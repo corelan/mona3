@@ -46,7 +46,7 @@ import pickle
 import ctypes
 import array
 import re
-
+import inspect
 import sys
 
 DEBUG_MODE = False
@@ -98,6 +98,12 @@ def dbgp(s):
 		print("[WINDBGLIB DEBUG - error] %s" % str(e))
 		pass
 
+def get_current_function_name():
+	frame = inspect.currentframe().f_back
+	args, _, _, values = inspect.getargvalues(frame)
+	callerargs = {arg: values[arg] for arg in args}
+	return "Start function: %s(%s)" % (inspect.currentframe().f_back.f_back.f_code.co_name, callerargs)
+
 def ensure_bytes(s, encoding='latin-1'):
 	if isinstance(s, bytes):
 		return s
@@ -119,10 +125,10 @@ def rstrip_nulls(s):
 		return s.rstrip(b'\x00')
 	return s.rstrip('\x00')
 
-
-
-
 def getOSVersion():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	osversions = {}
 	osversions["5.0"] = "2000"
 	osversions["5.1"] = "xp"
@@ -142,12 +148,17 @@ def getOSVersion():
 		return "unknown"
 
 def getArchitecture():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	if not pykd.is64bitSystem():
 		return 32
 	else:
 		return 64
 
 def getNtHeaders(modulebase):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_DOS_HEADER.html
 	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_NT_HEADERS.html
 	if getArchitecture() == 64:
@@ -159,6 +170,9 @@ def getNtHeaders(modulebase):
 	return pykd.module("ntdll").typedVar(ntheaders, modulebase + pykd.ptrDWord(modulebase + 0x3c))
 
 def clearvars():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	global MemoryPages
 	global AsmCache
 	global OpcodeCache
@@ -177,6 +191,9 @@ def clearvars():
 	return
 
 def getPEBInfo():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	try:
 		return pykd.typedVar("ntdll!_PEB", pykd.getCurrentProcess())
 	except:
@@ -214,15 +231,24 @@ def getPEBInfo():
 		exit(1)
 
 def getPEBAddress():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	global cpebaddress
 	peb = getPEBInfo()
 	cpebaddress = peb.getAddress()
 	return cpebaddress
 
 def getTEBInfo():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	return pykd.typedVar("_TEB", pykd.getImplicitThread())
 
 def getTEBAddress():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	tebinfo = pykd.dbgCommand("!teb")
 	if len(tebinfo) > 0:
 		teblines = tebinfo.split("\n")
@@ -235,12 +261,18 @@ def getTEBAddress():
 	return int(teb.Self)
 
 def bin2hex(binbytes):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	"""
 	Converts a binary string to a string of space-separated hexadecimal bytes.
 	"""
 	return ' '.join('%02x' % b for b in iter_byte_values(binbytes))
 
 def hexptr2bin(hexptr):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	"""
 	Input must be a int
 	output : bytes in little endian
@@ -249,6 +281,9 @@ def hexptr2bin(hexptr):
 
 
 def hexStrToInt(inputstr):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	"""
 	Converts a string with hex bytes to a numeric value
 	Arguments:
@@ -265,6 +300,9 @@ def hexStrToInt(inputstr):
 	return valtoreturn
 
 def addrToInt(address):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	"""
 	Convert a textual address to an integer
 
@@ -279,6 +317,9 @@ def addrToInt(address):
 	return hexStrToInt(address)
 
 def isAddress(address):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	"""
 	Check if a string is an address / consists of hex chars only
 
@@ -295,12 +336,18 @@ def isAddress(address):
 	return set(address.upper()) <= set("ABCDEF1234567890")
 
 def intToHex(address):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	if arch == 32:
 		return "0x%08x" % address
 	if arch == 64:
 		return "0x%016x" % address
 
 def intToHexWinDbgFormat(address):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	if arch == 32:
 		return "%08x" % address
 	if arch == 64:
@@ -309,6 +356,9 @@ def intToHexWinDbgFormat(address):
 		return formatted_hex
 
 def toHexByte(n):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	"""
 	Converts a numeric value to a hex byte
 
@@ -321,6 +371,9 @@ def toHexByte(n):
 	return "%02X" % n
 
 def hex2bin(pattern):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	"""
 	Converts a hex string (\\x??\\x??\\x??\\x??) to real hex bytes
 
@@ -340,6 +393,9 @@ def hex2bin(pattern):
 
 
 def getPyKDVersion():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	currentversion = pykd.version
 	currversion = ""
 	for versionpart in currentversion:
@@ -352,6 +408,9 @@ def getPyKDVersion():
 	return currversion
 
 def isPyKDVersionCompatible(currentversion,requiredversion):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	# current version should be at least requiredversion
 	if currentversion == requiredversion:
 		return True
@@ -375,6 +434,9 @@ def isPyKDVersionCompatible(currentversion,requiredversion):
 		return True
 		
 def checkVersion():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	pykdurl = "https://github.com/corelan/windbglib/raw/master/pykd/pykd.zip"
 	pykdurl03 = "https://github.com/corelan/windbglib/raw/master/pykd/pykd03.zip"
 	pykdversion_needed = "0.2.0.29"
@@ -393,6 +455,9 @@ def checkVersion():
 	return
 
 def getModulesFromPEB():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	global PEBModList
 	peb = getPEBInfo()
 	imagenames = []
@@ -484,6 +549,8 @@ def getModulesFromPEB():
 	return moduleLst
 
 def getModuleFromAddress(address):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 
 	offset = 0x20
 	if arch == 64:
@@ -594,6 +661,9 @@ def getModuleFromAddress(address):
 	return None
 
 def getImageBaseOnDisk(fullpath):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	with open(fullpath, "rb") as pe: 
 		data = pe.read()
 		nt_header_offset = struct.unpack("<I", data[0x3c:0x40])[0]
@@ -634,12 +704,18 @@ class Debugger:
 		return self.knowledgedb
 
 	def remoteVirtualAlloc(self, size=0x10000,interactive=False):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		PAGE_EXECUTE_READWRITE = 0x40
 		VIRTUAL_MEM = ( 0x1000 | 0x2000 )
 		vaddr = self.rVirtualAlloc(0,size,VIRTUAL_MEM,PAGE_EXECUTE_READWRITE)
 		return vaddr
 
 	def rVirtualAlloc(self, lpAddress, dwSize, flAllocationType, flProtect):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		PROCESS_VM_OPERATION = 0x0008
 		kernel32 = ctypes.windll.kernel32
 		pid = self.getDebuggedPid()
@@ -649,6 +725,9 @@ class Debugger:
 		return vaddr
 
 	def rVirtualProtect(self, lpAddress, dwSize, flNewProtect, lpflOldProtect = 0):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+		
 		PROCESS_VM_OPERATION = 0x0008
 		kernel32 = ctypes.windll.kernel32
 		pid = self.getDebuggedPid()
@@ -660,6 +739,9 @@ class Debugger:
 
 
 	def getAddress(self, functionname):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+	
 		functionparts = functionname.split(".")
 		if len(functionparts) > 1:
 			modulename = functionparts[0]
@@ -680,6 +762,9 @@ class Debugger:
 			return 0
 
 	def getCurrentTEBAddress(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		return getTEBAddress()	
 
 	"""
@@ -687,6 +772,8 @@ class Debugger:
 	"""
 
 	def fillAsmCache(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 
 		self.AsmCache["push eax"] = b"\x50"
 		self.AsmCache["push ecx"] = b"\x51"
@@ -787,6 +874,9 @@ class Debugger:
 	Knowledge
 	"""
 	def addKnowledge(self, id, object, force_add = 0):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+		
 		allk = self.readKnowledgeDB()
 		if not id in allk:	
 			allk[id] = object
@@ -799,6 +889,9 @@ class Debugger:
 		return
 
 	def getKnowledge(self,id):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		allk = self.readKnowledgeDB()
 		if id in allk:
 			return allk[id]
@@ -806,6 +899,9 @@ class Debugger:
 			return None
 
 	def readKnowledgeDB(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		allk = {}
 		try:
 			with open(self.knowledgedb,"rb") as fh:
@@ -815,6 +911,9 @@ class Debugger:
 		return allk
 
 	def listKnowledge(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		allk = self.readKnowledgeDB()
 		allid = []
 		for thisk in allk:
@@ -822,6 +921,9 @@ class Debugger:
 		return allid
 
 	def cleanKnowledge(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		try:
 			os.remove(self.knowledgedb)
 		except:
@@ -834,6 +936,9 @@ class Debugger:
 		return
 
 	def forgetKnowledge(self,id,entry=""):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		allk = self.readKnowledgeDB()
 		if entry == "":
 			if id in allk:
@@ -850,6 +955,9 @@ class Debugger:
 		return
 
 	def cleanUp(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		self.cleanKnowledge()
 		return
 
@@ -866,6 +974,7 @@ class Debugger:
 	LOGGING
 	"""
 	def toAsciiOnly(self, message):
+
 		message = ensure_text(message)
 		newchar = []
 		for thischar in message:
@@ -876,6 +985,9 @@ class Debugger:
 		return "".join(newchar)
 
 	def createLogWindow(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		return
 	
 	def log(self, message, highlight=0, address=None, focus=0):
@@ -917,6 +1029,9 @@ class Debugger:
 	"""
 	
 	def getDebuggedName(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/RTL_USER_PROCESS_PARAMETERS.html
 		peb = getPEBInfo()
@@ -931,6 +1046,9 @@ class Debugger:
 		return sImageFilepieces[len(sImageFilepieces)-1]
 		
 	def getDebuggedPid(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		# http://www.nirsoft.net/kernel_struct/vista/TEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/CLIENT_ID.html
 		teb = getTEBAddress()
@@ -946,6 +1064,9 @@ class Debugger:
 	OS stuff
 	"""
 	def getOsRelease(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		peb = getPEBInfo()
 		majorversion = int(peb.OSMajorVersion)
 		minorversion = int(peb.OSMinorVersion)
@@ -964,6 +1085,9 @@ class Debugger:
 	"""
 	
 	def getRegs(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		regs = []
 		if arch == 32:
 			regs = Registers32BitsOrder[:]
@@ -981,6 +1105,9 @@ class Debugger:
 	Commands
 	"""
 	def nativeCommand(self,cmd2run):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		try:
 			if DEBUG_MODE:
 				dbgp("nativeCommand: %s" % cmd2run)
