@@ -18819,8 +18819,9 @@ def procHelp(args):
 		dbg.log(" !mona <command> <parameter>")
 		dbg.logLines("\nAvailable mona commands and parameters for %sbit architecture:\n" % str(arch))
 
-		items = commands.items()
-		items.sort(key = itemgetter(0))
+		#items = commands.items()
+		#items.sort(key = itemgetter(0))
+		items = sorted(commands.items(), key=itemgetter(0))
 		for item in items:
 			if arch in commands[item[0]].supportedarchs:
 				if commands[item[0]].usage != "":
