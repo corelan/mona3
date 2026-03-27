@@ -38,7 +38,7 @@ __VERSION__ = '3.0'
 __REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
 
 
-## Some Python2/Python compatibility stuff
+## Some Python2/Pytho3 compatibility stuff
 
 PY3 = __import__("sys").version_info[0] >= 3
 
@@ -58,6 +58,15 @@ except ImportError:
 	from urllib.request import urlretrieve as urllib_urlretrieve
 
 
+
+if PY3:
+	text_type = str
+	bytes_type = bytes
+else:
+	text_type = unicode
+	bytes_type = str
+
+
 def _ord(x):
     if isinstance(x, int):
         return x
@@ -68,14 +77,6 @@ def _ord(x):
         return x[0] if PY3 else ord(x[0])
 
     return ord(x)
-
-if PY3:
-	text_type = str
-	bytes_type = bytes
-else:
-	text_type = unicode
-	bytes_type = str
-
 
 def _to_text(value):
 	if isinstance(value, text_type):
@@ -90,8 +91,7 @@ def _to_bytes(value):
 		return value
 	if isinstance(value, text_type):
 		return value.encode('latin1')
-	return bytes_type(text_type(value).encode('latin1') if PY3 else text_type(value))
-
+	return text_type(value).encode('latin1')
 
 __IMM__ = '1.8'
 __DEBUGGERAPP__ = ''
@@ -6379,7 +6379,6 @@ def assemble(instructions,encoder=""):
 					strAssembled = strAssembled+subAssembled
 				else:
 					strAssembled =  strAssembled+hex(_ord(assemOpc)).replace('0x', '\\x')
-				dbg.log("strAssembled : %s" % strAssembled)
 			if len(strAssembled) < 30:
 				if not silent:
 					dbg.log(" %s = %s" % (instruct,strAssembled))
