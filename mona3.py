@@ -88,6 +88,7 @@ except:
 	try:
 		import pykd
 		import windbglib3 as dbglib
+		dbglib.set_debug_mode(True)
 		from windbglib3 import LogBpHook
 		dbglib.checkVersion()
 		arch = dbglib.getArchitecture()
@@ -97,9 +98,9 @@ except:
 		import sys
 		sys.exit(1)
 	except Exception:
-		#import traceback
+		import traceback
 		print("Do not run this script outside of a debugger !")
-		#print traceback.format_exc()
+		print(traceback.format_exc())
 		import sys
 		sys.exit(1)
 

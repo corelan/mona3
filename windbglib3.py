@@ -49,33 +49,13 @@ import re
 
 import sys
 
+DEBUG_MODE = False
+
 PY3 = sys.version_info[0] == 3
 try:
 	xrange
 except NameError:
 	xrange = range
-
-def ensure_bytes(s, encoding='latin-1'):
-	if isinstance(s, bytes):
-		return s
-	return s.encode(encoding)
-
-def ensure_text(s, encoding='latin-1'):
-	if isinstance(s, str):
-		return s
-	return s.decode(encoding)
-
-def iter_byte_values(data):
-	data = ensure_bytes(data)
-	if PY3:
-		return data
-	return [ord(c) for c in data]
-
-def rstrip_nulls(s):
-	if isinstance(s, bytes):
-		return s.rstrip(b'\x00')
-	return s.rstrip('\x00')
-
 
 global MemoryPages
 global AsmCache
@@ -101,7 +81,41 @@ if pykd.is64bitSystem():
 	arch = 64
 
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
+
 # Utility functions
+
+
+def set_debug_mode(enabled):
+    global DEBUG_MODE
+    DEBUG_MODE = bool(enabled)
+
+def dbgp(s):
+	# print debug information
+	print("[DEBUG] %s" % s)
+
+def ensure_bytes(s, encoding='latin-1'):
+	if isinstance(s, bytes):
+		return s
+	return s.encode(encoding)
+
+def ensure_text(s, encoding='latin-1'):
+	if isinstance(s, str):
+		return s
+	return s.decode(encoding)
+
+def iter_byte_values(data):
+	data = ensure_bytes(data)
+	if PY3:
+		return data
+	return [ord(c) for c in data]
+
+def rstrip_nulls(s):
+	if isinstance(s, bytes):
+		return s.rstrip(b'\x00')
+	return s.rstrip('\x00')
+
+
+
 
 def getOSVersion():
 	osversions = {}
@@ -1345,6 +1359,10 @@ class Debugger:
 	def assemble(self,instructions):
 		allbytes = ""
 		address = pykd.reg("eip") if arch == 32 else pykd.reg("rip")
+		if DEBUG_MODE:
+			dbgp("instructions: %s" % instructions)
+			dbgp("address: %s" % address)
+			dbgp("pykd.isValid(address): %s" % pykd.isValid(address))
 		if not pykd.isValid(address):
 			# assemble somewhere else - let's say at the ntdll entrypoint
 			thismod = pykd.module("ntdll")
@@ -1353,9 +1371,12 @@ class Debugger:
 			entrypoint = ntHeader.OptionalHeader.AddressOfEntryPoint
 			address = thismodbase + entrypoint
 		allinstructions = instructions.lower().split("\n")
+		dbgp("allinstructions: %s" % allinstructions)
 		origbytes = pykd.loadChars(address,20)
+		dbgp("origbytes: %s" % bin2hex(origbytes))
 		cached = True
 		for thisinstruction in allinstructions:	
+			dbgp("current instruction : %s" % thisinstruction)
 			thisinstruction = thisinstruction.strip(" ").lstrip(" ")
 			if thisinstruction.startswith("ret") and not thisinstruction.startswith("retf"):
 				thisinstruction = thisinstruction.replace("retn","ret").replace("ret","retn")
@@ -1364,15 +1385,19 @@ class Debugger:
 				objdisasm = pykd.disasm(address)
 				try:
 					objdisasm.asm(thisinstruction)
-				except:
+				except Exception as e:
+					print(str(e))
 					return ""
 				opc = opcode(address)	
 				thesebytes = opc.getBytes()
+				print("bytes: " % thesebytes)
 				allbytes += thesebytes
 				self.AsmCache[thisinstruction] = thesebytes
 				cached = False
 			else:
 			# return from cache
+				print("debug: return from cache")
+				print(self.AsmCache)
 				allbytes += self.AsmCache[thisinstruction]
 		if not cached:
 			putback = "eb 0x%08x " % address
