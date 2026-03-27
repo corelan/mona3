@@ -1987,13 +1987,13 @@ class MnCommand:
 	"""
 	Class to call commands, show usage and parse arguments
 	"""
-	def __init__(self, name, description, usage, parseProc, alias=""):
+	def __init__(self, name, description, usage, parseProc, alias="", archs=[32]):
 		self.name = name
 		self.description = description
 		self.usage = usage
 		self.parseProc = parseProc
 		self.alias = alias
-
+		self.supportedarchs = archs
 
 #---------------------------------------#
 #   Class to encode bytes               #
@@ -18305,16 +18305,9 @@ def procFlow(args):
 											if s in cregsb:
 												cregsb.remove(s)
 									break
-						#else:
-							#dbg.log("    Control: %s" % ocregsb)
-
 
 						logfile.write("0x%08x : %s" % (thisaddy,instruction),thislog)
 						
-						#if len(cregs) > 0 or len(cregsb) > 0:
-						#	if cmp(ocregsb,cregsb) == -1:
-						#		dbg.log("    Before: %s" % ocregsb)
-						#		dbg.log("    After : %s" % cregsb)
 	return
 
 
@@ -18796,19 +18789,27 @@ def procHelp(args):
 		thiscmd = args[1].lower().strip()
 		if thiscmd in commands:
 			dbg.log("")
-			dbg.log("Usage of command '%s' :" % thiscmd)
-			dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-			dbg.logLines(commands[thiscmd].usage)
+			if arch in commands[thiscmd].supportedarchs:
+				dbg.log("Usage of command '%s' :" % thiscmd)
+				dbg.log("%s" % ("-" * (22 + len(thiscmd))))
+				dbg.logLines(commands[thiscmd].usage)
+			else:
+				dbg.log("You're running in a %sbit environment," % arch)
+				dbg.log("but the '%s' command is only supported in %sbit" % commands[thiscmd].supportedarchs )
 			dbg.log("")
 		else:
 			aliasfound = False
 			for cmd in commands:
 				if commands[cmd].alias == thiscmd:
 					dbg.log("")
-					dbg.log("Usage of command '%s' :" % thiscmd)
-					dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-					dbg.logLines(commands[cmd].usage)
-					dbg.log("")
+					if arch in commands[cmd].supportedarchs:
+						dbg.log("Usage of command '%s' :" % thiscmd)
+						dbg.log("%s" % ("-" * (22 + len(thiscmd))))
+						dbg.logLines(commands[cmd].usage)
+						dbg.log("")
+					else:
+						dbg.log("You're running in a %sbit environment," % arch)
+						dbg.log("but the '%s' command is only supported in %sbit" % commands[cmd].supportedarchs )
 					aliasfound = True
 			if not aliasfound:
 				dbg.logLines("\nCommand %s does not exist. Run !mona to get a list of available commands\n" % thiscmd,highlight=1)
@@ -18816,16 +18817,17 @@ def procHelp(args):
 		dbg.logLines("\nUsage :")
 		dbg.logLines("-------\n")
 		dbg.log(" !mona <command> <parameter>")
-		dbg.logLines("\nAvailable commands and parameters :\n")
+		dbg.logLines("\nAvailable mona commands and parameters for %sbit architecture:\n" % str(arch))
 
 		items = commands.items()
 		items.sort(key = itemgetter(0))
 		for item in items:
-			if commands[item[0]].usage != "":
-				aliastxt = ""
-				if commands[item[0]].alias != "":
-					aliastxt = " / " + commands[item[0]].alias
-				dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
+			if arch in commands[item[0]].supportedarchs:
+				if commands[item[0]].usage != "":
+					aliastxt = ""
+					if commands[item[0]].alias != "":
+						aliastxt = " / " + commands[item[0]].alias
+					dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
 		dbg.log("")
 		dbg.log("Want more info about a given command ?  Run !mona help <command>",highlight=1)
 		dbg.log("")
@@ -19309,16 +19311,16 @@ Arguments:
 -a     : address (or register) to write to""" 
 
 	# initialize list of available mona commands
-	commands["help"] 			= MnCommand("help", "show help", "!mona help [command]",procHelp)
+	commands["help"] 			= MnCommand("help", "show help", "!mona help [command]",procHelp,"",[32,64])
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
-	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf")
-	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j")
+	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
+	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
 	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC)
 	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP exploit and do ROP magic with them",ropUsage,procROP)
 	commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP exploit",jopUsage,procJOP)		
 	commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
 	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
-	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod")
+	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod", [32,64])
 	commands["filecompare"]		= MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc")
 	commands["pattern_create"]	= MnCommand("pattern_create","Create a cyclic pattern of a given size",patcreateUsage,procCreatePATTERN,"pc")
 	commands["pattern_offset"]	= MnCommand("pattern_offset","Find location of 4 bytes in a cyclic pattern",patoffsetUsage,procOffsetPATTERN,"po")
@@ -19438,7 +19440,6 @@ def main(args):
 		if "-showargs" in args:
 			dbg.log("arguments: %s" % arguments)
 
-		
 		for word in arguments:
 			if (word[0] == '-'):
 				word = word.lstrip("-")
