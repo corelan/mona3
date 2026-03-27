@@ -1068,8 +1068,8 @@ class Debugger:
 			self.AsmCache["add esp,%02x" % offset] = thisasm
 			self.AsmCache["add esp,%x" % offset] = thisasm
 			thisasm64 = b"\x48\x83\xc4" + hex2bin("%02x" % offset)
-			self.AsmCache["add rsp,%02x" % offset] = thisasm
-			self.AsmCache["add rsp,%x" % offset] = thisasm
+			self.AsmCache["add rsp,%02x" % offset] = thisasm64
+			self.AsmCache["add rsp,%x" % offset] = thisasm64
 
 		self.AsmCache["retn"] = b"\xc3"
 		self.AsmCache["retf"] = b"\xdb"
