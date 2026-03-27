@@ -38,7 +38,7 @@ __VERSION__ = '3.0'
 __REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
 
 
-## Some Python2/Pytho3 compatibility stuff
+## Some Python2/Python3 compatibility stuff
 
 PY3 = __import__("sys").version_info[0] >= 3
 
