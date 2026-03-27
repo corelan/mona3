@@ -87,8 +87,8 @@ try:
 except:		
 	try:
 		import pykd
-		import windbglib as dbglib
-		from windbglib import LogBpHook
+		import windbglib3 as dbglib
+		from windbglib3 import LogBpHook
 		dbglib.checkVersion()
 		arch = dbglib.getArchitecture()
 		__DEBUGGERAPP__ = "WinDBG"
@@ -13620,6 +13620,11 @@ def main(args):
 				else:
 					if int(currentrevision) < int(newrevision):
 						doupdate = True
+
+			# TO REVERT
+			# temporarily disabling updates
+			doupdate = False
+			dbg.log("**** UPDATES DISABLED ****")
 				
 			if doupdate:
 				dbg.log("[+] New version available",highlight=1)
@@ -13676,7 +13681,12 @@ def main(args):
 						else:
 							if int(currentrevision) < int(newrevision):
 								doupdate = True
-						
+					
+					# TO REVERT
+					# temporarily disabling updates
+					doupdate = False
+					dbg.log("**** UPDATES DISABLED ****")
+
 					if doupdate:
 						dbg.log("[+] New version available",highlight=1)
 						dbg.log("    Updating to %s r%s" % (newversion,newrevision),highlight=1) 
