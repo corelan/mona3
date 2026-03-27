@@ -982,7 +982,15 @@ class Debugger:
 	"""
 	def nativeCommand(self,cmd2run):
 		try:
+			if DEBUG_MODE:
+				dbgp("nativeCommand: %s" % cmd2run)
 			output = pykd.dbgCommand(cmd2run)
+			if DEBUG_MODE:
+				dbgp("command output: %s" % output)
+			if output is None:
+				output = ""
+			if DEBUG_MODE:
+				dbgp("returning '%s'" % output)
 			return output
 		except:
 			#dprintln(traceback.format_exc())

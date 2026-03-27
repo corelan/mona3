@@ -37,6 +37,8 @@ $Revision: 3000 $
 __VERSION__ = '3.0'
 __REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
 
+DEBUG_MODE = False
+
 
 ## Some Python2/Python3 compatibility stuff
 
@@ -284,6 +286,14 @@ memProtConstants["WC"] = ["PAGE_WRITECOMBINE",0x400]
 #---------------------------------------#
 #  Utility functions                    #
 #---------------------------------------#	
+
+def dbgp(s):
+	# print debug information
+	try:
+		print("[MONA DEBUG] %s" % s)
+	except Exception as e:
+		print("[MONA DEBUG - error] %s" % str(e))
+		pass
 
 def resetGlobals():
 	"""
@@ -11750,6 +11760,8 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 						crit = "*" + crit + "*"
 					modsearch = "x %s!%s" % (shortname,crit)
 					output = dbg.nativeCommand(modsearch)
+					if DEBUG_MODE:
+						dbgp("output: %s" % output)
 					outputlines = output.split("\n")
 					for line in outputlines:
 						if line.replace(" ","") != "":
@@ -11830,8 +11842,10 @@ def main(args):
 	global currentArgs
 	currentArgs = copy.copy(args)
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
+		global DEBUG_MODE
+		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
-		dbg.log("*** Activating debug mode ***")
+		dbg.log("*** Activating debug mode : %s***" % DEBUG_MODE)
 
 	try:
 		starttime = datetime.datetime.now()
