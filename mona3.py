@@ -37,6 +37,9 @@ $Revision: 3000 $
 __VERSION__ = '3.0'
 __REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
 
+
+## Some Python2/Python compatibility stuff
+
 PY3 = __import__("sys").version_info[0] >= 3
 
 try:
@@ -55,20 +58,40 @@ except ImportError:
 	from urllib.request import urlretrieve as urllib_urlretrieve
 
 
-def __ord(value):
-	return value if isinstance(value, int) else _ord(value)
+def _ord(x):
+    if isinstance(x, int):
+        return x
+
+    if isinstance(x, bytes):
+        # Python3: b"A"[0] -> 65
+        # Python2: b"A"[0] -> "A"
+        return x[0] if PY3 else ord(x[0])
+
+    return ord(x)
+
+if PY3:
+	text_type = str
+	bytes_type = bytes
+else:
+	text_type = unicode
+	bytes_type = str
 
 
 def _to_text(value):
-	if isinstance(value, bytes):
+	if isinstance(value, text_type):
+		return value
+	if isinstance(value, bytes_type):
 		return value.decode('latin1')
-	return value
+	return text_type(value)
 
 
 def _to_bytes(value):
-	if isinstance(value, bytes):
+	if isinstance(value, bytes_type):
 		return value
-	return value.encode('latin1')
+	if isinstance(value, text_type):
+		return value.encode('latin1')
+	return bytes_type(text_type(value).encode('latin1') if PY3 else text_type(value))
+
 
 __IMM__ = '1.8'
 __DEBUGGERAPP__ = ''

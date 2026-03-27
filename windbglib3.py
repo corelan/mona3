@@ -386,30 +386,10 @@ def checkVersion():
 		print("  You are running the wrong version of PyKD, please update ")
 		print("   Installed version : %s " % currversion)
 		print("   Required version : %s" % pykdversion_needed)
-		print("  You can get an updated PyKD version from one of the following sources:")
-		print("   - %s (preferred)" % pykdurl)
-		print("     (unzip with 7zip)")
-		print("   - https://githomelab.ru/pykd/pykd (newer versions may not work !)")
 		print("*******************************************************************************************")
 		import sys
 		sys.exit()
 		return
-	if pykdversion_needed != currversion:
-		# version must be higher
-		print("")
-		print("** You are running pykd.pyd v%s. Use at your own risk **" % currversion)
-		print("")
-		#print(" mona.py was tested against v%s" % pykdversion_needed)
-		#print(" and not against v%s" % currversion)
-		#print(" This version may not work properly.")
-		#print(" If you are having issues, I recommend to download the correct version from")
-		#print("   %s" % pykdurl)
-		#print("   (unzip with 7zip)")
-		#if currversion.startswith("0.3"):
-		#	print("")
-		#	print(" NOTE: PyKD v%s requires msdia120.dll, which only gets installed via Visual Studio 2013 (yup, I know)" % currversion)
-		#	print(" Alternatively, you can use the copy of msdia120.dll from the pykd.pyd file")
-		#	print("  (%s), but use this file at your own risk" % pykdurl03)
 	return
 
 def getModulesFromPEB():
