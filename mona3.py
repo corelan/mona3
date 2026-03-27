@@ -88,7 +88,8 @@ except:
 	try:
 		import pykd
 		import windbglib3 as dbglib
-		dbglib.set_debug_mode(True)
+		#activate this with -debug flag
+		#dbglib.set_debug_mode(True)
 		from windbglib3 import LogBpHook
 		dbglib.checkVersion()
 		arch = dbglib.getArchitecture()
@@ -6355,6 +6356,7 @@ def assemble(instructions,encoder=""):
 					strAssembled = strAssembled+subAssembled
 				else:
 					strAssembled =  strAssembled+hex(_ord(assemOpc)).replace('0x', '\\x')
+				dbg.log("strAssembled : %s" % strAssembled)
 			if len(strAssembled) < 30:
 				if not silent:
 					dbg.log(" %s = %s" % (instruct,strAssembled))
@@ -6362,9 +6364,10 @@ def assemble(instructions,encoder=""):
 			else:
 				if not silent:
 					dbg.log(" %s => Unable to assemble this instruction !" % instruct,highlight=1)
-		except:
+		except Exception as e:
 			if not silent:
 				dbg.log("   Could not assemble %s " % instruct)
+				dbg.log("   %s" % str(e))
 			pass
 	if not silent:
 		dbg.log(" Full opcode : %s " % allopcodes)
@@ -11804,6 +11807,10 @@ def main(args):
 	dbg.createLogWindow()
 	global currentArgs
 	currentArgs = copy.copy(args)
+	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
+		dbglib.set_debug_mode(True)
+		dbg.log("*** Activating debug mode ***")
+
 	try:
 		starttime = datetime.datetime.now()
 		ptr_counter = 0

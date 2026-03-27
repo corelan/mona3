@@ -84,6 +84,7 @@ TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 
 # Utility functions
 
+DEBUG_MODE = False
 
 def set_debug_mode(enabled):
     global DEBUG_MODE
@@ -91,7 +92,11 @@ def set_debug_mode(enabled):
 
 def dbgp(s):
 	# print debug information
-	print("[DEBUG] %s" % s)
+	try:
+		print("[WINDBGLIB DEBUG] %s" % s)
+	except Exception as e:
+		print("[WINDBGLIB DEBUG - error] %s" % str(e))
+		pass
 
 def ensure_bytes(s, encoding='latin-1'):
 	if isinstance(s, bytes):
