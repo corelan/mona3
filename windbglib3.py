@@ -1335,6 +1335,8 @@ class Debugger:
 	def disasmBackward(self,address,depth):
 		while True:
 			cmd2run = "ub 0x%08x L%d" % (address,depth)
+			if DEBUG_MODE:
+				dbgp("cmd2run: %s" % cmd2run)
 			try:
 				disasmlist = pykd.dbgCommand(cmd2run)
 				disasmLinesTmp = disasmlist.split("\n")
@@ -1371,39 +1373,54 @@ class Debugger:
 			entrypoint = ntHeader.OptionalHeader.AddressOfEntryPoint
 			address = thismodbase + entrypoint
 		allinstructions = instructions.lower().split("\n")
-		dbgp("allinstructions: %s" % allinstructions)
+		
 		origbytes = pykd.loadChars(address,20)
-		dbgp("origbytes: %s" % bin2hex(origbytes))
+		if DEBUG_MODE:
+			dbgp("allinstructions: %s" % allinstructions)	
+			dbgp("origbytes: %s" % bin2hex(origbytes))
 		cached = True
 		for thisinstruction in allinstructions:	
-			dbgp("current instruction : %s" % thisinstruction)
+			if DEBUG_MODE:
+				dbgp("current instruction : %s" % thisinstruction)
 			thisinstruction = thisinstruction.strip(" ").lstrip(" ")
 			if thisinstruction.startswith("ret") and not thisinstruction.startswith("retf"):
 				thisinstruction = thisinstruction.replace("retn","ret").replace("ret","retn")
 
 			if not thisinstruction in self.AsmCache:
 				objdisasm = pykd.disasm(address)
+				if DEBUG_MODE:
+					dbgp("instruction not in cache, assembling")
 				try:
 					objdisasm.asm(thisinstruction)
 				except Exception as e:
 					print(str(e))
+					if DEBUG_MODE:
+						dbgp("error: %s" % str(e))
 					return ""
 				opc = opcode(address)	
 				thesebytes = opc.getBytes()
-				print("bytes: " % thesebytes)
+				if DEBUG_MODE:
+					dbgp("bytes: " % thesebytes)
 				allbytes += thesebytes
 				self.AsmCache[thisinstruction] = thesebytes
+				if DEBUG_MODE:
+					dbgp("added to cache. Instruction: %s, bytes: %s" (thisinstruction, bin2hex(thesebytes)))
 				cached = False
 			else:
 			# return from cache
-				print("debug: return from cache")
-				print(self.AsmCache)
+				if DEBUG_MODE:
+					dbgp("return bytes from cache")
+					dbgp("cache: %s" % bin2hex(self.AsmCache[thisinstruction]))
 				allbytes += self.AsmCache[thisinstruction]
 		if not cached:
 			putback = "eb 0x%08x " % address
 			restorebytes = [''.join(bin2hex(origbyte)) for origbyte in origbytes] 
 			putback += ' '.join(restorebytes)
 			pykd.dbgCommand(putback)
+			if DEBUG_MODE:
+				dbgp("putback command: %s" % putback)
+		if DEBUG_MODE:
+			dbgp("returning %s" % bin2hex(allbytes))
 		return allbytes
 
 	def getOpcode(self,address):
