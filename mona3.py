@@ -213,6 +213,8 @@ disasmUpperChecked = False
 disasmIsUpper = False
 configwarningshown = False
 
+commands = {}
+
 if __DEBUGGERAPP__ == "WinDBG":
 	if pykd.getSymbolPath().replace(" ","") == "":
 		dbg.log("")
@@ -11832,6 +11834,149 @@ def getAbsolutePath(filename):
 
 		return os.path.join(workingfolder, filename)
 
+#-----------------------------------------------------------------------#
+# 
+#-----------------------------------------------------------------------#	
+
+# Show banner
+def getBanner():
+	banners = {}
+	bannertext = ""
+	bannertext += "    |------------------------------------------------------------------|\n"
+	bannertext += "    |                         __               __                      |\n"
+	bannertext += "    |   _________  ________  / /___ _____     / /____  ____ _____ ___  |\n"
+	bannertext += "    |  / ___/ __ \/ ___/ _ \/ / __ `/ __ \   / __/ _ \/ __ `/ __ `__ \ |\n"
+	bannertext += "    | / /__/ /_/ / /  /  __/ / /_/ / / / /  / /_/  __/ /_/ / / / / / / |\n"
+	bannertext += "    | \___/\____/_/   \___/_/\__,_/_/ /_/   \__/\___/\__,_/_/ /_/ /_/  |\n"
+	bannertext += "    |                                                                  |\n"
+	bannertext += "    |     https://www.corelan.be | https://www.corelan-training.com    |\n"
+	bannertext += "    |------------------------------------------------------------------|\n"
+	banners[0] = bannertext
+
+	bannertext = ""
+	bannertext += "    |------------------------------------------------------------------|\n"			
+	bannertext += "    |        _ __ ___    ___   _ __    __ _     _ __   _   _           |\n"
+	bannertext += "    |       | '_ ` _ \  / _ \ | '_ \  / _` |   | '_ \ | | | |          |\n"
+	bannertext += "    |       | | | | | || (_) || | | || (_| | _ | |_) || |_| |          |\n"
+	bannertext += "    |       |_| |_| |_| \___/ |_| |_| \__,_|(_)| .__/  \__, |          |\n"
+	bannertext += "    |                                          |_|     |___/           |\n"
+	bannertext += "    |                                                                  |\n"
+	bannertext += "    |------------------------------------------------------------------|\n"	
+	banners[1] = bannertext
+
+	bannertext = ""
+	bannertext += "    |------------------------------------------------------------------|\n"
+	bannertext += "    |                                                                  |\n"
+	bannertext += "    |    _____ ___  ____  ____  ____ _                                 |\n"
+	bannertext += "    |    / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be         |\n"
+	bannertext += "    |   / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com|\n"
+	bannertext += "    |  /_/ /_/ /_/\____/_/ /_/\__,_/                                   |\n"
+	bannertext += "    |                                                                  |\n"
+	bannertext += "    |------------------------------------------------------------------|\n"
+	banners[2] = bannertext
+
+	bannertext = ""
+	bannertext += "\n    .##.....##..#######..##....##....###........########..##....##\n"
+	bannertext += "    .###...###.##.....##.###...##...##.##.......##.....##..##..##.\n"
+	bannertext += "    .####.####.##.....##.####..##..##...##......##.....##...####..\n"
+	bannertext += "    .##.###.##.##.....##.##.##.##.##.....##.....########.....##...\n"
+	bannertext += "    .##.....##.##.....##.##..####.#########.....##...........##...\n"
+	bannertext += "    .##.....##.##.....##.##...###.##.....##.###.##...........##...\n"
+	bannertext += "    .##.....##..#######..##....##.##.....##.###.##...........##...\n\n"
+	banners[3] = bannertext
+
+
+	# pick random banner
+	bannerlist = []
+	for i in range (0, len(banners)):
+		bannerlist.append(i)
+
+	random.shuffle(bannerlist)
+	return banners[bannerlist[0]]
+
+# Show Help
+def procHelp(args):
+	global commands
+	dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
+	dbg.log("     Plugin version : %s r%s" % (__VERSION__,__REV__))
+	dbg.log("     Python version : %s" % (getPythonVersion()))
+	if __DEBUGGERAPP__ == "WinDBG":
+		pykdversion = dbg.getPyKDVersionNr()
+		dbg.log("     PyKD version %s" % pykdversion)
+	dbg.log("     Written by Corelan - https://www.corelan.be")
+	dbg.log("     Project page : https://github.com/corelan/mona")
+	dbg.logLines(getBanner(),highlight=1)
+	dbg.log("Global options :")
+	dbg.log("----------------")
+	dbg.log("You can use one or more of the following global options on any command that will perform")
+	dbg.log("a search in one or more modules, returning a list of pointers :")
+	dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
+	dbg.log("                          option -cp nonull instead")
+	dbg.log(" -o                     : Ignore OS modules")
+	dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
+	dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
+	dbg.log("                          You can specify multiple modules (comma separated)")
+	dbg.log("                          Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
+	dbg.log("                          Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
+	dbg.log("                          blah or *blah* = contains blah")
+	dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
+	dbg.log("                          You can use one or more of the following criteria :")
+	dbg.log("                          aslr,safeseh,rebase,nx,os")
+	dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
+	dbg.log("                          Example :  -cm aslr=true,safeseh=false")
+	dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")
+	dbg.log("                          !mona seh -cm aslr")
+	dbg.log(" -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
+	dbg.log("                          Available options are :")
+	dbg.log("                          unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
+	dbg.log("                          Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
+	dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
+	dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
+	dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
+	dbg.log("                          only executable pointers will be returned.")
+	dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
+	dbg.log(" -debug                 : Enable debug routines in mona/windbglib")
+
+	if not args:
+		args = []
+	if len(args) > 1:
+		thiscmd = args[1].lower().strip()
+		if thiscmd in commands:
+			dbg.log("")
+			dbg.log("Usage of command '%s' :" % thiscmd)
+			dbg.log("%s" % ("-" * (22 + len(thiscmd))))
+			dbg.logLines(commands[thiscmd].usage)
+			dbg.log("")
+		else:
+			aliasfound = False
+			for cmd in commands:
+				if commands[cmd].alias == thiscmd:
+					dbg.log("")
+					dbg.log("Usage of command '%s' :" % thiscmd)
+					dbg.log("%s" % ("-" * (22 + len(thiscmd))))
+					dbg.logLines(commands[cmd].usage)
+					dbg.log("")
+					aliasfound = True
+			if not aliasfound:
+				dbg.logLines("\nCommand %s does not exist. Run !mona to get a list of available commands\n" % thiscmd,highlight=1)
+	else:
+		dbg.logLines("\nUsage :")
+		dbg.logLines("-------\n")
+		dbg.log(" !mona <command> <parameter>")
+		dbg.logLines("\nAvailable commands and parameters :\n")
+
+		items = commands.items()
+		items.sort(key = itemgetter(0))
+		for item in items:
+			if commands[item[0]].usage != "":
+				aliastxt = ""
+				if commands[item[0]].alias != "":
+					aliastxt = " / " + commands[item[0]].alias
+				dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
+		dbg.log("")
+		dbg.log("Want more info about a given command ?  Run !mona help <command>",highlight=1)
+		dbg.log("")
+
 
 #-----------------------------------------------------------------------#
 # main
@@ -11840,6 +11985,8 @@ def getAbsolutePath(filename):
 def main(args):
 	dbg.createLogWindow()
 	global currentArgs
+	global commands
+
 	currentArgs = copy.copy(args)
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
 		global DEBUG_MODE
@@ -11851,147 +11998,7 @@ def main(args):
 		starttime = datetime.datetime.now()
 		ptr_counter = 0
 		
-		# initialize list of commands
-		commands = {}
-		
-		# ----- HELP ----- #
-		def getBanner():
-			banners = {}
-			bannertext = ""
-			bannertext += "    |------------------------------------------------------------------|\n"
-			bannertext += "    |                         __               __                      |\n"
-			bannertext += "    |   _________  ________  / /___ _____     / /____  ____ _____ ___  |\n"
-			bannertext += "    |  / ___/ __ \/ ___/ _ \/ / __ `/ __ \   / __/ _ \/ __ `/ __ `__ \ |\n"
-			bannertext += "    | / /__/ /_/ / /  /  __/ / /_/ / / / /  / /_/  __/ /_/ / / / / / / |\n"
-			bannertext += "    | \___/\____/_/   \___/_/\__,_/_/ /_/   \__/\___/\__,_/_/ /_/ /_/  |\n"
-			bannertext += "    |                                                                  |\n"
-			bannertext += "    |     https://www.corelan.be | https://www.corelan-training.com    |\n"
-			bannertext += "    |------------------------------------------------------------------|\n"
-			banners[0] = bannertext
-
-			bannertext = ""
-			bannertext += "    |------------------------------------------------------------------|\n"			
-			bannertext += "    |        _ __ ___    ___   _ __    __ _     _ __   _   _           |\n"
-			bannertext += "    |       | '_ ` _ \  / _ \ | '_ \  / _` |   | '_ \ | | | |          |\n"
-			bannertext += "    |       | | | | | || (_) || | | || (_| | _ | |_) || |_| |          |\n"
-			bannertext += "    |       |_| |_| |_| \___/ |_| |_| \__,_|(_)| .__/  \__, |          |\n"
-			bannertext += "    |                                          |_|     |___/           |\n"
-			bannertext += "    |                                                                  |\n"
-			bannertext += "    |------------------------------------------------------------------|\n"	
-			banners[1] = bannertext
-
-			bannertext = ""
-			bannertext += "    |------------------------------------------------------------------|\n"
-			bannertext += "    |                                                                  |\n"
-			bannertext += "    |    _____ ___  ____  ____  ____ _                                 |\n"
-			bannertext += "    |    / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be         |\n"
-			bannertext += "    |   / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com|\n"
-			bannertext += "    |  /_/ /_/ /_/\____/_/ /_/\__,_/                                   |\n"
-			bannertext += "    |                                                                  |\n"
-			bannertext += "    |------------------------------------------------------------------|\n"
-			banners[2] = bannertext
-
-			bannertext = ""
-			bannertext += "\n    .##.....##..#######..##....##....###........########..##....##\n"
-			bannertext += "    .###...###.##.....##.###...##...##.##.......##.....##..##..##.\n"
-			bannertext += "    .####.####.##.....##.####..##..##...##......##.....##...####..\n"
-			bannertext += "    .##.###.##.##.....##.##.##.##.##.....##.....########.....##...\n"
-			bannertext += "    .##.....##.##.....##.##..####.#########.....##...........##...\n"
-			bannertext += "    .##.....##.##.....##.##...###.##.....##.###.##...........##...\n"
-			bannertext += "    .##.....##..#######..##....##.##.....##.###.##...........##...\n\n"
-			banners[3] = bannertext
-
-
-			# pick random banner
-			bannerlist = []
-			for i in range (0, len(banners)):
-				bannerlist.append(i)
-
-			random.shuffle(bannerlist)
-			return banners[bannerlist[0]]
-
-		
-		def procHelp(args):
-			dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
-			dbg.log("     Plugin version : %s r%s" % (__VERSION__,__REV__))
-			dbg.log("     Python version : %s" % (getPythonVersion()))
-			if __DEBUGGERAPP__ == "WinDBG":
-				pykdversion = dbg.getPyKDVersionNr()
-				dbg.log("     PyKD version %s" % pykdversion)
-			dbg.log("     Written by Corelan - https://www.corelan.be")
-			dbg.log("     Project page : https://github.com/corelan/mona")
-			dbg.logLines(getBanner(),highlight=1)
-			dbg.log("Global options :")
-			dbg.log("----------------")
-			dbg.log("You can use one or more of the following global options on any command that will perform")
-			dbg.log("a search in one or more modules, returning a list of pointers :")
-			dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
-			dbg.log("                          option -cp nonull instead")
-			dbg.log(" -o                     : Ignore OS modules")
-			dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
-			dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
-			dbg.log("                          You can specify multiple modules (comma separated)")
-			dbg.log("                          Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
-			dbg.log("                          Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
-			dbg.log("                          blah or *blah* = contains blah")
-			dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
-			dbg.log("                          You can use one or more of the following criteria :")
-			dbg.log("                          aslr,safeseh,rebase,nx,os")
-			dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
-			dbg.log("                          Example :  -cm aslr=true,safeseh=false")
-			dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")
-			dbg.log("                          !mona seh -cm aslr")
-			dbg.log(" -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
-			dbg.log("                          Available options are :")
-			dbg.log("                          unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
-			dbg.log("                          Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
-			dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
-			dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
-			dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
-			dbg.log("                          only executable pointers will be returned.")
-			dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
-			dbg.log(" -debug                 : Enable debug routines in mona/windbglib")
-
-			if not args:
-				args = []
-			if len(args) > 1:
-				thiscmd = args[1].lower().strip()
-				if thiscmd in commands:
-					dbg.log("")
-					dbg.log("Usage of command '%s' :" % thiscmd)
-					dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-					dbg.logLines(commands[thiscmd].usage)
-					dbg.log("")
-				else:
-					aliasfound = False
-					for cmd in commands:
-						if commands[cmd].alias == thiscmd:
-							dbg.log("")
-							dbg.log("Usage of command '%s' :" % thiscmd)
-							dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-							dbg.logLines(commands[cmd].usage)
-							dbg.log("")
-							aliasfound = True
-					if not aliasfound:
-						dbg.logLines("\nCommand %s does not exist. Run !mona to get a list of available commands\n" % thiscmd,highlight=1)
-			else:
-				dbg.logLines("\nUsage :")
-				dbg.logLines("-------\n")
-				dbg.log(" !mona <command> <parameter>")
-				dbg.logLines("\nAvailable commands and parameters :\n")
-
-				items = commands.items()
-				items.sort(key = itemgetter(0))
-				for item in items:
-					if commands[item[0]].usage != "":
-						aliastxt = ""
-						if commands[item[0]].alias != "":
-							aliastxt = " / " + commands[item[0]].alias
-						dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
-				dbg.log("")
-				dbg.log("Want more info about a given command ?  Run !mona help <command>",highlight=1)
-				dbg.log("")
-		
+		# initialize list of available mona commands
 		commands["help"] = MnCommand("help", "show help", "!mona help [command]",procHelp)
 		
 		# ----- Config file management ----- #
@@ -19439,7 +19446,10 @@ Arguments:
 		if len(args) > 1 and args[1][0] != "-":
 			opts["?"] = args[1]
 	
-		
+		if DEBUG_MODE:
+			dbgp("Number of commands: %d" % len(commands))
+			dbgp("Command: args[0]")
+
 		if len(args) < 1:
 			commands["help"].parseProc(opts)
 			return("")
