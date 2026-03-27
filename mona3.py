@@ -18812,7 +18812,7 @@ def procHelp(args):
 						dbg.log("but the '%s' command is only supported in %sbit" % commands[cmd].supportedarchs )
 					aliasfound = True
 			if not aliasfound:
-				dbg.logLines("\nCommand %s does not exist. Run !mona to get a list of available commands\n" % thiscmd,highlight=1)
+				dbg.logLines("\nCommand %s does not exist. Run 'mona' without arguments to get a list of available commands\n" % thiscmd,highlight=1)
 	else:
 		dbg.logLines("\nUsage :")
 		dbg.logLines("-------\n")

@@ -775,6 +775,8 @@ class Debugger:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
+		# 32bit
+
 		self.AsmCache["push eax"] = b"\x50"
 		self.AsmCache["push ecx"] = b"\x51"
 		self.AsmCache["push edx"] = b"\x52"
@@ -783,7 +785,6 @@ class Debugger:
 		self.AsmCache["push ebp"] = b"\x55"
 		self.AsmCache["push esi"] = b"\x56"		
 		self.AsmCache["push edi"] = b"\x57"
-
 
 		self.AsmCache["pop eax"] = b"\x58"
 		self.AsmCache["pop ecx"] = b"\x59"
@@ -821,7 +822,6 @@ class Debugger:
 		self.AsmCache["jmp [esi]"] = b"\xff\x26"
 		self.AsmCache["jmp [edi]"] = b"\xff\x27"
 
-
 		self.AsmCache["call [eax]"] = b"\xff\x10"
 		self.AsmCache["call [ecx]"] = b"\xff\x11"
 		self.AsmCache["call [edx]"] = b"\xff\x12"
@@ -849,6 +849,213 @@ class Debugger:
 		self.AsmCache["pushad"] = b"\x60"
 		self.AsmCache["popad"] = b"\x61"
 
+		# 64-bit register opcodes
+		# jmp reg        = FF /4
+		# call reg       = FF /2
+		# push reg; ret  = 50+reg, C3
+		#
+		# For r8-r15, a REX.B prefix (0x41) is needed.
+		# ------------------------------------------------------------
+		# JMP reg
+		# ------------------------------------------------------------
+		self.AsmCache["jmp rax"] = b"\xff\xe0"
+		self.AsmCache["jmp rcx"] = b"\xff\xe1"
+		self.AsmCache["jmp rdx"] = b"\xff\xe2"
+		self.AsmCache["jmp rbx"] = b"\xff\xe3"
+		self.AsmCache["jmp rsp"] = b"\xff\xe4"
+		self.AsmCache["jmp rbp"] = b"\xff\xe5"
+		self.AsmCache["jmp rsi"] = b"\xff\xe6"
+		self.AsmCache["jmp rdi"] = b"\xff\xe7"
+		self.AsmCache["jmp r8"]  = b"\x41\xff\xe0"
+		self.AsmCache["jmp r9"]  = b"\x41\xff\xe1"
+		self.AsmCache["jmp r10"] = b"\x41\xff\xe2"
+		self.AsmCache["jmp r11"] = b"\x41\xff\xe3"
+		self.AsmCache["jmp r12"] = b"\x41\xff\xe4"
+		self.AsmCache["jmp r13"] = b"\x41\xff\xe5"
+		self.AsmCache["jmp r14"] = b"\x41\xff\xe6"
+		self.AsmCache["jmp r15"] = b"\x41\xff\xe7"
+
+		# ------------------------------------------------------------
+		# CALL reg
+		# ------------------------------------------------------------
+		self.AsmCache["call rax"] = b"\xff\xd0"
+		self.AsmCache["call rcx"] = b"\xff\xd1"
+		self.AsmCache["call rdx"] = b"\xff\xd2"
+		self.AsmCache["call rbx"] = b"\xff\xd3"
+		self.AsmCache["call rsp"] = b"\xff\xd4"
+		self.AsmCache["call rbp"] = b"\xff\xd5"
+		self.AsmCache["call rsi"] = b"\xff\xd6"
+		self.AsmCache["call rdi"] = b"\xff\xd7"
+		self.AsmCache["call r8"]  = b"\x41\xff\xd0"
+		self.AsmCache["call r9"]  = b"\x41\xff\xd1"
+		self.AsmCache["call r10"] = b"\x41\xff\xd2"
+		self.AsmCache["call r11"] = b"\x41\xff\xd3"
+		self.AsmCache["call r12"] = b"\x41\xff\xd4"
+		self.AsmCache["call r13"] = b"\x41\xff\xd5"
+		self.AsmCache["call r14"] = b"\x41\xff\xd6"
+		self.AsmCache["call r15"] = b"\x41\xff\xd7"
+
+		# ------------------------------------------------------------
+		# JMP [reg]
+		# FF /4 with modrm selecting memory operand [reg]
+		# Note: [rsp] and [r12] require SIB byte 0x24
+		# Note: [rbp] and [r13] with mod=00 do not encode plain [rbp]/[r13],
+		#       so use mod=01 with disp8=00 instead.
+		# ------------------------------------------------------------
+		self.AsmCache["jmp [rax]"] = b"\xff\x20"
+		self.AsmCache["jmp [rcx]"] = b"\xff\x21"
+		self.AsmCache["jmp [rdx]"] = b"\xff\x22"
+		self.AsmCache["jmp [rbx]"] = b"\xff\x23"
+		self.AsmCache["jmp [rsp]"] = b"\xff\x24\x24"
+		self.AsmCache["jmp [rbp]"] = b"\xff\x65\x00"
+		self.AsmCache["jmp [rsi]"] = b"\xff\x26"
+		self.AsmCache["jmp [rdi]"] = b"\xff\x27"
+		self.AsmCache["jmp [r8]"]  = b"\x41\xff\x20"
+		self.AsmCache["jmp [r9]"]  = b"\x41\xff\x21"
+		self.AsmCache["jmp [r10]"] = b"\x41\xff\x22"
+		self.AsmCache["jmp [r11]"] = b"\x41\xff\x23"
+		self.AsmCache["jmp [r12]"] = b"\x41\xff\x24\x24"
+		self.AsmCache["jmp [r13]"] = b"\x41\xff\x65\x00"
+		self.AsmCache["jmp [r14]"] = b"\x41\xff\x26"
+		self.AsmCache["jmp [r15]"] = b"\x41\xff\x27"
+
+		# ------------------------------------------------------------
+		# CALL [reg]
+		# FF /2 with modrm selecting memory operand [reg]
+		# Same encoding caveats as above for rsp/r12 and rbp/r13
+		# ------------------------------------------------------------
+		self.AsmCache["call [rax]"] = b"\xff\x10"
+		self.AsmCache["call [rcx]"] = b"\xff\x11"
+		self.AsmCache["call [rdx]"] = b"\xff\x12"
+		self.AsmCache["call [rbx]"] = b"\xff\x13"
+		self.AsmCache["call [rsp]"] = b"\xff\x14\x24"
+		self.AsmCache["call [rbp]"] = b"\xff\x55\x00"
+		self.AsmCache["call [rsi]"] = b"\xff\x16"
+		self.AsmCache["call [rdi]"] = b"\xff\x17"
+		self.AsmCache["call [r8]"]  = b"\x41\xff\x10"
+		self.AsmCache["call [r9]"]  = b"\x41\xff\x11"
+		self.AsmCache["call [r10]"] = b"\x41\xff\x12"
+		self.AsmCache["call [r11]"] = b"\x41\xff\x13"
+		self.AsmCache["call [r12]"] = b"\x41\xff\x14\x24"
+		self.AsmCache["call [r13]"] = b"\x41\xff\x55\x00"
+		self.AsmCache["call [r14]"] = b"\x41\xff\x16"
+		self.AsmCache["call [r15]"] = b"\x41\xff\x17"
+
+		# ------------------------------------------------------------
+		# PUSH reg ; RET
+		# ------------------------------------------------------------
+		self.AsmCache["push rax # ret"] = b"\x50\xc3"
+		self.AsmCache["push rcx # ret"] = b"\x51\xc3"
+		self.AsmCache["push rdx # ret"] = b"\x52\xc3"
+		self.AsmCache["push rbx # ret"] = b"\x53\xc3"
+		self.AsmCache["push rsp # ret"] = b"\x54\xc3"
+		self.AsmCache["push rbp # ret"] = b"\x55\xc3"
+		self.AsmCache["push rsi # ret"] = b"\x56\xc3"
+		self.AsmCache["push rdi # ret"] = b"\x57\xc3"
+		self.AsmCache["push r8 # ret"]  = b"\x41\x50\xc3"
+		self.AsmCache["push r9 # ret"]  = b"\x41\x51\xc3"
+		self.AsmCache["push r10 # ret"] = b"\x41\x52\xc3"
+		self.AsmCache["push r11 # ret"] = b"\x41\x53\xc3"
+		self.AsmCache["push r12 # ret"] = b"\x41\x54\xc3"
+		self.AsmCache["push r13 # ret"] = b"\x41\x55\xc3"
+		self.AsmCache["push r14 # ret"] = b"\x41\x56\xc3"
+		self.AsmCache["push r15 # ret"] = b"\x41\x57\xc3"
+
+		# ------------------------------------------------------------
+		# XCHG reg, rsp
+		# and xchg rsp, reg
+		#
+		# Important:
+		# - xchg is symmetric, so "xchg reg, rsp" and "xchg rsp, reg"
+		#   are the exact same opcode.
+		# - There is no encodable "xchg rsp, rsp" gadget form that is useful here.
+		# - For rax <-> rsp there is a special short form.
+		# ------------------------------------------------------------
+		self.AsmCache["xchg rax,rsp"] = b"\x48\x94"
+		self.AsmCache["xchg rsp,rax"] = b"\x48\x94"
+
+		self.AsmCache["xchg rcx,rsp"] = b"\x48\x87\xcc"
+		self.AsmCache["xchg rsp,rcx"] = b"\x48\x87\xcc"
+
+		self.AsmCache["xchg rdx,rsp"] = b"\x48\x87\xd4"
+		self.AsmCache["xchg rsp,rdx"] = b"\x48\x87\xd4"
+
+		self.AsmCache["xchg rbx,rsp"] = b"\x48\x87\xdc"
+		self.AsmCache["xchg rsp,rbx"] = b"\x48\x87\xdc"
+
+		self.AsmCache["xchg rbp,rsp"] = b"\x48\x87\xec"
+		self.AsmCache["xchg rsp,rbp"] = b"\x48\x87\xec"
+
+		self.AsmCache["xchg rsi,rsp"] = b"\x48\x87\xf4"
+		self.AsmCache["xchg rsp,rsi"] = b"\x48\x87\xf4"
+
+		self.AsmCache["xchg rdi,rsp"] = b"\x48\x87\xfc"
+		self.AsmCache["xchg rsp,rdi"] = b"\x48\x87\xfc"
+
+		self.AsmCache["xchg r8,rsp"]  = b"\x49\x87\xe0"
+		self.AsmCache["xchg rsp,r8"]  = b"\x49\x87\xe0"
+
+		self.AsmCache["xchg r9,rsp"]  = b"\x49\x87\xe1"
+		self.AsmCache["xchg rsp,r9"]  = b"\x49\x87\xe1"
+
+		self.AsmCache["xchg r10,rsp"] = b"\x49\x87\xe2"
+		self.AsmCache["xchg rsp,r10"] = b"\x49\x87\xe2"
+
+		self.AsmCache["xchg r11,rsp"] = b"\x49\x87\xe3"
+		self.AsmCache["xchg rsp,r11"] = b"\x49\x87\xe3"
+
+		self.AsmCache["xchg r12,rsp"] = b"\x49\x87\xe4"
+		self.AsmCache["xchg rsp,r12"] = b"\x49\x87\xe4"
+
+		self.AsmCache["xchg r13,rsp"] = b"\x49\x87\xe5"
+		self.AsmCache["xchg rsp,r13"] = b"\x49\x87\xe5"
+
+		self.AsmCache["xchg r14,rsp"] = b"\x49\x87\xe6"
+		self.AsmCache["xchg rsp,r14"] = b"\x49\x87\xe6"
+
+		self.AsmCache["xchg r15,rsp"] = b"\x49\x87\xe7"
+		self.AsmCache["xchg rsp,r15"] = b"\x49\x87\xe7"
+
+		# ------------------------------------------------------------
+		# PUSH reg (x64)
+		# ------------------------------------------------------------
+		self.AsmCache["push rax"] = b"\x50"
+		self.AsmCache["push rcx"] = b"\x51"
+		self.AsmCache["push rdx"] = b"\x52"
+		self.AsmCache["push rbx"] = b"\x53"
+		self.AsmCache["push rsp"] = b"\x54"
+		self.AsmCache["push rbp"] = b"\x55"
+		self.AsmCache["push rsi"] = b"\x56"
+		self.AsmCache["push rdi"] = b"\x57"
+		self.AsmCache["push r8"]  = b"\x41\x50"
+		self.AsmCache["push r9"]  = b"\x41\x51"
+		self.AsmCache["push r10"] = b"\x41\x52"
+		self.AsmCache["push r11"] = b"\x41\x53"
+		self.AsmCache["push r12"] = b"\x41\x54"
+		self.AsmCache["push r13"] = b"\x41\x55"
+		self.AsmCache["push r14"] = b"\x41\x56"
+		self.AsmCache["push r15"] = b"\x41\x57"
+
+		# ------------------------------------------------------------
+		# POP reg (x64)
+		# ------------------------------------------------------------
+		self.AsmCache["pop rax"] = b"\x58"
+		self.AsmCache["pop rcx"] = b"\x59"
+		self.AsmCache["pop rdx"] = b"\x5a"
+		self.AsmCache["pop rbx"] = b"\x5b"
+		self.AsmCache["pop rsp"] = b"\x5c"
+		self.AsmCache["pop rbp"] = b"\x5d"
+		self.AsmCache["pop rsi"] = b"\x5e"
+		self.AsmCache["pop rdi"] = b"\x5f"
+		self.AsmCache["pop r8"]  = b"\x41\x58"
+		self.AsmCache["pop r9"]  = b"\x41\x59"
+		self.AsmCache["pop r10"] = b"\x41\x5a"
+		self.AsmCache["pop r11"] = b"\x41\x5b"
+		self.AsmCache["pop r12"] = b"\x41\x5c"
+		self.AsmCache["pop r13"] = b"\x41\x5d"
+		self.AsmCache["pop r14"] = b"\x41\x5e"
+		self.AsmCache["pop r15"] = b"\x41\x5f"
+
 		try:
    			# Python 2
 			xrange
@@ -860,6 +1067,9 @@ class Debugger:
 			thisasm = b"\x83\xc4" + hex2bin("%02x" % offset)
 			self.AsmCache["add esp,%02x" % offset] = thisasm
 			self.AsmCache["add esp,%x" % offset] = thisasm
+			thisasm64 = b"\x48\x83\xc4" + hex2bin("%02x" % offset)
+			self.AsmCache["add rsp,%02x" % offset] = thisasm
+			self.AsmCache["add rsp,%x" % offset] = thisasm
 
 		self.AsmCache["retn"] = b"\xc3"
 		self.AsmCache["retf"] = b"\xdb"
