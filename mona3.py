@@ -19386,15 +19386,18 @@ def main(args):
 	dbg.createLogWindow()
 	global currentArgs
 	global commands
-
+	global DEBUG_MODE
 	commands = {}
 
 	currentArgs = copy.copy(args)
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
-		global DEBUG_MODE
+		
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
+	else:
+		DEBUG_MODE = False
+		dbglib.set_debug_mode(False)
 
 	try:
 		starttime = datetime.datetime.now()

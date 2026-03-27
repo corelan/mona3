@@ -1129,6 +1129,9 @@ class Debugger:
 	"""
 
 	def getSehChain(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+	
 		# http://www.nirsoft.net/kernel_struct/vista/TEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/NT_TIB.html
 		# http://www.nirsoft.net/kernel_struct/vista/EXCEPTION_REGISTRATION_RECORD.html
@@ -1156,6 +1159,9 @@ class Debugger:
 	Memory
 	"""
 	def readMemory(self,location,size):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		try:	
 			#return hex2bin(''.join(("%02X" % n) for n in loadBytes(location,size)))
 			return pykd.loadChars(location,size)
@@ -1197,6 +1203,9 @@ class Debugger:
 
 
 	def writeMemory(self,location,data):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		A = array.array('B')
 		A.fromstring(data)
 		pykd.writeBytes(location, A.tolist())
@@ -1209,6 +1218,9 @@ class Debugger:
 
 
 	def getMemoryPages(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		if not self.MemoryPages:
 			address_output = pykd.dbgCommand('!address -c:".printf\\"%1 %3 \\\\n\\""')
 			address_output_lines = address_output.split('\n')
@@ -1225,6 +1237,9 @@ class Debugger:
 
 
 	def getMemoryPageByAddress(self,address):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		if len(self.MemoryPages) == 0:
 			# may never get hit
 			self.MemoryPages = self.getMemoryPages()
@@ -1240,6 +1255,9 @@ class Debugger:
 		return []
 
 	def getPageContains(self,address):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		if len(self.MemoryPages) == 0:
 			self.MemoryPages = self.getMemoryPages()
 		for pagestart in self.MemoryPages:
@@ -1250,6 +1268,9 @@ class Debugger:
 		return 0
 
 	def getHeapsAddress(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		allheaps = []
 		peb = getPEBInfo()
@@ -1278,12 +1299,21 @@ class Debugger:
 
 
 	def getHeap(self,address):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		return wheap(address)
 
 	def getPEBAddress(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		return getPEBAddress()
 
 	def getAllThreads(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		allthreads = []
 		for thisthread in pykd.getProcessThreads():
 			allthreads.append(wthread(thisthread))
@@ -1293,6 +1323,9 @@ class Debugger:
 	Modules
 	"""
 	def getModule(self,modulename):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		wmod = None
 		self.origmodname = modulename
 		fullpath = ""
@@ -1364,6 +1397,9 @@ class Debugger:
 		
 
 	def getAllModules(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		if len(self.allmodules) == 0:
 			if len(PEBModList) == 0:
 				getModulesFromPEB()
@@ -1375,6 +1411,9 @@ class Debugger:
 
 
 	def getImageNameForModule(self,modulename):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/PEB_LDR_DATA.html
 		# http://www.nirsoft.net/kernel_struct/vista/LDR_DATA_TABLE_ENTRY.html
