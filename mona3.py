@@ -8462,7 +8462,7 @@ def memoized(func):
 		cache[args] = val
 		return val
 	wrapper.__doc__ = func.__doc__
-	wrapper.func_name = '%s_memoized' % func.func_name
+	wrapper.func_name = '%s_memoized' % func.__name__
 	return wrapper
 
 class MemoryComparator(object):

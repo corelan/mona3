@@ -1074,7 +1074,7 @@ class Debugger:
 		self.AsmCache["retn"] = b"\xc3"
 		self.AsmCache["retf"] = b"\xdb"
 		for offset in xrange(0,80,2):
-			thisasm = b"\xc2" + hex2bin("%02x" % offset) + "\x00"
+			thisasm = b"\xc2" + hex2bin("%02x" % offset) + b"\x00"
 			self.AsmCache["retn %02x" % offset] = thisasm
 			self.AsmCache["retn %x" % offset] = thisasm
 			self.AsmCache["retn 0x%02x" % offset] = thisasm
