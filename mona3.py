@@ -11845,7 +11845,7 @@ def main(args):
 		global DEBUG_MODE
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
-		dbg.log("*** Activating debug mode : %s***" % DEBUG_MODE)
+		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
 
 	try:
 		starttime = datetime.datetime.now()
@@ -11950,7 +11950,8 @@ def main(args):
 			dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
 			dbg.log("                          only executable pointers will be returned.")
 			dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
-			
+			dbg.log(" -debug                 : Enable debug routines in mona/windbglib")
+
 			if not args:
 				args = []
 			if len(args) > 1:
