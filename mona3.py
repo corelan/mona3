@@ -909,6 +909,9 @@ def getVersionInfo(filename):
 	revision = ""
 	version = ""
 	for line in content:
+		# Py2/Py3 compatibility: ensure line is text
+		if not isinstance(line, str):
+			line = line.decode("utf-8", "ignore")	
 		if line.startswith("$Revision"):
 			parts = line.split(" ")
 			if len(parts) > 1:
@@ -19393,8 +19396,8 @@ def main(args):
 	commands = {}
 
 	currentArgs = copy.copy(args)
+	dbgp("%s" % args)
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
-		
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
@@ -19441,6 +19444,9 @@ def main(args):
 		if "-showargs" in args:
 			dbg.log("arguments: %s" % arguments)
 
+		if DEBUG_MODE:
+			dbgp("Arguments: %s" % arguments)
+
 		for word in arguments:
 			if (word[0] == '-'):
 				word = word.lstrip("-")
@@ -19475,21 +19481,24 @@ def main(args):
 		
 		# ----- execute the chosen command ----- #
 		if command in commands:
+			if DEBUG_MODE:
+				dbgp("Running command '%s'" % command)
 			if command.lower().strip() == "help":
 				commands[command].parseProc(args)
 			else:
 				commands[command].parseProc(opts)
-		
 		else:
 			# maybe it's an alias
 			aliasfound = False
 			for cmd in commands:
-				if commands[cmd].alias == command:
+				if (commands[cmd].alias == command) and (command != ""):
+					if DEBUG_MODE:
+						dbgp("Running alias command '%s'" % command)					
 					commands[cmd].parseProc(opts)
 					aliasfound = True
 			if not aliasfound:
 				commands["help"].parseProc(None)
-				return("** Invalid command **")
+				return("** Please provide a valid command **")
 		
 		# ----- report ----- #
 		endtime = datetime.datetime.now()
@@ -19503,8 +19512,8 @@ def main(args):
 		dbg.logLines(traceback.format_exc(),highlight=True)
 		dbg.log("*" * 80,highlight=True)
 		dbg.error(traceback.format_exc())
-	
 	return ""
+
 
 if __name__ == "__main__":
 	dbg.log("Hold on...")
@@ -19515,6 +19524,7 @@ if __name__ == "__main__":
 		dbg.log("Starting profiler...")
 		cProfile.run('main(sys.argv)', 'monaprofile')
 	else:
+		dbg.log("%s" % sys.argv)
 		main(sys.argv)
 	if doprofile:
 		dbg.log("[+] Showing profile stats...")

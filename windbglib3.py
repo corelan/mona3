@@ -193,7 +193,7 @@ def clearvars():
 def getPEBInfo():
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
-
+		dbgp("Current process: %s" % pykd.getCurrentProcess())
 	try:
 		return pykd.typedVar("ntdll!_PEB", pykd.getCurrentProcess())
 	except:
@@ -1772,8 +1772,6 @@ class Debugger:
 					dbgp("bytes: " % thesebytes)
 				allbytes += thesebytes
 				self.AsmCache[thisinstruction] = thesebytes
-				if DEBUG_MODE:
-					dbgp("added to cache. Instruction: %s, bytes: %s" (thisinstruction, bin2hex(thesebytes)))
 				cached = False
 			else:
 			# return from cache
