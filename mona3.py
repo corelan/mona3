@@ -12259,6 +12259,8 @@ def procJOP(args,mode="all"):
 def procCreatePATTERN(args):
 	size = 0
 	pattern = ""
+	if DEBUG_MODE:
+		dbgp("Args: %s" % args)
 	if "?" in args and args["?"] != "":
 		try:
 			if "0x" in args["?"].lower():
@@ -12270,6 +12272,7 @@ def procCreatePATTERN(args):
 				size = int(args["?"])
 		except:
 			size = 0
+
 	if size == 0:
 		dbg.log("Please enter a valid size",highlight=1)
 	else:
@@ -18828,10 +18831,11 @@ def procHelp(args):
 		dbg.logLines("\nUsage :")
 		dbg.logLines("-------\n")
 		dbg.log(" !mona <command> <parameter>")
-		dbg.logLines("\nAvailable mona commands and parameters for %sbit architecture:\n" % str(arch))
+		if __DEBUGGERAPP__ == "WinDBG":
+			dbg.logLines("\nAvailable mona commands and parameters for <b>%sbit</b> architecture:\n" % str(arch))
+		else:
+			dbg.logLines("\nAvailable mona commands and parameters for %sbit architecture:\n" % str(arch))
 
-		#items = commands.items()
-		#items.sort(key = itemgetter(0))
 		items = sorted(commands.items(), key=itemgetter(0))
 		for item in items:
 			if arch in commands[item[0]].supportedarchs:

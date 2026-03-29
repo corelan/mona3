@@ -555,6 +555,8 @@ def getModulesFromPEB():
 			if addtolist:
 				imagenames.append(imagename)
 				PEBModList[imagename] = [exename, fullpath]
+				if DEBUG_MODE:
+					dbgp("    Added %s to PEBModList" % imagename)
 	
 	return moduleLst
 
@@ -1217,6 +1219,9 @@ class Debugger:
 		if highlight == 1:
 			showdml = True
 			message = "<b>" + message + "</b>"
+		else:
+			if "<b>" in message and "</b>" in message:
+				showdml = True
 		pykd.dprintln(self.toAsciiOnly(message), showdml)
 
 
@@ -2034,8 +2039,7 @@ class wmodule:
 		return self.issystemdll
 	
 	def getVersion(self):
-		return "n.a."
-		#return self.modversion
+		return self.modversion
 	
 	def getEntry(self):
 		return self.entrypoint
