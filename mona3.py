@@ -191,6 +191,7 @@ global disasmUpperChecked
 global disasmIsUpper
 global configFileCache
 global configwarningshown
+global scriptname
 
 NtGlobalFlag = -1
 FreeListBitmap = {}
@@ -322,7 +323,12 @@ def resetGlobals():
 	disasmUpperChecked = False
 	return
 
-
+def get_script_name():
+    if '__file__' in globals():
+        return os.path.splitext(os.path.basename(__file__))[0]
+    if len(sys.argv) > 0:
+        return os.path.splitext(os.path.basename(sys.argv[0]))[0]
+    return "unknown"
 
 def get_current_function_name():
 	frame = inspect.currentframe().f_back
@@ -18843,6 +18849,7 @@ def getBanner():
 # Show Help
 def procHelp(args, procUsage = ""):
 	global commands
+	global scriptname
 	dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
 	dbg.log("     Plugin version : %s r%s" % (__VERSION__,__REV__))
 	dbg.log("     Python version : %s" % (getPythonVersion()))
@@ -18914,13 +18921,14 @@ def procHelp(args, procUsage = ""):
 			if not aliasfound:
 				dbg.logLines("\nCommand %s does not exist. Run 'mona' without arguments to get a list of available commands\n" % thiscmd,highlight=1)
 	else:
-		dbg.logLines("\nUsage :")
+		dbg.logLines("\n\nUsage :")
 		dbg.logLines("-------\n")
-		dbg.log(" !mona <command> <parameter>")
 		if __DEBUGGERAPP__ == "WinDBG":
-			dbg.logLines("\nAvailable mona commands and parameters for <b>%sbit</b> architecture:\n" % str(arch))
+			dbg.log("<b>!py %s &lt;command&gt; &lt;parameter&gt;</b>" % scriptname)
+			dbg.logLines("\nAvailable commands and parameters for <b>%sbit</b> architecture:\n" % str(arch))
 		else:
-			dbg.logLines("\nAvailable mona commands and parameters for %sbit architecture:\n" % str(arch))
+			dbg.log("!mona <command> <parameter>")
+			dbg.logLines("\nAvailable commands and parameters for %sbit architecture:\n" % str(arch))
 
 		items = sorted(commands.items(), key=itemgetter(0))
 		for item in items:
@@ -19607,6 +19615,7 @@ def _parse_mona_args_with_argparse(raw_args):
 def main(args):
 	dbg.createLogWindow()
 	global currentArgs
+	global scriptname
 	global commands
 	global DEBUG_MODE
 	commands = {}
@@ -19637,10 +19646,13 @@ def main(args):
 		argcopy = copy.copy(args)
 
 		aline = " ".join(a for a in argcopy)
+
 		if __DEBUGGERAPP__ == "WinDBG":
+			scriptname = get_script_name()
 			aline = "!py " + aline
 			dbg.log("[+] Command used: <b>%s</b>" % aline)
 		else:
+			scriptname = "mona"
 			aline = "!mona " + aline
 			dbg.log("[+] Command used: %s" % aline)
 
