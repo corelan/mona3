@@ -1728,7 +1728,7 @@ class Debugger:
 			depth -= 1
 
 	def assemble(self,instructions):
-		allbytes = ""
+		allbytes = b""
 		address = pykd.reg("eip") if arch == 32 else pykd.reg("rip")
 		if DEBUG_MODE:
 			dbgp("instructions: %s" % instructions)
@@ -1743,10 +1743,11 @@ class Debugger:
 			address = thismodbase + entrypoint
 		allinstructions = instructions.lower().split("\n")
 		
-		origbytes = pykd.loadChars(address,20)
+		origbytes = bytes(bytearray(pykd.loadBytes(address, 20)))
 		if DEBUG_MODE:
-			dbgp("allinstructions: %s" % allinstructions)	
+			dbgp("allinstructions: %s" % allinstructions)
 			dbgp("origbytes: %s" % bin2hex(origbytes))
+
 		cached = True
 		for thisinstruction in allinstructions:	
 			if DEBUG_MODE:
@@ -1781,7 +1782,7 @@ class Debugger:
 				allbytes += self.AsmCache[thisinstruction]
 		if not cached:
 			putback = "eb 0x%08x " % address
-			restorebytes = [''.join(bin2hex(origbyte)) for origbyte in origbytes] 
+			restorebytes = ["%02x" % b for b in origbytes]
 			putback += ' '.join(restorebytes)
 			pykd.dbgCommand(putback)
 			if DEBUG_MODE:

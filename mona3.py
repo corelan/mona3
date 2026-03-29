@@ -19396,7 +19396,6 @@ def main(args):
 	commands = {}
 
 	currentArgs = copy.copy(args)
-	dbgp("%s" % args)
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
@@ -19419,6 +19418,7 @@ def main(args):
 		opts = {}
 		last = ""
 		arguments = []
+		command = ""
 		argcopy = copy.copy(args)
 
 		aline = " ".join(a for a in argcopy)
@@ -19464,15 +19464,13 @@ def main(args):
 		if len(args) > 1 and args[1][0] != "-":
 			opts["?"] = args[1]
 	
-		if DEBUG_MODE:
-			dbgp("Number of commands: %d" % len(commands))
-			dbgp("Command: args[0]")
-
 		if len(args) < 1:
 			commands["help"].parseProc(opts)
 			return("")
 		
-		command = args[0]
+		if len(args) > 1:
+			command = args[1]
+		
 		if "-showargs" in args:
 			dbg.log("command: %s" % command)
 			dbg.log("-" * 50)
@@ -19480,9 +19478,10 @@ def main(args):
 			arguments.remove("-showargs")			
 		
 		# ----- execute the chosen command ----- #
+		if DEBUG_MODE:
+			dbgp("You're trying to run command '%s'" % command)
+
 		if command in commands:
-			if DEBUG_MODE:
-				dbgp("Running command '%s'" % command)
 			if command.lower().strip() == "help":
 				commands[command].parseProc(args)
 			else:
@@ -19524,7 +19523,6 @@ if __name__ == "__main__":
 		dbg.log("Starting profiler...")
 		cProfile.run('main(sys.argv)', 'monaprofile')
 	else:
-		dbg.log("%s" % sys.argv)
 		main(sys.argv)
 	if doprofile:
 		dbg.log("[+] Showing profile stats...")
