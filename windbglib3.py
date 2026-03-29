@@ -102,7 +102,7 @@ def get_current_function_name():
 	frame = inspect.currentframe().f_back
 	args, _, _, values = inspect.getargvalues(frame)
 	callerargs = {arg: values[arg] for arg in args}
-	return "Start function: %s(%s)" % (inspect.currentframe().f_back.f_back.f_code.co_name, callerargs)
+	return "--- Start function: %s(%s) ---" % (inspect.currentframe().f_back.f_back.f_code.co_name, callerargs)
 
 def ensure_bytes(s, encoding='latin-1'):
 	if isinstance(s, bytes):
@@ -167,7 +167,13 @@ def getNtHeaders(modulebase):
 		ntheaders = "_IMAGE_NT_HEADERS"
 
 	# modulebase + 0x3c = IMAGE_DOS_HEADER.e_lfanew
-	return pykd.module("ntdll").typedVar(ntheaders, modulebase + pykd.ptrDWord(modulebase + 0x3c))
+	nth = None
+	try:
+		nth = pykd.module("ntdll").typedVar(ntheaders, modulebase + pykd.ptrDWord(modulebase + 0x3c))
+	except Exception as e:
+		if DEBUG_MODE:
+			dbgp("ERROR: %s" % str(e))
+	return nth
 
 def clearvars():
 	if DEBUG_MODE:
@@ -469,9 +475,13 @@ def getModulesFromPEB():
 	if arch == 64:
 		offset = 0x40
 	moduleLst = pykd.typedVarList(peb.Ldr.deref().InLoadOrderModuleList, "ntdll!_LDR_DATA_TABLE_ENTRY", "InMemoryOrderLinks.Flink")
+	if DEBUG_MODE:
+		dbgp("moduleList: %d, PEBModlist: %d" % (len(moduleLst), len(PEBModList)))
 	if len(PEBModList) == 0:
 		for mod in moduleLst:
 			thismod = ensure_text(pykd.loadUnicodeString(mod.BaseDllName))
+			if DEBUG_MODE:
+				dbgp("Got name for mod.BaseDllName: %s" % thismod)
 			modparts = thismod.split("\\")
 			modulename = modparts[len(modparts)-1]
 			fullpath = thismod
@@ -1535,17 +1545,27 @@ class Debugger:
 	def getModule(self,modulename):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
+			dbgp("Transform '%s' into Module object" % modulename)
 
 		wmod = None
 		self.origmodname = modulename
 		fullpath = ""
 		if len(PEBModList) == 0:
 			getModulesFromPEB()
+			if DEBUG_MODE:
+				dbgp("    Loaded modules from PEB")
+		else:
+			if DEBUG_MODE:
+				dbgp("    Modules were already loaded into PEBModList, continue")
 		try:
 			thismod = None
 			if modulename in PEBModList:
 				modentry = PEBModList[modulename]
+				if DEBUG_MODE:
+					dbgp("    Convert module into pykd module object: %s" % modulename)
 				thismod = pykd.module(modulename)
+				if DEBUG_MODE:
+					dbgp("    Module converted, thismod: %s" % thismod)
 				fullpath = modentry[1]
 			else:
 				# find a good one
@@ -1563,20 +1583,41 @@ class Debugger:
 				imagename = self.getImageNameForModule(self.origmodname)
 				thismod = pykd.module(str(imagename))
 
+			if DEBUG_MODE:
+				dbgp("   Getting module properties (name, start, end, size, etc)")
 			thisimagename = thismod.image()
+			if DEBUG_MODE:
+				dbgp("    image: %s" % thisimagename)
 			thismodname = thismod.name()
+			if DEBUG_MODE:
+				dbgp("    name: %s" % thismodname)
 			thismodbase = thismod.begin()
+			if DEBUG_MODE:
+				dbgp("    begin: 0x%08x" % thismodbase)
 			thismodsize = thismod.size()
+			if DEBUG_MODE:
+				dbgp("    size: 0x%08x" % thismodsize)
 			thismodpath = thismod.image()
+			if DEBUG_MODE:
+				dbgp("    path: %s" % thismodpath)
 
 			try:
+				if DEBUG_MODE:
+					dbgp("    Trying to get version info")
 				versionstuff = thismod.getVersion()
 				thismodversion = ""
 				for vstuff in versionstuff:
 					thismodversion = thismodversion + str(vstuff) + "."
 				thismodversion = thismodversion.strip(".")
-			except:
+				if DEBUG_MODE:
+					dbgp("    -> %s" % thismodversion)
+			except Exception as e:
 				thismodversion = ""
+				if DEBUG_MODE:
+					dbgp("    Error: %s (might be ok)" % str(e))
+
+			if DEBUG_MODE:
+				dbgp("    Getting NT Headers for %s. Base: 0x%08x" % (thisimagename, thismodbase))
 			ntHeader = getNtHeaders(thismodbase)
 			#preferredbase = ntHeader.OptionalHeader.ImageBase
 			preferredbase = getImageBaseOnDisk(fullpath)
@@ -1612,7 +1653,11 @@ class Debugger:
 
 		if len(self.allmodules) == 0:
 			if len(PEBModList) == 0:
+				if DEBUG_MODE:
+					dbgp("Get modules from PEB")
 				getModulesFromPEB()
+				if DEBUG_MODE:
+					dbgp("Modules in list now: %d" % len(PEBModList))
 			for imagename in PEBModList:
 				thismodname = PEBModList[imagename][0]
 				wmodobject = self.getModule(imagename)
@@ -1989,7 +2034,8 @@ class wmodule:
 		return self.issystemdll
 	
 	def getVersion(self):
-		return self.modversion
+		return "n.a."
+		#return self.modversion
 	
 	def getEntry(self):
 		return self.entrypoint

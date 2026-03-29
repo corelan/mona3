@@ -5933,12 +5933,20 @@ def populateModuleInfo():
 		dbg.updateLog()
 	global g_modules
 	g_modules={}
+	if DEBUG_MODE:
+		dbgp("Enumerating modules via getAllModules")
 	allmodules=dbg.getAllModules()
+	if DEBUG_MODE:
+		dbgp("Number of modules found: %d" % len(allmodules))
 	curmod = ""
 	for key in allmodules.keys():
 		try:    
 			modinfo={}
+			if DEBUG_MODE:
+				dbgp("Transforming %s into a MnModule object" % key)
 			thismod = MnModule(key)
+			if DEBUG_MODE:
+				dbgp("Result: %s" % thismod)
 			if not thismod is None:
 				modinfo["path"]		= thismod.modulePath
 				modinfo["base"] 	= thismod.moduleBase
