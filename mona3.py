@@ -100,10 +100,10 @@ __DEBUGGERAPP__ = ''
 arch = 32
 win7mode = False
 
-# try:
-# 	import debugger
-# except:
-# 	pass
+Registers32BitsOrder = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"]
+Registers64BitsOrder = ["RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
+						"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"]
+
 
 try:
 	import immlib as dbglib
@@ -1155,9 +1155,25 @@ def getSourceDest(instruction):
 
 def getAllRegs():
 	"""
-	Return an array with all 32bit, 16bit and 8bit registers
+	Return an array with all 64bit, 32bit, 16bit and 8bit registers
+	(depending on the current architecture)
 	"""
-	regs = ["EAX","EBX","ECX","EDX","ESP","EBP","ESI","EDI","EIP"]
+
+	regs = []
+	if arch == 64:
+		regs = Registers64BitsOrder + Registers32BitsOrder
+		regs.append("R8D")
+		regs.append("R9D")
+		regs.append("R10D")
+		regs.append("R11D")
+		regs.append("R12D")
+		regs.append("R13D")
+		regs.append("R14D")
+		regs.append("R15D")
+
+	if arch == 32:
+		regs = Registers32BitsOrder 
+	
 	regs.append("AX")
 	regs.append("BX")
 	regs.append("CX")
@@ -1177,6 +1193,7 @@ def getAllRegs():
 	return regs
 
 def getSmallerRegs(reg):
+
 	if reg == "EAX":
 		return ["AX","AL","AH"]
 	if reg == "AX":
@@ -1411,9 +1428,9 @@ def getHeapFlag(flag):
 	0x4 : "Fill pattern",
 	0x8 : "Virtallocd",
 	0x10 : "Last",
-	0x20 : "FFU-1",
-	0x40 : "FFU-2",
-	0x80 : "No Coalesce"
+	0x20 : "Internal/FFU-1",
+	0x40 : "Internal/FFU-2",
+	0x80 : "Internal/No Coalesce"
 	}
 	#if win7mode:
 	#	flags[0x8] = "Internal"
