@@ -731,7 +731,7 @@ def hex2bin(pattern):
 	pattern = pattern.replace("\"", "")
 	pattern = pattern.replace("\'", "")
 	
-	return ''.join([_to_text(binascii.a2b_hex(i+j)) for i,j in zip(pattern[0::2],pattern[1::2])])
+	return ensure_bytes(''.join([_to_text(binascii.a2b_hex(i+j)) for i,j in zip(pattern[0::2],pattern[1::2])]))
 
 def cleanHex(hex):
 	hex = hex.replace("'","")
@@ -1684,7 +1684,7 @@ def getPatternLength(startptr,type="normal",args={}):
 			sizemeter=dbg.readMemory(startptr+patternsize,4)
 			if type == "unicode":
 				sizemeter=dbg.readMemory(startptr+patternsize,8)
-				sizemeter = sizemeter.replace('\x00','')
+				sizemeter = sizemeter.replace(b"\x00","")
 			else:
 				sizemeter=dbg.readMemory(startptr+patternsize,4)
 			if len(sizemeter) == 4:
@@ -1703,7 +1703,7 @@ def getPatternLength(startptr,type="normal",args={}):
 			sizemeter=dbg.readMemory(startptr+patternsize,4)
 			if type == "unicode":
 				sizemeter=dbg.readMemory(startptr+patternsize,8)
-				sizemeter = sizemeter.replace('\x00','')
+				sizemeter = sizemeter.replace(b"\x00","")
 			else:
 				sizemeter=dbg.readMemory(startptr+patternsize,4)
 			if fullpattern.find(sizemeter) < 0:
@@ -11173,9 +11173,10 @@ def checkSEHOverwrite(address, nseh, seh):
 			regpattern = regpattern.lower()
 		if pattype == "unicode":
 			hexpat = dbg.readMemory(address,8)
-			hexpat = hexpat.replace('\x00','')
+			hexpat = hexpat.replace(b"\x00",b"")
 			goback = 2
-		offset = regpattern.find(hexpat)-goback
+		offset = ensure_bytes(regpattern).find(ensure_bytes(hexpat)) - goback
+		#offset = regpattern.find(hexpat)-goback
 		thissize = 0
 		if offset > -1:		
 			thepointer = MnPointer(address)
@@ -11328,7 +11329,7 @@ def goFindMSP(distance = 0,args = {}):
 					regpattern = fullpattern.lower()
 				if pattype == "unicode":
 					mempat = dbg.readMemory(regs[reg],8)
-					mempat = mempat.replace('\x00','')
+					mempat = mempat.replace(b"\x00","")
 					
 				offset = regpattern.find(mempat)
 				
@@ -11397,7 +11398,7 @@ def goFindMSP(distance = 0,args = {}):
 				if pattype == "unicode":
 					#get next 4 bytes too
 					nsehascii = dbg.readMemory(address,8)
-					hexpat = nsehascii.replace('\x00','')
+					hexpat = nsehascii.replace(b"\x00","")
 					takeout = 0
 					divide = 2
 				offset = regpattern.find(hexpat)
@@ -11481,8 +11482,8 @@ def goFindMSP(distance = 0,args = {}):
 						if pattype == "unicode":
 							hexpat1 = dbg.readMemory(stackcounter,4)
 							hexpat2 = dbg.readMemory(stackcounter+4,4)
-							hexpat1 = hexpat1.replace('\x00','')
-							hexpat2 = hexpat2.replace('\x00','')
+							hexpat1 = hexpat1.replace(b"\x00",b"")
+							hexpat2 = hexpat2.replace(b"\x00",b"")
 							if hexpat1 == "" or hexpat2 == "":
 								#no unicode
 								hexpat = ""
@@ -11587,8 +11588,8 @@ def goFindMSP(distance = 0,args = {}):
 						if pattype == "unicode":
 							hexpat1 = dbg.readMemory(stackcounter,4)
 							hexpat2 = dbg.readMemory(stackcounter+4,4)
-							hexpat1 = hexpat1.replace('\x00','')
-							hexpat2 = hexpat2.replace('\x00','')
+							hexpat1 = hexpat1.replace(b"\x00",b"")
+							hexpat2 = hexpat2.replace(b"\x00",b"")
 							if hexpat1 == "" or hexpat2 == "":
 								#no unicode
 								hexpat = ""
@@ -13303,7 +13304,7 @@ def procByteArray(args, procUsage = ""):
 				byteafter = badchars[pos+2] + badchars[pos+3]
 				bbefore = int(bytebefore,16)
 				bafter = int(byteafter,16)
-				insertbytes = ""
+				insertbytes = b""
 				bbefore += 1
 				while bbefore < bafter:
 					insertbytes += "%02x" % bbefore
@@ -13315,14 +13316,14 @@ def procByteArray(args, procUsage = ""):
 	badchars = newbadchars
 
 	cnt = 0
-	strb = ""
+	strb = b""
 	while cnt < len(badchars):
 		strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
 		cnt=cnt+2
 
 	dbg.log("Generating table, excluding %d bad chars..." % len(strb))
 	arraytable = []
-	binarray = ""
+	binarray = b""
 
 	# handle range() last value
 	if endval > startval:
@@ -15237,7 +15238,7 @@ def procHeap(args, procUsage = ""):
 								elif ptr in bstr:
 									ptrtype = "BSTR"
 									dataend = bstr[ptr]
-									data = blockmem[ptr:dataend].replace("\x00","")
+									data = blockmem[ptr:dataend].replace(b"\x00",b"")
 									alldata = data
 									ptrchars = len(data)
 									ptrbytes = ptrchars*2
@@ -15250,7 +15251,7 @@ def procHeap(args, procUsage = ""):
 								elif ptr in unicodestrings:
 									ptrtype = "Unicode"
 									dataend = unicodestrings[ptr]
-									data = blockmem[ptr:dataend].replace("\x00","")
+									data = blockmem[ptr:dataend].replace(b"\x00",b"")
 									alldata = ""
 									ptrchars = len(data)
 									ptrbytes = ptrchars * 2
@@ -18939,7 +18940,11 @@ def procHelp(args, procUsage = ""):
 						aliastxt = " / " + commands[item[0]].alias
 					dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
 		dbg.log("")
-		dbg.log("Want more info about a given command ?  Run !mona help <command>",highlight=1)
+		scriptname = get_script_name()
+		launchcmd = "!" + scriptname
+		if __DEBUGGERAPP__ == "WinDBG":
+			launchcmd = "!py " + scriptname
+		dbg.log("Want more info about a given command ?  Run %s help <command>" % launchcmd,highlight=1)
 		dbg.log("")
 
 
@@ -19421,7 +19426,13 @@ Arguments:
 -a     : address (or register) to write to""" 
 
 	# initialize list of available mona commands
-	commands["help"] 			= MnCommand("help", "show help", "!mona help [command]",procHelp,"",[32,64])
+	global scriptname
+	scriptname = get_script_name()
+	launchcmd = scriptname
+	if __DEBUGGERAPP__ == "WinDBG":
+		launchcmd = "!py " + scriptname
+
+	commands["help"] 			= MnCommand("help", "Show help", "%s help [command]" % launchcmd,procHelp,"h",[32,64])
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
@@ -19438,8 +19449,8 @@ Arguments:
 	commands["findwild"]		= MnCommand("findwild", "Find instructions in memory, accepts wildcards", findwildUsage, procFindWild,"fw")
 	commands["assemble"] 		= MnCommand("assemble", "Convert instructions to opcode. Separate multiple instructions with #",assembleUsage,procAssemble,"asm", [32,64])
 	commands["info"] 			= MnCommand("info", "Show information about a given address in the context of the loaded application",infoUsage,procInfo,"", [32,64])
-	commands["dump"] 			= MnCommand("dump", "Dump the specified range of memory to a file", dumpUsage,procDump, [32,64])
-	commands["offset"]          = MnCommand("offset", "Calculate the number of bytes between two addresses", offsetUsage, procOffset, [32,64])		
+	commands["dump"] 			= MnCommand("dump", "Dump the specified range of memory to a file", dumpUsage,procDump,"dmp", [32,64])
+	commands["offset"]          = MnCommand("offset", "Calculate the number of bytes between two addresses", offsetUsage, procOffset, "os", [32,64])		
 	#commands["compare"]			= MnCommand("compare","Compare contents of a binary file with a copy in memory", compareUsage, procCompare,"cmp")
 	commands["compare"]			= MnCommand("compare","Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory", compareUsage, procCompare,"cmp", [32,64])
 	commands["breakpoint"]		= MnCommand("bp","Set a memory breakpoint on read/write or execute of a given address", bpUsage, procBp,"bp", [32,64])
@@ -19450,7 +19461,7 @@ Arguments:
 	commands["suggest"]			= MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest)
 	commands["bytearray"]		= MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba", [32,64])
 	commands["header"]			= MnCommand("header","Read a binary file and convert content to a nice 'header' string",headerUsage,procPrintHeader)
-	commands["update"]			= MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up")
+	commands["update"]			= MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up", [32, 64])
 	commands["getpc"]			= MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC)	
 	commands["egghunter"]		= MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
 	commands["stacks"]			= MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks,"",[32,64])
