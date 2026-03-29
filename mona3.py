@@ -18841,15 +18841,15 @@ def getBanner():
 
 	bannertext = ""
 	bannertext += "\n   ┌───────────────────────────────────────┐\n"
-	bannertext += "\n   │                                       │\n"
-	bannertext += "\n   │    ____               _               │\n"
-	bannertext += "\n   │   / ___|___  _ __ ___| | __ _ _ __    │\n"
-	bannertext += "\n   │  | |   / _ \| '__/ _ \ |/ _` | '_ \   │\n"
-	bannertext += "\n   │  | |__| (_) | | |  __/ | (_| | | | |  │\n"
-	bannertext += "\n   │   \____\___/|_|  \___|_|\__,_|_| |_|  │\n"
-	bannertext += "\n   │                                       │\n"
-	bannertext += "\n   │    www.corelan.be                     │\n"
-	bannertext += "\n   └───────────────────────────────────────┘\n"
+	bannertext += "   │                                       │\n"
+	bannertext += "   │    ____               _               │\n"
+	bannertext += "   │   / ___|___  _ __ ___| | __ _ _ __    │\n"
+	bannertext += "   │  | |   / _ \| '__/ _ \ |/ _` | '_ \   │\n"
+	bannertext += "   │  | |__| (_) | | |  __/ | (_| | | | |  │\n"
+	bannertext += "   │   \____\___/|_|  \___|_|\__,_|_| |_|  │\n"
+	bannertext += "   │                                       │\n"
+	bannertext += "   │    www.corelan.be                     │\n"
+	bannertext += "   └───────────────────────────────────────┘\n"
 	banners[4] = bannertext
 
 
