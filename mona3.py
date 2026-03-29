@@ -18821,7 +18821,7 @@ def getBanner():
 	bannertext = ""
 	bannertext += "    |----------------------------------------------------------------- |\n"
 	bannertext += "    |                                                                  |\n"
-	bannertext += "    |    _____ ___  ____  ____  ____ _                                 |\n"
+	bannertext += "    |   	____ ___  ____  ____  ____ _                                  |\n"
 	bannertext += "    |   / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be          |\n"
 	bannertext += "    |  / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com |\n"
 	bannertext += "    | /_/ /_/ /_/\____/_/ /_/\__,_/  https://www.corelan-certified.com |\n"
