@@ -1378,15 +1378,15 @@ class Debugger:
 	"""
 	Memory
 	"""
-	def readMemory(self,location,size):
+
+	def readMemory(self, location, size):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
-
-		try:	
-			#return hex2bin(''.join(("%02X" % n) for n in loadBytes(location,size)))
-			return pykd.loadChars(location,size)
+		try:
+			data = bytes(bytearray(pykd.loadBytes(location, size)))
+			return ensure_bytes(data)
 		except:
-			return ""
+			return ensure_bytes(b"")
 
 	def readString(self,location):
 		if pykd.isValid(location):
