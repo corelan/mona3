@@ -158,6 +158,7 @@ import traceback
 import pickle
 import json
 import math
+import argparse
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -19396,10 +19397,128 @@ Arguments:
 	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval")
 	return
 
+
+#
+# Argument parsing routine
+#
+
+def _strip_launcher_and_script(argv):
+	argv = list(argv)
+	while len(argv) > 0:
+		first_raw = str(argv[0]).strip().strip('"').strip("'")
+		first_base = os.path.basename(first_raw).lower()
+
+		if first_base in ["!py", "py", "mona.py", "mona3.py"]:
+			argv = argv[1:]
+			continue
+		break
+	return argv
+
+
+def _parse_mona_args_with_argparse(raw_args):
+	"""
+	Return:
+		command  : first token after script name (or "")
+		monaArgs : dict with:
+			- key = switch name without leading dashes
+			- value = True for flags
+			- value = string for switches with argument(s)
+			- optional key "?" for free positional values after command
+	"""
+	parser = argparse.ArgumentParser(add_help=False)
+	# Python 3 only, so guard it
+	try:
+		parser.allow_abbrev = False
+	except Exception:
+		pass
+
+	# Work on a copy
+	argv = _strip_launcher_and_script(raw_args)
+
+	# First remaining token is the command/alias, not an argument
+	command = ""
+	if len(argv) > 0:
+		command = argv[0]
+		argv = argv[1:]
+
+	# Build parser dynamically from the actual tokens seen
+	#
+	# Example:
+	#   -a 41414141 -t fileformat:pdf -s -cpb \x00\x0a
+	#
+	# becomes dynamically:
+	#   parser.add_argument("-a", dest="a", nargs="+")
+	#   parser.add_argument("-t", dest="t", nargs="+")
+	#   parser.add_argument("-s", dest="s", action="store_true")
+	#   parser.add_argument("-cpb", dest="cpb", nargs="+")
+	#
+	seen = set()
+	i = 0
+	while i < len(argv):
+		token = argv[i]
+
+		if token.startswith("-") and token != "-":
+			opt = token
+
+			if opt not in seen:
+				dest = opt.lstrip("-").replace("-", "_")
+				j = i + 1
+				has_value = False
+
+				# Collect all consecutive non-switch tokens as this option's value
+				while j < len(argv):
+					next_token = argv[j]
+					if next_token.startswith("-") and next_token != "-":
+						break
+					has_value = True
+					j += 1
+
+				if has_value:
+					parser.add_argument(opt, dest=dest, nargs="+")
+				else:
+					parser.add_argument(opt, dest=dest, action="store_true")
+
+				seen.add(opt)
+
+			# Skip over this option and any attached value tokens
+			i += 1
+			while i < len(argv):
+				next_token = argv[i]
+				if next_token.startswith("-") and next_token != "-":
+					break
+				i += 1
+		else:
+			# Positional token after the command; we'll catch it later via parse_known_args
+			i += 1
+
+	parsed, extras = parser.parse_known_args(argv)
+
+	monaArgs = {}
+	for key, value in vars(parsed).items():
+		if value is None:
+			continue
+
+		# turn dest back into original switch name style
+		switch_name = key.replace("_", "-")
+
+		if isinstance(value, list):
+			monaArgs[switch_name] = " ".join([str(v) for v in value])
+		else:
+			monaArgs[switch_name] = value
+
+	# Preserve free positional arguments after the command, if any
+	if extras:
+		monaArgs["?"] = " ".join([str(v) for v in extras])
+
+	return command, monaArgs
+
+
 #-----------------------------------------------------------------------#
 # main itself. the boss.
 #-----------------------------------------------------------------------#	
-				
+
+
+
 def main(args):
 	dbg.createLogWindow()
 	global currentArgs
@@ -19436,59 +19555,27 @@ def main(args):
 		aline = " ".join(a for a in argcopy)
 		if __DEBUGGERAPP__ == "WinDBG":
 			aline = "!py " + aline
+			dbg.log("[+] Command used: <b>%s</b>" % aline)
 		else:
 			aline = "!mona " + aline
-		dbg.log("[+] Command used:")
-		dbg.log("%s" % aline)	
-
+			dbg.log("[+] Command used: %s" % aline)
 
 		# in case we're not using Immunity
 		if "-showargs" in args:
 			dbg.log("-" * 50)
 			dbg.log("args: %s" % args)
 
-		if len(args) > 0:
-			if args[0].lower().startswith("mona") or args[0].lower().endswith("mona") or args[0].lower().endswith("mona.py"):
-				args.pop(0)
-		
-		if len(args) >= 2:
-			arguments = args[1:]
-		if "-showargs" in args:
-			dbg.log("arguments: %s" % arguments)
+		command, monaArgs = _parse_mona_args_with_argparse(args)
 
-		if DEBUG_MODE:
-			dbgp("Arguments: %s" % arguments)
-
-		for word in arguments:
-			if (word[0] == '-'):
-				word = word.lstrip("-")
-				opts[word] = True
-				last = word
-			else:
-				if (last != ""):
-					if str(opts[last]) == "True":
-						opts[last] = word
-					else:
-						opts[last] = opts[last] + " " + word
-					#last = ""
-		# if a command only requires a value and not a switch ?
-		# then we'll drop the value into dictionary with key "?"
-		if len(args) > 1 and args[1][0] != "-":
-			opts["?"] = args[1]
-	
-		if len(args) < 1:
-			commands["help"].parseProc(opts)
-			return("")
-		
-		if len(args) > 1:
-			command = args[1]
-		
 		if "-showargs" in args:
 			dbg.log("command: %s" % command)
+			dbg.log("monaArgs: %s" % monaArgs)
 			dbg.log("-" * 50)
-			args.remove("-showargs")
-			arguments.remove("-showargs")			
-		
+
+		if DEBUG_MODE:
+			dbgp("Command: %s" % command)
+			dbgp("monaArgs: %s" % monaArgs)
+
 		# ----- execute the chosen command ----- #
 		if DEBUG_MODE:
 			dbgp("You're trying to run command '%s'" % command)
@@ -19497,17 +19584,19 @@ def main(args):
 			if command.lower().strip() == "help":
 				commands[command].parseProc(args)
 			else:
-				commands[command].parseProc(opts)
+				commands[command].parseProc(monaArgs)
 		else:
 			# maybe it's an alias
 			aliasfound = False
 			for cmd in commands:
 				if (commands[cmd].alias == command) and (command != ""):
 					if DEBUG_MODE:
-						dbgp("Running alias command '%s'" % command)					
-					commands[cmd].parseProc(opts)
+						dbgp("Running alias command '%s'" % command)
+					commands[cmd].parseProc(monaArgs)
 					aliasfound = True
 			if not aliasfound:
+				if DEBUG_MODE:
+					dbgp("'%s' is not a valid command" % command)
 				commands["help"].parseProc(None)
 				return("** Please provide a valid command **")
 		
