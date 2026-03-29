@@ -334,8 +334,7 @@ def get_current_function_name():
 	frame = inspect.currentframe().f_back
 	args, _, _, values = inspect.getargvalues(frame)
 	callerargs = {arg: values[arg] for arg in args}
-	return "--- Start function: %s(%s) ---" % (inspect.currentframe().f_back.f_back.f_code.co_name, callerargs)
-
+	return "--- Start function: %s(%s) ---" % (frame.f_code.co_name, callerargs)
 
 def getPythonVersion():
 	versioninfo = sys.version
@@ -1280,29 +1279,29 @@ def Poly_ReturnDW(value):
 	I = random.randint(1, 3)
 	if I == 1:
 		if random.randint(1, 2) == 1:
-			return dbg.assemble( "SUB EAX, EAX\n ADD EAX, 0x%08x" % value )
+			return dbg.assemble( "SUB EAX,EAX\n ADD EAX,0x%08x" % value )
 		else:
-			return dbg.assemble( "SUB EAX, EAX\n ADD EAX, -0x%08x" % value )
+			return dbg.assemble( "SUB EAX,EAX\n ADD EAX,-0x%08x" % value )
 	if I == 2:
 		return dbg.assemble( "PUSH 0x%08x\n POP EAX\n" % value )
 	if I == 3:
 		if random.randint(1, 2) == 1:
-			return dbg.assemble( "XCHG EAX, EDI\n DB 0xBF\n DD 0x%08x\n XCHG EAX, EDI" % value )
+			return dbg.assemble( "XCHG EAX,EDI\n DB 0xBF\n DD 0x%08x\n XCHG EAX,EDI" % value )
 		else:
-			return dbg.assemble( "XCHG EAX, EDI\n MOV EDI, 0x%08x\n XCHG EAX, EDI" % value )
+			return dbg.assemble( "XCHG EAX,EDI\n MOV EDI,0x%08x\n XCHG EAX,EDI" % value )
 	return
 
 def Poly_Return0():
 	I = random.randint(1, 4)
 	if I == 1:
-		return dbg.assemble( "SUB EAX, EAX" )
+		return dbg.assemble( "SUB EAX,EAX" )
 	if I == 2:
 		if random.randint(1, 2) == 1:
 			return dbg.assemble( "PUSH 0\n POP EAX" )
 		else:
-			return dbg.assemble( "DB 0x6A, 0x00\n POP EAX" )
+			return dbg.assemble( "DB 0x6A,0x00\n POP EAX" )
 	if I == 3:
-		return dbg.assemble( "XCHG EAX, EDI\n SUB EDI, EDI\n XCHG EAX, EDI" )
+		return dbg.assemble( "XCHG EAX,EDI\n SUB EDI,EDI\n XCHG EAX,EDI" )
 	if I == 4:
 		return Poly_ReturnDW(0)
 	return
@@ -5432,7 +5431,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 						buf = None
 						human_format = b""
 						if type(seq) == str:
-							human_format = seq.replace("\n"," # ")
+							human_format = seq.replace("\n"," # ").lower()
 							buf = dbg.assemble(seq)
 						else:
 							human_format = seq[0].replace("\n"," # ")
@@ -5727,7 +5726,7 @@ def getSearchSequences(searchtype,searchcriteria="",type="",criteria={}):
 					search.append("push "+searchcriteria+"\nret "+roffset)
 					
 				for reg in archregs:
-					if reg != searchcriteria:
+					if reg.lower() != searchcriteria.lower():
 						search.append("push " + searchcriteria + "\npop "+reg+"\njmp "+reg)
 						search.append("push " + searchcriteria + "\npop "+reg+"\ncall "+reg)			
 						search.append("mov "+reg+"," + searchcriteria + "\njmp "+reg)
