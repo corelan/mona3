@@ -5818,6 +5818,11 @@ def getModulesToQuery(criteria):
 	array with module names that meet the given criteria
 	
 	"""	
+
+	if DEBUG_MODE:
+		dbgp(dbglib.get_current_function_name())
+		dbgp("function criteria: %s" % criteria)
+		dbgp("g_modules: %d entries" % len(g_modules))
 	if len(g_modules) == 0:
 		populateModuleInfo()
 	modulestoquery=[]
@@ -5925,11 +5930,14 @@ def populateModuleInfo():
 	Return:
 	Dictionary
 	"""
+	if DEBUG_MODE:
+		dbgp(dbglib.get_current_function_name())
+
 	if not silent:
 		dbg.setStatusBar("Getting modules info...")
 		dbg.log("[+] Generating module info table, hang on...")
 		dbg.log("    - Processing modules")
-		dbg.updateLog()
+		#dbg.updateLog()
 	global g_modules
 	g_modules={}
 	if DEBUG_MODE:
@@ -18780,7 +18788,7 @@ def procHelp(args):
 	dbg.log("                          blah or *blah* = contains blah")
 	dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
 	dbg.log("                          You can use one or more of the following criteria :")
-	dbg.log("                          aslr,safeseh,rebase,nx,os")
+	dbg.log("                          aslr,safeseh,rebase,nx,cfg,os")
 	dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
 	dbg.log("                          Example :  -cm aslr=true,safeseh=false")
 	dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")

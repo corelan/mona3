@@ -175,6 +175,7 @@ def getNtHeaders(modulebase):
 			dbgp("ERROR: %s" % str(e))
 	return nth
 
+
 def clearvars():
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
@@ -195,6 +196,7 @@ def clearvars():
 	ModuleCache = None
 	cpebaddress = None
 	return
+
 
 def getPEBInfo():
 	if DEBUG_MODE:
@@ -442,9 +444,6 @@ def isPyKDVersionCompatible(currentversion,requiredversion):
 def checkVersion():
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
-
-	pykdurl = "https://github.com/corelan/windbglib/raw/master/pykd/pykd.zip"
-	pykdurl03 = "https://github.com/corelan/windbglib/raw/master/pykd/pykd03.zip"
 	pykdversion_needed = "0.2.0.29"
 	if arch == 64:
 		pykdversion_needed = "0.2.0.29"
@@ -559,6 +558,8 @@ def getModulesFromPEB():
 					dbgp("    Added %s to PEBModList" % imagename)
 	
 	return moduleLst
+
+
 
 def getModuleFromAddress(address):
 	if DEBUG_MODE:
@@ -1583,10 +1584,10 @@ class Debugger:
 						fullpath = modrecord[1]
 						break
 
-			if thismod == None:
-				# should never hit, as we have tested if modules can be loaded already
-				imagename = self.getImageNameForModule(self.origmodname)
-				thismod = pykd.module(str(imagename))
+			#if thismod == None:
+			#	# should never hit, as we have tested if modules can be loaded already
+			#	imagename = self.getImageNameForModule(self.origmodname)
+			#	thismod = pykd.module(str(imagename))
 
 			if DEBUG_MODE:
 				dbgp("   Getting module properties (name, start, end, size, etc)")
@@ -1609,18 +1610,20 @@ class Debugger:
 			try:
 				if DEBUG_MODE:
 					dbgp("    Trying to get version info")
+				thismodversion = ""
+				"""	
 				versionstuff = thismod.getVersion()
 				thismodversion = ""
 				for vstuff in versionstuff:
 					thismodversion = thismodversion + str(vstuff) + "."
 				thismodversion = thismodversion.strip(".")
 				if DEBUG_MODE:
-					dbgp("    -> %s" % thismodversion)
+					dbgp("    -> %s" % thismodversion)"""
 			except Exception as e:
 				thismodversion = ""
 				if DEBUG_MODE:
 					dbgp("    Error: %s (might be ok)" % str(e))
-
+				
 			if DEBUG_MODE:
 				dbgp("    Getting NT Headers for %s. Base: 0x%08x" % (thisimagename, thismodbase))
 			ntHeader = getNtHeaders(thismodbase)
@@ -1649,6 +1652,7 @@ class Debugger:
 			pykd.dprintln("** Error trying to process module %s" % modulename)
 			#dprintln(traceback.format_exc())
 			wmod = None
+
 		return wmod
 		
 
