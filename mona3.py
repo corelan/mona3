@@ -18803,6 +18803,7 @@ def getBanner():
 	bannertext += "    | \___/\____/_/   \___/_/\__,_/_/ /_/   \__/\___/\__,_/_/ /_/ /_/  |\n"
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    |     https://www.corelan.be | https://www.corelan-training.com    |\n"
+	bannertext += "    |                 https://www.corelan-certified.com                |\n"
 	bannertext += "    |------------------------------------------------------------------|\n"
 	banners[0] = bannertext
 
@@ -18818,12 +18819,12 @@ def getBanner():
 	banners[1] = bannertext
 
 	bannertext = ""
-	bannertext += "    |------------------------------------------------------------------|\n"
+	bannertext += "    |----------------------------------------------------------------- |\n"
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    |    _____ ___  ____  ____  ____ _                                 |\n"
-	bannertext += "    |    / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be         |\n"
-	bannertext += "    |   / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com|\n"
-	bannertext += "    |  /_/ /_/ /_/\____/_/ /_/\__,_/                                   |\n"
+	bannertext += "    |   / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be          |\n"
+	bannertext += "    |  / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com |\n"
+	bannertext += "    | /_/ /_/ /_/\____/_/ /_/\__,_/  https://www.corelan-certified.com |\n"
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    |------------------------------------------------------------------|\n"
 	banners[2] = bannertext
@@ -18837,6 +18838,19 @@ def getBanner():
 	bannertext += "    .##.....##.##.....##.##...###.##.....##.###.##...........##...\n"
 	bannertext += "    .##.....##..#######..##....##.##.....##.###.##...........##...\n\n"
 	banners[3] = bannertext
+
+	bannertext = ""
+	bannertext += "\n   ┌───────────────────────────────────────┐\n"
+	bannertext += "\n   │                                       │\n"
+	bannertext += "\n   │    ____               _               │\n"
+	bannertext += "\n   │   / ___|___  _ __ ___| | __ _ _ __    │\n"
+	bannertext += "\n   │  | |   / _ \| '__/ _ \ |/ _` | '_ \   │\n"
+	bannertext += "\n   │  | |__| (_) | | |  __/ | (_| | | | |  │\n"
+	bannertext += "\n   │   \____\___/|_|  \___|_|\__,_|_| |_|  │\n"
+	bannertext += "\n   │                                       │\n"
+	bannertext += "\n   │    www.corelan.be                     │\n"
+	bannertext += "\n   └───────────────────────────────────────┘\n"
+	banners[4] = bannertext
 
 
 	# pick random banner
