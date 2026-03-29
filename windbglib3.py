@@ -1832,7 +1832,7 @@ class Debugger:
 		address = pykd.reg("eip") if arch == 32 else pykd.reg("rip")
 		if DEBUG_MODE:
 			dbgp("instructions: %s" % instructions)
-			dbgp("address: %s" % address)
+			dbgp("address: 0x%s" % intToHex(address))
 			dbgp("pykd.isValid(address): %s" % pykd.isValid(address))
 		if not pykd.isValid(address):
 			# assemble somewhere else - let's say at the ntdll entrypoint

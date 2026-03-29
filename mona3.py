@@ -337,6 +337,12 @@ def getPythonVersion():
 	return versioninfolines[0]
 
 
+def ensure_bytes(s, encoding='latin-1'):
+	if isinstance(s, bytes):
+		return s
+	return s.encode(encoding)
+
+
 def toHex(n):
 	"""
 	Converts a numeric value to hex (pointer to hex)
@@ -5399,10 +5405,9 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 				# loop on each sequence
 				for seq in sequences:
-					seq = seq.lower()
 					if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
 						buf = None
-						human_format = ""
+						human_format = b""
 						if type(seq) == str:
 							human_format = seq.replace("\n"," # ")
 							buf = dbg.assemble(seq)
@@ -5410,14 +5415,17 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 							human_format = seq[0].replace("\n"," # ")
 							buf = seq[1]
 
+						buf = ensure_bytes(buf)
+						
 						recur_find   = []		
 						try:
 							buf_len      = len(buf)
 							mem_list     = mem.split( buf )
 							total_length = buf_len * -1
-						except:
+						except Exception as e:
 							process_error_found = True
 							dbg.log(" ** Unable to process searchPattern '%s'. **" % human_format)
+							dbg.log(str(e))
 							break
 						
 						for i in mem_list:
@@ -6435,7 +6443,7 @@ def assemble(instructions,encoder=""):
 		dbg.log("---------------- ")
 	allopcodes=""
 
-	instructions = instructions.replace('"',"").replace("'","")
+	instructions = instructions.replace('"',"").replace("'","").lower()
 
 	splitter=re.compile('#')
 	instructions=splitter.split(instructions)
@@ -12519,10 +12527,12 @@ def procFind(args, procUsage = ""):
 		consecutive = True
 		
 	if "type" in args:
-		if not args["type"] in ["bin","asc","ptr","instr","file"]:
+		if not args["type"] in ["bin","asc","ptr","instr","file","str"]:
 			dbg.log("Invalid search type : %s" % args["type"], highlight=1)
 			return
-		ftype = args["type"] 
+		ftype = args["type"]
+		if ftype == "str":
+			ftype = "asc"
 		if ftype == "file":
 			filename = args["s"].replace('"',"").replace("'","")
 			#see if we can read the file
@@ -19672,7 +19682,7 @@ def main(args):
 			for cmd in commands:
 				if (commands[cmd].alias == command) and (command != ""):
 					if DEBUG_MODE:
-						dbgp("Supported on %s" % commands[command].supportedarchs)
+						dbgp("Supported on %s" % commands[cmd].supportedarchs)
 					if arch in commands[cmd].supportedarchs:
 						if DEBUG_MODE:
 							dbgp("Running alias command '%s'" % command)
