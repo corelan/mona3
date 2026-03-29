@@ -1448,6 +1448,43 @@ class Debugger:
 			dbgp(get_current_function_name())
 
 		if not self.MemoryPages:
+			address_output = pykd.dbgCommand("!address")
+			address_output_lines = address_output.splitlines()
+
+			row_regex = re.compile(
+				r'^\s*\+?\s*'                 # optional leading "+"
+				r'([0-9A-Fa-f`]+)\s+'         # BaseAddress
+				r'([0-9A-Fa-f`]+)\s+'         # EndAddress+1
+				r'([0-9A-Fa-f`]+)\b'          # RegionSize
+			)
+
+			for memory_page_info in address_output_lines:
+				memory_page_info = memory_page_info.rstrip()
+				if DEBUG_MODE:
+					dbgp("    Page: %s" % memory_page_info)
+				m = row_regex.match(memory_page_info)
+				if DEBUG_MODE:
+					dbgp("      Result of regex match: %s" % m)
+				if not m:
+					continue
+
+				starting_address = int(m.group(1).replace('`', ''), 16)
+				size = int(m.group(3).replace('`', ''), 16)
+
+				if DEBUG_MODE:
+					dbgp("      OK - Including page: 0x%08x, size 0x%08x" % (starting_address, size))
+
+				page_obj = wpage(starting_address, size)
+				self.MemoryPages[starting_address] = page_obj
+
+		return self.MemoryPages
+
+
+	def getMemoryPages_old(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
+		if not self.MemoryPages:
 			address_output = pykd.dbgCommand('!address -c:".printf\\"%1 %3 \\\\n\\""')
 			address_output_lines = address_output.split('\n')
 			info_regex = re.compile(r'0x[\da-fA-F]+ 0x[\da-fA-F]+')
@@ -1459,6 +1496,15 @@ class Debugger:
 					size = int(info[1].replace('`', ''), base=16)
 					page_obj = wpage(starting_address, size)
 					self.MemoryPages[starting_address] = page_obj
+
+		if DEBUG_MODE:
+			dbgp("--- THIS SHOULD BE HIDDEN ---")
+			address_output = pykd.dbgCommand("!address")
+			dbgp("--- END THIS SHOULD BE HIDDEN ---")
+			address_output_lines = address_output.split('\n')
+			for mmm in address_output_lines:
+				dbgp(" Line: %s" % mmm)
+
 		return self.MemoryPages
 
 
@@ -2171,9 +2217,12 @@ class wpage():
 	def getMemory(self):
 		if self.getAccess() > 0x1:
 			try:
-				data =  pykd.loadChars(self.begin,self.size)
+				#data =  pykd.loadChars(self.begin,self.size)
+				data = bytes(bytearray(pykd.loadBytes(self.begin, self.size)))
 				return data
-			except:
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Error accessing memory: %s" % str(e))
 				return None
 		else:
 			return None
@@ -2280,6 +2329,7 @@ class wpage():
 					for sectioncnt in xrange(nrsections):
 						sectionstart = (ntHeader.OptionalHeader.getAddress() + sizeOptionalHeader) + (sectioncnt*sectionsize)
 						thissection = rstrip_nulls(pykd.loadChars(sectionstart, 8))
+						
 						# IMAGE_SECTION_HEADER.SizeOfRawData(DWORD)
 						thissectionsize = pykd.ptrDWord(sectionstart + 0x8 + 0x8)
 						# IMAGE_SECTION_HEADER.VirtualAddress(DWORD)
