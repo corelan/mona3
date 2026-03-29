@@ -16367,7 +16367,7 @@ def procPageACL(args, procUsage = ""):
 			acldata = "%s %s %s" % (acl, mod, sectionname)
 			pstart = "0x%08x" % pagestart
 			pend = "0x%08x" % (pagestart + pagesize)
-			psize = "0x%08x" % pagesize	
+			psize = "0x%x" % pagesize	
 			if arch == 64:
 				pstart = "0x%016x" % pagestart
 				pend = "0x%016x" % (pagestart + pagesize)
