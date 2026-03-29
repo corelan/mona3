@@ -133,8 +133,6 @@ except:
 import getopt
 
 try:
-	#import debugtypes
-	#import libdatatype
 	from immutils import *
 except:
 	pass
@@ -19360,7 +19358,7 @@ Arguments:
 	commands["update"]			= MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up")
 	commands["getpc"]			= MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC)	
 	commands["egghunter"]		= MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
-	commands["stacks"]			= MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks)
+	commands["stacks"]			= MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks,"",[32,64])
 	commands["skeleton"]		= MnCommand("skeleton","Create a Metasploit module skeleton with a cyclic pattern for a given type of exploit",skeletonUsage,procSkeleton)
 	commands["breakfunc"]		= MnCommand("breakfunc","Set a breakpoint on an exported function in on or more dll's",bfUsage,procBf,"bf")
 	commands["heap"]			= MnCommand("heap","Show heap related information",heapUsage,procHeap)
@@ -19546,7 +19544,6 @@ def main(args):
 			dbgp("Initialized %d commands" % len(commands))
 		
 		# get the options
-		opts = {}
 		last = ""
 		arguments = []
 		command = ""
