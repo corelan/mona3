@@ -99,10 +99,26 @@ def dbgp(s):
 		pass
 
 def get_current_function_name():
-	frame = inspect.currentframe().f_back
-	args, _, _, values = inspect.getargvalues(frame)
-	callerargs = {arg: values[arg] for arg in args}
-	return "--- Start function: %s(%s) ---" % (frame.f_code.co_name, callerargs)
+
+    frame = inspect.currentframe()
+    try:
+        current_frame = frame.f_back
+        parent_frame  = current_frame.f_back if current_frame else None
+
+        # Current function
+        current_name = current_frame.f_code.co_name if current_frame else "???()"
+
+        args, _, _, values = inspect.getargvalues(current_frame)
+        callerargs = {arg: values[arg] for arg in args}
+
+        # Parent function
+        parent_name = parent_frame.f_code.co_name if parent_frame else "???()"
+
+        return "--- %s() -> %s(%s)" % (parent_name, current_name, callerargs)
+
+    finally:
+        del frame
+	
 
 def ensure_bytes(s, encoding='latin-1'):
 	if isinstance(s, bytes):

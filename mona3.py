@@ -330,11 +330,29 @@ def get_script_name():
         return os.path.splitext(os.path.basename(sys.argv[0]))[0]
     return "unknown"
 
+
 def get_current_function_name():
-	frame = inspect.currentframe().f_back
-	args, _, _, values = inspect.getargvalues(frame)
-	callerargs = {arg: values[arg] for arg in args}
-	return "--- Start function: %s(%s) ---" % (frame.f_code.co_name, callerargs)
+
+    frame = inspect.currentframe()
+    try:
+        current_frame = frame.f_back
+        parent_frame  = current_frame.f_back if current_frame else None
+
+        # Current function
+        current_name = current_frame.f_code.co_name if current_frame else "???()"
+
+        args, _, _, values = inspect.getargvalues(current_frame)
+        callerargs = {arg: values[arg] for arg in args}
+
+        # Parent function
+        parent_name = parent_frame.f_code.co_name if parent_frame else "???()"
+
+        return "--- %s() -> %s(%s)" % (parent_name, current_name, callerargs)
+
+    finally:
+        del frame	
+
+
 
 def getPythonVersion():
 	versioninfo = sys.version
@@ -346,6 +364,11 @@ def ensure_bytes(s, encoding='latin-1'):
 	if isinstance(s, bytes):
 		return s
 	return s.encode(encoding)
+
+def ensure_text(s, encoding='latin-1'):
+	if isinstance(s, str):
+		return s
+	return s.decode(encoding)	
 
 
 def toHex(n):
@@ -2479,6 +2502,8 @@ class MnConfig:
 	Class to perform config file operations
 	"""
 	def __init__(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 	
 		global configwarningshown
 		self.configfile = "mona.ini"
@@ -2503,35 +2528,66 @@ class MnConfig:
 		"""	
 		#read config file
 		#format :  parameter=value
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		toreturn = ""
 		curparam=[]
 		global configFileCache
 		#first check if parameter already exists in global cache
+		if DEBUG_MODE:
+			dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
+
 		if parameter.strip().lower() in configFileCache:
 			toreturn = configFileCache[parameter.strip().lower()]
+			if DEBUG_MODE:
+				dbgp("    Yes: Result: %s" % toreturn)			
 			#dbg.log("Found parameter %s in cache: %s" % (parameter, toreturn))
 		else:
+			if DEBUG_MODE:
+				dbgp("    No, reading from file %s" % self.configfile)
 			if os.path.exists(self.configfile):
 				try:
 					configfileobj = open(self.configfile,"rb")
 					content = configfileobj.readlines()
 					configfileobj.close()
+					if DEBUG_MODE:
+						dbgp("    Reading content line by line")
 					for thisLine in content:
-						if not thisLine[0] == "#":
-							currparam = thisLine.split('=')
+						thisLine = thisLine.decode("latin-1").strip()
+						if DEBUG_MODE:
+							dbgp("    Line: %s" % thisLine)
+						if not thisLine[0].startswith("#"):
+							currparam = thisLine.split("=")
+							if DEBUG_MODE:
+								dbgp("          Elements: %s" % currparam)
+								dbgp("          Found parameter: %s" % currparam[0].strip().lower())
+								dbgp("          Looking for parameter: %s" % parameter.strip().lower())
 							if currparam[0].strip().lower() == parameter.strip().lower() and len(currparam) > 1:
 								#get value
+								if DEBUG_MODE:
+									dbgp("          Parameter found!")
 								currvalue = ""
 								i=1
 								while i < len(currparam):
 									currvalue = currvalue + currparam[i] + "="
 									i += 1
-								toreturn = currvalue.rstrip("=").replace('\n','').replace('\r','')
+								toreturn = currvalue.rstrip("=").replace("\n","").replace("\r","")
 								# drop into global cache for next time
 								configFileCache[parameter.strip().lower()] = toreturn
 								#dbg.log("Read parameter %s from file: %s" % (parameter, toreturn))
-				except:
+								if DEBUG_MODE:
+									dbgp("Stored parameter %s with value %s in configFileCache %s" % (parameter.strip().lower(), toreturn, configFileCache))
+							else:
+								if DEBUG_MODE:
+									dbgp("          Skip, not the right parameter")
+				except Exception as e:
+					if DEBUG_MODE:
+						dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
 					toreturn=""
+			else:
+				if DEBUG_MODE:
+					dbgp("Config file %s does not seem to exist" % self.configfile)
 		
 		return toreturn
 	
@@ -2546,9 +2602,16 @@ class MnConfig:
 		Return:
 		nothing
 		"""
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		global configFileCache
 		configFileCache[parameter.strip().lower()] = paramvalue
 		if os.path.exists(self.configfile):
+			paramvalue.strip()
+			if DEBUG_MODE:
+				dbgp("Editing existing config file %s" % self.configfile)
+				dbgp("Setting parameter %s to %s" % (parameter, paramvalue))			
 			#modify file
 			try:
 				configfileobj = open(self.configfile,"r")
@@ -2582,6 +2645,10 @@ class MnConfig:
 			#create new file
 			try:
 				dbg.log("[+] Creating config file, setting parameter %s" % parameter)
+				paramvalue.strip()
+				if DEBUG_MODE:
+					dbgp("Creating config file %s" % self.configfile)
+					dbgp("Setting parameter %s to %s" % (parameter, paramvalue))
 				FILE=open(self.configfile,"w")
 				FILE.write("# -----------------------------------------------#\n")
 				FILE.write("# mona.py configuration file                    #\n")
@@ -2619,8 +2686,12 @@ class MnLog:
 		Return:
 		full path to the logfile name.
 		"""	
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 		global noheader
 		if clear:
+			if DEBUG_MODE:
+				dbgp("Filename: %s" % self.filename)
 			if not silent:
 				dbg.log("[+] Preparing output file '" + self.filename +"'")
 		if not showheader:
@@ -2632,6 +2703,9 @@ class MnLog:
 		
 		thisconfig = MnConfig()
 		workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
+		if DEBUG_MODE:
+			dbgp("Workingfolder: %s" % workingfolder)
+
 		#strip extension from debuggedname
 		parts = debuggedname.split(".")
 		extlen = len(parts[len(parts)-1])+1
