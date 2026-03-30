@@ -736,7 +736,7 @@ def toAscii(n):
 		n = "%02x" % n
 	try:
 		if n != "00":
-			asciiequival=binascii.a2b_hex(n)
+			asciiequival=binascii.a2b_hex(n).decode("latin1")
 		else:
 			asciiequival = " "
 	except TypeError:
