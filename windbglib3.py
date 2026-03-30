@@ -2784,10 +2784,15 @@ class Debugger:
 					return self.getOpcode(addrToInt(pointer))
 				else:
 					return self.getOpcode(address)
-			except:
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Error disassembling backwards, %s" % str(e))
+					dbgp("Depth: %d" % depth)
 				# probably invalid instruction, so fake by returning itself
 				# caller should check if address is different than what was provided
 				if depth == 1:
+					if DEBUG_MODE:
+						dbgp("Returning opcode at 0x%x" % address)
 					return self.getOpcode(address)
 			depth -= 1
 
