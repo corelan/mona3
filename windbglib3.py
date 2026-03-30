@@ -311,8 +311,6 @@ def hexptr2bin(hexptr):
 
 
 def hexStrToInt(inputstr):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
 
 	"""
 	Converts a string with hex bytes to a numeric value
@@ -330,8 +328,6 @@ def hexStrToInt(inputstr):
 	return valtoreturn
 
 def addrToInt(address):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
 
 	"""
 	Convert a textual address to an integer
@@ -366,8 +362,8 @@ def isAddress(address):
 	return set(address.upper()) <= set("ABCDEF1234567890")
 
 def intToHex(address):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	#if DEBUG_MODE:
+	#	dbgp(get_current_function_name())
 
 	if arch == 32:
 		return "0x%08x" % address
@@ -375,8 +371,8 @@ def intToHex(address):
 		return "0x%016x" % address
 
 def intToHexWinDbgFormat(address):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	#if DEBUG_MODE:
+	#	dbgp(get_current_function_name())
 
 	if arch == 32:
 		return "%08x" % address
@@ -2426,19 +2422,15 @@ class Debugger:
 
 			for memory_page_info in address_output_lines:
 				memory_page_info = memory_page_info.rstrip()
-				if DEBUG_MODE:
-					dbgp("    Page: %s" % memory_page_info)
 				m = row_regex.match(memory_page_info)
-				if DEBUG_MODE:
-					dbgp("      Result of regex match: %s" % m)
 				if not m:
 					continue
 
 				starting_address = int(m.group(1).replace('`', ''), 16)
 				size = int(m.group(3).replace('`', ''), 16)
 
-				if DEBUG_MODE:
-					dbgp("      OK - Including page: 0x%08x, size 0x%08x" % (starting_address, size))
+				#if DEBUG_MODE:
+				#	dbgp("      OK - Including page: 0x%08x, size 0x%08x" % (starting_address, size))
 
 				page_obj = wpage(starting_address, size)
 				self.MemoryPages[starting_address] = page_obj
@@ -2787,6 +2779,7 @@ class Debugger:
 			except Exception as e:
 				if DEBUG_MODE:
 					dbgp("Error disassembling backwards, %s" % str(e))
+					dbgp(traceback.format_exc())
 					dbgp("Depth: %d" % depth)
 				# probably invalid instruction, so fake by returning itself
 				# caller should check if address is different than what was provided

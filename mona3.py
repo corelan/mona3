@@ -5371,7 +5371,8 @@ def meetsCriteria(pointer,criteria):
 	Return:
 	Boolean - True if all the conditions are met
 	"""
-	
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	# Unicode
 	if "unicode" in criteria and not (pointer.isUnicode or pointer.unicodeTransform != ""):
 		return False
@@ -5438,6 +5439,8 @@ def search(sequences,criteria=[]):
 	Return:
 	Dictionary (opcode sequence => List of addresses)
 	"""	
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	return searchInRange(sequences,criteria)
 	
 	
@@ -6740,6 +6743,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		updateth = 500
 	if (tp < 2000):
 		updateth = 100
+	if DEBUG_MODE:
+		updateth = 50
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:
 			if DEBUG_MODE:
@@ -6763,6 +6768,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						thisptr = thisopcode.getAddress()
 					except:
 						dbg.log("        ** Unable to backward disassemble at 0x%0x, depth %d, skipping location\n" % (endingtypeptr, depth+1))
+						if DEBUG_MODE:
+							dbgp(traceback.format_exc())
 						thisopcode = ""
 						thisptr = 0
 
@@ -6779,10 +6786,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							thisopcodebytes = ""
 							chainptr = startptr
 							if isGoodGadgetPtr(startptr,criteria) and not startptr in ropgadgets and not startptr in interestinggadgets:
-								if DEBUG_MODE:
-									dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
+								#if DEBUG_MODE:
+								#	dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
 								invalidinstr = False
-								dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
+								#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
 								avoidunlimitedloop = 0
 								while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
 									thisopcode = dbg.disasm(chainptr)
@@ -6822,6 +6829,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 									else:
 										if not fast:
 											ropgadgets[startptr] = fullchain
+											if DEBUG_MODE:
+												dbgp("Added 0x%08x to chain list: %s" % (startptr, fullchain))
 							startptr = startptr+1
 						except Exception as ropex:
 							dbgp("Error while looking for gadgets: %s" % str(ropex))
@@ -10771,6 +10780,8 @@ def readGadgetsFromFile(filename):
 	return readopcodes
 	
 def isGoodGadgetPtr(gadget,criteria):
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	if gadget in CritCache:
 		return CritCache[gadget]
 	else:
