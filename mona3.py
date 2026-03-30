@@ -6529,7 +6529,7 @@ def assemble(instructions,encoder=""):
 	Assembles one or more instructions to opcodes
 
 	Arguments:
-	instructions = the instructions to assemble (separated by #)
+	instructions = the instructions to assemble (separated by # or ;)
 
 	Return:
 	Dictionary (pointers)
@@ -6541,8 +6541,10 @@ def assemble(instructions,encoder=""):
 
 	instructions = instructions.replace('"',"").replace("'","").lower()
 
-	splitter=re.compile('#')
-	instructions=splitter.split(instructions)
+	#splitter = re.compile(r'[;#]')
+	#instructions = splitter.split(instructions)
+	instructions = [i for i in re.split(r'[;#]', instructions) if i]
+
 	for instruct in instructions:
 		try:
 			instruct = instruct.strip()
