@@ -2858,6 +2858,8 @@ class MnModule:
 	Class to access module properties
 	"""
 	def __init__(self, modulename):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 		modisaslr = True
 		modissafeseh = True
 		modrebased = True
@@ -3149,7 +3151,7 @@ class MnModule:
 				PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
 				# do we have an optional header ?
 				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location+0x14,2)
-				sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+"\x00\x00")[0]
+				sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+b"\x00\x00")[0]
 				OptionalHeader_location = PEHeader_location + 0x18
 				if sizeOfOptionalHeader > 0:
 					# get address of DataDirectory
@@ -3228,6 +3230,8 @@ class MnModule:
 		
 		
 	def getEAT(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())		
 		eatlist = {}
 		if len(self.EAT) == 0:
 			try:
@@ -3237,7 +3241,7 @@ class MnModule:
 				PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
 				# do we have an optional header ?
 				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location+0x14,2)
-				sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+"\x00\x00")[0]
+				sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+b"\x00\x00")[0]
 				OptionalHeader_location = PEHeader_location + 0x18
 				if sizeOfOptionalHeader > 0:
 					# get address of DataDirectory
@@ -3256,7 +3260,11 @@ class MnModule:
 							eatAddress = self.moduleBase + struct.unpack('<L',dbg.readMemory(address_of_functions + (4 * i),4))[0]
 							eatlist[eatAddress] = eatName
 				self.EAT = eatlist
-			except:
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)))
+					dbgp("%s" % traceback.format_exc())
+					dbgp("eatlist: %s" % eatlist)
 				return eatlist
 		else:
 			eatlist = self.EAT
@@ -11860,6 +11868,9 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 	Returns : nothing
 	"""
 	
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+	
 	type = type.lower()
 	
 	namecrit = funcfilter.strip('"').strip("'").split(",")
@@ -11873,7 +11884,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 		
 		for thismodule in modulestosearch:
 			if not silent:
-				dbg.log(" Querying module %s" % thismodule)
+				dbg.log("    Querying module %s" % thismodule)
 			# get all
 			themod = dbg.getModule(thismodule)
 			tmod = MnModule(thismodule)
@@ -11886,7 +11897,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 			else:
 				funcs = tmod.getIAT()
 			if not silent:
-				dbg.log("   Total nr of %sed functions : %d" % (type,len(funcs)))
+				dbg.log("      Total nr of %sed functions : %d" % (type,len(funcs)))
 			for func in funcs:
 				if meetsCriteria(MnPointer(func), criteria):
 					funcname = funcs[func].lower()
@@ -13274,6 +13285,9 @@ def procBu(args, procUsage = ""):
 # ----- bf: Set a breakpoint on exported functions of a module ----- #
 def procBf(args, procUsage = ""):
 
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	funcfilter = ""
 	
 	mode = ""
@@ -13680,7 +13694,6 @@ def procUpdate(args, procUsage = ""):
 			return
 	except:
 		dbg.log("[-] Unable to check latest version (download error). Try again later",highlight=1)
-		dbg.log("    Meanwhile, please check/confirm that you're running a recent version of python 2.7 (2.7.14 or higher)", highlight=1)
 		return
 	#check versions
 	doupdate = False
