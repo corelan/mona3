@@ -292,10 +292,10 @@ memProtConstants["WC"] = ["PAGE_WRITECOMBINE",0x400]
 def dbgp(s):
 	# print debug information
 	try:
-		print("[MONA DEBUG] %s" % s)
+		print("[MONA DEBUG] %s - %s" % (get_current_datetime(),s))
 	except Exception as e:
-		print("[MONA DEBUG - error] %s" % str(e))
-		pass
+		print("[MONA DEBUG - error] %s - %s" % (get_current_datetime(), str(e)))
+		pass	
 
 def resetGlobals():
 	"""
@@ -329,6 +329,10 @@ def get_script_name():
     if len(sys.argv) > 0:
         return os.path.splitext(os.path.basename(sys.argv[0]))[0]
     return "unknown"
+
+
+def get_current_datetime():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_current_function_name():
@@ -3146,6 +3150,9 @@ class MnModule:
 					pass
 				# merge
 				dbg.log("    Enumerating IAT, method 2 (read strings)")
+				if DEBUG_MODE:
+					dbgp("Current number of IAT entries found: %d" % len(IAT))
+					dbgp("Reading strings in Import table now...")
 				# find optional header
 				PEHeader_ref = self.moduleBase + 0x3c
 				PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
@@ -3180,14 +3187,22 @@ class MnModule:
 										thisfuncfullname =  "." + imagename + "!" + eatlist[iatEntry]	
 										thisfuncname = thisfuncfullname.split('.')
 										IAT[thisloc] = thisfuncname[1].strip(">")
+										if DEBUG_MODE:
+											dbgp("Update type1 -  IAT[0x%x] to %s" % (thisloc,IAT[thisloc] ))
 									else:
 										IAT[thisloc] = imagename + "!0x%08x" % iatEntry
+										if DEBUG_MODE:
+											dbgp("Update type2 - IAT[0x%x] to %s" % (thisloc,IAT[thisloc] ))
 							else:	
 								IAT[thisloc] = thisfuncfullname.replace(".","!")
+								if DEBUG_MODE:
+									dbgp("Update type3 - IAT[0x%x] to %s" % (thisloc,IAT[thisloc] ))
 						iatcnt += 1
-				
+				if DEBUG_MODE:
+					dbgp("Current number of IAT entries found: %d" % len(IAT))
+
 				if len(IAT) == 0:
-					#another search method, not accurate, but will find *something*
+					#another search method, not accurate, but might find *something*
 					dbg.log("    Enumerating IAT, method 3 (getFunctionCalls)")
 					funccalls = self.getFunctionCalls()
 					for functype in funccalls:
@@ -3212,9 +3227,9 @@ class MnModule:
 											if iatptr in eatlist:
 												thisfuncfullname =  "." + imagename + "!" + eatlist[iatptr]
 										if thisfuncfullname == ofullname:
-											tparts = thisfuncfullname.split('.')
-											thisfuncfullname = tparts[0] + (".%08x" % iatptr)
-									thisfuncname = thisfuncfullname.split('.')
+											tparts = thisfuncfullname.split('!')
+											thisfuncfullname = tparts[0] + ("!%08x" % iatptr)
+									thisfuncname = thisfuncfullname.split('!')
 									IAT[ptr] = thisfuncname[1].strip(">")
 									
 				self.IAT = IAT
@@ -11735,7 +11750,7 @@ def args2criteria(args,modulecriteria,criteria):
 
 	thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
 	thisversion = thisversion.replace("'","")
-	dbg.logLines("\n---------- Mona command started on %s (v%s, rev %s) %sbit ----------" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),thisversion,thisrevision, arch))
+	dbg.logLines("\n---------- Mona command started on %s (v%s, rev %s) %sbit ----------" % (get_current_datetime(),thisversion,thisrevision, arch))
 	dbg.log("[+] Processing arguments and criteria")
 	global ptr_to_get
 	
@@ -11897,7 +11912,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 			else:
 				funcs = tmod.getIAT()
 			if not silent:
-				dbg.log("      Total nr of %sed functions : %d" % (type,len(funcs)))
+				dbg.log("      Total nr of %sed functions in %s: %d" % (type, thismodule, len(funcs)))
 			for func in funcs:
 				if meetsCriteria(MnPointer(func), criteria):
 					funcname = funcs[func].lower()
@@ -15845,17 +15860,17 @@ def procGetxAT(args,mode="",procUsage = ""):
 					theptr = struct.unpack('<L',dbg.readMemory(thisfunc,4))[0]
 					ptrx = MnPointer(theptr)
 					iatptr_modname = ptrx.belongsTo()
-					if not iatptr_modname == "" and "." in iatptr_modname:
-						iatptr_modparts = iatptr_modname.split(".")
+					if not iatptr_modname == "" and "!" in iatptr_modname:
+						iatptr_modparts = iatptr_modname.split("!")
 						iatptr_modname = iatptr_modparts[0]
-					if not "." in origfuncname and iatptr_modname != "" and not "!" in origfuncname:
-						origfuncname = iatptr_modname.lower() + "." + origfuncname
+					if not "!" in origfuncname and iatptr_modname != "":
+						origfuncname = iatptr_modname.lower() + "!" + origfuncname
 						thisfuncname = origfuncname
 						
-					if "!" in origfuncname:
-						oparts = origfuncname.split("!")
-						origfuncname = iatptr_modname + "." + oparts[1]
-						thisfuncname = origfuncname
+					#if "!" in origfuncname:
+					#	oparts = origfuncname.split("!")
+					#	origfuncname = iatptr_modname + "." + oparts[1]
+					#	thisfuncname = origfuncname
 
 					try:
 						ModObj = MnModule(iatptr_modname)
@@ -19843,6 +19858,7 @@ def main(args):
 		delta = endtime - starttime
 		dbg.log("")
 		dbg.log("[+] This mona.py action took %s" % str(delta))	
+		dbg.log("    Current date/time: %s" % get_current_datetime())
 		dbg.setStatusBar("Done")
 				
 	except:

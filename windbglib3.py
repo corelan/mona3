@@ -48,6 +48,7 @@ import array
 import re
 import inspect
 import sys
+import datetime
 
 DEBUG_MODE = False
 
@@ -65,12 +66,14 @@ global PageSections
 global ModuleCache
 global cpebaddress
 global PEBModList
+global FuncCache
 
 arch = 32
 cpebaddress = 0
 
 PageSections = {}
 ModuleCache = {}
+FuncCache = {}
 PEBModList = {}
 
 Registers32BitsOrder = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"]
@@ -93,10 +96,13 @@ def set_debug_mode(enabled):
 def dbgp(s):
 	# print debug information
 	try:
-		print("[WINDBGLIB DEBUG] %s" % s)
+		print("[WINDBGLIB DEBUG] %s - %s" % (get_current_datetime(),s))
 	except Exception as e:
-		print("[WINDBGLIB DEBUG - error] %s" % str(e))
+		print("[WINDBGLIB DEBUG - error] %s - %s" % (get_current_datetime(), str(e)))
 		pass
+
+def get_current_datetime():
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def get_current_function_name():
 
@@ -177,7 +183,7 @@ def getNtHeaders(modulebase):
 
 	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_DOS_HEADER.html
 	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_NT_HEADERS.html
-	if getArchitecture() == 64:
+	if arch == 64:
 		ntheaders = "_IMAGE_NT_HEADERS64"
 	else:
 		ntheaders = "_IMAGE_NT_HEADERS"
@@ -2596,22 +2602,20 @@ class Debugger:
 			#	thismod = pykd.module(str(imagename))
 
 			if DEBUG_MODE:
-				dbgp("   Getting module properties (name, start, end, size, etc)")
+				dbgp("    Getting module properties (name, start, end, size, etc)")
+			
 			thisimagename = thismod.image()
-			if DEBUG_MODE:
-				dbgp("    image: %s" % thisimagename)
 			thismodname = thismod.name()
-			if DEBUG_MODE:
-				dbgp("    name: %s" % thismodname)
 			thismodbase = thismod.begin()
-			if DEBUG_MODE:
-				dbgp("    begin: 0x%08x" % thismodbase)
 			thismodsize = thismod.size()
-			if DEBUG_MODE:
-				dbgp("    size: 0x%08x" % thismodsize)
 			thismodpath = thismod.image()
+
 			if DEBUG_MODE:
-				dbgp("    path: %s" % thismodpath)
+				dbgp("    - image: %s" % thisimagename)
+				dbgp("   - name: %s" % thismodname)
+				dbgp("    - begin: 0x%08x" % thismodbase)
+				dbgp("    - size: 0x%08x" % thismodsize)
+				dbgp("    - path: %s" % thismodpath)				
 
 			try:
 				if DEBUG_MODE:
@@ -2637,7 +2641,7 @@ class Debugger:
 			preferredbase = getImageBaseOnDisk(fullpath)
 			entrypoint = ntHeader.OptionalHeader.AddressOfEntryPoint
 			codebase = ntHeader.OptionalHeader.BaseOfCode
-			if getArchitecture() == 64:
+			if arch == 64:
 				database = 0
 			else:
 				database = ntHeader.OptionalHeader.BaseOfData
@@ -2958,6 +2962,7 @@ class Debugger:
 		except:
 			return ""
 
+
 # other classes
 
 class wtable:
@@ -3065,13 +3070,57 @@ class wmodule:
 	def getDatabase(self):
 		return self.database
 
+	def addressToSymbol(self, address):
+		# use a WinDBG command to force a symbol lookup for an address
+		# need double %% to avoid it is seen as format for python.
+		global FuncCache
+
+		if address in FuncCache:
+			if FuncCache[address] != "":
+				if DEBUG_MODE:
+					dbgp("Returning symbol from cache. 0x%x = %s" % (address, FuncCache[address]))
+				return FuncCache[address]
+		else:
+
+			cmd2run = '.printf "%y", 0x{0:x}'.format(address)
+
+			if DEBUG_MODE:
+				dbgp("Running %s" % cmd2run)
+			output = pykd.dbgCommand(cmd2run)
+			if not output:
+					return ""
+
+			output = output.strip()
+
+			# If WinDBG reports an offset, such as module!func+0x12,
+			# then we don't want to return the full symbol name
+			if "+" in output:
+				return ""
+
+			# Extract everything before the final " (address)"
+			# Example:
+			#   KERNELBASE!AreFileApisANSI (75a17cc0)
+			m = re.match(r'^(.*?)\s+\([0-9A-Fa-f`]+\)$', output)
+			if m:
+				if not address in FuncCache:
+					FuncCache[address] = m.group(1).strip()
+				return m.group(1).strip()
+		return ""
+
+
 	def getSymbols(self):
 		# enumerate IAT and EAT and put into a symbol object
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())		
+			dbgp("Getting symbols for module: %s" % self.modname)		
 		ntHeader = getNtHeaders(self.modbase)
 		pSize = 4
 		if arch == 64:
 			pSize = 8
 		iatlist = self.getIATList(ntHeader,pSize)
+		if DEBUG_MODE:
+			dbgp("iatlist has %d elements" % len(iatlist))
+
 		symbollist = {}
 		for iatEntry in iatlist:
 			iatEntryAddress = iatEntry
@@ -3080,32 +3129,67 @@ class wmodule:
 			symbollist[iatEntryAddress] = sym 
 
 		eatlist = self.getEATList(ntHeader,pSize)
+		if DEBUG_MODE:
+			dbgp("eatlist has %d elements" % len(eatlist))
+
 		for eatEntry in eatlist:
 			eatEntryName = eatEntry
 			eatEntryAddress = eatlist[eatEntry]
 			sym = wsymbol("Export", eatEntryAddress, eatEntryName)
 			symbollist[eatEntryAddress] = sym
+
+		if DEBUG_MODE:
+			dbgp("returning symbollist, %d elements" % len(symbollist))
+		
 		return symbollist
 
 	def getIATList(self,ntHeader, pSize):
 		# If Import Address Table Directory (DataDirectory[12]) is set this will work.
 		# The fallback case of Import Directory (DataDirectory[1]) will produce garbage.
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+			dbgp("Current module: %s" % self.modname)		
 		iatlist = {}
 		iatdir = ntHeader.OptionalHeader.DataDirectory[12]
 		if iatdir.Size == 0:
 			iatdir = ntHeader.OptionalHeader.DataDirectory[1]
+		if DEBUG_MODE:
+			dbgp("iatdir size: %d" % iatdir.Size)
 		if iatdir.Size > 0:
 			iatAddr = self.modbase + iatdir.VirtualAddress
-			for i in range(0, iatdir.Size // pSize):
-				iatEntry = pykd.ptrPtr(iatAddr + i*pSize)
-				if iatEntry != None and iatEntry != 0:
-					symbolName = pykd.findSymbol(iatEntry)
-					if "!" in symbolName:
-						iatlist[iatAddr + i*pSize] = symbolName
+			if DEBUG_MODE:
+				dbgp("iatAddr: 0x%x" % iatAddr)
+				dbgp("  iat processing range: 0 - %d " % (iatdir.Size // pSize))
+
+			maxnr = iatdir.Size // pSize
+			for i in range(0, maxnr):
+				try:
+					iatEntry = pykd.ptrPtr(iatAddr + i*pSize)
+					if iatEntry != None and iatEntry != 0:
+						if DEBUG_MODE:
+							dbgp("Symbol lookup via printf, for 0x%x (%d / %d)" % (iatEntry, i, maxnr))
+						symbolName = self.addressToSymbol(iatEntry)
+						if symbolName == "":
+							if DEBUG_MODE:
+								dbgp("pykd.findSymbol for 0x%x (%d / %d)" % (iatEntry, i, maxnr))
+							symbolName = pykd.findSymbol(iatEntry)
+						if DEBUG_MODE:
+							dbgp("Symbol: %s" % symbolName)
+						if "!" in symbolName:
+							iatlist[iatAddr + i*pSize] = symbolName
+				except Exception as e:
+					if DEBUG_MODE:
+						dbgp("Error while getting IAT: %s" % str(e))
+						dbgp(traceback.format_exc())
+					continue
 		return iatlist
-					
+
+
 	def getEATList(self,ntHeader, pSize):
 		# http://www.pinvoke.net/default.aspx/Structures.IMAGE_EXPORT_DIRECTORY
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+			dbgp("Current module: %s" % self.modname)		
 		eatlist = {}
 		if ntHeader.OptionalHeader.DataDirectory[0].Size > 0:
 			eatAddr = self.modbase + ntHeader.OptionalHeader.DataDirectory[0].VirtualAddress
@@ -3323,29 +3407,82 @@ class Function:
 		self.obj = obj
 
 	def getName(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 		modname = "unknown"
 		funcname = "unknown"
-		# get module this address belongs to
-		self.function_allmodules = self.obj.getAllModules()
-		for objmod in self.function_allmodules:
-			thismod = self.function_allmodules[objmod]
-			startaddress = thismod.getBaseAddress()
-			size = thismod.getSize()
-			endaddress = startaddress + size
-			if self.address >= startaddress and self.address <= endaddress:
-				modname = thismod.getName().lower()
-				syms = thismod.getSymbols()
-				for sym in syms:
-					if syms[sym].getType().startswith("Export"):
-						eatsym = syms[sym]
-						if eatsym.getAddress() == self.address:
-							funcname = eatsym.getName()
-							break
-		thename = "%s.%s" % (modname,funcname)
+		symname = self.addressToSymbol()
+		if DEBUG_MODE:
+			dbgp("Symname: %s" % symname)
+		if symname == "":
+			# get module this address belongs to
+			self.function_allmodules = self.obj.getAllModules()
+			for objmod in self.function_allmodules:
+				thismod = self.function_allmodules[objmod]
+				startaddress = thismod.getBaseAddress()
+				size = thismod.getSize()
+				endaddress = startaddress + size
+				if self.address >= startaddress and self.address <= endaddress:
+					modname = thismod.getName().lower()
+					syms = thismod.getSymbols()
+					for sym in syms:
+						if syms[sym].getType().startswith("Export"):
+							eatsym = syms[sym]
+							if eatsym.getAddress() == self.address:
+								funcname = eatsym.getName()
+								break
+		else:
+			if DEBUG_MODE:
+				dbgp("Splitting module & symbol name")
+			if "!" in symname:
+				symname.split("!")
+				if len(symname) > 1:
+					funcname = symname[1]
+			if DEBUG_MODE:
+				dbgp("Function name: %s" % funcname)
+		thename = "%s!%s" % (modname,funcname)
+		if DEBUG_MODE:
+			dbgp("Full name for 0x%x = %s" % (self.address, thename))
 		return thename
 
 	def hasAddress(self):
 		return False
+	
+	def addressToSymbol(self):
+		global FuncCache
+
+		if self.address in FuncCache:
+			if FuncCache[self.address] != "":
+				if DEBUG_MODE:
+					dbgp("Returning symbol from cache. 0x%x = %s" % (self.address, FuncCache[self.address]))
+				return FuncCache[self.address]
+		else:
+
+			cmd2run = '.printf "%y", 0x{0:x}'.format(self.address)
+
+			if DEBUG_MODE:
+				dbgp("Running %s" % cmd2run)
+			output = pykd.dbgCommand(cmd2run)
+			if not output:
+					return ""
+
+			output = output.strip()
+
+			# If WinDBG reports an offset, such as module!func+0x12,
+			# then we don't want to return the full symbol name
+			if "+" in output:
+				return ""
+
+			# Extract everything before the final " (address)"
+			# Example:
+			#   KERNELBASE!AreFileApisANSI (75a17cc0)
+			m = re.match(r'^(.*?)\s+\([0-9A-Fa-f`]+\)$', output)
+			if m:
+				if not self.address in FuncCache:
+					FuncCache[self.address] = m.group(1).strip()
+				return m.group(1).strip()
+		return ""
+
 
 class opcode:
 
