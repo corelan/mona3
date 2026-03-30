@@ -2542,6 +2542,8 @@ class MnConfig:
 		if DEBUG_MODE:
 			dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
 
+		# if it's not, and configFileCache is not empty, don't read the file.
+
 		if parameter.strip().lower() in configFileCache:
 			toreturn = configFileCache[parameter.strip().lower()]
 			if DEBUG_MODE:
@@ -2549,50 +2551,56 @@ class MnConfig:
 			#dbg.log("Found parameter %s in cache: %s" % (parameter, toreturn))
 		else:
 			if DEBUG_MODE:
-				dbgp("    No, reading from file %s" % self.configfile)
-			if os.path.exists(self.configfile):
-				try:
-					configfileobj = open(self.configfile,"rb")
-					content = configfileobj.readlines()
-					configfileobj.close()
-					if DEBUG_MODE:
-						dbgp("    Reading content line by line")
-					for thisLine in content:
-						thisLine = thisLine.decode("latin-1").strip()
+				dbgp("    Not in cache.")
+			if len(configFileCache) == 0 or not parameter.strip().lower() in configFileCache:
+				if os.path.exists(self.configfile):
+					try:
+						configfileobj = open(self.configfile,"rb")
+						content = configfileobj.readlines()
+						configfileobj.close()
 						if DEBUG_MODE:
-							dbgp("    Line: %s" % thisLine)
-						if not thisLine[0].startswith("#"):
-							currparam = thisLine.split("=")
+							dbgp("    Reading content line by line")
+						for thisLine in content:
+							thisLine = thisLine.decode("latin-1").strip()
 							if DEBUG_MODE:
-								dbgp("          Elements: %s" % currparam)
-								dbgp("          Found parameter: %s" % currparam[0].strip().lower())
-								dbgp("          Looking for parameter: %s" % parameter.strip().lower())
-							if currparam[0].strip().lower() == parameter.strip().lower() and len(currparam) > 1:
-								#get value
+								dbgp("    Line: %s" % thisLine)
+							if not thisLine.startswith("#"):
+
+								thisparam, thisvalue = thisLine.split('=', 1)
+								# strip spaces around both
+								thisparam = thisparam.strip().lower()
+								thisvalue = thisvalue.strip().lower().replace("\n","").replace("\r","")
+
 								if DEBUG_MODE:
-									dbgp("          Parameter found!")
-								currvalue = ""
-								i=1
-								while i < len(currparam):
-									currvalue = currvalue + currparam[i] + "="
-									i += 1
-								toreturn = currvalue.rstrip("=").replace("\n","").replace("\r","")
-								# drop into global cache for next time
-								configFileCache[parameter.strip().lower()] = toreturn
-								#dbg.log("Read parameter %s from file: %s" % (parameter, toreturn))
-								if DEBUG_MODE:
-									dbgp("Stored parameter %s with value %s in configFileCache %s" % (parameter.strip().lower(), toreturn, configFileCache))
-							else:
-								if DEBUG_MODE:
-									dbgp("          Skip, not the right parameter")
-				except Exception as e:
+									dbgp("          Found parameter: %s" % thisparam)
+									dbgp("          Looking for parameter: %s" % parameter.strip().lower())
+
+								if not thisparam in configFileCache:
+									configFileCache[thisparam] = thisvalue
+									if DEBUG_MODE:
+										dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
+
+								if thisparam == parameter.strip().lower():
+									#get value
+									if DEBUG_MODE:
+										dbgp("          Parameter found!")
+									toreturn = thisvalue
+								else:
+									if DEBUG_MODE:
+										dbgp("          Skip, not the right parameter")
+							
+
+					except Exception as e:
+						if DEBUG_MODE:
+							dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
+						toreturn=""
+				else:
 					if DEBUG_MODE:
-						dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
-					toreturn=""
+						dbgp("Config file %s does not seem to exist" % self.configfile)
 			else:
 				if DEBUG_MODE:
-					dbgp("Config file %s does not seem to exist" % self.configfile)
-		
+					dbgp("Not reading config file, it has been processed already before. It contains %d entries" % len(configFileCache))
+	
 		return toreturn
 	
 	def set(self,parameter,paramvalue):
@@ -5481,17 +5489,17 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 				page_size = dbg.MemoryPages[a].getSize()
 				page_end   = a + page_size
 
-				if DEBUG_MODE:
-					dbgp("    Validating candidate page 0x%08x - 0x%08x" % (page_start, page_end))
+				#if DEBUG_MODE:
+				#	dbgp("    Validating candidate page 0x%08x - 0x%08x" % (page_start, page_end))
 				
 				if ( start > page_end or end < page_start ):
 					# we are outside the search range, skip
-					if DEBUG_MODE:
-						dbgp("      - Page is outside of search range, skipping")
+					#if DEBUG_MODE:
+					#	dbgp("      - Page is outside of search range, skipping")
 					continue
 				if (not meetsAccessLevel(dbg.MemoryPages[a],criteria["accesslevel"])):
-					if DEBUG_MODE:
-						dbgp("      - Page does not have required access level")
+					#if DEBUG_MODE:
+					#	dbgp("      - Page does not have required access level")
 					#skip this page, not executable
 					continue
 					
@@ -6620,6 +6628,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	Return:
 	Output is written to files, containing rop gadgets, suggestions, stack pivots and virtualprotect/virtualalloc routine (if possible)
 	"""
+
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	
 	found_opcodes = {}
 	all_opcodes = {}
