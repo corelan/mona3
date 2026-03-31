@@ -2743,22 +2743,26 @@ class Debugger:
 			lineindex = len(disasmLines)-1
 			if lineindex > -1:
 				asmline = disasmLines[lineindex]
-				pointer = asmline[0:8] if arch == 32 else asmline.replace('`', '')[0:16]
+				pointer_str = asmline[0:8] if arch == 32 else asmline.replace('`', '')[0:16]
+				pointer = int(pointer_str, 16)
 				if pointer > address:
-					return self.getOpcode(hexStrToInt(pointer))
+					return self.getOpcode(pointer)
 				else:
 					return self.getOpcode(address)
 			else:
 				return self.getOpcode(address)
-		except:
+		except Exception as e:
 			# probably invalid instruction, so fake by returning itself
 			# caller should check if address is different than what was provided
+			if DEBUG_MODE:
+				dbgp("Error disasmForward for 0x%x: %s" % (address, str(e)))
+				dbgp(traceback.format_exc())
 			return self.getOpcode(address)
 
 
 	def disasmForwardAddressOnly(self,address,depth):
-		# go to correct location
-		return self.disasmForward(address,depth).getAddress()
+		# go to correct location, get address of depth+1 positions after current address
+		return self.disasmForward(address,depth+1).getAddress()
 
 	def disasmBackward(self,address,depth):
 		while True:
@@ -3587,7 +3591,7 @@ class opcode:
 						cnt += 1
 					self.instruction = self.instruction+ instructionparts[len(instructionparts)-1].strip("H")
 			self.dump = self.instruction
-			return self.instruction
+		return self.instruction
 
 	def parseDisasm(self, disasmdata):
 		if arch == 32:

@@ -1076,7 +1076,7 @@ def toJavaScript(input):
 	"""
 	alllines = input.split("\n")
 	javascriptversion = ""
-	allbytes = ""
+	allbytes = b""
 	for eachline in alllines:
 		thisline = eachline.replace("\t","").lower().strip()
 		if not(thisline.startswith("#")):
@@ -6830,10 +6830,14 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 
 					# we now have a range to mine
 					startptr = thisptr
+					if DEBUG_MODE:
+						dbgp("Create & check all possible chains in range between 0x%x and 0x%x" % (startptr, endingtypeptr))
 					currentmodulename = MnPointer(thisptr).belongsTo()
 					modinfo = MnModule(currentmodulename)
 					issafeseh = modinfo.isSafeSEH
+
 					while startptr <= endingtypeptr and startptr != 0x0:
+
 						# get the entire chain from startptr to endingtypeptr
 						try:
 							thischain = ""
@@ -6855,12 +6859,17 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											thischain =  thischain + " # " + thisinstruction
 											msfchain.append([chainptr,thisinstruction])
 											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
+											if DEBUG_MODE:
+												dbgp("Current position: 0x%x" % chainptr)
 											chainptr = dbg.disasmForwardAddressOnly(chainptr,1)
+											if DEBUG_MODE:
+												dbgp("Next position: 0x%x" % chainptr)
 										else:
 											invalidinstr = True
 										avoidunlimitedloop += 1
-										#if DEBUG_MODE:
-										#	dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
+									if DEBUG_MODE:
+										dbgp("Chain at 0x%x, Invalidinstr: %s, chain %s" % (startptr,invalidinstr, thischain))	
+										dbgp("endingtypeptr 0x%x, chainptr 0x%x" % (endingtypeptr, chainptr))				
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
 											fullchain = thischain + " # " + endingtype
@@ -10674,7 +10683,8 @@ def getShortestGadget(chaintypedict):
 	thischaindict = chaintypedict.copy()
 	#shuffle dict so returning ptrs would be different each time
 	while thischaindict:
-		typeptr, thisinstr = random.choice(thischaindict.items())
+		typeptr, thisinstr = random.choice(list(thischaindict.items()))
+
 		if thisinstr.startswith("# XOR") or thisinstr.startswith("# OR") or thisinstr.startswith("# AD"):
 			thisinstr += "     "	# make sure we don prefer MOV or XCHG
 		thiscount = thisinstr.count("#")
