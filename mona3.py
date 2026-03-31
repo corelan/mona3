@@ -157,7 +157,6 @@ import pickle
 import json
 import math
 import argparse
-import time
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -293,9 +292,9 @@ memProtConstants["WC"] = ["PAGE_WRITECOMBINE",0x400]
 def dbgp(s):
 	# print debug information
 	try:
-		print("[MONA DEBUG] %s | %s" % (get_current_datetime(),s))
+		print("[MONA DEBUG] %s - %s" % (get_current_datetime(),s))
 	except Exception as e:
-		print("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
+		print("[MONA DEBUG - error] %s - %s" % (get_current_datetime(), str(e)))
 		pass	
 
 def resetGlobals():
@@ -626,7 +625,7 @@ def getFunctionName(addy):
 	return fname,foffset
 
 
-def printDataArray(data,charsperline=16,prefix=b""):
+def printDataArray(data,charsperline=16,prefix=""):
 	maxlen = len(data)
 	charcnt = 0
 	charlinecnt = 0
@@ -672,7 +671,6 @@ def find_all_copies(tofind,data):
 
 def getAllStringOffsets(data,minlen,offsetstart = 0):
 	asciistrings = {}
-	data = ensure_text(data)
 	for match in re.finditer("(([\x20-\x7e]){%d,})" % minlen,data): 
 		thisloc = match.start() + offsetstart
 		thisend = match.end() + offsetstart
@@ -835,31 +833,28 @@ def bin2hexstr(binbytes):
 	"""
 	return ''.join('\\x%02x' % _ord(c) for c in binbytes)
 
-
 def str2js(inputstring):
 	"""
-	Converts a byte string to a javascript string
+	Converts a string to a javascript string
 	
 	Arguments:
-	inputstring - the input bytes to convert
+	inputstring - the input string to convert 
 
-	Return:
+	Return :
 	string in javascript format
 	"""
-	inputbytes = _to_bytes(inputstring)
-	length = len(inputbytes)
-
+	length = len(inputstring)
 	if length % 2 == 1:
 		jsmsg = "Warning : odd size given, js pattern will be truncated to " + str(length - 1) + " bytes, it's better use an even size\n"
 		if not silent:
-			dbg.logLines(jsmsg, highlight=1)
-
-	toreturn = ""
-	for i in range(0, length - 1, 2):
-		thisunibyte = "%02x%02x" % (_ord(inputbytes[i + 1]), _ord(inputbytes[i]))
+			dbg.logLines(jsmsg,highlight=1)
+	toreturn=""
+	for thismatch in re.compile("..").findall(inputstring):
+		thisunibyte = ""
+		for thisbyte in thismatch:
+			thisunibyte = "%02x" % _ord(thisbyte) + thisunibyte
 		toreturn += "%u" + thisunibyte
-
-	return toreturn
+	return toreturn		
 
 
 def readJSONDict(filename):
@@ -1079,7 +1074,7 @@ def toJavaScript(input):
 	"""
 	alllines = input.split("\n")
 	javascriptversion = ""
-	allbytes = b""
+	allbytes = ""
 	for eachline in alllines:
 		thisline = eachline.replace("\t","").lower().strip()
 		if not(thisline.startswith("#")):
@@ -2511,6 +2506,8 @@ class MnConfig:
 	Class to perform config file operations
 	"""
 	def __init__(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 	
 		global configwarningshown
 		self.configfile = "mona.ini"
@@ -2542,19 +2539,19 @@ class MnConfig:
 		curparam=[]
 		global configFileCache
 		#first check if parameter already exists in global cache
-		#if DEBUG_MODE:
-		#	dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
+		if DEBUG_MODE:
+			dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
 
 		# if it's not, and configFileCache is not empty, don't read the file.
 
 		if parameter.strip().lower() in configFileCache:
 			toreturn = configFileCache[parameter.strip().lower()]
-			#if DEBUG_MODE:
-			#	dbgp("    Yes: Result: %s" % toreturn)			
+			if DEBUG_MODE:
+				dbgp("    Yes: Result: %s" % toreturn)			
 			#dbg.log("Found parameter %s in cache: %s" % (parameter, toreturn))
 		else:
-			#if DEBUG_MODE:
-			#	dbgp("    Not in cache.")
+			if DEBUG_MODE:
+				dbgp("    Not in cache.")
 			if len(configFileCache) == 0:
 				if os.path.exists(self.configfile):
 					try:
@@ -2562,7 +2559,7 @@ class MnConfig:
 						content = configfileobj.readlines()
 						configfileobj.close()
 						if DEBUG_MODE:
-							dbgp("    Reading config content line by line")
+							dbgp("    Reading content line by line")
 						for thisLine in content:
 							thisLine = thisLine.decode("latin-1").strip()
 							if DEBUG_MODE:
@@ -2592,6 +2589,7 @@ class MnConfig:
 									if DEBUG_MODE:
 										dbgp("          Skip, not the right parameter")
 							
+
 					except Exception as e:
 						if DEBUG_MODE:
 							dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
@@ -2599,6 +2597,9 @@ class MnConfig:
 				else:
 					if DEBUG_MODE:
 						dbgp("Config file %s does not seem to exist" % self.configfile)
+			else:
+				if DEBUG_MODE:
+					dbgp("Not reading config file, it has been processed already before. It contains %d entries" % len(configFileCache))
 	
 		return toreturn
 	
@@ -5335,20 +5336,28 @@ def getSegmentsForHeap(heapbase):
 		segmentlistCache[heapbase] = segmentinfo
 		return segmentinfo
 
-def containsBadChars(address, badchars=b"\x0a\x0d"):
+def containsBadChars(address,badchars="\x0a\x0d"):
 	"""
 	checks if the address contains bad chars
+	
+	Arguments:
+	address  - the address
+	badchars - string with the characters that should be avoided (defaults to 0x0a and 0x0d)
+	
+	Return:
+	Boolean - True if badchars are found
 	"""
-
-	addrbytes = splitAddress(address)
-
-	# normalize badchars to a set of integer byte values
-	if isinstance(badchars, bytes):
-		badset = set(badchars) if PY3 else set(ord(b) for b in badchars)
-	else:
-		badset = set(_ord(b) for b in badchars)
-
-	return any(b in badset for b in addrbytes)
+	
+	bytes = splitAddress(address)
+	chars = []
+	for byte in bytes:
+		chars.append(chr(byte))
+	
+	# check each char
+	for char in chars:
+		if char in badchars:
+			return True			
+	return False
 
 
 def meetsCriteria(pointer,criteria):
@@ -5362,8 +5371,8 @@ def meetsCriteria(pointer,criteria):
 	Return:
 	Boolean - True if all the conditions are met
 	"""
-	#if DEBUG_MODE:
-	#	dbgp(get_current_function_name())
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	# Unicode
 	if "unicode" in criteria and not (pointer.isUnicode or pointer.unicodeTransform != ""):
 		return False
@@ -6437,10 +6446,6 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	Return:
 	Dictionary (pointers)
 	"""
-
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-
 	found_opcodes = {}
 	all_opcodes = {}
 	ptr_counter = 0
@@ -6492,12 +6497,9 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	# now query IATs
 	# dbg.log("%s" % modulecriteria)		
 	isrebased = False
-	nrkeys = len(modulestosearch)
-	keycnt = 1
 	for key in modulestosearch:
 		curmod = dbg.getModule(key)
-		dbg.log("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
-		keycnt += 1
+		dbg.log("Searching in IAT of %s" % key)
 		#is this module going to get rebase ?
 		themodule = MnModule(key)
 		isrebased = themodule.isRebase
@@ -6554,8 +6556,6 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 						ptr_counter += 1
 						if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
 							ropfuncs,ropfuncoffsets
-		keycnt += 1
-
 	return ropfuncs,ropfuncoffsets
 
 def assemble(instructions,encoder=""):
@@ -6607,53 +6607,6 @@ def assemble(instructions,encoder=""):
 	return allopcodes
 	
 
-def get_eta(startmoment, done, total):
-	"""
-	Returns ETA string or 'calculating eta...'
-	If remaining time < 10 minutes, also shows remaining duration.
-
-	Arguments:
-	startmoment - timestamp from time.time()
-	done        - number of items processed so far
-	total       - total number of items
-
-	Return:
-	string
-	"""
-
-	now = time.time()
-	elapsed = now - startmoment
-
-	if done <= 0 or elapsed <= 0:
-		return "calculating eta..."
-
-	rate = float(done) / elapsed
-	if rate <= 0:
-		return "calculating eta..."
-
-	remaining = total - done
-	if remaining <= 0:
-		return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
-
-	eta_seconds = remaining / rate
-	eta_time = now + eta_seconds
-
-	eta_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(eta_time))
-
-	# If less than 10 minutes remaining → add human-readable duration
-	if eta_seconds < 600:
-		secs = int(eta_seconds)
-		mins = secs // 60
-		secs = secs % 60
-
-		if mins > 0:
-			duration = "%dm %ds" % (mins, secs)
-		else:
-			duration = "%ds" % secs
-
-		return "%s (%s remaining)" % (eta_str, duration)
-
-	return eta_str
 
 
 	
@@ -6678,8 +6631,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	Return:
 	Output is written to files, containing rop gadgets, suggestions, stack pivots and virtualprotect/virtualalloc routine (if possible)
 	"""
-
-
 
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
@@ -6774,9 +6725,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				tp = tp + len(all_opcodes[endingtype])
 	global silent
 	if not usefiles:		
-		dbg.log("    - Filtering and mutating %d gadget endings" % tp)
+		dbg.log("    - Filtering and mutating %d gadgets" % tp)
 	else:
-		dbg.log("    - Categorizing %d gadget endings" % tp)
+		dbg.log("    - Categorizing %d gadgets" % tp)
 		silent = True
 	dbg.updateLog()
 	ropgadgets = {}
@@ -6794,7 +6745,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		updateth = 100
 	if DEBUG_MODE:
 		updateth = 50
-	startmoment = time.time()
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:
 			if DEBUG_MODE:
@@ -6803,33 +6753,16 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				adcnt=adcnt+1
 				if usefiles:
 					adcnt = adcnt - 0.5
-				done = tc * updateth
-				if adcnt > done:
-					thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
-					eta = get_eta(startmoment, done, tp)
-					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
-						done=done,
-						total=tp,
-						ts=thistimestamp,
-						pct=(done * 100.0) / tp,
-						eta=eta
-					)
-					ropcounttxt = "        Nr of gadgets so far: %d " % len(ropgadgets)
-
+				if adcnt > (tc*updateth):
+					thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+					updatetext = "      - Progress update : " + str(tc*updateth) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*updateth*100)/tp)+"%)"
 					objprogressfile.write(updatetext.strip(),progressfile)
-					objprogressfile.write(ropcounttxt.strip(),progressfile)
 					dbg.log(updatetext)
-					dbg.log(ropcounttxt)
 					dbg.updateLog()
-					if DEBUG_MODE:
-						dbgp("Number of ropgadgets: %d" % len(ropgadgets))
-						dbgp("Number of stackpivots: %d" % len(stackpivots))
-						dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
 					tc += 1				
 				if not usefiles:
 					#first get max backward instruction
 					#immlib libanalyze might blow up at (self.ip=opcode[0]  # Instruction pointer), so we have to catch exceptions here
-					thisptr = 0
 					try:
 						thisopcode = dbg.disasmBackward(endingtypeptr,depth+1)
 						thisptr = thisopcode.getAddress()
@@ -6842,78 +6775,62 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 
 					# we now have a range to mine
 					startptr = thisptr
-					if DEBUG_MODE:
-						dbgp("Create & check all possible chains in range between 0x%x and 0x%x" % (startptr, endingtypeptr))
 					currentmodulename = MnPointer(thisptr).belongsTo()
 					modinfo = MnModule(currentmodulename)
 					issafeseh = modinfo.isSafeSEH
-
 					while startptr <= endingtypeptr and startptr != 0x0:
-
 						# get the entire chain from startptr to endingtypeptr
 						try:
 							thischain = ""
 							msfchain = []
 							thisopcodebytes = ""
 							chainptr = startptr
-							if isGoodGadgetPtr(startptr,criteria): 
-								# only lookup if it's a good gadget
-								if not startptr in ropgadgets and not startptr in interestinggadgets:
+							if isGoodGadgetPtr(startptr,criteria) and not startptr in ropgadgets and not startptr in interestinggadgets:
+								#if DEBUG_MODE:
+								#	dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
+								invalidinstr = False
+								#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
+								avoidunlimitedloop = 0
+								while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
+									thisopcode = dbg.disasm(chainptr)
+									thisinstruction = getDisasmInstruction(thisopcode)
+									if isGoodGadgetInstr(thisinstruction) and not isGadgetEnding(thisinstruction,search):						
+										thischain =  thischain + " # " + thisinstruction
+										msfchain.append([chainptr,thisinstruction])
+										thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
+										chainptr = dbg.disasmForwardAddressOnly(chainptr,1)
+									else:
+										invalidinstr = True
+									avoidunlimitedloop += 1
 									#if DEBUG_MODE:
-									#	dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
-									invalidinstr = False
-									#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
-									avoidunlimitedloop = 0
-									while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
-										thisopcode = dbg.disasm(chainptr)
-										thisinstruction = getDisasmInstruction(thisopcode)
-										if isGoodGadgetInstr(thisinstruction) and not isGadgetEnding(thisinstruction,search):						
-											thischain =  thischain + " # " + thisinstruction
-											msfchain.append([chainptr,thisinstruction])
-											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
-											if DEBUG_MODE:
-												dbgp("Current position: 0x%x" % chainptr)
-											chainptr = dbg.disasmForwardAddressOnly(chainptr,1)
-											if DEBUG_MODE:
-												dbgp("Next position: 0x%x" % chainptr)
-										else:
-											invalidinstr = True
-										avoidunlimitedloop += 1
-									if DEBUG_MODE:
-										dbgp("Chain at 0x%x, Invalidinstr: %s, chain %s" % (startptr,invalidinstr, thischain))	
-										dbgp("endingtypeptr 0x%x, chainptr 0x%x" % (endingtypeptr, chainptr))				
-									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
-										if not startptr in ropgadgets:
-											fullchain = thischain + " # " + endingtype.upper()
-											msfchain.append([endingtypeptr,endingtype])
-											thisopcode = dbg.disasm(endingtypeptr)
-											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
-											msfchain.append(["raw",thisopcodebytes])
-											if isInterestingGadget(fullchain):
-												interestinggadgets[startptr] = fullchain
-												if DEBUG_MODE:
-													dbgp("Added 0x%08x to interestinggadgets %s" % startptr)
-												#this may be a good stackpivot too
-												stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
-												if stackpivotdistance > 0:
-													#safeseh or not ?
-													if issafeseh:
-														if not stackpivotdistance in stackpivots_safeseh:
-															stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
-														else:
-															stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
-													else:
-														if not stackpivotdistance in stackpivots:
-															stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
-														else:
-															stackpivots[stackpivotdistance] += [[startptr,fullchain]]
-													if DEBUG_MODE:
-														dbgp("Added 0x%08x to ropgadgets %s" % startptr)
-								
+									#	dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
+								if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
+									fullchain = thischain + " # " + endingtype
+									msfchain.append([endingtypeptr,endingtype])
+									thisopcode = dbg.disasm(endingtypeptr)
+									thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
+									msfchain.append(["raw",thisopcodebytes])
+									if isInterestingGadget(fullchain):
+										interestinggadgets[startptr] = fullchain
+										#this may be a good stackpivot too
+										stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
+										if stackpivotdistance > 0:
+											#safeseh or not ?
+											if issafeseh:
+												if not stackpivotdistance in stackpivots_safeseh:
+													stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
+												else:
+													stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
+											else:
+												if not stackpivotdistance in stackpivots:
+													stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
+												else:
+													stackpivots[stackpivotdistance] += [[startptr,fullchain]]								
+									else:
+										if not fast:
 											ropgadgets[startptr] = fullchain
 											if DEBUG_MODE:
-												dbgp("Added 0x%08x to ropgadgets %s" % startptr)
-
+												dbgp("Added 0x%08x to chain list: %s" % (startptr, fullchain))
 							startptr = startptr+1
 						except Exception as ropex:
 							dbgp("Error while looking for gadgets: %s" % str(ropex))
@@ -6955,15 +6872,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						step = -1
 					step += 1
 	
-	thistimestamp = datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+	thistimestamp = datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
 	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
 	dbg.updateLog()
-	if DEBUG_MODE:
-		dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
-		dbgp("Final Number of stackpivots: %d" % len(stackpivots))
-		dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
 
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
@@ -7028,8 +6941,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	logfile.write("", thislog)	
 	arrtowrite = ""	
 	pivotcount = 0
-	startmoment = time.time()
-	flipover = 0
 	try:
 		with open(thislog,"a") as fh:
 			arrtowrite = ""
@@ -7042,12 +6953,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 					pivotcount += 1
 					arrtowrite += ptrinfo
-				flipover += 1
-				if flipover > 20:
-					eta = get_eta(startmoment, pivotcount , len(stackpivots_index))
-					dbg.log("    Update: %s" % eta)
-					flipover = 0
-					
 			fh.writelines(arrtowrite)
 	except:
 		pass
@@ -7062,9 +6967,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	logfile.write("--------------------------",thislog)	
 	logfile.write("", thislog)	
 	arrtowrite = ""	
-	startmoment = time.time()
-	flipover = 0
-
 	try:
 		with open(thislog, "a") as fh:
 			arrtowrite = ""
@@ -7078,12 +6980,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] SafeSEH **   |  " + ptrx.__str__()+"\n"
 					pivotcount += 1
 					arrtowrite += ptrinfo
-				flipover += 1
-				if flipover > 20:
-					eta = get_eta(startmoment, pivotcount , len(stackpivots_safeseh_index))
-					dbg.log("    Update: %s" % eta)
-					flipover = 0
-
 			fh.writelines(arrtowrite)
 	except:
 		pass	
@@ -7114,9 +7010,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			try:
 				with open(thislog, "a") as fh:
 					arrtowrite = ""
-					flipover = 0
-					gcount = 0
-					startmoment = time.time()
 					if sortedprint:
 						arrptrs = []
 						dbg.log("    Sorting interesting gadgets first")
@@ -7130,12 +7023,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							#modinfo = MnModule(modname)
 							ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 							arrtowrite += ptrinfo
-							flipover += 1
-							gcount += 1
-							if flipover > 1000:
-								eta = get_eta(startmoment, gcount , len(ropgadgets))
-								dbg.log("    Update: %s" % eta)
-								flipover = 0	
 
 					else:
 						for gadget in interestinggadgets:
@@ -7144,12 +7031,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							#modinfo = MnModule(modname)
 							ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 							arrtowrite += ptrinfo
-							flipover += 1
-							gcount += 1
-							if flipover > 1000:
-								eta = get_eta(startmoment, gcount , len(ropgadgets))
-								dbg.log("    Update: %s" % eta)
-								flipover = 0
 					objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
 					fh.writelines(arrtowrite)
 				dbg.log("    Wrote %d interesting gadgets to file" % len(interestinggadgets))
@@ -7163,9 +7044,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					logfile.write("",thislog)
 					logfile.write("Other gadgets",thislog)
 					logfile.write("-------------",thislog)
-					startmoment = time.time()
-					flipover = 0
-					gcount = 0
 					with open(thislog, "a") as fh:
 						arrtowrite=""
 						if sortedprint:
@@ -7181,12 +7059,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								#modinfo = MnModule(modname)
 								ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 								arrtowrite += ptrinfo
-								flipover += 1
-								gcount += 1
-								if flipover > 500:
-									eta = get_eta(startmoment, gcount , len(ropgadgets))
-									dbg.log("    Update: %s" % eta)
-									flipover = 0	
 						else:	
 							for gadget in ropgadgets:
 								ptrx = MnPointer(gadget)
@@ -7194,12 +7066,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								#modinfo = MnModule(modname)
 								ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 								arrtowrite += ptrinfo
-								flipover += 1
-								gcount += 1
-								if flipover > 500:
-									eta = get_eta(startmoment, gcount , len(ropgadgets))
-									dbg.log("    Update: %s" % eta)
-									flipover = 0	
 
 						dbg.log("    Wrote %d other gadgets to file" % len(ropgadgets))
 						objprogressfile.write("Writing results to file " + thislog + " (" + str(len(ropgadgets))+" other gadgets)",progressfile)
@@ -7246,7 +7112,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 					with open(thislog, "a") as fh:
 						fh.write(ptrinfo)
-	thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+	thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
 	objprogressfile.write("Done (" + thistimestamp+")",progressfile)
 	dbg.log("Done")
 	return interestinggadgets,ropgadgets,suggestions,vplogtxt
@@ -7344,7 +7210,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 				if usefiles:
 					adcnt = adcnt - 0.5
 				if adcnt > (tc*1000):
-					thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+					thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
 					updatetext = "      - Progress update : " + str(tc*1000) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*1000*100)/tp)+"%)"
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
@@ -7388,7 +7254,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 									jopgadgets[startptr] = fullchain
 					startptr = startptr+1
 	
-	thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+	thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
 	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
@@ -8236,8 +8102,8 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 		for ranges in rangestosearch:
 			mBase = ranges[0]
 			mTop = ranges[1]
-			if DEBUG_MODE:
-				dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+			if not silent:
+				dbg.log("[+] Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 			dbg.updateLog()
 			searchPattern = []
 			searchPattern.append([originalPattern, bytes])
@@ -8358,8 +8224,8 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 				for ranges in p2prangestosearch:
 					mBase = ranges[0]
 					mTop = ranges[1]
-					if DEBUG_MODE:
-						dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+					if not silent:
+						dbg.log("[+] Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 					dbg.updateLog()
 					oldsilent = silent
 					silent=True
@@ -8377,9 +8243,9 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 							remainingpointers[ptrtype] = pointers[ptrtype]
 				thislevel += 1
 				if len(remainingpointers) == 0:
-					if DEBUG_MODE:
-						dbgp("[+] No more pointers left, giving up...", highlight=1)
-					break
+					if not silent:
+						dbg.log("[+] No more pointers left, giving up...", highlight=1)
+						break
 		allpointers = remainingpointers
 
 	return allpointers
@@ -9143,9 +9009,6 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	"""
 	Will attempt to produce ROP chains
 	"""
-
-	if DEBUG_MODE:
-		dbpg(get_current_function_name())
 	
 	global ptr_to_get
 	global ptr_counter
@@ -9298,7 +9161,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			if thisreg in replacelist:
 				thistarget = replacelist[thisreg]
 			
-			thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+			thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
 			dbg.log("    %s: Step %d/%d: %s" % (thistimestamp,stepcnt,len(routinedefs[routine]),thisreg))
 			stepcnt += 1
 
@@ -10125,10 +9988,6 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 	a pointer (integer value, 0 if no pointer was found)
 	text (with optional info)
 	"""
-
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-
 	global silent
 	oldsilent = silent
 	silent = True
@@ -10749,8 +10608,7 @@ def getShortestGadget(chaintypedict):
 	thischaindict = chaintypedict.copy()
 	#shuffle dict so returning ptrs would be different each time
 	while thischaindict:
-		typeptr, thisinstr = random.choice(list(thischaindict.items()))
-
+		typeptr, thisinstr = random.choice(thischaindict.items())
 		if thisinstr.startswith("# XOR") or thisinstr.startswith("# OR") or thisinstr.startswith("# AD"):
 			thisinstr += "     "	# make sure we don prefer MOV or XCHG
 		thiscount = thisinstr.count("#")
@@ -10922,8 +10780,8 @@ def readGadgetsFromFile(filename):
 	return readopcodes
 	
 def isGoodGadgetPtr(gadget,criteria):
-	#if DEBUG_MODE:
-	#	dbgp(get_current_function_name())
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	if gadget in CritCache:
 		return CritCache[gadget]
 	else:
@@ -12009,7 +11867,7 @@ def args2criteria(args,modulecriteria,criteria):
 			bpos += 2
 		badchars = newbadchars
 		cnt = 0
-		strb = b""
+		strb = ""
 		while cnt < len(badchars):
 			strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
 			cnt=cnt+2
@@ -13616,7 +13474,7 @@ def procByteArray(args, procUsage = ""):
 	cnt = 0
 	strb = b""
 	while cnt < len(badchars):
-		strb=strb+ensure_text(binascii.a2b_hex(badchars[cnt]+badchars[cnt+1]))
+		strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
 		cnt=cnt+2
 
 	dbg.log("Generating table, excluding %d bad chars..." % len(strb))
@@ -14030,15 +13888,15 @@ def procgetPC(args, procUsage = ""):
 #----- Egghunter -----#
 def procEgg(args, procUsage = ""):
 	filename = ""
-	egg = b"w00t"
+	egg = "w00t"
 	usechecksum = False
 	usewow64 = False
 	useboth = False
 	egg_size = 0
 	win_ver = "10"
 	win_vers = ["7","10"]
-	checksumbyte = b""
-	extratext = b""
+	checksumbyte = ""
+	extratext = ""
 	
 	global silent
 	oldsilent = silent
@@ -14068,7 +13926,7 @@ def procEgg(args, procUsage = ""):
 		useboth = True
 
 	if len(egg) != 4:
-		egg = "w00t"
+		egg = 'w00t'
 	dbg.log("[+] Egg set to %s" % egg)
 	
 	if "c" in args:
@@ -14097,33 +13955,33 @@ def procEgg(args, procUsage = ""):
 	# 2 : mov xL
 	# 3 : mov xH
 	#
-	regsx["eax"] = [b"\x66\xb8",b"\x66\x50",b"\xb0",b"\xb4"]
-	regsx["ebx"] = [b"\x66\xbb",b"\x66\x53",b"\xb3",b"\xb7"]
-	regsx["ecx"] = [b"\x66\xb9",b"\x66\x51",b"\xb1",b"\xb5"]
-	regsx["edx"] = [b"\x66\xba",b"\x66\x52",b"\xb2",b"\xb6"]
-	regsx["esi"] = [b"\x66\xbe",b"\x66\x56"]
-	regsx["edi"] = [b"\x66\xbf",b"\x66\x57"]
-	regsx["ebp"] = [b"\x66\xbd",b"\x66\x55"]
-	regsx["esp"] = [b"\x66\xbc",b"\x66\x54"]
+	regsx["eax"] = ["\x66\xb8","\x66\x50","\xb0","\xb4"]
+	regsx["ebx"] = ["\x66\xbb","\x66\x53","\xb3","\xb7"]
+	regsx["ecx"] = ["\x66\xb9","\x66\x51","\xb1","\xb5"]
+	regsx["edx"] = ["\x66\xba","\x66\x52","\xb2","\xb6"]
+	regsx["esi"] = ["\x66\xbe","\x66\x56"]
+	regsx["edi"] = ["\x66\xbf","\x66\x57"]
+	regsx["ebp"] = ["\x66\xbd","\x66\x55"]
+	regsx["esp"] = ["\x66\xbc","\x66\x54"]
 	
 	addreg = {}
-	addreg["eax"] = b"\x83\xc0"
-	addreg["ebx"] = b"\x83\xc3"			
-	addreg["ecx"] = b"\x83\xc1"
-	addreg["edx"] = b"\x83\xc2"
-	addreg["esi"] = b"\x83\xc6"
-	addreg["edi"] = b"\x83\xc7"
-	addreg["ebp"] = b"\x83\xc5"			
-	addreg["esp"] = b"\x83\xc4"
+	addreg["eax"] = "\x83\xc0"
+	addreg["ebx"] = "\x83\xc3"			
+	addreg["ecx"] = "\x83\xc1"
+	addreg["edx"] = "\x83\xc2"
+	addreg["esi"] = "\x83\xc6"
+	addreg["edi"] = "\x83\xc7"
+	addreg["ebp"] = "\x83\xc5"			
+	addreg["esp"] = "\x83\xc4"
 	
 	depdest = ""
 	depmethod = ""
 	
 	getpointer = ""
-	getsize = b""
-	getpc = b""
+	getsize = ""
+	getpc = ""
 	
-	jmppayload = b"\xff\xe7"	#jmp edi
+	jmppayload = "\xff\xe7"	#jmp edi
 	
 	if "depmethod" in args:
 		if args["depmethod"].lower() in depmethods:
@@ -14161,115 +14019,115 @@ def procEgg(args, procUsage = ""):
 
 			
 	#let's start		
-	egghunter = b""
+	egghunter = ""
 
 	if not usewow64:
 		#Basic version of egghunter
 		dbg.log("[+] Generating traditional 32bit egghunter code")
-		egghunter = b""
+		egghunter = ""
 		egghunter += (
-			b"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
-			b"\x42"+					#INC EDX
-			b"\x52"					#push edx
-			b"\x6a\x02"				#push 2	(NtAccessCheckAndAuditAlarm syscall)
-			b"\x58"					#pop eax
-			b"\xcd\x2e"				#int 0x2e 
-			b"\x3c\x05"				#cmp al,5
-			b"\x5a"					#pop edx
-			b"\x74\xef"				#je "or dx,0xfff"
-			b"\xb8"+egg+				#mov eax, egg
-			b"\x8b\xfa"				#mov edi,edx
-			b"\xaf"					#scasd
-			b"\x75\xea"				#jne "inc edx"
-			b"\xaf"					#scasd
-			b"\x75\xe7"				#jne "inc edx"
+			"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
+			"\x42"+					#INC EDX
+			"\x52"					#push edx
+			"\x6a\x02"				#push 2	(NtAccessCheckAndAuditAlarm syscall)
+			"\x58"					#pop eax
+			"\xcd\x2e"				#int 0x2e 
+			"\x3c\x05"				#cmp al,5
+			"\x5a"					#pop edx
+			"\x74\xef"				#je "or dx,0xfff"
+			"\xb8"+egg+				#mov eax, egg
+			"\x8b\xfa"				#mov edi,edx
+			"\xaf"					#scasd
+			"\x75\xea"				#jne "inc edx"
+			"\xaf"					#scasd
+			"\x75\xe7"				#jne "inc edx"
 		)
 		incedxoffset = 5 # The offset in the egghunter to reach the #INC EDX
 	if usewow64:
 		dbg.log("[+] Generating egghunter for wow64, Windows %s" % win_ver)
-		egghunter = b""
+		egghunter = ""
 		if win_ver == "7":
 			egghunter += (
 				# 64 stub needed before loop
-				b"\x31\xdb"                                      #xor ebx,ebx
-				b"\x53"                                          #push ebx
-				b"\x53"                                          #push ebx
-				b"\x53"                                          #push ebx
-				b"\x53"                                          #push ebx
-				b"\xb3\xc0"                                      #mov bl,0xc0
+				"\x31\xdb"                                      #xor ebx,ebx
+				"\x53"                                          #push ebx
+				"\x53"                                          #push ebx
+				"\x53"                                          #push ebx
+				"\x53"                                          #push ebx
+				"\xb3\xc0"                                      #mov bl,0xc0
 
 				# 64 Loop
-				b"\x66\x81\xCA\xFF\x0F"                          #OR DX,0FFF
-				b"\x42"                                          #INC EDX
-				b"\x52"                                          #PUSH EDX
-				b"\x6A\x26"                                      #PUSH 26 
-				b"\x58"                                          #POP EAX
-				b"\x33\xC9"                                      #XOR ECX,ECX
-				b"\x8B\xD4"                                      #MOV EDX,ESP
-				b"\x64\xff\x13"                                  #CALL DWORD PTR FS:[ebx]
-				b"\x5e"                                          #POP ESI
-				b"\x5a"                                          #POP EDX
-				b"\x3C\x05"                                      #CMP AL,5
-				b"\x74\xe9"                                      #JE SHORT
-				b"\xB8"+egg+                                     #MOV EAX,74303077 w00t
-				b"\x8B\xFA"                                      #MOV EDI,EDX
-				b"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
-				b"\x75\xe4"                                      #JNZ "inc edx"
-				b"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
-				b"\x75\xe1"                                      #JNZ "inc edx"
-				)
+				"\x66\x81\xCA\xFF\x0F"                          #OR DX,0FFF
+				"\x42"                                          #INC EDX
+				"\x52"                                          #PUSH EDX
+				"\x6A\x26"                                      #PUSH 26 
+				"\x58"                                          #POP EAX
+				"\x33\xC9"                                      #XOR ECX,ECX
+				"\x8B\xD4"                                      #MOV EDX,ESP
+				"\x64\xff\x13"                                  #CALL DWORD PTR FS:[ebx]
+				"\x5e"                                          #POP ESI
+				"\x5a"                                          #POP EDX
+				"\x3C\x05"                                      #CMP AL,5
+				"\x74\xe9"                                      #JE SHORT
+				"\xB8"+egg+                                     #MOV EAX,74303077 w00t
+				"\x8B\xFA"                                      #MOV EDI,EDX
+				"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+				"\x75\xe4"                                      #JNZ "inc edx"
+				"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+				"\x75\xe1"                                      #JNZ "inc edx"
+				"")
 			incedxoffset = 13 # The offset in the egghunter to reach the #INC EDX
 		elif win_ver == "10":
 			egghunter += (
 			# _start:
 				# "\x8c\xcb"            #MOV EBX,CS
 				# "\x80\xfb\x23"        #CMP BL,0x23
-				b"\x33\xD2"              #XOR EDX,EDX
+				"\x33\xD2"              #XOR EDX,EDX
 			# invalid_page:
-				b"\x66\x81\xCA\xFF\x0F"  #OR DX,0FFF
+				"\x66\x81\xCA\xFF\x0F"  #OR DX,0FFF
 			# valid_page:
-				b"\x33\xDB"              #XOR EBX,EBX
-				b"\x42"               	#INC EDX
-				b"\x53"               	#PUSH EBX
-				b"\x53"               	#PUSH EBX
-				b"\x52"               	#PUSH EDX
-				b"\x53"               	#PUSH EBX
-				b"\x53"               	#PUSH EBX
-				b"\x53"               	#PUSH EBX
-				b"\x6A\x29"            	#PUSH 29
-				b"\x58"               	#POP EAX
-				b"\xB3\xC0"            	#MOV BL,0C0
-				b"\x64\xFF\x13"          #CALL DWORD PTR FS:[EBX]
-				b"\x83\xC4\x0c"          #ADD ESP,0xc
-				b"\x5A"               	#POP EDX
-				b"\x83\xc4\x08"          #ADD ESP,0x8
-				b"\x3C\x05"            	#CMP AL,5
-				b"\x74\xDF"            	#JE SHORT invalid_page
-				b"\xB8" + egg +  		#MOV EAX,<tag>
-				b"\x8B\xFA"              #MOV EDI,EDX
-				b"\xAF"               	#SCAS DWORD PTR ES:[EDI]
-				b"\x75\xDA"            	#JNZ SHORT valid_page
-				b"\xAF"              	#SCAS DWORD PTR ES:[EDI]
-				b"\x75\xD7"    			#JNZ SHORT valid_page
+				"\x33\xDB"              #XOR EBX,EBX
+				"\x42"               	#INC EDX
+				"\x53"               	#PUSH EBX
+				"\x53"               	#PUSH EBX
+				"\x52"               	#PUSH EDX
+				"\x53"               	#PUSH EBX
+				"\x53"               	#PUSH EBX
+				"\x53"               	#PUSH EBX
+				"\x6A\x29"            	#PUSH 29
+				"\x58"               	#POP EAX
+				"\xB3\xC0"            	#MOV BL,0C0
+				"\x64\xFF\x13"          #CALL DWORD PTR FS:[EBX]
+				"\x83\xC4\x0c"          #ADD ESP,0xc
+				"\x5A"               	#POP EDX
+				"\x83\xc4\x08"          #ADD ESP,0x8
+				"\x3C\x05"            	#CMP AL,5
+				"\x74\xDF"            	#JE SHORT invalid_page
+				"\xB8" + egg +  		#MOV EAX,<tag>
+				"\x8B\xFA"              #MOV EDI,EDX
+				"\xAF"               	#SCAS DWORD PTR ES:[EDI]
+				"\x75\xDA"            	#JNZ SHORT valid_page
+				"\xAF"              	#SCAS DWORD PTR ES:[EDI]
+				"\x75\xD7"    			#JNZ SHORT valid_page
 				)
 			incedxoffset = 9 # The offset in the egghunter to reach the #INC EDX
 	if usechecksum:
 		dbg.log("[+] Generating checksum routine")
-		extratext = b"+ checksum routine"
-		egg_size = b""
+		extratext = "+ checksum routine"
+		egg_size = ""
 		if len(data) < 256:
-			cmp_reg = b"\x80\xf9"	#cmp cl,value
-			egg_size = _to_bytes(hex2bin("%02x" % len(data)))
-			offset1 = b"\xf7"
+			cmp_reg = "\x80\xf9"	#cmp cl,value
+			egg_size = hex2bin("%02x" % len(data))
+			offset1 = "\xf7"
 		elif len(data) < 65536:
-			cmp_reg = b"\x66\x81\xf9"	#cmp cx,value
+			cmp_reg = "\x66\x81\xf9"	#cmp cx,value
 			#avoid nulls
 			egg_size_normal = "%04X" % len(data)
 			while egg_size_normal[0:2] == "00" or egg_size_normal[2:4] == "00":
-				data += b"\x90"
+				data += "\x90"
 				egg_size_normal = "%04X" % len(data)
 			egg_size = hex2bin(egg_size_normal[2:4]) + hex2bin(egg_size_normal[0:2])
-			offset1 = b"\xf5"
+			offset1 = "\xf5"
 		else:
 			dbg.log("Cannot use checksum code with this payload size (way too big)",highlight=1)
 			return
@@ -14284,16 +14142,16 @@ def procEgg(args, procUsage = ""):
 		sizeOfChecksumRoutine = 15 # The number of static bytes in the checksum routine below
 		offset2 = shortJump(sizeOfjnzincedx, - (len(egghunter) - incedxoffset + sizeOfChecksumRoutine + len(cmp_reg) + len(egg_size)))
 		egghunter += (
-			b"\x51"						#push ecx
-			b"\x31\xc9"					#xor ecx,ecx
-			b"\x31\xc0"					#xor eax,eax
-			b"\x02\x04\x0f"				#add al,byte [edi+ecx]
-			b"\x41"+						#inc ecx
+			"\x51"						#push ecx
+			"\x31\xc9"					#xor ecx,ecx
+			"\x31\xc0"					#xor eax,eax
+			"\x02\x04\x0f"				#add al,byte [edi+ecx]
+			"\x41"+						#inc ecx
 			cmp_reg + egg_size +    	#cmp cx/cl, value
-			b"\x75" + offset1 +			#jnz "add al,byte [edi+ecx]
-			b"\x3a\x04\x39" +			#cmp al,byte [edi+ecx]
-			b"\x59" +					#pop ecx
-			b"\x75" + offset2			#jnz "inc edx"
+			"\x75" + offset1 +			#jnz "add al,byte [edi+ecx]
+			"\x3a\x04\x39" +			#cmp al,byte [edi+ecx]
+			"\x59" +					#pop ecx
+			"\x75" + offset2			#jnz "inc edx"
 		)		
 
 	#dep bypass ?
@@ -14311,8 +14169,8 @@ def procEgg(args, procUsage = ""):
 					getpointer += "mov " + freeregs[0] + "," + depdest + "#"
 					depdest = freeregs[0]
 			else:
-				getpc = b"\xd9\xee"			# fldz
-				getpc += b"\xd9\x74\xe4\xf4"	# fstenv [esp-0c]
+				getpc = "\xd9\xee"			# fldz
+				getpc += "\xd9\x74\xe4\xf4"	# fstenv [esp-0c]
 				depdest = freeregs[0]
 				getpc += hex2bin(assemble("pop "+depdest))
 			
@@ -14332,7 +14190,7 @@ def procEgg(args, procUsage = ""):
 		else:
 			if depsize <= 127:
 				#simply push it to the stack
-				getsize = b"\x6a" + hex2bin("\\x" + toHexByte(depsize))
+				getsize = "\x6a" + hex2bin("\\x" + toHexByte(depsize))
 			else:
 				#can we do it with 16bit reg, no nulls ?
 				if depsize <= 65535:
@@ -14380,28 +14238,28 @@ def procEgg(args, procUsage = ""):
 				
 		#finish it off
 		if depmethod == "virtualprotect":
-			jmppayload = b"\x54\x6a\x40"
+			jmppayload = "\x54\x6a\x40"
 			jmppayload += getsize
-			jmppayload += _to_bytes(hex2bin(assemble("#push edi#push edi#push "+depreg+"#ret")))
+			jmppayload += hex2bin(assemble("#push edi#push edi#push "+depreg+"#ret"))
 		elif depmethod == "copy":
-			jmppayload = _to_bytes(hex2bin(assemble("push edi\push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret")))
+			jmppayload = hex2bin(assemble("push edi\push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret"))
 		elif depmethod == "copy_size":
 			jmppayload += getsize
-			jmppayload += _to_bytes(hex2bin(assemble("push edi#push "+depdest+"#push " + depdest + "#push "+depreg+"#mov edi,"+depdest+"#ret")))
+			jmppayload += hex2bin(assemble("push edi#push "+depdest+"#push " + depdest + "#push "+depreg+"#mov edi,"+depdest+"#ret"))
 		
 
 	#jmp to payload
 	egghunter += getpc
 	egghunter += jmppayload
 	
-	startat = b""
-	skip = b""
+	startat = ""
+	skip = ""
 	
 	#start at a certain reg ?
 	if startreg != "":
 		if startreg != "edx":
 			startat = hex2bin(assemble("mov edx," + startreg))
-		skip = b"\xeb\x05"
+		skip = "\xeb\x05"
 	
 	egghunter = skip + egghunter
 	#pickup pointer for DEP bypass ?
@@ -14423,14 +14281,14 @@ def procEgg(args, procUsage = ""):
 	dbg.log("[+] Egghunter %s (%d bytes): " % (extratext, len(egghunter.strip().replace(b" ", b""))))
 	dbg.logLines("%s" % egghunter_hex)
 
-	objegghunterfile.write("Egghunter " + extratext + ", tag " + egg + " : ",egghunterfile)
+	objegghunterfile.write("Egghunter " + ensure_text(extratext) + ", tag " + ensure_text(egg) + " : ",egghunterfile)
 	objegghunterfile.write(egghunter_hex,egghunterfile)			
 
 	if filename == "":
-		objegghunterfile.write("Put this tag in front of your shellcode : " + egg + egg,egghunterfile)
+		objegghunterfile.write("Put this tag in front of your shellcode : " + ensure_text(egg) + ensure_text(egg),egghunterfile)
 	else:
 		dbg.log("[+] Shellcode, with tag : ")			
-		block = "\"" + egg + egg + "\"\n"
+		block = "\"" + ensure_text(egg) + ensure_text(egg) + "\"\n"
 		cnt = 0
 		flip = 1
 		thisline = "\""
@@ -19048,7 +18906,7 @@ def procHideDebug(args, procUsage = ""):
 		while a < 3:
 			a += 1
 			s += dbg.disasmSizeOnly(zwq + s).opsize
-		FakeCode = dbg.readMemory(zwq, 1) + b"\x78\x56\x34\x12" + dbg.readMemory(zwq + 5, 1)
+		FakeCode = dbg.readMemory(zwq, 1) + "\x78\x56\x34\x12" + dbg.readMemory(zwq + 5, 1)
 		if FakeCode == dbg.assemble("PUSH 0x12345678\nRET"):
 			isPatched = True
 			a = dbg.readLong(zwq+1)
