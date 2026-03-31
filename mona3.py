@@ -8382,81 +8382,6 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	return allpointers
 		
 
-# def compareFileWithMemory(filename,startpos,skipmodules=False,findunicode=False):
-# 	dbg.log("[+] Reading file %s..." % filename)
-# 	srcdata_normal=[]
-# 	srcdata_unicode=[]
-# 	tagresults=[]
-# 	criteria = {}
-# 	criteria["accesslevel"] = "*"
-# 	try:
-# 		srcfile = open(filename,"rb")
-# 		content = srcfile.readlines()
-# 		srcfile.close()
-# 		for eachLine in content:
-# 			srcdata_normal += eachLine
-# 		for eachByte in srcdata_normal:
-# 			eachByte+=struct.pack('B', 0)
-# 			srcdata_unicode += eachByte
-# 		dbg.log("    Read %d bytes from file" % len(srcdata_normal))
-# 	except:
-# 		dbg.log("Error while reading file %s" % filename, highlight=1)
-# 		return
-# 	# loop normal and unicode
-# 	comparetable=dbg.createTable('mona Memory comparison results',['Address','Status','BadChars','Type','Location'])	
-# 	modes = ["normal", "unicode"]
-# 	if not findunicode:
-# 		modes.remove("unicode")
-# 	objlogfile = MnLog("compare.txt")
-# 	logfile = objlogfile.reset()
-# 	for mode in modes:
-# 		if mode == "normal":
-# 			srcdata = srcdata_normal
-# 		if mode == "unicode":
-# 			srcdata = srcdata_unicode
-# 		maxcnt = len(srcdata)
-# 		if maxcnt < 8:
-# 			dbg.log("Error - file does not contain enough bytes (min 8 bytes needed)",highlight=1)
-# 			return
-# 		locations = []
-# 		if startpos == 0:
-# 			dbg.log("[+] Locating all copies in memory (%s)" % mode)
-# 			btcnt = 0
-# 			cnt = 0
-# 			linecount = 0
-# 			hexstr = ""
-# 			hexbytes = ""
-# 			for eachByte in srcdata:
-# 				if cnt < 8:
-# 					hexbytes += eachByte
-# 					if len((hex(_ord(srcdata[cnt]))).replace('0x',''))==1:
-# 						hexchar=hex(_ord(srcdata[cnt])).replace('0x', '\\x0')
-# 					else:
-# 						hexchar = hex(_ord(srcdata[cnt])).replace('0x', '\\x')
-# 					hexstr += hexchar					
-# 				cnt += 1
-# 			dbg.log("    - searching for "+hexstr)
-# 			global silent
-# 			silent = True
-# 			results = findPattern({},criteria,hexstr,"bin",0,TOP_USERLAND,False)
-
-# 			for type in results:
-# 				for ptr in results[type]:
-# 					ptrinfo = MnPointer(ptr).memLocation()
-# 					if not skipmodules or (skipmodules and (ptrinfo in ["Heap","Stack","??"])):
-# 						locations.append(ptr)
-# 			if len(locations) == 0:
-# 				dbg.log("      Oops, no copies found")
-# 		else:
-# 			startpos_fixed = startpos
-# 			locations.append(startpos_fixed)
-# 		if len(locations) > 0:
-# 			dbg.log("    - Comparing %d location(s)" % (len(locations)))
-# 			dbg.log("Comparing bytes from file with memory :")
-# 			for location in locations:
-# 				memcompare(location,srcdata,comparetable,mode, smart=(mode == 'normal'))
-# 		silent = False
-# 	return
 
 def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,findunicode=False):
 
@@ -8475,12 +8400,12 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 
 	#Class ported from https://github.com/mgeeky/expdevBadChars, author: mgeeky, Mariusz B.
 	#Ported by: onlylonly, Z.Y Liew
-	class BytesParser():
+	class BytesParser(object):
 		formats_rex = {
 			'xxd': r'^[^0-9a-f]*[0-9a-f]{2,}\:\s((?:[0-9a-f]{4}\s)+)\s+.+$',
 			'hexdump': r'^[^0-9a-f]*[0-9a-f]{2,}\s+([0-9a-f\s]+[0-9a-f])$',
-			'classic-hexdump':r'^[0-9a-f]*[0-9a-f]{2,}(?:\:|\s)+\s([0-9a-f\s]+)\s{2,}.+$',
-			'hexdump-C': r'^[0-9a-f]*[0-9a-f]{2,}\s+\s([0-9a-f\s]+)\s*\|', 
+			'classic-hexdump': r'^[0-9a-f]*[0-9a-f]{2,}(?:\:|\s)+\s([0-9a-f\s]+)\s{2,}.+$',
+			'hexdump-C': r'^[0-9a-f]*[0-9a-f]{2,}\s+\s([0-9a-f\s]+)\s*\|',
 			'escaped-hexes': r'^[^\'"]*((?:\'[\\\\x0-9a-f]{8,}\')|(?:"[\\\\x0-9a-f]{8,}"))',
 			'hexstring': r'^([0-9a-f]+)$',
 			'msfvenom-powershell': r'^[^0x]+((?:0x[0-9a-f]{1,2},?)+)$',
@@ -8488,43 +8413,58 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 			'js-unicode': r'^[^%u0-9a-f]*((?:%u[0-9a-f]{4})+)$',
 			'dword': r'^(?:((?:0x[0-9a-f]{1,8}\s[<>\w\+]+)|(?:0x[0-9a-f]{1,8})):\s*)?((?:0x[0-9a-f]{8},?\s*)+)$',
 		}
+
 		formats_aliases = {
 			'classic-hexdump': ['ollydbg'],
-			'escaped-hexes': ['msfvenom-ruby','msfvenom-c', 'msfvenom-carray', 'msfvenom-python'],
+			'escaped-hexes': ['msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'],
 			'dword': ['gdb']
 		}
+
 		formats_compiled = {}
 
-		def __init__(self, input, name = None, format = None):
-			#convert list to string
-			self.input = ''.join(input)
+		def __init__(self, input_data, name=None, format=None):
 			self.name = name
 			self.bytes = []
 			self.parsed = False
 			self.format = None
 
-			BytesParser.compile_regexps()
+			# Preserve raw input bytes, but also keep a text form for regex processing.
+			if isinstance(input_data, bytes):
+				self.input_bytes = input_data
+				self.input = _to_text(input_data)
+			elif isinstance(input_data, list):
+				# Supports old behavior where input may be a list of chars/strings/ints
+				tmp = []
+				for x in input_data:
+					if isinstance(x, int):
+						tmp.append(chr(x))
+					else:
+						tmp.append(_to_text(x))
+				self.input = ''.join(tmp)
+				self.input_bytes = _to_bytes(self.input)
+			else:
+				self.input = _to_text(input_data)
+				self.input_bytes = _to_bytes(self.input)
 
+			BytesParser.compile_regexps()
 
 			if format:
 				verbose("Using user-specified format: %s" % format)
-	
+
 				try:
 					self.format = BytesParser.interpret_format_name(format)
 				except Exception as e:
 					verbose(str(e))
 
-				#exit when user-specified format not in both formats_rex and formats_aliases 
-				assert (format in BytesParser.formats_rex.keys() or self.format is not None), \
-						"Format '%s' is not implemented." % format
-						
+				assert (format in BytesParser.formats_rex or self.format is not None or str(format).lower() == "raw"), \
+					"Format '%s' is not implemented." % format
+
 				if self.format is None:
 					self.format = format
-
 			else:
 				self.recognize_format()
 
-			#do not normalize input on raw format to prevent input tempering
+			# do not normalize input on raw format to prevent input tampering
 			if str(self.format).lower() != "raw":
 				self.normalize_input()
 
@@ -8542,16 +8482,23 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 							(self.name, self.format))
 
 		def normalize_input(self):
-			input = []
+			out = []
 			for line in self.input.split('\n'):
 				line = line.strip()
-				line2 = line.encode('string-escape')
-				input.append(line2)
-			self.input = '\n'.join(input)
+				line2 = BytesParser.escape_string(line)
+				out.append(line2)
+			self.input = '\n'.join(out)
+
+		@staticmethod
+		def escape_string(s):
+			# Python 2/3 compatible replacement for encode('string-escape')
+			if isinstance(s, bytes):
+				s = _to_text(s)
+			return s.encode('unicode_escape').decode('ascii')
 
 		@staticmethod
 		def interpret_format_name(name):
-			if str(format).lower() == "raw":
+			if str(name).lower() == "raw":
 				return "raw"
 
 			for k, v in BytesParser.formats_aliases.items():
@@ -8567,30 +8514,32 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 
 		@staticmethod
 		def make_line_printable(line):
+			if isinstance(line, bytes):
+				line = _to_text(line)
 			return ''.join([c if c in string.printable else '.' for c in line])
 
 		def recognize_format(self):
 			for line in self.input.split('\n'):
-				if self.format: break
-				for format, rex in BytesParser.formats_compiled.items():
-					line = BytesParser.make_line_printable(line)
+				if self.format:
+					break
+				for format_name, rex in BytesParser.formats_compiled.items():
+					line_printable = BytesParser.make_line_printable(line)
 
-					verbose("Trying format %s on ('%s')" % (format, line))
-					
-					if rex.match(line):
-						ok("%s has been recognized as %s formatted." % (self.name, format))
-						self.format = format
+					verbose("Trying format %s on ('%s')" % (format_name, line_printable))
+
+					if rex.match(line_printable):
+						ok("%s has been recognized as %s formatted." % (self.name, format_name))
+						self.format = format_name
 						break
 
 			if not self.format:
-				if not all(c in string.printable for c in self.input):
+				if not all(chr(_ord(c)) in string.printable for c in self.input_bytes):
 					ok("%s has been recognized as RAW bytes." % (self.name))
 					self.format = 'raw'
 					return True
 				else:
 					err("Could not recognize input bytes format of the %s!" % self.name)
 					return False
-
 
 			return (len(self.format) > 0)
 
@@ -8615,7 +8564,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 			return l
 
 		@staticmethod
-		def unpack_dw_ord(line):
+		def unpack_dword(line):
 			outs = ''
 			i = 0
 
@@ -8627,7 +8576,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 				unpack = reversed([
 					(dword & 0xff000000) >> 24,
 					(dword & 0x00ff0000) >> 16,
-					(dword & 0x0000ff00) >>  8,
+					(dword & 0x0000ff00) >> 8,
 					(dword & 0x000000ff)
 				])
 				i += 4
@@ -8644,13 +8593,12 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 
 			if self.format == 'raw':
 				verbose("Parsing %s as raw bytes." % self.name)
-				self.bytes = [_ord(c) for c in list(self.input)]
+				self.bytes = [_ord(c) for c in self.input_bytes]
 				return len(self.bytes) > 0
-			
+
 			for line in self.input.split('\n'):
 				callback_called = False
-				if self.format in BytesParser.formats_callbacks.keys() and \
-						BytesParser.formats_callbacks[self.format]:
+				if self.format in BytesParser.formats_callbacks and BytesParser.formats_callbacks[self.format]:
 					verbose("Before callback ('%s')" % line)
 					m = BytesParser.formats_callbacks[self.format].__func__(line)
 					callback_called = True
@@ -8660,16 +8608,17 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 
 				if m:
 					extract = ''
-					for mg in m.groups()[0:]:
-						if len(mg) > 0:
+					for mg in m.groups():
+						if mg:
 							extract = mg
-					bytes = BytesParser.post_process_bytes_line(extract)
-					if not bytes:
-						err("Could not process %s bytes line ('%s') as %s formatted! Quitting." \
-								% (self.name, line, self.format))
+					bytes_line = BytesParser.post_process_bytes_line(extract)
+					if not bytes_line:
+						err("Could not process %s bytes line ('%s') as %s formatted! Quitting." %
+							(self.name, line, self.format))
 					else:
-						verbose("Line ('%s'), bytes ('%s'), extracted ('%s'), len: %d" % (line, extract, bytes, len(bytes)))
-						self.bytes.extend(bytes)
+						verbose("Line ('%s'), bytes ('%s'), extracted ('%s'), len: %d" %
+							(line, extract, bytes_line, len(bytes_line)))
+						self.bytes.extend(bytes_line)
 				else:
 					if callback_called:
 						verbose("Callback failure: transformed string ('%s') did not catched on returned match" % (line))
@@ -8679,20 +8628,21 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 			return len(self.bytes) > 0
 
 		@staticmethod
-		def get_available_format():
-			#check is input format valid?
-			avail_formats = ['raw',]
-			avail_formats.extend(BytesParser.formats_rex.keys())
+		def get_available_formats():
+			avail_formats = ['raw']
+			avail_formats.extend(list(BytesParser.formats_rex.keys()))
 			for k, v in BytesParser.formats_aliases.items():
 				avail_formats.extend(v)
+			return avail_formats
 
-			formats = ', '.join(["'"+x+"'" for x in avail_formats]) #list all available formats
+		@staticmethod
+		def get_available_format():
+			formats = ', '.join(["'" + x + "'" for x in BytesParser.get_available_formats()])
 			return formats
 
 		@staticmethod
 		def is_valid_format(format):
-			avail_formats = BytesParser.get_available_format()
-			return format in avail_formats		
+			return format in BytesParser.get_available_formats()
 
 		def get_bytes(self):
 			return self.bytes
@@ -8701,29 +8651,36 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 			'dword': unpack_dword
 		}
 
-	########## END Class : BytesParser
 
+	########## END Class : BytesParser
 	dbg.log("[+] Reading file %s..." % filename)
-	srcdata_normal=[]
-	srcdata_unicode=[]
-	tagresults=[]
+	srcdata_normal = b""
+	srcdata_unicode = b""
+	tagresults = []
 	criteria = {}
 	criteria["accesslevel"] = "*"
+
 	try:
-		srcfile = open(filename,"rb")
-		content = srcfile.readlines()
+		srcfile = open(filename, "rb")
+		srcdata_normal = srcfile.read()
 		srcfile.close()
-		for eachLine in content:
-			srcdata_normal += eachLine
-		for eachByte in srcdata_normal:
-			eachByte+=struct.pack('B', 0)
-			srcdata_unicode += eachByte
+
+		# Convert to "unicode" style bytes: 41 42 43 -> 41 00 42 00 43 00
+		srcdata_unicode = b"".join(
+			struct.pack("B", _ord(eachByte)) + b"\x00"
+			for eachByte in srcdata_normal
+		)
+
 		dbg.log("    Read %d bytes from file" % len(srcdata_normal))
-	except:
+	except Exception as e:
+		if DEBUG_MODE:
+			dbgp("Error reading file %s: %s" % (filename, str(e)))
 		dbg.log("Error while reading file %s" % filename, highlight=1)
 		return
+
+
 	# loop normal and unicode
-	comparetable=dbg.createTable('mona Memory comparison results',['Address','Status','BadChars','Type','Location'])	
+	comparetable = dbg.createTable('mona Memory comparison results', ['Address', 'Status', 'BadChars', 'Type', 'Location'])
 	modes = ["normal", "unicode"]
 	if not findunicode:
 		modes.remove("unicode")
@@ -8735,28 +8692,28 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 		if mode == "unicode":
 			srcdata = srcdata_unicode
 
-		#check is user supplied input is valid input
+		# check if user supplied input is valid input
 		if format and not BytesParser.is_valid_format(format):
 			err("Format that was specified is not recognized.")
-			err("Valid formats: %s" % BytesParser.get_available_format())		
+			err("Valid formats: %s" % BytesParser.get_available_format())
 
-		#parse input file
+		# parse input file
 		b = BytesParser(srcdata, filename, format)
 		if not b.parsed:
 			return False
 		else:
 			srcdata = b.get_bytes()
 
-		#convert bytes array(from BytesParser) to string array
-		#mona expect input as string array 
+		# convert bytes array (from BytesParser) to string array
+		# mona expects input as string array
 		bytetostr = []
 		for eachByte in srcdata:
-			bytetostr += chr(eachByte)
+			bytetostr.append(chr(_ord(eachByte)))
 		srcdata = bytetostr
-		
+
 		maxcnt = len(srcdata)
 		if maxcnt < 8:
-			dbg.log("Error - file does not contain enough bytes (min 8 bytes needed)",highlight=1)
+			dbg.log("Error - file does not contain enough bytes (min 8 bytes needed)", highlight=1)
 			return
 		locations = []
 		if startpos == 0:
@@ -8769,21 +8726,21 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 			for eachByte in srcdata:
 				if cnt < 8:
 					hexbytes += eachByte
-					if len((hex(_ord(srcdata[cnt]))).replace('0x',''))==1:
-						hexchar=hex(_ord(srcdata[cnt])).replace('0x', '\\x0')
+					if len((hex(_ord(srcdata[cnt]))).replace('0x', '')) == 1:
+						hexchar = hex(_ord(srcdata[cnt])).replace('0x', '\\x0')
 					else:
 						hexchar = hex(_ord(srcdata[cnt])).replace('0x', '\\x')
-					hexstr += hexchar					
+					hexstr += hexchar
 				cnt += 1
-			dbg.log("    - searching for "+hexstr)
+			dbg.log("    - searching for " + hexstr)
 			global silent
 			silent = True
-			results = findPattern({},criteria,hexstr,"bin",0,TOP_USERLAND,False)
+			results = findPattern({}, criteria, hexstr, "bin", 0, TOP_USERLAND, False)
 
 			for _type in results:
 				for ptr in results[_type]:
 					ptrinfo = MnPointer(ptr).memLocation()
-					if not skipmodules or (skipmodules and (ptrinfo in ["Heap","Stack","??"])):
+					if not skipmodules or (skipmodules and (ptrinfo in ["Heap", "Stack", "??"])):
 						locations.append(ptr)
 			if len(locations) == 0:
 				dbg.log("      Oops, no copies found")
@@ -8794,7 +8751,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 			dbg.log("    - Comparing %d location(s)" % (len(locations)))
 			dbg.log("Comparing bytes from file with memory :")
 			for location in locations:
-				memcompare(location,srcdata,comparetable,mode, smart=(mode == 'normal'))
+				memcompare(location, srcdata, comparetable, mode, smart=(mode == 'normal'))
 		silent = False
 	return
 
@@ -8821,14 +8778,17 @@ class MemoryComparator(object):
 	''' Solve the memory comparison problem with a special dynamic programming
 	algorithm similar to that for the LCS problem '''
 
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	Chunk = namedtuple('Chunk', 'unmodified i j dx dy xchunk ychunk')
 
 	move_to_gradient = {
-			0: (0, 0),
-			1: (0, 1),
-			2: (1, 1),
-			3: (2, 1),
-			}
+		0: (0, 0),
+		1: (0, 1),
+		2: (1, 1),
+		3: (2, 1),
+	}
 
 	def __init__(self, x, y):
 		self.x, self.y = x, y
@@ -8846,28 +8806,28 @@ class MemoryComparator(object):
 	def get_grid(self):
 		''' Builds a 2-d suffix grid for our DP algorithm. '''
 		x = self.x
-		y = self.y[:len(x)*2]
-		width, height  = len(x), len(y)
+		y = self.y[:len(x) * 2]
+		width, height = len(x), len(y)
 		values = [[0] * (width + 1) for j in range(height + 1)]
-		moves  = [[0] * (width + 1) for j in range(height + 1)]
-		equal  = [[x[i] == y[j] for i in range(width)] for j in range(height)]
+		moves = [[0] * (width + 1) for j in range(height + 1)]
+		equal = [[x[i] == y[j] for i in range(width)] for j in range(height)]
 		equal.append([False] * width)
 
 		for j, i in itertools.product(rrange(height + 1), rrange(width + 1)):
 			value = values[j][i]
 			if i >= 1 and j >= 1:
-				if equal[j-1][i-1]:
-					values[j-1][i-1] = value + 1
-					moves[j-1][i-1] = 2
-				elif value > values[j][i-1]:
-					values[j-1][i-1] = value
-					moves[j-1][i-1] = 2
-			if i >= 1 and not equal[j][i-1] and value - 2 > values[j][i-1]:
-				values[j][i-1] = value - 2
-				moves[j][i-1] = 1
-			if i >= 1 and j >= 2 and not equal[j-2][i-1] and value - 1 > values[j-2][i-1]:
-				values[j-2][i-1] = value - 1
-				moves[j-2][i-1] = 3
+				if equal[j - 1][i - 1]:
+					values[j - 1][i - 1] = value + 1
+					moves[j - 1][i - 1] = 2
+				elif value > values[j][i - 1]:
+					values[j - 1][i - 1] = value
+					moves[j - 1][i - 1] = 2
+			if i >= 1 and not equal[j][i - 1] and value - 2 > values[j][i - 1]:
+				values[j][i - 1] = value - 2
+				moves[j][i - 1] = 1
+			if i >= 1 and j >= 2 and not equal[j - 2][i - 1] and value - 1 > values[j - 2][i - 1]:
+				values[j - 2][i - 1] = value - 1
+				moves[j - 2][i - 1] = 3
 		return (values, moves)
 
 	@memoized
@@ -8880,7 +8840,7 @@ class MemoryComparator(object):
 		 * expand single bytes in x to two bytes (less likely)
 		 * drop single bytes in x (even less likely)
 
-		Returns a generator that yields elements of the form (unmodified, xdiff, ydiff),
+		Returns a list of elements of the form (unmodified, xdiff, ydiff),
 		where each item represents a binary chunk with "unmodified" denoting whether the
 		chunk is the same in both strings, "xdiff" denoting the size of the chunk in x
 		and "ydiff" denoting the size of the chunk in y.
@@ -8900,29 +8860,33 @@ class MemoryComparator(object):
 		i, j = 0, 0
 		while True:
 			dy, dx = self.move_to_gradient[moves[j][i]]
-			if dy == dx == 0: break
+			if dy == dx == 0:
+				break
 			path.append((dy == 1 and x[i] == y[j], dy, dx))
 			j, i = j + dy, i + dx
 
-		for i, j in zip(range(i, len(x)), itertools.count(j)):
-			if j < len(y): path.append((x[i] == y[j], 1, 1))
-			else:          path.append((False,        0, 1))
+		for i2, j2 in zip(range(i, len(x)), itertools.count(j)):
+			if j2 < len(y):
+				path.append((x[i2] == y[j2], 1, 1))
+			else:
+				path.append((False, 0, 1))
 
-		i = j = 0
+		out = []
 		for unmodified, subpath in itertools.groupby(path, itemgetter(0)):
-			ydiffs = map(itemgetter(1), subpath)
+			ydiffs = [entry[1] for entry in subpath]
 			dx, dy = len(ydiffs), sum(ydiffs)
-			yield unmodified, dx, dy
-			i += dx
-			j += dy
+			out.append((unmodified, dx, dy))
+		return out
 
 	@memoized
 	def get_chunks(self):
+		out = []
 		i = j = 0
 		for unmodified, dx, dy in self.get_blocks():
-			yield self.Chunk(unmodified, i, j, dx, dy, self.x[i:i+dx], self.y[j:j+dy])
+			out.append(self.Chunk(unmodified, i, j, dx, dy, self.x[i:i + dx], self.y[j:j + dy]))
 			i += dx
 			j += dy
+		return out
 
 	@memoized
 	def guess_mapping(self):
@@ -8946,16 +8910,18 @@ class MemoryComparator(object):
 			if dx < dy and dy - dx <= 3 and dy <= 5:
 				for i, b in enumerate(c.xchunk):
 					slices = set()
-					for start in range(i, min(2*i + 1, dy)):
+					for start in range(i, min(2 * i + 1, dy)):
 						for size in range(1, min(dy - start + 1, 3)):
-							slc = tuple(c.ychunk[start:start+size])
-							if slc in slices: continue
+							slc = tuple(c.ychunk[start:start + size])
+							if slc in slices:
+								continue
 							mappings_by_byte[b][slc] += 1
 							slices.add(slc)
 
 		for b, values in mappings_by_byte.items():
-			mappings_by_byte[b] = sorted(values.items(), key=lambda value, count : (-count, -len(value)))
+			mappings_by_byte[b] = sorted(values.items(), key=lambda vc: (-vc[1], -len(vc[0])))
 
+		out = []
 		for c in self.get_chunks():
 			dx, dy, xchunk, ychunk = c.dx, c.dy, c.xchunk, c.ychunk
 			if dx < dy:  # expansion
@@ -8963,29 +8929,38 @@ class MemoryComparator(object):
 				if dx <= 10:
 					res = []
 					for b in xchunk:
-						if dx == dy or dy >= 2*dx: break
+						if dx == dy or dy >= 2 * dx:
+							break
 						for value, count in mappings_by_byte[b]:
-							if tuple(ychunk[:len(value)]) != value: continue
+							if tuple(ychunk[:len(value)]) != value:
+								continue
 							res.append(value)
 							ychunk = ychunk[len(value):]
 							dy -= len(value)
 							break
 						else:
-							yield (ychunk[0],)
-							ychunk = ychunk[1:]
-							dy -= 1
+							if len(ychunk) > 0:
+								res.append((ychunk[0],))
+								ychunk = ychunk[1:]
+								dy -= 1
 						dx -= 1
-					for c in res: yield c
+					for c2 in res:
+						out.append(c2)
 
 				# ... or do it the stupid way. If n bytes were changed to m, simply do
 				# as much drops/expansions as necessary at the beginning and than
 				# yield the rest of the y chunk as single-byte modifications
-				for k in range(dy - dx): yield tuple(ychunk[2*k:2*k+2])
-				ychunk = ychunk[2*(dy - dx):]
+				for k in range(dy - dx):
+					out.append(tuple(ychunk[2 * k:2 * k + 2]))
+				ychunk = ychunk[2 * (dy - dx):]
 			elif dx > dy:
-				for _ in range(dx - dy): yield ()
+				for _ in range(dx - dy):
+					out.append(())
 
-			for b in ychunk: yield (b,)
+			for b in ychunk:
+				out.append((b,))
+		return out
+
 
 def read_memory(dbg, location, max_size):
 	''' read the maximum amount of memory from the given address '''
@@ -8996,34 +8971,44 @@ def read_memory(dbg, location, max_size):
 	# we should never get here, i == 0 should always fulfill the above condition
 	assert False
 
-def shorten_bytes(bytes, size=8):
-	if len(bytes) <= size: return bin2hex(bytes)
-	return '%02x ... %02x' % (_ord(bytes[0]), _ord(bytes[-1]))
+
+def shorten_bytes(bytestr, size=8):
+	if len(bytestr) <= size:
+		return bin2hex(bytestr)
+	return '%02x ... %02x' % (_ord(bytestr[0]), _ord(bytestr[-1]))
+
 
 def draw_byte_table(mapping, log, columns=16):
 	hrspace = 3 * columns - 1
-	hr = '-'*hrspace
+	hr = '-' * hrspace
 	log('    ,' + hr + '.')
 	log('    |' + ' Comparison results:'.ljust(hrspace) + '|')
 	log('    |' + hr + '|')
 	for i, chunk in enumerate(extract_chunks(mapping, columns)):
 		chunk = list(chunk)  # save generator result in a list
+		if len(chunk) == 0:
+			continue
 		src, mapped = zip(*chunk)
 		values = []
 		for left, right in zip(src, mapped):
-			if   left == right:   values.append('')             # byte matches original
-			elif len(right) == 0: values.append('-1')           # byte dropped
-			elif len(right) == 2: values.append('+1')           # byte expanded
-			else:                 values.append(bin2hex(right)) # byte modified
+			if left == right:
+				values.append('')             # byte matches original
+			elif len(right) == 0:
+				values.append('-1')           # byte dropped
+			elif len(right) == 2:
+				values.append('+1')           # byte expanded
+			else:
+				values.append(bin2hex(right)) # byte modified
 		line1 = '%3x' % (i * columns) + ' |' + bin2hex(src)
-		line2 = '    |' + ' '.join(sym.ljust(2) for sym in values) 
+		line2 = '    |' + ' '.join(sym.ljust(2) for sym in values)
 
 		# highlight lines if a modification was detected - removed, looks bad in WinDBG
 		#highlight = any(x != y for x, y in chunk)
 		#for l in (line1, line2):
-		log(line1.ljust(5 + hrspace) + '| File')	
+		log(line1.ljust(5 + hrspace) + '| File')
 		log(line2.ljust(5 + hrspace) + '| Memory')
 	log('    `' + hr + "'")
+
 
 def draw_chunk_table(cmp, log):
 	''' Outputs a table that compares the found memory chunks side-by-side
@@ -9032,11 +9017,16 @@ def draw_chunk_table(cmp, log):
 	delims = (' ', ' ', ' ', ' | ', ' | ', ' | ', '')
 	last_unmodified = cmp.get_last_unmodified_chunk()
 	for c in cmp.get_chunks():
-		if   c.dy == 0:    note = 'missing'
-		elif c.dx > c.dy:  note = 'compacted'
-		elif c.dx < c.dy:  note = 'expanded'
-		elif c.unmodified: note = 'unmodified!'
-		else:              note = 'corrupted'
+		if c.dy == 0:
+			note = 'missing'
+		elif c.dx > c.dy:
+			note = 'compacted'
+		elif c.dx < c.dy:
+			note = 'expanded'
+		elif c.unmodified:
+			note = 'unmodified!'
+		else:
+			note = 'corrupted'
 		table.append((c.i, c.j, c.dx, c.dy, shorten_bytes(c.xchunk), shorten_bytes(c.ychunk), note))
 
 	# draw the table
@@ -9046,39 +9036,70 @@ def draw_chunk_table(cmp, log):
 		if i == 0 or (i == last_unmodified + 1 and i < len(table)):
 			log('-' * (sum(sizes) + sum(len(d) for d in delims)))
 
-def guess_bad_chars(cmp, log, logsilent):
-	guessed_badchars = []
+def guess_bad_chars(cmp, log, logsilent, mapping=None):
 	''' Tries to guess bad characters and outputs them '''
+	guessed_badchars = []
 	bytes_in_changed_blocks = defaultdict(int)
 	chunks = cmp.get_chunks()
 	last_unmodified = cmp.get_last_unmodified_chunk()
+
+	# Strongest signal: first actual mismatching source byte from the byte mapping
+	first_broken_src = None
+	if mapping:
+		for x, y in mapping:
+			if x != y:
+				first_broken_src = x
+				break
+
 	for i, c in enumerate(chunks):
-		if c.unmodified: continue
+		if c.unmodified:
+			continue
+
 		if i == last_unmodified + 1:
-			# only report the first character as bad in the final corrupted chunk
-			bytes_in_changed_blocks[c.xchunk[0]] += 1
+			# Prefer the first actual mismatching byte if we know it
+			if first_broken_src is not None:
+				bytes_in_changed_blocks[first_broken_src] += 1
+			elif len(c.xchunk) > 0:
+				bytes_in_changed_blocks[c.xchunk[0]] += 1
 			break
+
 		for b in set(c.xchunk):
 			bytes_in_changed_blocks[b] += 1
 
-	# guess bad chars
+	# Guess bad chars
 	likely_bc = [char for char, count in bytes_in_changed_blocks.items() if count > 2]
+
+	if first_broken_src is not None:
+		if not logsilent:
+			log("First mismatching byte: %s" % bin2hex(first_broken_src))
+		if first_broken_src not in guessed_badchars:
+			guessed_badchars.append(first_broken_src)
+
 	if likely_bc:
 		if not logsilent:
-			log("Very likely bad chars: %s" % bin2hex(sorted(likely_bc)))
-		guessed_badchars += list(sorted(likely_bc))
-	if not logsilent:
+			log("Very likely bad chars: %s" % bin2hex(sorted(set(likely_bc))))
+		for b in likely_bc:
+			if b not in guessed_badchars:
+				guessed_badchars.append(b)
+
+	if not logsilent and len(bytes_in_changed_blocks) > 0:
 		log("Possibly bad chars: %s" % bin2hex(sorted(bytes_in_changed_blocks)))
-	guessed_badchars += list(sorted(bytes_in_changed_blocks))
-	
-	# list bytes already omitted from the input
-	bytes_omitted_from_input = set(map(chr, range(0, 256))) - set(cmp.x)
+
+	for b in sorted(bytes_in_changed_blocks):
+		if b not in guessed_badchars:
+			guessed_badchars.append(b)
+
+	# List bytes already omitted from the input
+	bytes_omitted_from_input = set(chr(i) for i in range(0, 256)) - set(cmp.x)
 	if bytes_omitted_from_input:
-		log("Bytes omitted from input: %s" % bin2hex(sorted(bytes_omitted_from_input)))
-		guessed_badchars += list(sorted( bytes_omitted_from_input))
-		
-	# return list, use list(set(..)) to remove dups
-	return list(set(guessed_badchars))
+		if not logsilent:
+			log("Bytes omitted from input: %s" % bin2hex(sorted(bytes_omitted_from_input)))
+		for b in sorted(bytes_omitted_from_input):
+			if b not in guessed_badchars:
+				guessed_badchars.append(b)
+
+	return guessed_badchars
+
 
 def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 	''' Thoroughly compares an input binary string with a location in memory
@@ -9094,30 +9115,32 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 		dbg.log(msg, address=location, **kw)
 		objlogfile.write(msg, logfile)
 
-	def add_to_table(msg,badbytes = []):
+	def add_to_table(msg, badbytes=[]):
 		locinfo = MnPointer(location).memLocation()
 		badbstr = " "
 		if len(badbytes) > 0:
 			badbstr = "%s " % bin2hex(sorted(badbytes))
 		comparetable.add(0, ['0x%08x' % location, msg, badbstr, sctype, locinfo])
 
-	objlogfile.write("-" * 100,logfile)
-	log('[+] Comparing with memory at location : 0x%08x (%s)' % (location,MnPointer(location).memLocation()), highlight=1)
+	objlogfile.write("-" * 100, logfile)
+	log('[+] Comparing with memory at location : 0x%08x (%s)' % (location, MnPointer(location).memLocation()), highlight=1)
 	dbg.updateLog()
 
-	mem = read_memory(dbg, location, 2*len(src))
+	mem = read_memory(dbg, location, 2 * len(src))
 	if smart:
 		cmp = MemoryComparator(src, mem)
-		mapped_chunks = map(''.join, cmp.guess_mapping())
+		mapped_chunks = [''.join(chr(_ord(b)) for b in chunk) for chunk in cmp.guess_mapping()]
 	else:
-		mapped_chunks = list(mem[:len(src)]) + [()] * (len(src) - len(mem))
-	mapping = zip(src, mapped_chunks)
+		mapped_chunks = [chr(_ord(b)) for b in mem[:len(src)]] + [()] * (len(src) - len(mem))
 
-	broken = [(i,x,y) for i,(x,y) in enumerate(mapping) if x != y]
+	mapping = list(zip(src, mapped_chunks))
+
+	broken = [(i, x, y) for i, (x, y) in enumerate(mapping) if x != y]
 	if not broken:
 		log('!!! Hooray, %s shellcode unmodified !!!' % sctype, focus=1, highlight=1)
 		add_to_table('Unmodified')
-		guessed_bc = guess_bad_chars(cmp, log, True)
+		if smart:
+			guessed_bc = guess_bad_chars(cmp, log, True, mapping)
 	else:
 		log("Only %d original bytes of '%s' code found." % (len(src) - len(broken), sctype))
 		draw_byte_table(mapping, log, columns=tablecols)
@@ -9127,10 +9150,10 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 			# print additional analysis
 			draw_chunk_table(cmp, log)
 			log()
-			guessed_bc = guess_bad_chars(cmp, log, False)
+			# False = show the guessed bad chars
+			guessed_bc = guess_bad_chars(cmp, log, False, mapping)
 			log()
-		add_to_table('Corruption after %d bytes' % broken[0][0],guessed_bc)
-
+		add_to_table('Corruption after %d bytes' % broken[0][0], guessed_bc)
 
 #-----------------------------------------------------------------------#
 # ROP related functions
