@@ -96,9 +96,9 @@ def set_debug_mode(enabled):
 def dbgp(s):
 	# print debug information
 	try:
-		print("[WINDBGLIB DEBUG] %s - %s" % (get_current_datetime(),s))
+		print("[WINDBGLIB DEBUG] %s | %s" % (get_current_datetime(),s))
 	except Exception as e:
-		print("[WINDBGLIB DEBUG - error] %s - %s" % (get_current_datetime(), str(e)))
+		print("[WINDBGLIB DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
 		pass
 
 def get_current_datetime():

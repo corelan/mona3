@@ -292,9 +292,9 @@ memProtConstants["WC"] = ["PAGE_WRITECOMBINE",0x400]
 def dbgp(s):
 	# print debug information
 	try:
-		print("[MONA DEBUG] %s - %s" % (get_current_datetime(),s))
+		print("[MONA DEBUG] %s | %s" % (get_current_datetime(),s))
 	except Exception as e:
-		print("[MONA DEBUG - error] %s - %s" % (get_current_datetime(), str(e)))
+		print("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
 		pass	
 
 def resetGlobals():
@@ -11879,7 +11879,7 @@ def args2criteria(args,modulecriteria,criteria):
 		cnt = 0
 		strb = ""
 		while cnt < len(badchars):
-			strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
+			strb=strb+ensure_text(binascii.a2b_hex(badchars[cnt]+badchars[cnt+1]))
 			cnt=cnt+2
 		criteria["badchars"] = strb
 		dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
@@ -13484,7 +13484,7 @@ def procByteArray(args, procUsage = ""):
 	cnt = 0
 	strb = b""
 	while cnt < len(badchars):
-		strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
+		strb=strb+ensure_text(binascii.a2b_hex(badchars[cnt]+badchars[cnt+1]))
 		cnt=cnt+2
 
 	dbg.log("Generating table, excluding %d bad chars..." % len(strb))
