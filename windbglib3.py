@@ -2785,7 +2785,7 @@ class Debugger:
 				# caller should check if address is different than what was provided
 				if depth == 1:
 					if DEBUG_MODE:
-						dbgp("Returning opcode at 0x%x" % address)
+						dbgp("Depth 1, returning opcode at 0x%x" % address)
 					return self.getOpcode(address)
 			depth -= 1
 

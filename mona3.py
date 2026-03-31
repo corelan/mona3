@@ -6759,6 +6759,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
 					dbg.updateLog()
+					if DEBUG_MODE:
+						dbgp("Number of ropgadgets: %d" % len(ropgadgets))
+						dbgp("Number of stackpivots: %d" % len(stackpivots))
+						dbgp("Number of safeseh stackpivots: %d" % l(nstackpivots_safeseh))					
 					tc += 1				
 				if not usefiles:
 					#first get max backward instruction
@@ -6785,52 +6789,54 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							msfchain = []
 							thisopcodebytes = ""
 							chainptr = startptr
-							if isGoodGadgetPtr(startptr,criteria) and not startptr in ropgadgets and not startptr in interestinggadgets:
-								#if DEBUG_MODE:
-								#	dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
-								invalidinstr = False
-								#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
-								avoidunlimitedloop = 0
-								while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
-									thisopcode = dbg.disasm(chainptr)
-									thisinstruction = getDisasmInstruction(thisopcode)
-									if isGoodGadgetInstr(thisinstruction) and not isGadgetEnding(thisinstruction,search):						
-										thischain =  thischain + " # " + thisinstruction
-										msfchain.append([chainptr,thisinstruction])
-										thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
-										chainptr = dbg.disasmForwardAddressOnly(chainptr,1)
-									else:
-										invalidinstr = True
-									avoidunlimitedloop += 1
+							if isGoodGadgetPtr(startptr,criteria): 
+								# only lookup if it's a good gadget
+								if not startptr in ropgadgets and not startptr in interestinggadgets:
 									#if DEBUG_MODE:
-									#	dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
-								if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
-									fullchain = thischain + " # " + endingtype
-									msfchain.append([endingtypeptr,endingtype])
-									thisopcode = dbg.disasm(endingtypeptr)
-									thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
-									msfchain.append(["raw",thisopcodebytes])
-									if isInterestingGadget(fullchain):
-										interestinggadgets[startptr] = fullchain
-										#this may be a good stackpivot too
-										stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
-										if stackpivotdistance > 0:
-											#safeseh or not ?
-											if issafeseh:
-												if not stackpivotdistance in stackpivots_safeseh:
-													stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
+									#	dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
+									invalidinstr = False
+									#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
+									avoidunlimitedloop = 0
+									while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
+										thisopcode = dbg.disasm(chainptr)
+										thisinstruction = getDisasmInstruction(thisopcode)
+										if isGoodGadgetInstr(thisinstruction) and not isGadgetEnding(thisinstruction,search):						
+											thischain =  thischain + " # " + thisinstruction
+											msfchain.append([chainptr,thisinstruction])
+											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
+											chainptr = dbg.disasmForwardAddressOnly(chainptr,1)
+										else:
+											invalidinstr = True
+										avoidunlimitedloop += 1
+										#if DEBUG_MODE:
+										#	dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
+									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
+										fullchain = thischain + " # " + endingtype
+										msfchain.append([endingtypeptr,endingtype])
+										thisopcode = dbg.disasm(endingtypeptr)
+										thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
+										msfchain.append(["raw",thisopcodebytes])
+										if isInterestingGadget(fullchain):
+											interestinggadgets[startptr] = fullchain
+											#this may be a good stackpivot too
+											stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
+											if stackpivotdistance > 0:
+												#safeseh or not ?
+												if issafeseh:
+													if not stackpivotdistance in stackpivots_safeseh:
+														stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
+													else:
+														stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
 												else:
-													stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
-											else:
-												if not stackpivotdistance in stackpivots:
-													stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
-												else:
-													stackpivots[stackpivotdistance] += [[startptr,fullchain]]								
-									else:
-										if not fast:
-											ropgadgets[startptr] = fullchain
-											if DEBUG_MODE:
-												dbgp("Added 0x%08x to chain list: %s" % (startptr, fullchain))
+													if not stackpivotdistance in stackpivots:
+														stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
+													else:
+														stackpivots[stackpivotdistance] += [[startptr,fullchain]]								
+										else:
+											if not fast:
+												ropgadgets[startptr] = fullchain
+												if DEBUG_MODE:
+													dbgp("Added 0x%08x to chain list: %s" % (startptr, fullchain))
 							startptr = startptr+1
 						except Exception as ropex:
 							dbgp("Error while looking for gadgets: %s" % str(ropex))
@@ -6877,6 +6883,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
 	dbg.updateLog()
+	if DEBUG_MODE:
+		dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
+		dbgp("Final Number of stackpivots: %d" % len(stackpivots))
+		dbgp("Final Number of safeseh stackpivots: %d" % l(nstackpivots_safeseh))					
 
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
