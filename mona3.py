@@ -1699,13 +1699,13 @@ def getModuleObj(modname):
 	
 		
 		
-def getPatternLength(startptr,type="normal",args={}):
+def getPatternLength(startptr, pattern_type="normal", args=None):
 	"""
 	Gets length of a cyclic pattern, starting from a given pointer
 	
 	Arguments:
 	startptr - the start pointer (integer value)
-	type - optional string, indicating type of pattern :
+	pattern_type - optional string, indicating type of pattern :
 		"normal" : normal pattern
 		"unicode" : unicode pattern
 		"upper" : uppercase pattern
@@ -1714,26 +1714,31 @@ def getPatternLength(startptr,type="normal",args={}):
 	patternsize = 0
 	endofpattern = False
 	global silent
-	oldsilent=silent
-	silent=True
-	fullpattern = createPattern(200000,args)
-	silent=oldsilent
-	if type == "upper":
+
+	if args is None:
+		args = {}
+
+	oldsilent = silent
+	silent = True
+	fullpattern = ensure_bytes(createPattern(200000, args))
+	silent = oldsilent
+
+	if pattern_type == "upper":
 		fullpattern = fullpattern.upper()
-	if type == "lower":
+	if pattern_type == "lower":
 		fullpattern = fullpattern.lower()
-	#if type == "unicode":
+	#if pattern_type == "unicode":
 	#	fullpattern = toUnicode(fullpattern)
-	
-	if type in ["normal","upper","lower","unicode"]:
+
+	if pattern_type in ["normal", "upper", "lower", "unicode"]:
 		previousloc = -1
 		while not endofpattern and patternsize <= len(fullpattern):
-			sizemeter=dbg.readMemory(startptr+patternsize,4)
-			if type == "unicode":
-				sizemeter=dbg.readMemory(startptr+patternsize,8)
-				sizemeter = sizemeter.replace(b"\x00","")
+			if pattern_type == "unicode":
+				sizemeter = dbg.readMemory(startptr + patternsize, 8)
+				sizemeter = sizemeter.replace(b"\x00", b"")
 			else:
-				sizemeter=dbg.readMemory(startptr+patternsize,4)
+				sizemeter = dbg.readMemory(startptr + patternsize, 4)
+
 			if len(sizemeter) == 4:
 				thisloc = fullpattern.find(sizemeter)
 				if thisloc < 0 or thisloc <= previousloc:
@@ -1743,23 +1748,27 @@ def getPatternLength(startptr,type="normal",args={}):
 					previousloc = thisloc
 			else:
 				return patternsize
-		#maybe this is not the end yet
+
+		# maybe this is not the end yet
 		patternsize -= 8
 		endofpattern = False
+
 		while not endofpattern and patternsize <= len(fullpattern):
-			sizemeter=dbg.readMemory(startptr+patternsize,4)
-			if type == "unicode":
-				sizemeter=dbg.readMemory(startptr+patternsize,8)
-				sizemeter = sizemeter.replace(b"\x00","")
+			if pattern_type == "unicode":
+				sizemeter = dbg.readMemory(startptr + patternsize, 8)
+				sizemeter = sizemeter.replace(b"\x00", b"")
 			else:
-				sizemeter=dbg.readMemory(startptr+patternsize,4)
+				sizemeter = dbg.readMemory(startptr + patternsize, 4)
+
 			if fullpattern.find(sizemeter) < 0:
 				patternsize += 3
 				endofpattern = True
-			else:		
+			else:
 				patternsize += 1
-	if type == "unicode":
+
+	if pattern_type == "unicode":
 		patternsize = (patternsize // 2) + 1
+
 	return patternsize
 	
 def getAPointer(modules,criteria,accesslevel):
@@ -8382,6 +8391,10 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	return allpointers
 		
 
+#-----------------------------------------------------------------------#
+# mona compare magic
+#-----------------------------------------------------------------------#
+
 
 def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,findunicode=False):
 
@@ -9154,6 +9167,8 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 			guessed_bc = guess_bad_chars(cmp, log, False, mapping)
 			log()
 		add_to_table('Corruption after %d bytes' % broken[0][0], guessed_bc)
+
+
 
 #-----------------------------------------------------------------------#
 # ROP related functions
@@ -11501,255 +11516,304 @@ def checkSEHOverwrite(address, nseh, seh):
 	silent = False
 	return overwritten
 
-
-def goFindMSP(distance = 0,args = {}):
+def goFindMSP(distance=0, args=None):
 	"""
 	Finds all references to cyclic pattern in memory
-	
+
 	Arguments:
 	None
-	
+
 	Return:
-	Dictonary with results of the search operation
+	Dictionary with results of the search operation
 	"""
+	if args is None:
+		args = {}
+
 	results = {}
 	regs = dbg.getRegs()
 	criteria = {}
 	criteria["accesslevel"] = "*"
-	
+
 	tofile = ""
-	
+
 	global silent
 	oldsilent = silent
-	silent=True	
-	
-	fullpattern = createPattern(50000,args)
-	factor = 1
-	
-	#are we attached to an application ?
-	if dbg.getDebuggedPid() == 0:
-		dbg.log("*** Attach to an application, and trigger a crash with a cyclic pattern ! ***",highlight=1)
-		return	{}
-	
-	#1. find beginning of cyclic pattern in memory ?
+	silent = True
 
-	patbegin = createPattern(6,args)
-	
-	silent=oldsilent
-	pattypes = ["normal","unicode","lower","upper"]
+	# keep text version for searchInRange() / older helper functions
+	fullpattern = createPattern(50000, args)
+	# use bytes version when comparing with dbg.readMemory()
+	fullpattern_bytes = ensure_bytes(fullpattern)
+
+	# determine stack pointer register / pointer size
+	if arch == 64:
+		sp_reg = "RSP"
+		ptr_size = 8
+		ptr_pack_fmt = "<Q"
+	else:
+		sp_reg = "ESP"
+		ptr_size = 4
+		ptr_pack_fmt = "<L"
+
+	# are we attached to an application ?
+	if dbg.getDebuggedPid() == 0:
+		silent = oldsilent
+		dbg.log("*** Attach to an application, and trigger a crash with a cyclic pattern ! ***", highlight=1)
+		return {}
+
+	# 1. find beginning of cyclic pattern in memory ?
+	# keep as text because searchInRange() expects text
+	patbegin = createPattern(6, args)
+
+	silent = oldsilent
+	pattypes = ["normal", "unicode", "lower", "upper"]
 	if not silent:
 		dbg.log("[+] Looking for cyclic pattern in memory")
 	tofile += "[+] Looking for cyclic pattern in memory\n"
+
 	for pattype in pattypes:
 		dbg.updateLog()
 		searchPattern = []
-		#create search pattern
-		factor = 1
+
+		# create search pattern (TEXT, not bytes)
 		if pattype == "normal":
-			searchPattern.append([patbegin, patbegin])	
+			searchPattern.append([patbegin, patbegin])
+
 		if pattype == "unicode":
 			patbegin_unicode = ""
-			factor = 0.5
 			for pbyte in patbegin:
 				patbegin_unicode += pbyte + "\x00"
-			searchPattern.append([patbegin_unicode, patbegin_unicode])	
+			searchPattern.append([patbegin_unicode, patbegin_unicode])
+
 		if pattype == "lower":
-			searchPattern.append([patbegin.lower(), patbegin.lower()])	
+			searchPattern.append([patbegin.lower(), patbegin.lower()])
+
 		if pattype == "upper":
-			searchPattern.append([patbegin.upper(), patbegin.upper()])	
-		#search
-		pointers = searchInRange(searchPattern,0,TOP_USERLAND,criteria)
-		memory={}
+			searchPattern.append([patbegin.upper(), patbegin.upper()])
+
+		# search
+		pointers = searchInRange(searchPattern, 0, TOP_USERLAND, criteria)
+		memory = {}
+
 		if len(pointers) > 0:
 			for ptrtypes in pointers:
 				for ptr in pointers[ptrtypes]:
-					#get size
-					thissize = getPatternLength(ptr,pattype,args)
+					# get size
+					thissize = getPatternLength(ptr, pattype, args)
 					if thissize > 0:
 						if not silent:
-							dbg.log("    Cyclic pattern (%s) found at 0x%s (length %d bytes)" % (pattype,toHex(ptr),thissize))
-						tofile += "    Cyclic pattern (%s) found at 0x%s (length %d bytes)\n" % (pattype,toHex(ptr),thissize)
-						if not ptr in memory:
-							memory[ptr] = ([thissize,pattype])
-					#get distance from ESP
-					if "ESP" in regs:
-						thisesp = regs["ESP"]
+							dbg.log("    Cyclic pattern (%s) found at 0x%s (length %d bytes)" % (pattype, toHex(ptr), thissize))
+						tofile += "    Cyclic pattern (%s) found at 0x%s (length %d bytes)\n" % (pattype, toHex(ptr), thissize)
+						if ptr not in memory:
+							memory[ptr] = [thissize, pattype]
+
+					# get distance from SP
+					if sp_reg in regs:
+						thissp = regs[sp_reg]
 						thisptr = MnPointer(ptr)
 						if thisptr.isOnStack():
-							if ptr > thisesp:
+							if ptr > thissp:
 								if not silent:
-									dbg.log("    -  Stack pivot between %d & %d bytes needed to land in this pattern" % (ptr-thisesp,ptr-thisesp+thissize))
-								tofile += "    -  Stack pivot between %d & %d bytes needed to land in this pattern\n" % (ptr-thisesp,ptr-thisesp+thissize)
-			if not "memory" in results:
+									dbg.log("    -  Stack pivot between %d & %d bytes needed to land in this pattern" % (ptr - thissp, ptr - thissp + thissize))
+								tofile += "    -  Stack pivot between %d & %d bytes needed to land in this pattern\n" % (ptr - thissp, ptr - thissp + thissize)
+
+			if "memory" not in results:
 				results["memory"] = memory
-			
-	#2. registers overwritten ?
+
+	# 2. registers overwritten ?
 	if not silent:
 		dbg.log("[+] Examining registers")
 	tofile += "\n[+] Examining registers\n"
+
 	registers = {}
 	registers_to = {}
+
 	for reg in regs:
 		for pattype in pattypes:
-			dbg.updateLog()		
-			regpattern = fullpattern
-			hexpat = toHex(regs[reg])
-			hexpatr = hexpat
-			factor = 1
-			hexpat = toAscii(hexpat[6]+hexpat[7])+toAscii(hexpat[4]+hexpat[5])+toAscii(hexpat[2]+hexpat[3])+toAscii(hexpat[0]+hexpat[1])
-			hexpatrev = toAscii(hexpatr[0]+hexpatr[1])+toAscii(hexpatr[2]+hexpatr[3])+toAscii(hexpatr[4]+hexpatr[5])+toAscii(hexpatr[6]+hexpatr[7])	
+			dbg.updateLog()
+
+			regpattern = fullpattern_bytes
+
 			if pattype == "upper":
-				regpattern = regpattern.upper()
+				regpattern = fullpattern_bytes.upper()
 			if pattype == "lower":
-				regpattern = regpattern.lower()
+				regpattern = fullpattern_bytes.lower()
 			if pattype == "unicode":
-				regpattern = toUnicode(regpattern)
-				factor = 0.5
-			offset = regpattern.find(hexpat)
-			if offset > -1:
-				if pattype == "unicode":
-					offset = offset * factor
-				if not silent:
-					dbg.log("    %s contains %s pattern : 0x%s (offset %d)" % (reg,pattype,toHex(regs[reg]),offset))
-				tofile += "    %s contains %s pattern : 0x%s (offset %d)\n" % (reg,pattype,toHex(regs[reg]),offset)
-				if not reg in registers:
-					registers[reg] = ([regs[reg],offset,pattype])
-			else:
-				# maybe it's reversed ?
-				offset = regpattern.find(hexpatrev)
+				regpattern = ensure_bytes(toUnicode(fullpattern))
+
+			# Pack register value as raw bytes
+			try:
+				regbytes = struct.pack(ptr_pack_fmt, regs[reg] & ((1 << (ptr_size * 8)) - 1))
+			except:
+				regbytes = b""
+
+			# Try full pointer width, then low 4 bytes
+			candidates = []
+			if ptr_size == 8 and len(regbytes) == 8:
+				candidates.append((regbytes, False))
+				candidates.append((regbytes[::-1], True))
+				candidates.append((regbytes[:4], False))
+				candidates.append((regbytes[:4][::-1], True))
+			elif len(regbytes) == 4:
+				candidates.append((regbytes, False))
+				candidates.append((regbytes[::-1], True))
+
+			for regcand, is_reversed in candidates:
+				offset = regpattern.find(regcand)
 				if offset > -1:
 					if pattype == "unicode":
-						offset = offset * factor
+						offset = offset // 2
+
 					if not silent:
-						dbg.log("    %s contains %s pattern (reversed) : 0x%s (offset %d)" % (reg,pattype,toHex(regs[reg]),offset))
-					tofile += "    %s contains %s pattern (reversed) : 0x%s (offset %d)\n" % (reg,pattype,toHex(regs[reg]),offset)
-					if not reg in registers:
-						registers[reg] = ([regs[reg],offset,pattype])				
-					
+						if is_reversed:
+							dbg.log("    %s contains %s pattern (reversed) : 0x%s (offset %d)" % (reg, pattype, toHex(regs[reg]), offset))
+						else:
+							dbg.log("    %s contains %s pattern : 0x%s (offset %d)" % (reg, pattype, toHex(regs[reg]), offset))
+
+					if is_reversed:
+						tofile += "    %s contains %s pattern (reversed) : 0x%s (offset %d)\n" % (reg, pattype, toHex(regs[reg]), offset)
+					else:
+						tofile += "    %s contains %s pattern : 0x%s (offset %d)\n" % (reg, pattype, toHex(regs[reg]), offset)
+
+					if reg not in registers:
+						registers[reg] = [regs[reg], offset, pattype]
+					break
+
 			# maybe register points into cyclic pattern
-			mempat = ""
+			mempat = b""
 			try:
-				mempat = dbg.readMemory(regs[reg],4)
+				mempat = dbg.readMemory(regs[reg], 4)
 			except:
 				pass
-			
-			if mempat != "":
+
+			if mempat != b"":
 				if pattype == "normal":
-					regpattern = fullpattern
+					regpattern = fullpattern_bytes
 				if pattype == "upper":
-					regpattern = fullpattern.upper()
+					regpattern = fullpattern_bytes.upper()
 				if pattype == "lower":
-					regpattern = fullpattern.lower()
+					regpattern = fullpattern_bytes.lower()
 				if pattype == "unicode":
-					mempat = dbg.readMemory(regs[reg],8)
-					mempat = mempat.replace(b"\x00","")
-					
+					regpattern = ensure_bytes(toUnicode(fullpattern))
+					mempat = dbg.readMemory(regs[reg], 8)
+					mempat = mempat.replace(b"\x00", b"")
+
 				offset = regpattern.find(mempat)
-				
-				if offset > -1:				
-					thissize = getPatternLength(regs[reg],pattype,args)
+
+				if offset > -1:
+					if pattype == "unicode":
+						offset = offset // 2
+
+					thissize = getPatternLength(regs[reg], pattype, args)
 					if thissize > 0:
 						if not silent:
-							dbg.log("    %s (0x%s) points at offset %d in %s pattern (length %d)" % (reg,toHex(regs[reg]),offset,pattype,thissize))
-						tofile += "    %s (0x%s) points at offset %d in %s pattern (length %d)\n" % (reg,toHex(regs[reg]),offset,pattype,thissize)
-						if not reg in registers_to:
-							registers_to[reg] = ([regs[reg],offset,thissize,pattype])
-						else:
-							registers_to[reg] = ([regs[reg],offset,thissize,pattype])
+							dbg.log("    %s (0x%s) points at offset %d in %s pattern (length %d)" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+						tofile += "    %s (0x%s) points at offset %d in %s pattern (length %d)\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
+						registers_to[reg] = [regs[reg], offset, thissize, pattype]
 				else:
 					# reversed ?
 					offset = regpattern.find(mempat[::-1])
-					if offset > -1:				
-						thissize = getPatternLength(regs[reg],pattype,args)
+					if offset > -1:
+						if pattype == "unicode":
+							offset = offset // 2
+
+						thissize = getPatternLength(regs[reg], pattype, args)
 						if thissize > 0:
 							if not silent:
-								dbg.log("    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d)" % (reg,toHex(regs[reg]),offset,pattype,thissize))
-							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d)\n" % (reg,toHex(regs[reg]),offset,pattype,thissize)
-							if not reg in registers_to:
-								registers_to[reg] = ([regs[reg],offset,thissize,pattype])
-							else:
-								registers_to[reg] = ([regs[reg],offset,thissize,pattype])					
+								dbg.log("    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d)" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d)\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
+							registers_to[reg] = [regs[reg], offset, thissize, pattype]
 
-							
-	if not "registers" in results:
+	if "registers" not in results:
 		results["registers"] = registers
-	if not "registers_to" in results:
+	if "registers_to" not in results:
 		results["registers_to"] = registers_to
 
-	#3. SEH record overwritten ?
+	# 3. SEH record overwritten ?
+	# SEH chain logic is x86-only in this form, so skip entirely on x64
 	seh = {}
-	if not silent:
-		dbg.log("[+] Examining SEH chain")
-	tofile += "\n[+] Examining SEH chain\n"
-	thissehchain=dbg.getSehChain()
-	
-	for chainentry in thissehchain:
-		address = chainentry[0]
-		sehandler = chainentry[1]
-		nseh = 0
-		nsehvalue = 0
-		nsehascii = ""
-		try:
-			nsehascii = dbg.readMemory(address,4)
-			nsehvalue = struct.unpack('<L',nsehascii)[0]
-			nseh = "%08x" % nsehvalue
-		except:
+	if ptr_size == 4:
+		if not silent:
+			dbg.log("[+] Examining SEH chain")
+		tofile += "\n[+] Examining SEH chain\n"
+		thissehchain = dbg.getSehChain()
+
+		for chainentry in thissehchain:
+			address = chainentry[0]
+			sehandler = chainentry[1]
 			nseh = 0
-			sehandler = 0
-		if nseh != 0 :
-			for pattype in pattypes:
-				dbg.updateLog()		
-				regpattern = fullpattern
-				hexpat = nsehascii
-				factor = 1
-				takeout = 4
-				divide = 1
-				if pattype == "upper":
-					regpattern = regpattern.upper()
-				if pattype == "lower":
-					regpattern = regpattern.lower()
-				if pattype == "unicode":
-					#get next 4 bytes too
-					nsehascii = dbg.readMemory(address,8)
-					hexpat = nsehascii.replace(b"\x00","")
-					takeout = 0
-					divide = 2
-				offset = regpattern.find(hexpat)
-				thissize = 0
-				if offset > -1:		
-					thepointer = MnPointer(chainentry[0])
-					if thepointer.isOnStack():
-						thissize = getPatternLength(address+4,pattype)
-						if thissize > 0:
-							thissize = (thissize - takeout)/divide
-							if not silent:
-								dbg.log("    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler" % (toHex(chainentry[0]),pattype,nseh,offset,thissize))
-							tofile += "    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler\n" % (toHex(chainentry[0]),pattype,nseh,offset,thissize)
-							if not chainentry[0]+4 in seh:
-								seh[chainentry[0]+4] = ([chainentry[1],offset,pattype,thissize])
-							
-							
-	if not "seh" in results:
+			nsehvalue = 0
+			nsehascii = b""
+			try:
+				nsehascii = dbg.readMemory(address, 4)
+				nsehvalue = struct.unpack('<L', nsehascii)[0]
+				nseh = "%08x" % nsehvalue
+			except:
+				nseh = 0
+				sehandler = 0
+
+			if nseh != 0:
+				for pattype in pattypes:
+					dbg.updateLog()
+					regpattern = fullpattern_bytes
+					hexpat = nsehascii
+					takeout = 4
+					divide = 1
+
+					if pattype == "upper":
+						regpattern = fullpattern_bytes.upper()
+					if pattype == "lower":
+						regpattern = fullpattern_bytes.lower()
+					if pattype == "unicode":
+						regpattern = ensure_bytes(toUnicode(fullpattern))
+						# get next 4 bytes too
+						nsehascii = dbg.readMemory(address, 8)
+						hexpat = nsehascii.replace(b"\x00", b"")
+						takeout = 0
+						divide = 2
+
+					offset = regpattern.find(hexpat)
+					thissize = 0
+
+					if offset > -1:
+						thepointer = MnPointer(chainentry[0])
+						if thepointer.isOnStack():
+							thissize = getPatternLength(address + 4, pattype, args)
+							if thissize > 0:
+								thissize = (thissize - takeout) // divide
+								if pattype == "unicode":
+									offset = offset // 2
+
+								if not silent:
+									dbg.log("    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler" % (toHex(chainentry[0]), pattype, nseh, offset, thissize))
+								tofile += "    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler\n" % (toHex(chainentry[0]), pattype, nseh, offset, thissize)
+
+								if (chainentry[0] + 4) not in seh:
+									seh[chainentry[0] + 4] = [chainentry[1], offset, pattype, thissize]
+
+	if "seh" not in results:
 		results["seh"] = seh
 
-	stack = {}	
+	stack = {}
 	stackcontains = {}
-	
-	#4. walking stack
-	if "ESP" in regs:	
-		curresp = regs["ESP"]	
+
+	# 4. walking stack
+	if sp_reg in regs:
+		curresp = regs[sp_reg]
+
 		if not silent:
 			if distance == 0:
 				extratxt = "(entire stack)"
 			else:
-				extratxt = "(+- "+str(distance)+" bytes)"
+				extratxt = "(+- " + str(distance) + " bytes)"
 			dbg.log("[+] Examining stack %s - looking for cyclic pattern" % extratxt)
 		tofile += "\n[+] Examining stack %s - looking for cyclic pattern\n" % extratxt
-		
+
 		# get stack this address belongs to
 		stacks = getStacks()
 		thisstackbase = 0
 		thisstacktop = 0
+
 		if distance < 1:
 			for tstack in stacks:
 				if (stacks[tstack][0] < curresp) and (curresp < stacks[tstack][1]):
@@ -11757,67 +11821,68 @@ def goFindMSP(distance = 0,args = {}):
 					thisstacktop = stacks[tstack][1]
 		else:
 			thisstackbase = curresp - distance
-			thisstacktop = curresp + distance + 8
-		stackcounter = thisstackbase
-		sign=""
+			thisstacktop = curresp + distance + ptr_size
 
-	
+		stackcounter = thisstackbase
+		sign = ""
+
 		if not silent:
-			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter)))
-		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter))
+			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter)))
+		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter))
 
 		# stack contains part of a cyclic pattern ?
-		while stackcounter < thisstacktop-4:
+		while stackcounter < thisstacktop - ptr_size:
 			espoffset = stackcounter - curresp
-			stepsize = 4
-			dbg.updateLog()	
+			stepsize = ptr_size
+			dbg.updateLog()
+
 			if espoffset > -1:
-				sign="+"			
+				sign = "+"
 			else:
-				sign="-"	
-				
-			cont = dbg.readMemory(stackcounter,4)
-			
+				sign = "-"
+
+			cont = dbg.readMemory(stackcounter, 4)
+
 			if len(cont) == 4:
 				contat = cont
-				if contat != "":
-		
+				if contat != b"":
 					for pattype in pattypes:
 						dbg.updateLog()
-						regpattern = fullpattern
-						
+						regpattern = fullpattern_bytes
 						hexpat = contat
-					
+
 						if pattype == "upper":
-							regpattern = regpattern.upper()
+							regpattern = fullpattern_bytes.upper()
 						if pattype == "lower":
-							regpattern = regpattern.lower()
+							regpattern = fullpattern_bytes.lower()
 						if pattype == "unicode":
-							hexpat1 = dbg.readMemory(stackcounter,4)
-							hexpat2 = dbg.readMemory(stackcounter+4,4)
-							hexpat1 = hexpat1.replace(b"\x00",b"")
-							hexpat2 = hexpat2.replace(b"\x00",b"")
-							if hexpat1 == "" or hexpat2 == "":
-								#no unicode
-								hexpat = ""
+							regpattern = ensure_bytes(toUnicode(fullpattern))
+							hexpat1 = dbg.readMemory(stackcounter, 4)
+							hexpat2 = dbg.readMemory(stackcounter + 4, 4)
+							hexpat1 = hexpat1.replace(b"\x00", b"")
+							hexpat2 = hexpat2.replace(b"\x00", b"")
+							if hexpat1 == b"" or hexpat2 == b"":
+								# no unicode
+								hexpat = b""
 								break
 							else:
 								hexpat = hexpat1 + hexpat2
-						
+
 						if len(hexpat) == 4:
-							
 							offset = regpattern.find(hexpat)
-							
 							currptr = stackcounter
-							
-							if offset > -1:				
-								thissize = getPatternLength(currptr,pattype)
-								offsetvalue = int(str(espoffset).replace("-",""))								
+
+							if offset > -1:
+								if pattype == "unicode":
+									offset = offset // 2
+
+								thissize = getPatternLength(currptr, pattype, args)
+								offsetvalue = abs(espoffset)
 								if thissize > 0:
 									stepsize = thissize
-									if thissize/4*4 != thissize:
-										stepsize = (thissize/4*4) + 4
-									# align stack again
+									if (thissize % ptr_size) != 0:
+										stepsize = ((thissize // ptr_size) * ptr_size) + ptr_size
+
 									if not silent:
 										espoff = 0
 										espsign = "+"
@@ -11825,31 +11890,41 @@ def goFindMSP(distance = 0,args = {}):
 											espoff = (stackcounter + thissize) - curresp
 										else:
 											espoff = curresp - (stackcounter + thissize)
-											espsign = "-"											
-										dbg.log("    0x%s : Contains %s cyclic pattern at ESP%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : ESP%s0x%s)" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,offset,thissize,toHex(stackcounter+thissize-1),espsign,rmLeading(toHex(espoff),"0")))
-									tofile += "    0x%s : Contains %s cyclic pattern at ESP%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : ESP%s0x%s)\n" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,offset,thissize,toHex(stackcounter+thissize-1),espsign,rmLeading(toHex(espoff),"0"))
-									if not currptr in stackcontains:
-										stackcontains[currptr] = ([offsetvalue,sign,offset,thissize,pattype])
+											espsign = "-"
+
+										dbg.log("    0x%s : Contains %s cyclic pattern at %s%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : %s%s0x%s)" % (
+											toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
+											sign, offsetvalue, offset, thissize,
+											toHex(stackcounter + thissize - 1), sp_reg, espsign, rmLeading(toHex(espoff), "0")))
+
+									tofile += "    0x%s : Contains %s cyclic pattern at %s%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : %s%s0x%s)\n" % (
+										toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
+										sign, offsetvalue, offset, thissize,
+										toHex(stackcounter + thissize - 1), sp_reg, espsign, rmLeading(toHex(espoff), "0"))
+
+									if currptr not in stackcontains:
+										stackcontains[currptr] = [offsetvalue, sign, offset, thissize, pattype]
 								else:
-									#if we are close to ESP, change stepsize to 1
+									# if we are close to SP, change stepsize to 1
 									if offsetvalue <= 256:
 										stepsize = 1
-			stackcounter += stepsize
-			
 
-			
+			stackcounter += stepsize
+
 		# stack has pointer into cyclic pattern ?
 		if not silent:
 			if distance == 0:
 				extratxt = "(entire stack)"
 			else:
-				extratxt = "(+- "+str(distance)+" bytes)"
-			dbg.log("[+] Examining stack %s - looking for pointers to cyclic pattern" % extratxt)	
+				extratxt = "(+- " + str(distance) + " bytes)"
+			dbg.log("[+] Examining stack %s - looking for pointers to cyclic pattern" % extratxt)
 		tofile += "\n[+] Examining stack %s - looking for pointers to cyclic pattern\n" % extratxt
+
 		# get stack this address belongs to
 		stacks = getStacks()
 		thisstackbase = 0
 		thisstacktop = 0
+
 		if distance < 1:
 			for tstack in stacks:
 				if (stacks[tstack][0] < curresp) and (curresp < stacks[tstack][1]):
@@ -11857,88 +11932,93 @@ def goFindMSP(distance = 0,args = {}):
 					thisstacktop = stacks[tstack][1]
 		else:
 			thisstackbase = curresp - distance
-			thisstacktop = curresp + distance + 8
+			thisstacktop = curresp + distance + ptr_size
+
 		stackcounter = thisstackbase
-		sign=""		
-		
+		sign = ""
+
 		if not silent:
-			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter)))
-		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter),toHex(thisstacktop-4),toHex(thisstacktop-4-stackcounter))
-		while stackcounter < thisstacktop-4:
+			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter)))
+		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter))
+
+		while stackcounter < thisstacktop - ptr_size:
 			espoffset = stackcounter - curresp
-			
-			dbg.updateLog()	
+			dbg.updateLog()
+
 			if espoffset > -1:
-				sign="+"			
+				sign = "+"
 			else:
-				sign="-"	
-				
-			cont = dbg.readMemory(stackcounter,4)
-			
-			if len(cont) == 4:
-				cval=""				
-				for sbytes in cont:
-					tval = hex(_ord(sbytes)).replace("0x","")
-					if len(tval) < 2:
-						tval="0"+tval
-					cval = tval+cval
-				try:				
-					contat = dbg.readMemory(hexStrToInt(cval),4)
+				sign = "-"
+
+			cont = dbg.readMemory(stackcounter, ptr_size)
+
+			if len(cont) == ptr_size:
+				try:
+					currptr = struct.unpack(ptr_pack_fmt, cont)[0]
+					contat = dbg.readMemory(currptr, 4)
 				except:
-					contat = ""	
-					
-				if contat != "":
+					contat = b""
+
+				if contat != b"":
 					for pattype in pattypes:
 						dbg.updateLog()
-						regpattern = fullpattern
-						
+						regpattern = fullpattern_bytes
 						hexpat = contat
-					
+
 						if pattype == "upper":
-							regpattern = regpattern.upper()
+							regpattern = fullpattern_bytes.upper()
 						if pattype == "lower":
-							regpattern = regpattern.lower()
+							regpattern = fullpattern_bytes.lower()
 						if pattype == "unicode":
-							hexpat1 = dbg.readMemory(stackcounter,4)
-							hexpat2 = dbg.readMemory(stackcounter+4,4)
-							hexpat1 = hexpat1.replace(b"\x00",b"")
-							hexpat2 = hexpat2.replace(b"\x00",b"")
-							if hexpat1 == "" or hexpat2 == "":
-								#no unicode
-								hexpat = ""
+							regpattern = ensure_bytes(toUnicode(fullpattern))
+							hexpat1 = dbg.readMemory(currptr, 4)
+							hexpat2 = dbg.readMemory(currptr + 4, 4)
+							hexpat1 = hexpat1.replace(b"\x00", b"")
+							hexpat2 = hexpat2.replace(b"\x00", b"")
+							if hexpat1 == b"" or hexpat2 == b"":
+								# no unicode
+								hexpat = b""
 								break
 							else:
 								hexpat = hexpat1 + hexpat2
-						
+
 						if len(hexpat) == 4:
 							offset = regpattern.find(hexpat)
-							currptr = hexStrToInt(cval)
-							
-							if offset > -1:				
-								thissize = getPatternLength(currptr,pattype)
+
+							if offset > -1:
+								if pattype == "unicode":
+									offset = offset // 2
+
+								thissize = getPatternLength(currptr, pattype, args)
 								if thissize > 0:
-									offsetvalue = int(str(espoffset).replace("-",""))
+									offsetvalue = abs(espoffset)
 									if not silent:
-										dbg.log("    0x%s : Pointer into %s cyclic pattern at ESP%s0x%s (%s%s) : 0x%s : offset %d, length %d" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,toHex(currptr),offset,thissize))
-									tofile += "    0x%s : Pointer into %s cyclic pattern at ESP%s0x%s (%s%s) : 0x%s : offset %d, length %d\n" % (toHex(stackcounter),pattype,sign,rmLeading(toHex(offsetvalue),"0"),sign,offsetvalue,toHex(currptr),offset,thissize)
-									if not currptr in stack:
-										stack[currptr] = ([offsetvalue,sign,offset,thissize,pattype])					
-							
-			stackcounter += 4
+										dbg.log("    0x%s : Pointer into %s cyclic pattern at %s%s0x%s (%s%s) : 0x%s : offset %d, length %d" % (
+											toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
+											sign, offsetvalue, toHex(currptr), offset, thissize))
+									tofile += "    0x%s : Pointer into %s cyclic pattern at %s%s0x%s (%s%s) : 0x%s : offset %d, length %d\n" % (
+										toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
+										sign, offsetvalue, toHex(currptr), offset, thissize)
+
+									if currptr not in stack:
+										stack[currptr] = [offsetvalue, sign, offset, thissize, pattype]
+
+			stackcounter += ptr_size
 	else:
-		dbg.log("** Are you connected to an application ?",highlight=1)
-		
-	if not "stack" in results:
+		dbg.log("** Are you connected to an application ?", highlight=1)
+
+	if "stack" not in results:
 		results["stack"] = stack
-	if not "stackcontains" in results:
-		results["stackcontains"] = stack
-		
+	if "stackcontains" not in results:
+		results["stackcontains"] = stackcontains
+
 	if tofile != "":
 		objfindmspfile = MnLog("findmsp.txt")
 		findmspfile = objfindmspfile.reset()
-		objfindmspfile.write(tofile,findmspfile)
+		objfindmspfile.write(tofile, findmspfile)
+
 	return results
-	
+
 	
 #-----------------------------------------------------------------------#
 # convert arguments to criteria
