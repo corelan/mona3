@@ -6493,10 +6493,11 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	# dbg.log("%s" % modulecriteria)		
 	isrebased = False
 	nrkeys = len(modulestosearch)
+	keycnt = 1
 	for key in modulestosearch:
-		keycnt = 1
 		curmod = dbg.getModule(key)
 		dbg.log("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
+		keycnt += 1
 		#is this module going to get rebase ?
 		themodule = MnModule(key)
 		isrebased = themodule.isRebase
@@ -7027,6 +7028,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	logfile.write("", thislog)	
 	arrtowrite = ""	
 	pivotcount = 0
+	startmoment = time.time()
+	flipover = 0
 	try:
 		with open(thislog,"a") as fh:
 			arrtowrite = ""
@@ -7039,6 +7042,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 					pivotcount += 1
 					arrtowrite += ptrinfo
+				flipover += 1
+				if flipover > 20:
+					eta = get_eta(startmoment, pivotcount , len(stackpivots_index))
+					dbg.log("    Update: %s" % eta)
+					flipover = 0
+					
 			fh.writelines(arrtowrite)
 	except:
 		pass
@@ -7053,6 +7062,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	logfile.write("--------------------------",thislog)	
 	logfile.write("", thislog)	
 	arrtowrite = ""	
+	startmoment = time.time()
+	flipover = 0
+
 	try:
 		with open(thislog, "a") as fh:
 			arrtowrite = ""
@@ -7066,6 +7078,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] SafeSEH **   |  " + ptrx.__str__()+"\n"
 					pivotcount += 1
 					arrtowrite += ptrinfo
+				flipover += 1
+				if flipover > 20:
+					eta = get_eta(startmoment, pivotcount , len(stackpivots_safeseh_index))
+					dbg.log("    Update: %s" % eta)
+					flipover = 0
+
 			fh.writelines(arrtowrite)
 	except:
 		pass	
@@ -7096,6 +7114,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			try:
 				with open(thislog, "a") as fh:
 					arrtowrite = ""
+					flipover = 0
+					gcount = 0
+					startmoment = time.time()
 					if sortedprint:
 						arrptrs = []
 						dbg.log("    Sorting interesting gadgets first")
@@ -7109,6 +7130,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							#modinfo = MnModule(modname)
 							ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 							arrtowrite += ptrinfo
+							flipover += 1
+							gcount += 1
+							if flipover > 1000:
+								eta = get_eta(startmoment, gcount , len(ropgadgets))
+								dbg.log("    Update: %s" % eta)
+								flipover = 0	
 
 					else:
 						for gadget in interestinggadgets:
@@ -7117,6 +7144,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							#modinfo = MnModule(modname)
 							ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 							arrtowrite += ptrinfo
+							flipover += 1
+							gcount += 1
+							if flipover > 1000:
+								eta = get_eta(startmoment, gcount , len(ropgadgets))
+								dbg.log("    Update: %s" % eta)
+								flipover = 0
 					objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
 					fh.writelines(arrtowrite)
 				dbg.log("    Wrote %d interesting gadgets to file" % len(interestinggadgets))
@@ -7130,6 +7163,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					logfile.write("",thislog)
 					logfile.write("Other gadgets",thislog)
 					logfile.write("-------------",thislog)
+					startmoment = time.time()
+					flipover = 0
+					gcount = 0
 					with open(thislog, "a") as fh:
 						arrtowrite=""
 						if sortedprint:
@@ -7145,6 +7181,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								#modinfo = MnModule(modname)
 								ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 								arrtowrite += ptrinfo
+								flipover += 1
+								gcount += 1
+								if flipover > 500:
+									eta = get_eta(startmoment, gcount , len(ropgadgets))
+									dbg.log("    Update: %s" % eta)
+									flipover = 0	
 						else:	
 							for gadget in ropgadgets:
 								ptrx = MnPointer(gadget)
@@ -7152,6 +7194,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								#modinfo = MnModule(modname)
 								ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 								arrtowrite += ptrinfo
+								flipover += 1
+								gcount += 1
+								if flipover > 500:
+									eta = get_eta(startmoment, gcount , len(ropgadgets))
+									dbg.log("    Update: %s" % eta)
+									flipover = 0	
 
 						dbg.log("    Wrote %d other gadgets to file" % len(ropgadgets))
 						objprogressfile.write("Writing results to file " + thislog + " (" + str(len(ropgadgets))+" other gadgets)",progressfile)
@@ -14020,7 +14068,7 @@ def procEgg(args, procUsage = ""):
 		useboth = True
 
 	if len(egg) != 4:
-		egg = b"w00t"
+		egg = "w00t"
 	dbg.log("[+] Egg set to %s" % egg)
 	
 	if "c" in args:
@@ -14072,8 +14120,8 @@ def procEgg(args, procUsage = ""):
 	depmethod = ""
 	
 	getpointer = ""
-	getsize = ""
-	getpc = ""
+	getsize = b""
+	getpc = b""
 	
 	jmppayload = b"\xff\xe7"	#jmp edi
 	
@@ -14139,7 +14187,7 @@ def procEgg(args, procUsage = ""):
 		incedxoffset = 5 # The offset in the egghunter to reach the #INC EDX
 	if usewow64:
 		dbg.log("[+] Generating egghunter for wow64, Windows %s" % win_ver)
-		egghunter = ""
+		egghunter = b""
 		if win_ver == "7":
 			egghunter += (
 				# 64 stub needed before loop
@@ -14207,7 +14255,7 @@ def procEgg(args, procUsage = ""):
 			incedxoffset = 9 # The offset in the egghunter to reach the #INC EDX
 	if usechecksum:
 		dbg.log("[+] Generating checksum routine")
-		extratext = "+ checksum routine"
+		extratext = b"+ checksum routine"
 		egg_size = b""
 		if len(data) < 256:
 			cmp_reg = b"\x80\xf9"	#cmp cl,value
@@ -14219,7 +14267,7 @@ def procEgg(args, procUsage = ""):
 			egg_size_normal = "%04X" % len(data)
 			while egg_size_normal[0:2] == "00" or egg_size_normal[2:4] == "00":
 				data += b"\x90"
-				egg_size_normal = b"%04X" % len(data)
+				egg_size_normal = "%04X" % len(data)
 			egg_size = hex2bin(egg_size_normal[2:4]) + hex2bin(egg_size_normal[0:2])
 			offset1 = b"\xf5"
 		else:
@@ -14364,7 +14412,7 @@ def procEgg(args, procUsage = ""):
 	silent = oldsilent			
 	
 	#Convert binary to printable hex format
-	egghunter_hex = toniceHex(egghunter.strip().replace(" ",""),16)
+	egghunter_hex = toniceHex(egghunter.strip().replace(b" ",b""),16)
 			
 	global ignoremodules
 	ignoremodules = True
@@ -14372,7 +14420,7 @@ def procEgg(args, procUsage = ""):
 	objegghunterfile = MnLog(hunterfilename)
 	egghunterfile = objegghunterfile.reset()						
 
-	dbg.log("[+] Egghunter %s (%d bytes): " % (extratext,len(egghunter.strip().replace(" ",""))))
+	dbg.log("[+] Egghunter %s (%d bytes): " % (extratext, len(egghunter.strip().replace(b" ", b""))))
 	dbg.logLines("%s" % egghunter_hex)
 
 	objegghunterfile.write("Egghunter " + extratext + ", tag " + egg + " : ",egghunterfile)
