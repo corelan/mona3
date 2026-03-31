@@ -6768,7 +6768,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		silent = True
 	dbg.updateLog()
 	ropgadgets = {}
-	instr_cache = {}
 	interestinggadgets = {}
 	stackpivots = {}
 	stackpivots_safeseh = {}
@@ -6803,8 +6802,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						pct=(done * 100.0) / tp,
 						eta=eta
 					)
+					ropcounttxt = "        Nr of gadgets so far: %d " % len(ropgadgets)
+
 					objprogressfile.write(updatetext.strip(),progressfile)
+					objprogressfile.write(ropcounttxt.strip(),progressfile)
 					dbg.log(updatetext)
+					dbg.log(ropcounttxt)
 					dbg.updateLog()
 					if DEBUG_MODE:
 						dbgp("Number of ropgadgets: %d" % len(ropgadgets))
@@ -6846,13 +6849,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 									#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
 									avoidunlimitedloop = 0
 									while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
-										if not chainptr in instr_cache:
-											thisopcode = dbg.disasm(chainptr)
-											instr_cache[chainptr] = thisopcode
-										else:
-											thisopcode = instr_cache[chainptr]
-											if DEBUG_MODE:
-												dbgp("Return instruction at 0x%x from cache: %s" % (chainptr, thisopcode))
+										thisopcode = dbg.disasm(chainptr)
 										thisinstruction = getDisasmInstruction(thisopcode)
 										if isGoodGadgetInstr(thisinstruction) and not isGadgetEnding(thisinstruction,search):						
 											thischain =  thischain + " # " + thisinstruction
@@ -6862,8 +6859,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 										else:
 											invalidinstr = True
 										avoidunlimitedloop += 1
-										if DEBUG_MODE:
-											dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
+										#if DEBUG_MODE:
+										#	dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
 											fullchain = thischain + " # " + endingtype

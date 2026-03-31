@@ -60,6 +60,7 @@ except NameError:
 
 global MemoryPages
 global AsmCache
+global disAsmCache
 global OpcodeCache
 global InstructionCache
 global PageSections
@@ -75,6 +76,7 @@ PageSections = {}
 ModuleCache = {}
 FuncCache = {}
 PEBModList = {}
+disAsmCache = {}
 
 Registers32BitsOrder = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"]
 Registers64BitsOrder = ["RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
@@ -211,6 +213,7 @@ def clearvars():
 	global cpebaddress	
 	MemoryPages = None
 	AsmCache = None
+	disAsmCache = None
 	OpcodeCache = None
 	InstructionCache = None
 	InstructionCache = None
@@ -716,6 +719,7 @@ class Debugger:
 
 	MemoryPages = {}
 	AsmCache = {}
+	disAsmCache = {}
 	OpcodeCache = {} 
 
 	def __init__(self):
@@ -3531,12 +3535,19 @@ class opcode:
 		if self.instruction == "":
 			disasmdata = ""
 
-			disasmlines = pykd.dbgCommand("u 0x%08x L 1" % self.address)
-			for thisline in disasmlines.split("\n"):
-				if thisline.lower().startswith(intToHexWinDbgFormat(self.address)):
-					disasmdata = thisline
-					break
+			global disAsmCache
+			if self.address in disAsmCache:
+				disasmdata = disAsmCache[self.address]
+			else:
+				disasmlines = pykd.dbgCommand("u 0x%08x L 1" % self.address)
+				for thisline in disasmlines.split("\n"):
+					if thisline.lower().startswith(intToHexWinDbgFormat(self.address)):
+						disasmdata = thisline
+						#if DEBUG_MODE:
+						#	dbgp("Disasm at 0x%x: %s" % (self.address, thisline))
+						break
 			if disasmdata != "":
+				disAsmCache[self.address] = disasmdata
 				self.parseDisasm(disasmdata)
 				self.instruction = self.instruction.replace("   "," ").replace("  "," ")
 				# sanitize instruction to make output immlib compatible. Ugly. A bit.
@@ -3575,8 +3586,8 @@ class opcode:
 						self.instruction = instructionparts[cnt] + ","
 						cnt += 1
 					self.instruction = self.instruction+ instructionparts[len(instructionparts)-1].strip("H")
-		self.dump = self.instruction
-		return self.instruction
+			self.dump = self.instruction
+			return self.instruction
 
 	def parseDisasm(self, disasmdata):
 		if arch == 32:
