@@ -6931,7 +6931,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if DEBUG_MODE:
 		dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
 		dbgp("Final Number of stackpivots: %d" % len(stackpivots))
-		dbgp("Final Number of safeseh stackpivots: %d" % l(nstackpivots_safeseh))					
+		dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
 
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
