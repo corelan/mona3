@@ -2869,7 +2869,8 @@ class MnModule:
 	"""
 	def __init__(self, modulename):
 		#if DEBUG_MODE:
-		dbgp(get_current_function_name())
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 		modisaslr = True
 		modissafeseh = True
 		modrebased = True
@@ -2892,7 +2893,8 @@ class MnModule:
 		if modulename != "":
 			# if info is cached, retrieve from cache
 			if ModInfoCached(modulename):
-				dbgp("module cached: %s" % modulename)
+				if DEBUG_MODE:
+					dbgp("module cached: %s" % modulename)
 				modisaslr = getModuleProperty(modulename,"aslr")
 				modissafeseh = getModuleProperty(modulename,"safeseh")
 				modrebased = getModuleProperty(modulename,"rebase")
