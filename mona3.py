@@ -6453,14 +6453,14 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	modulestosearch = getModulesToQuery(modulecriteria)
 	if searchfuncs == []:
 		functionnames = ["virtualprotect","virtualalloc","heapalloc","winexec","setprocessdeppolicy","heapcreate","setinformationprocess","writeprocessmemory","memcpy","memmove","strncpy","createmutex","getlasterror","strcpy","loadlibrary","freelibrary","getmodulehandle","getprocaddress","openfile","createfile","createfilemapping","mapviewoffile","openfilemapping"]
-		offsets["kernel32.dll"] = ["virtualprotect","virtualalloc","writeprocessmemory"]
+		offsets["kernel32"] = ["virtualprotect","virtualalloc","writeprocessmemory"]
 		# on newer OSes, functions are stored in kernelbase.dll
-		offsets["kernelbase.dll"] = ["virtualprotect","virtualalloc","writeprocessmemory"]
+		offsets["kernelbase"] = ["virtualprotect","virtualalloc","writeprocessmemory"]
 	else:
 		functionnames = searchfuncs
-		offsets["kernel32.dll"] = searchfuncs
+		offsets["kernel32"] = searchfuncs
 		# on newer OSes, functions are stored in kernelbase.dll
-		offsets["kernelbase.dll"] = searchfuncs
+		offsets["kernelbase"] = searchfuncs
 	if not silent:
 		dbg.log("[+] Looking for pointers to interesting functions...")
 	curmod = ""
@@ -6531,7 +6531,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 								if offsetvalue < 0:
 									operator = "-"
 								offsetvaluehex = toHex(offsetvalue).replace("-","")
-								thetype = "(%s - IAT 0x%s : %s.%s (0x%s), offset to %s.%s (0x%s) : %d (%s0x%s)" % (key,toHex(fn),pmodname,thisfuncfullname,toHex(ptr),pmodname,interestingfunc,toHex(offsetpointers[interestingfunc]),offsetvalue,operator,offsetvaluehex)
+								thetype = "(%s - IAT 0x%s : %s.%s (0x%s), offset to %s!%s (0x%s) : %d (%s0x%s)" % (key,toHex(fn),pmodname,thisfuncfullname,toHex(ptr),pmodname,interestingfunc,toHex(offsetpointers[interestingfunc]),offsetvalue,operator,offsetvaluehex)
 								if not thetype in ropfuncoffsets:
 									ropfuncoffsets[thetype] = [fn]
 				
@@ -6774,7 +6774,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				tp = tp + len(all_opcodes[endingtype])
 	global silent
 	if not usefiles:		
-		dbg.log("    - Filtering and mutating %d gadget endings" % tp)
+		dbg.log("[+] Expanding and filtering gadgets for %d endings" % tp)
 	else:
 		dbg.log("    - Categorizing %d gadget endings" % tp)
 		silent = True
@@ -6805,7 +6805,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					adcnt = adcnt - 0.5
 				done = tc * updateth
 				if adcnt > done:
-					thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+					thistimestamp=datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
 					eta = get_eta(startmoment, done, tp)
 					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
 						done=done,
@@ -6955,7 +6955,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						step = -1
 					step += 1
 	
-	thistimestamp = datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+	thistimestamp = datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
 	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
@@ -7173,7 +7173,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								arrtowrite += ptrinfo
 								flipover += 1
 								gcount += 1
-								if flipover > 500:
+								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
 									dbg.log("    Update: %s" % eta)
 									flipover = 0	
@@ -7186,7 +7186,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								arrtowrite += ptrinfo
 								flipover += 1
 								gcount += 1
-								if flipover > 500:
+								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
 									dbg.log("    Update: %s" % eta)
 									flipover = 0	
@@ -7236,7 +7236,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 					with open(thislog, "a") as fh:
 						fh.write(ptrinfo)
-	thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+	thistimestamp=datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
 	objprogressfile.write("Done (" + thistimestamp+")",progressfile)
 	dbg.log("Done")
 	return interestinggadgets,ropgadgets,suggestions,vplogtxt
@@ -9288,7 +9288,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			if thisreg in replacelist:
 				thistarget = replacelist[thisreg]
 			
-			thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+			thistimestamp=datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
 			dbg.log("    %s: Step %d/%d: %s" % (thistimestamp,stepcnt,len(routinedefs[routine]),thisreg))
 			stepcnt += 1
 
@@ -10115,6 +10115,7 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 	a pointer (integer value, 0 if no pointer was found)
 	text (with optional info)
 	"""
+	dbg.log("[+] Querying IATs for %s" % apiname)
 
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
