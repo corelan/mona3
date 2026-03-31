@@ -7042,11 +7042,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 					pivotcount += 1
 					arrtowrite += ptrinfo
-				flipover += 1
-				if flipover > 20:
-					eta = get_eta(startmoment, pivotcount , len(stackpivots_index))
-					dbg.log("    Update: %s" % eta)
-					flipover = 0
 					
 			fh.writelines(arrtowrite)
 	except:
@@ -7078,11 +7073,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] SafeSEH **   |  " + ptrx.__str__()+"\n"
 					pivotcount += 1
 					arrtowrite += ptrinfo
-				flipover += 1
-				if flipover > 20:
-					eta = get_eta(startmoment, pivotcount , len(stackpivots_safeseh_index))
-					dbg.log("    Update: %s" % eta)
-					flipover = 0
 
 			fh.writelines(arrtowrite)
 	except:
@@ -7132,7 +7122,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							arrtowrite += ptrinfo
 							flipover += 1
 							gcount += 1
-							if flipover > 1000:
+							if flipover > 5000:
 								eta = get_eta(startmoment, gcount , len(ropgadgets))
 								dbg.log("    Update: %s" % eta)
 								flipover = 0	
@@ -7146,7 +7136,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							arrtowrite += ptrinfo
 							flipover += 1
 							gcount += 1
-							if flipover > 1000:
+							if flipover > 5000:
 								eta = get_eta(startmoment, gcount , len(ropgadgets))
 								dbg.log("    Update: %s" % eta)
 								flipover = 0
@@ -14057,7 +14047,7 @@ def procEgg(args, procUsage = ""):
 	#Set egg
 	if "t" in args:
 		if type(args["t"]).__name__.lower() != "bool":
-			egg = args["t"]
+			egg = _to_bytes(args["t"])
 
 	if "wow64" in args:
 		usewow64 = True
@@ -14068,8 +14058,8 @@ def procEgg(args, procUsage = ""):
 		useboth = True
 
 	if len(egg) != 4:
-		egg = "w00t"
-	dbg.log("[+] Egg set to %s" % egg)
+		egg = b"w00t"
+	dbg.log("[+] Egg set to %s" % _to_text(egg))
 	
 	if "c" in args:
 		if filename != "":
@@ -14420,14 +14410,14 @@ def procEgg(args, procUsage = ""):
 	objegghunterfile = MnLog(hunterfilename)
 	egghunterfile = objegghunterfile.reset()						
 
-	dbg.log("[+] Egghunter %s (%d bytes): " % (extratext, len(egghunter.strip().replace(b" ", b""))))
+	dbg.log("[+] Egghunter %s (%d bytes): " % (_to_text(extratext), len(egghunter.strip().replace(b" ", b""))))
 	dbg.logLines("%s" % egghunter_hex)
 
-	objegghunterfile.write("Egghunter " + extratext + ", tag " + egg + " : ",egghunterfile)
+	objegghunterfile.write("Egghunter " + _to_text(extratext) + ", tag " + _to_text(egg) + " : ",egghunterfile)
 	objegghunterfile.write(egghunter_hex,egghunterfile)			
 
 	if filename == "":
-		objegghunterfile.write("Put this tag in front of your shellcode : " + egg + egg,egghunterfile)
+		objegghunterfile.write("Put this tag in front of your shellcode : " + _to_text(egg) + _to_text(egg),egghunterfile)
 	else:
 		dbg.log("[+] Shellcode, with tag : ")			
 		block = "\"" + egg + egg + "\"\n"
