@@ -6765,9 +6765,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				tp = tp + len(all_opcodes[endingtype])
 	global silent
 	if not usefiles:		
-		dbg.log("    - Filtering and mutating %d gadgets" % tp)
+		dbg.log("    - Filtering and mutating %d gadget endings" % tp)
 	else:
-		dbg.log("    - Categorizing %d gadgets" % tp)
+		dbg.log("    - Categorizing %d gadget endings" % tp)
 		silent = True
 	dbg.updateLog()
 	ropgadgets = {}
@@ -6875,7 +6875,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 										dbgp("endingtypeptr 0x%x, chainptr 0x%x" % (endingtypeptr, chainptr))				
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
-											fullchain = thischain + " # " + endingtype
+											fullchain = thischain + " # " + endingtype.upper()
 											msfchain.append([endingtypeptr,endingtype])
 											thisopcode = dbg.disasm(endingtypeptr)
 											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
@@ -8180,8 +8180,8 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 		for ranges in rangestosearch:
 			mBase = ranges[0]
 			mTop = ranges[1]
-			if not silent:
-				dbg.log("[+] Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+			if DEBUG_MODE:
+				dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 			dbg.updateLog()
 			searchPattern = []
 			searchPattern.append([originalPattern, bytes])
@@ -8302,8 +8302,8 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 				for ranges in p2prangestosearch:
 					mBase = ranges[0]
 					mTop = ranges[1]
-					if not silent:
-						dbg.log("[+] Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+					if DEBUG_MODE:
+						dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 					dbg.updateLog()
 					oldsilent = silent
 					silent=True
@@ -8321,9 +8321,9 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 							remainingpointers[ptrtype] = pointers[ptrtype]
 				thislevel += 1
 				if len(remainingpointers) == 0:
-					if not silent:
-						dbg.log("[+] No more pointers left, giving up...", highlight=1)
-						break
+					if DEBUG_MODE:
+						dbgp("[+] No more pointers left, giving up...", highlight=1)
+					break
 		allpointers = remainingpointers
 
 	return allpointers
