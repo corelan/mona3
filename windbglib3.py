@@ -2761,8 +2761,8 @@ class Debugger:
 
 
 	def disasmForwardAddressOnly(self,address,depth):
-		# go to correct location, get address of depth+1 positions after current address
-		return self.disasmForward(address,depth+1).getAddress()
+		# go to correct location, get address of next after current address
+		return self.disasmForward(address,depth).getAddress()
 
 	def disasmBackward(self,address,depth):
 		while True:

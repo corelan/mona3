@@ -835,28 +835,31 @@ def bin2hexstr(binbytes):
 	"""
 	return ''.join('\\x%02x' % _ord(c) for c in binbytes)
 
+
 def str2js(inputstring):
 	"""
-	Converts a string to a javascript string
+	Converts a byte string to a javascript string
 	
 	Arguments:
-	inputstring - the input string to convert 
+	inputstring - the input bytes to convert
 
-	Return :
+	Return:
 	string in javascript format
 	"""
-	length = len(inputstring)
+	inputbytes = _to_bytes(inputstring)
+	length = len(inputbytes)
+
 	if length % 2 == 1:
 		jsmsg = "Warning : odd size given, js pattern will be truncated to " + str(length - 1) + " bytes, it's better use an even size\n"
 		if not silent:
-			dbg.logLines(jsmsg,highlight=1)
-	toreturn=""
-	for thismatch in re.compile("..").findall(inputstring):
-		thisunibyte = ""
-		for thisbyte in thismatch:
-			thisunibyte = "%02x" % _ord(thisbyte) + thisunibyte
+			dbg.logLines(jsmsg, highlight=1)
+
+	toreturn = ""
+	for i in range(0, length - 1, 2):
+		thisunibyte = "%02x%02x" % (_ord(inputbytes[i + 1]), _ord(inputbytes[i]))
 		toreturn += "%u" + thisunibyte
-	return toreturn		
+
+	return toreturn
 
 
 def readJSONDict(filename):
