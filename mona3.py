@@ -14098,12 +14098,12 @@ def procEgg(args, procUsage = ""):
 
 			
 	#let's start		
-	egghunter = ""
+	egghunter = b""
 
 	if not usewow64:
 		#Basic version of egghunter
 		dbg.log("[+] Generating traditional 32bit egghunter code")
-		egghunter = ""
+		egghunter = b""
 		egghunter += (
 			b"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
 			b"\x42"+					#INC EDX
@@ -14193,7 +14193,7 @@ def procEgg(args, procUsage = ""):
 	if usechecksum:
 		dbg.log("[+] Generating checksum routine")
 		extratext = "+ checksum routine"
-		egg_size = ""
+		egg_size = b""
 		if len(data) < 256:
 			cmp_reg = b"\x80\xf9"	#cmp cl,value
 			egg_size = _to_bytes(hex2bin("%02x" % len(data)))
@@ -14206,7 +14206,7 @@ def procEgg(args, procUsage = ""):
 				data += b"\x90"
 				egg_size_normal = b"%04X" % len(data)
 			egg_size = hex2bin(egg_size_normal[2:4]) + hex2bin(egg_size_normal[0:2])
-			offset1 = "\xf5"
+			offset1 = b"\xf5"
 		else:
 			dbg.log("Cannot use checksum code with this payload size (way too big)",highlight=1)
 			return
@@ -14269,7 +14269,7 @@ def procEgg(args, procUsage = ""):
 		else:
 			if depsize <= 127:
 				#simply push it to the stack
-				getsize = "\x6a" + hex2bin("\\x" + toHexByte(depsize))
+				getsize = b"\x6a" + hex2bin("\\x" + toHexByte(depsize))
 			else:
 				#can we do it with 16bit reg, no nulls ?
 				if depsize <= 65535:
@@ -14331,14 +14331,14 @@ def procEgg(args, procUsage = ""):
 	egghunter += getpc
 	egghunter += jmppayload
 	
-	startat = ""
-	skip = ""
+	startat = b""
+	skip = b""
 	
 	#start at a certain reg ?
 	if startreg != "":
 		if startreg != "edx":
 			startat = hex2bin(assemble("mov edx," + startreg))
-		skip = "\xeb\x05"
+		skip = b"\xeb\x05"
 	
 	egghunter = skip + egghunter
 	#pickup pointer for DEP bypass ?
