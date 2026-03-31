@@ -2540,19 +2540,19 @@ class MnConfig:
 		curparam=[]
 		global configFileCache
 		#first check if parameter already exists in global cache
-		if DEBUG_MODE:
-			dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
+		#if DEBUG_MODE:
+		#	dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
 
 		# if it's not, and configFileCache is not empty, don't read the file.
 
 		if parameter.strip().lower() in configFileCache:
 			toreturn = configFileCache[parameter.strip().lower()]
-			if DEBUG_MODE:
-				dbgp("    Yes: Result: %s" % toreturn)			
+			#if DEBUG_MODE:
+			#	dbgp("    Yes: Result: %s" % toreturn)			
 			#dbg.log("Found parameter %s in cache: %s" % (parameter, toreturn))
 		else:
-			if DEBUG_MODE:
-				dbgp("    Not in cache.")
+			#if DEBUG_MODE:
+			#	dbgp("    Not in cache.")
 			if len(configFileCache) == 0:
 				if os.path.exists(self.configfile):
 					try:
@@ -2560,7 +2560,7 @@ class MnConfig:
 						content = configfileobj.readlines()
 						configfileobj.close()
 						if DEBUG_MODE:
-							dbgp("    Reading content line by line")
+							dbgp("    Reading config content line by line")
 						for thisLine in content:
 							thisLine = thisLine.decode("latin-1").strip()
 							if DEBUG_MODE:
@@ -2590,7 +2590,6 @@ class MnConfig:
 									if DEBUG_MODE:
 										dbgp("          Skip, not the right parameter")
 							
-
 					except Exception as e:
 						if DEBUG_MODE:
 							dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
@@ -2598,9 +2597,6 @@ class MnConfig:
 				else:
 					if DEBUG_MODE:
 						dbgp("Config file %s does not seem to exist" % self.configfile)
-			else:
-				if DEBUG_MODE:
-					dbgp("Not reading config file, it has been processed already before. It contains %d entries" % len(configFileCache))
 	
 		return toreturn
 	
@@ -5337,28 +5333,20 @@ def getSegmentsForHeap(heapbase):
 		segmentlistCache[heapbase] = segmentinfo
 		return segmentinfo
 
-def containsBadChars(address,badchars="\x0a\x0d"):
+def containsBadChars(address, badchars=b"\x0a\x0d"):
 	"""
 	checks if the address contains bad chars
-	
-	Arguments:
-	address  - the address
-	badchars - string with the characters that should be avoided (defaults to 0x0a and 0x0d)
-	
-	Return:
-	Boolean - True if badchars are found
 	"""
-	
-	bytes = splitAddress(address)
-	chars = []
-	for byte in bytes:
-		chars.append(chr(byte))
-	
-	# check each char
-	for char in chars:
-		if char in badchars:
-			return True			
-	return False
+
+	addrbytes = splitAddress(address)
+
+	# normalize badchars to a set of integer byte values
+	if isinstance(badchars, bytes):
+		badset = set(badchars) if PY3 else set(ord(b) for b in badchars)
+	else:
+		badset = set(_ord(b) for b in badchars)
+
+	return any(b in badset for b in addrbytes)
 
 
 def meetsCriteria(pointer,criteria):
@@ -5372,8 +5360,8 @@ def meetsCriteria(pointer,criteria):
 	Return:
 	Boolean - True if all the conditions are met
 	"""
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	#if DEBUG_MODE:
+	#	dbgp(get_current_function_name())
 	# Unicode
 	if "unicode" in criteria and not (pointer.isUnicode or pointer.unicodeTransform != ""):
 		return False
@@ -6756,7 +6744,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					adcnt = adcnt - 0.5
 				if adcnt > (tc*updateth):
 					thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
-					updatetext = "      - Progress update : " + str(tc*updateth) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*updateth*100)/tp)+"%)"
+					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%)".format( done=tc * updateth, total=tp, ts=thistimestamp, pct=(tc * updateth * 100.0) / tp)
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
 					dbg.updateLog()
@@ -10791,8 +10779,8 @@ def readGadgetsFromFile(filename):
 	return readopcodes
 	
 def isGoodGadgetPtr(gadget,criteria):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	#if DEBUG_MODE:
+	#	dbgp(get_current_function_name())
 	if gadget in CritCache:
 		return CritCache[gadget]
 	else:
@@ -13899,15 +13887,15 @@ def procgetPC(args, procUsage = ""):
 #----- Egghunter -----#
 def procEgg(args, procUsage = ""):
 	filename = ""
-	egg = "w00t"
+	egg = b"w00t"
 	usechecksum = False
 	usewow64 = False
 	useboth = False
 	egg_size = 0
 	win_ver = "10"
 	win_vers = ["7","10"]
-	checksumbyte = ""
-	extratext = ""
+	checksumbyte = b""
+	extratext = b""
 	
 	global silent
 	oldsilent = silent
@@ -13937,7 +13925,7 @@ def procEgg(args, procUsage = ""):
 		useboth = True
 
 	if len(egg) != 4:
-		egg = 'w00t'
+		egg = b"w00t"
 	dbg.log("[+] Egg set to %s" % egg)
 	
 	if "c" in args:
@@ -13966,24 +13954,24 @@ def procEgg(args, procUsage = ""):
 	# 2 : mov xL
 	# 3 : mov xH
 	#
-	regsx["eax"] = ["\x66\xb8","\x66\x50","\xb0","\xb4"]
-	regsx["ebx"] = ["\x66\xbb","\x66\x53","\xb3","\xb7"]
-	regsx["ecx"] = ["\x66\xb9","\x66\x51","\xb1","\xb5"]
-	regsx["edx"] = ["\x66\xba","\x66\x52","\xb2","\xb6"]
-	regsx["esi"] = ["\x66\xbe","\x66\x56"]
-	regsx["edi"] = ["\x66\xbf","\x66\x57"]
-	regsx["ebp"] = ["\x66\xbd","\x66\x55"]
-	regsx["esp"] = ["\x66\xbc","\x66\x54"]
+	regsx["eax"] = [b"\x66\xb8",b"\x66\x50",b"\xb0",b"\xb4"]
+	regsx["ebx"] = [b"\x66\xbb",b"\x66\x53",b"\xb3",b"\xb7"]
+	regsx["ecx"] = [b"\x66\xb9",b"\x66\x51",b"\xb1",b"\xb5"]
+	regsx["edx"] = [b"\x66\xba",b"\x66\x52",b"\xb2",b"\xb6"]
+	regsx["esi"] = [b"\x66\xbe",b"\x66\x56"]
+	regsx["edi"] = [b"\x66\xbf",b"\x66\x57"]
+	regsx["ebp"] = [b"\x66\xbd",b"\x66\x55"]
+	regsx["esp"] = [b"\x66\xbc",b"\x66\x54"]
 	
 	addreg = {}
-	addreg["eax"] = "\x83\xc0"
-	addreg["ebx"] = "\x83\xc3"			
-	addreg["ecx"] = "\x83\xc1"
-	addreg["edx"] = "\x83\xc2"
-	addreg["esi"] = "\x83\xc6"
-	addreg["edi"] = "\x83\xc7"
-	addreg["ebp"] = "\x83\xc5"			
-	addreg["esp"] = "\x83\xc4"
+	addreg["eax"] = b"\x83\xc0"
+	addreg["ebx"] = b"\x83\xc3"			
+	addreg["ecx"] = b"\x83\xc1"
+	addreg["edx"] = b"\x83\xc2"
+	addreg["esi"] = b"\x83\xc6"
+	addreg["edi"] = b"\x83\xc7"
+	addreg["ebp"] = b"\x83\xc5"			
+	addreg["esp"] = b"\x83\xc4"
 	
 	depdest = ""
 	depmethod = ""
@@ -13992,7 +13980,7 @@ def procEgg(args, procUsage = ""):
 	getsize = ""
 	getpc = ""
 	
-	jmppayload = "\xff\xe7"	#jmp edi
+	jmppayload = b"\xff\xe7"	#jmp edi
 	
 	if "depmethod" in args:
 		if args["depmethod"].lower() in depmethods:
@@ -14037,21 +14025,21 @@ def procEgg(args, procUsage = ""):
 		dbg.log("[+] Generating traditional 32bit egghunter code")
 		egghunter = ""
 		egghunter += (
-			"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
-			"\x42"+					#INC EDX
-			"\x52"					#push edx
-			"\x6a\x02"				#push 2	(NtAccessCheckAndAuditAlarm syscall)
-			"\x58"					#pop eax
-			"\xcd\x2e"				#int 0x2e 
-			"\x3c\x05"				#cmp al,5
-			"\x5a"					#pop edx
-			"\x74\xef"				#je "or dx,0xfff"
-			"\xb8"+egg+				#mov eax, egg
-			"\x8b\xfa"				#mov edi,edx
-			"\xaf"					#scasd
-			"\x75\xea"				#jne "inc edx"
-			"\xaf"					#scasd
-			"\x75\xe7"				#jne "inc edx"
+			b"\x66\x81\xca\xff\x0f"+	#or dx,0xfff
+			b"\x42"+					#INC EDX
+			b"\x52"					#push edx
+			b"\x6a\x02"				#push 2	(NtAccessCheckAndAuditAlarm syscall)
+			b"\x58"					#pop eax
+			b"\xcd\x2e"				#int 0x2e 
+			b"\x3c\x05"				#cmp al,5
+			b"\x5a"					#pop edx
+			b"\x74\xef"				#je "or dx,0xfff"
+			b"\xb8"+egg+				#mov eax, egg
+			b"\x8b\xfa"				#mov edi,edx
+			b"\xaf"					#scasd
+			b"\x75\xea"				#jne "inc edx"
+			b"\xaf"					#scasd
+			b"\x75\xe7"				#jne "inc edx"
 		)
 		incedxoffset = 5 # The offset in the egghunter to reach the #INC EDX
 	if usewow64:
@@ -14060,66 +14048,66 @@ def procEgg(args, procUsage = ""):
 		if win_ver == "7":
 			egghunter += (
 				# 64 stub needed before loop
-				"\x31\xdb"                                      #xor ebx,ebx
-				"\x53"                                          #push ebx
-				"\x53"                                          #push ebx
-				"\x53"                                          #push ebx
-				"\x53"                                          #push ebx
-				"\xb3\xc0"                                      #mov bl,0xc0
+				b"\x31\xdb"                                      #xor ebx,ebx
+				b"\x53"                                          #push ebx
+				b"\x53"                                          #push ebx
+				b"\x53"                                          #push ebx
+				b"\x53"                                          #push ebx
+				b"\xb3\xc0"                                      #mov bl,0xc0
 
 				# 64 Loop
-				"\x66\x81\xCA\xFF\x0F"                          #OR DX,0FFF
-				"\x42"                                          #INC EDX
-				"\x52"                                          #PUSH EDX
-				"\x6A\x26"                                      #PUSH 26 
-				"\x58"                                          #POP EAX
-				"\x33\xC9"                                      #XOR ECX,ECX
-				"\x8B\xD4"                                      #MOV EDX,ESP
-				"\x64\xff\x13"                                  #CALL DWORD PTR FS:[ebx]
-				"\x5e"                                          #POP ESI
-				"\x5a"                                          #POP EDX
-				"\x3C\x05"                                      #CMP AL,5
-				"\x74\xe9"                                      #JE SHORT
-				"\xB8"+egg+                                     #MOV EAX,74303077 w00t
-				"\x8B\xFA"                                      #MOV EDI,EDX
-				"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
-				"\x75\xe4"                                      #JNZ "inc edx"
-				"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
-				"\x75\xe1"                                      #JNZ "inc edx"
-				"")
+				b"\x66\x81\xCA\xFF\x0F"                          #OR DX,0FFF
+				b"\x42"                                          #INC EDX
+				b"\x52"                                          #PUSH EDX
+				b"\x6A\x26"                                      #PUSH 26 
+				b"\x58"                                          #POP EAX
+				b"\x33\xC9"                                      #XOR ECX,ECX
+				b"\x8B\xD4"                                      #MOV EDX,ESP
+				b"\x64\xff\x13"                                  #CALL DWORD PTR FS:[ebx]
+				b"\x5e"                                          #POP ESI
+				b"\x5a"                                          #POP EDX
+				b"\x3C\x05"                                      #CMP AL,5
+				b"\x74\xe9"                                      #JE SHORT
+				b"\xB8"+egg+                                     #MOV EAX,74303077 w00t
+				b"\x8B\xFA"                                      #MOV EDI,EDX
+				b"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+				b"\x75\xe4"                                      #JNZ "inc edx"
+				b"\xAF"                                          #SCAS DWORD PTR ES:[EDI]
+				b"\x75\xe1"                                      #JNZ "inc edx"
+				)
 			incedxoffset = 13 # The offset in the egghunter to reach the #INC EDX
 		elif win_ver == "10":
 			egghunter += (
 			# _start:
 				# "\x8c\xcb"            #MOV EBX,CS
 				# "\x80\xfb\x23"        #CMP BL,0x23
-				"\x33\xD2"              #XOR EDX,EDX
+				b"\x33\xD2"              #XOR EDX,EDX
 			# invalid_page:
-				"\x66\x81\xCA\xFF\x0F"  #OR DX,0FFF
+				b"\x66\x81\xCA\xFF\x0F"  #OR DX,0FFF
 			# valid_page:
-				"\x33\xDB"              #XOR EBX,EBX
-				"\x42"               	#INC EDX
-				"\x53"               	#PUSH EBX
-				"\x53"               	#PUSH EBX
-				"\x52"               	#PUSH EDX
-				"\x53"               	#PUSH EBX
-				"\x53"               	#PUSH EBX
-				"\x53"               	#PUSH EBX
-				"\x6A\x29"            	#PUSH 29
-				"\x58"               	#POP EAX
-				"\xB3\xC0"            	#MOV BL,0C0
-				"\x64\xFF\x13"          #CALL DWORD PTR FS:[EBX]
-				"\x83\xC4\x0c"          #ADD ESP,0xc
-				"\x5A"               	#POP EDX
-				"\x83\xc4\x08"          #ADD ESP,0x8
-				"\x3C\x05"            	#CMP AL,5
-				"\x74\xDF"            	#JE SHORT invalid_page
-				"\xB8" + egg +  		#MOV EAX,<tag>
-				"\x8B\xFA"              #MOV EDI,EDX
-				"\xAF"               	#SCAS DWORD PTR ES:[EDI]
-				"\x75\xDA"            	#JNZ SHORT valid_page
-				"\xAF"              	#SCAS DWORD PTR ES:[EDI]
-				"\x75\xD7"    			#JNZ SHORT valid_page
+				b"\x33\xDB"              #XOR EBX,EBX
+				b"\x42"               	#INC EDX
+				b"\x53"               	#PUSH EBX
+				b"\x53"               	#PUSH EBX
+				b"\x52"               	#PUSH EDX
+				b"\x53"               	#PUSH EBX
+				b"\x53"               	#PUSH EBX
+				b"\x53"               	#PUSH EBX
+				b"\x6A\x29"            	#PUSH 29
+				b"\x58"               	#POP EAX
+				b"\xB3\xC0"            	#MOV BL,0C0
+				b"\x64\xFF\x13"          #CALL DWORD PTR FS:[EBX]
+				b"\x83\xC4\x0c"          #ADD ESP,0xc
+				b"\x5A"               	#POP EDX
+				b"\x83\xc4\x08"          #ADD ESP,0x8
+				b"\x3C\x05"            	#CMP AL,5
+				b"\x74\xDF"            	#JE SHORT invalid_page
+				b"\xB8" + egg +  		#MOV EAX,<tag>
+				b"\x8B\xFA"              #MOV EDI,EDX
+				b"\xAF"               	#SCAS DWORD PTR ES:[EDI]
+				b"\x75\xDA"            	#JNZ SHORT valid_page
+				b"\xAF"              	#SCAS DWORD PTR ES:[EDI]
+				b"\x75\xD7"    			#JNZ SHORT valid_page
 				)
 			incedxoffset = 9 # The offset in the egghunter to reach the #INC EDX
 	if usechecksum:
@@ -14127,16 +14115,16 @@ def procEgg(args, procUsage = ""):
 		extratext = "+ checksum routine"
 		egg_size = ""
 		if len(data) < 256:
-			cmp_reg = "\x80\xf9"	#cmp cl,value
-			egg_size = hex2bin("%02x" % len(data))
-			offset1 = "\xf7"
+			cmp_reg = b"\x80\xf9"	#cmp cl,value
+			egg_size = _to_bytes(hex2bin("%02x" % len(data)))
+			offset1 = b"\xf7"
 		elif len(data) < 65536:
-			cmp_reg = "\x66\x81\xf9"	#cmp cx,value
+			cmp_reg = b"\x66\x81\xf9"	#cmp cx,value
 			#avoid nulls
 			egg_size_normal = "%04X" % len(data)
 			while egg_size_normal[0:2] == "00" or egg_size_normal[2:4] == "00":
-				data += "\x90"
-				egg_size_normal = "%04X" % len(data)
+				data += b"\x90"
+				egg_size_normal = b"%04X" % len(data)
 			egg_size = hex2bin(egg_size_normal[2:4]) + hex2bin(egg_size_normal[0:2])
 			offset1 = "\xf5"
 		else:
@@ -14153,16 +14141,16 @@ def procEgg(args, procUsage = ""):
 		sizeOfChecksumRoutine = 15 # The number of static bytes in the checksum routine below
 		offset2 = shortJump(sizeOfjnzincedx, - (len(egghunter) - incedxoffset + sizeOfChecksumRoutine + len(cmp_reg) + len(egg_size)))
 		egghunter += (
-			"\x51"						#push ecx
-			"\x31\xc9"					#xor ecx,ecx
-			"\x31\xc0"					#xor eax,eax
-			"\x02\x04\x0f"				#add al,byte [edi+ecx]
-			"\x41"+						#inc ecx
+			b"\x51"						#push ecx
+			b"\x31\xc9"					#xor ecx,ecx
+			b"\x31\xc0"					#xor eax,eax
+			b"\x02\x04\x0f"				#add al,byte [edi+ecx]
+			b"\x41"+						#inc ecx
 			cmp_reg + egg_size +    	#cmp cx/cl, value
-			"\x75" + offset1 +			#jnz "add al,byte [edi+ecx]
-			"\x3a\x04\x39" +			#cmp al,byte [edi+ecx]
-			"\x59" +					#pop ecx
-			"\x75" + offset2			#jnz "inc edx"
+			b"\x75" + offset1 +			#jnz "add al,byte [edi+ecx]
+			b"\x3a\x04\x39" +			#cmp al,byte [edi+ecx]
+			b"\x59" +					#pop ecx
+			b"\x75" + offset2			#jnz "inc edx"
 		)		
 
 	#dep bypass ?
@@ -14180,8 +14168,8 @@ def procEgg(args, procUsage = ""):
 					getpointer += "mov " + freeregs[0] + "," + depdest + "#"
 					depdest = freeregs[0]
 			else:
-				getpc = "\xd9\xee"			# fldz
-				getpc += "\xd9\x74\xe4\xf4"	# fstenv [esp-0c]
+				getpc = b"\xd9\xee"			# fldz
+				getpc += b"\xd9\x74\xe4\xf4"	# fstenv [esp-0c]
 				depdest = freeregs[0]
 				getpc += hex2bin(assemble("pop "+depdest))
 			
@@ -14249,14 +14237,14 @@ def procEgg(args, procUsage = ""):
 				
 		#finish it off
 		if depmethod == "virtualprotect":
-			jmppayload = "\x54\x6a\x40"
+			jmppayload = b"\x54\x6a\x40"
 			jmppayload += getsize
-			jmppayload += hex2bin(assemble("#push edi#push edi#push "+depreg+"#ret"))
+			jmppayload += _to_bytes(hex2bin(assemble("#push edi#push edi#push "+depreg+"#ret")))
 		elif depmethod == "copy":
-			jmppayload = hex2bin(assemble("push edi\push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret"))
+			jmppayload = _to_bytes(hex2bin(assemble("push edi\push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret")))
 		elif depmethod == "copy_size":
 			jmppayload += getsize
-			jmppayload += hex2bin(assemble("push edi#push "+depdest+"#push " + depdest + "#push "+depreg+"#mov edi,"+depdest+"#ret"))
+			jmppayload += _to_bytes(hex2bin(assemble("push edi#push "+depdest+"#push " + depdest + "#push "+depreg+"#mov edi,"+depdest+"#ret")))
 		
 
 	#jmp to payload
@@ -18917,7 +18905,7 @@ def procHideDebug(args, procUsage = ""):
 		while a < 3:
 			a += 1
 			s += dbg.disasmSizeOnly(zwq + s).opsize
-		FakeCode = dbg.readMemory(zwq, 1) + "\x78\x56\x34\x12" + dbg.readMemory(zwq + 5, 1)
+		FakeCode = dbg.readMemory(zwq, 1) + b"\x78\x56\x34\x12" + dbg.readMemory(zwq + 5, 1)
 		if FakeCode == dbg.assemble("PUSH 0x12345678\nRET"):
 			isPatched = True
 			a = dbg.readLong(zwq+1)
