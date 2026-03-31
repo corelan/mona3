@@ -2581,11 +2581,15 @@ class Debugger:
 				thismod = pykd.module(modulename)
 				fullpath = modentry[1]
 			else:
+				if DEBUG_MODE:
+					dbgp("Module %s not found in PEBModList" % modulename)
 				# find a good one
 				for modentry in PEBModList:
 					modrecord = PEBModList[modentry]
 					# 0 : file
 					# 1 : path
+					if DEBUG_MODE:
+						dbgp("Modrecord: %s" % modrecord)
 					if modulename == modrecord[0]:
 						thismod = pykd.module(modentry)
 						fullpath = modrecord[1]

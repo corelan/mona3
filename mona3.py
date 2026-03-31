@@ -332,10 +332,6 @@ def get_script_name():
     return "unknown"
 
 
-def get_current_datetime():
-    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
 def get_current_function_name():
 
     frame = inspect.currentframe()
@@ -357,6 +353,9 @@ def get_current_function_name():
     finally:
         del frame	
 
+
+def get_current_datetime():
+	return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
 
 
 def getPythonVersion():
@@ -2763,7 +2762,7 @@ class MnLog:
 						currmonaargs = " ".join(x for x in currentArgs)
 						fh.write("  Current mona arguments: %s\n" % currmonaargs)
 						fh.write("=" * 80 + '\n')
-						fh.write("  " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n")
+						fh.write("  " + get_current_datetime() + "\n")
 						fh.write("=" * 80 + '\n')
 				except:
 					pass
@@ -2869,8 +2868,8 @@ class MnModule:
 	Class to access module properties
 	"""
 	def __init__(self, modulename):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		#if DEBUG_MODE:
+		dbgp(get_current_function_name())
 		modisaslr = True
 		modissafeseh = True
 		modrebased = True
@@ -2893,6 +2892,7 @@ class MnModule:
 		if modulename != "":
 			# if info is cached, retrieve from cache
 			if ModInfoCached(modulename):
+				dbgp("module cached: %s" % modulename)
 				modisaslr = getModuleProperty(modulename,"aslr")
 				modissafeseh = getModuleProperty(modulename,"safeseh")
 				modrebased = getModuleProperty(modulename,"rebase")
@@ -6624,8 +6624,13 @@ def get_eta(startmoment, done, total):
 	now = time.time()
 	elapsed = now - startmoment
 
-	if done <= 0 or elapsed <= 0:
+	if done <= 0 or elapsed <= 0 or total <= 0:
 		return "calculating eta..."
+
+	# 👉 New logic: wait until at least 10% is done
+	percent_done = (float(done) / float(total)) * 100.0
+	if percent_done < 10.0:
+		return "Reporting ETA as soon as we get to 10%"
 
 	rate = float(done) / elapsed
 	if rate <= 0:
@@ -6633,7 +6638,7 @@ def get_eta(startmoment, done, total):
 
 	remaining = total - done
 	if remaining <= 0:
-		return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+		return get_current_datetime()
 
 	eta_seconds = remaining / rate
 	eta_time = now + eta_seconds
@@ -6805,7 +6810,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					adcnt = adcnt - 0.5
 				done = tc * updateth
 				if adcnt > done:
-					thistimestamp=datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+					thistimestamp=get_current_datetime()
 					eta = get_eta(startmoment, done, tp)
 					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
 						done=done,
@@ -6892,7 +6897,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											if isInterestingGadget(fullchain):
 												interestinggadgets[startptr] = fullchain
 												if DEBUG_MODE:
-													dbgp("Added 0x%08x to interestinggadgets %s" % startptr)
+													dbgp("Added 0x%08x to interestinggadgets" % startptr)
 												#this may be a good stackpivot too
 												stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
 												if stackpivotdistance > 0:
@@ -6908,7 +6913,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 														else:
 															stackpivots[stackpivotdistance] += [[startptr,fullchain]]
 													if DEBUG_MODE:
-														dbgp("Added 0x%08x to ropgadgets %s" % startptr)
+														dbgp("Added 0x%08x to ropgadgets" % startptr)
 								
 											ropgadgets[startptr] = fullchain
 											if DEBUG_MODE:
@@ -6955,7 +6960,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						step = -1
 					step += 1
 	
-	thistimestamp = datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+	thistimestamp = get_current_datetime()
 	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
@@ -7236,7 +7241,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 					with open(thislog, "a") as fh:
 						fh.write(ptrinfo)
-	thistimestamp=datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+	thistimestamp=get_current_datetime()
 	objprogressfile.write("Done (" + thistimestamp+")",progressfile)
 	dbg.log("Done")
 	return interestinggadgets,ropgadgets,suggestions,vplogtxt
@@ -7334,7 +7339,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 				if usefiles:
 					adcnt = adcnt - 0.5
 				if adcnt > (tc*1000):
-					thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+					thistimestamp=get_current_datetime()
 					updatetext = "      - Progress update : " + str(tc*1000) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*1000*100)/tp)+"%)"
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
@@ -7378,7 +7383,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 									jopgadgets[startptr] = fullchain
 					startptr = startptr+1
 	
-	thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
+	thistimestamp=get_current_datetime()
 	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
@@ -9135,7 +9140,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	"""
 
 	if DEBUG_MODE:
-		dbpg(get_current_function_name())
+		dbgp(get_current_function_name())
 	
 	global ptr_to_get
 	global ptr_counter
@@ -9288,7 +9293,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			if thisreg in replacelist:
 				thistarget = replacelist[thisreg]
 			
-			thistimestamp=datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+			thistimestamp=get_current_datetime()
 			dbg.log("    %s: Step %d/%d: %s" % (thistimestamp,stepcnt,len(routinedefs[routine]),thisreg))
 			stepcnt += 1
 
