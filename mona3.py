@@ -6643,6 +6643,7 @@ def get_eta(startmoment, done, total):
 
 	return eta_str
 
+
 	
 def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5,split=False,pivotdistance=0,fast=False,mode="all", sortedprint=False, technique=""):
 	"""
@@ -6665,6 +6666,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	Return:
 	Output is written to files, containing rop gadgets, suggestions, stack pivots and virtualprotect/virtualalloc routine (if possible)
 	"""
+
+
 
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
@@ -6765,6 +6768,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		silent = True
 	dbg.updateLog()
 	ropgadgets = {}
+	instr_cache = {}
 	interestinggadgets = {}
 	stackpivots = {}
 	stackpivots_safeseh = {}
@@ -6810,6 +6814,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				if not usefiles:
 					#first get max backward instruction
 					#immlib libanalyze might blow up at (self.ip=opcode[0]  # Instruction pointer), so we have to catch exceptions here
+					thisptr = 0
 					try:
 						thisopcode = dbg.disasmBackward(endingtypeptr,depth+1)
 						thisptr = thisopcode.getAddress()
@@ -6841,7 +6846,13 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 									#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
 									avoidunlimitedloop = 0
 									while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
-										thisopcode = dbg.disasm(chainptr)
+										if not chainptr in instr_cache:
+											thisopcode = dbg.disasm(chainptr)
+											instr_cache[chainptr] = thisopcode
+										else:
+											thisopcode = instr_cache[chainptr]
+											if DEBUG_MODE:
+												dbgp("Return instruction at 0x%x from cache: %s" % (chainptr, thisopcode))
 										thisinstruction = getDisasmInstruction(thisopcode)
 										if isGoodGadgetInstr(thisinstruction) and not isGadgetEnding(thisinstruction,search):						
 											thischain =  thischain + " # " + thisinstruction
@@ -6851,35 +6862,40 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 										else:
 											invalidinstr = True
 										avoidunlimitedloop += 1
-										#if DEBUG_MODE:
-										#	dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
+										if DEBUG_MODE:
+											dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s" % (chainptr, endingtypeptr, invalidinstr))					
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
-										fullchain = thischain + " # " + endingtype
-										msfchain.append([endingtypeptr,endingtype])
-										thisopcode = dbg.disasm(endingtypeptr)
-										thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
-										msfchain.append(["raw",thisopcodebytes])
-										if isInterestingGadget(fullchain):
-											interestinggadgets[startptr] = fullchain
-											#this may be a good stackpivot too
-											stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
-											if stackpivotdistance > 0:
-												#safeseh or not ?
-												if issafeseh:
-													if not stackpivotdistance in stackpivots_safeseh:
-														stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
-													else:
-														stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
-												else:
-													if not stackpivotdistance in stackpivots:
-														stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
-													else:
-														stackpivots[stackpivotdistance] += [[startptr,fullchain]]								
-										else:
-											if not fast:
-												ropgadgets[startptr] = fullchain
+										if not startptr in ropgadgets:
+											fullchain = thischain + " # " + endingtype
+											msfchain.append([endingtypeptr,endingtype])
+											thisopcode = dbg.disasm(endingtypeptr)
+											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
+											msfchain.append(["raw",thisopcodebytes])
+											if isInterestingGadget(fullchain):
+												interestinggadgets[startptr] = fullchain
 												if DEBUG_MODE:
-													dbgp("Added 0x%08x to chain list: %s" % (startptr, fullchain))
+													dbgp("Added 0x%08x to interestinggadgets %s" % startptr)
+												#this may be a good stackpivot too
+												stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
+												if stackpivotdistance > 0:
+													#safeseh or not ?
+													if issafeseh:
+														if not stackpivotdistance in stackpivots_safeseh:
+															stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
+														else:
+															stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
+													else:
+														if not stackpivotdistance in stackpivots:
+															stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
+														else:
+															stackpivots[stackpivotdistance] += [[startptr,fullchain]]
+													if DEBUG_MODE:
+														dbgp("Added 0x%08x to ropgadgets %s" % startptr)
+								
+											ropgadgets[startptr] = fullchain
+											if DEBUG_MODE:
+												dbgp("Added 0x%08x to ropgadgets %s" % startptr)
+
 							startptr = startptr+1
 						except Exception as ropex:
 							dbgp("Error while looking for gadgets: %s" % str(ropex))
