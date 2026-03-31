@@ -625,7 +625,7 @@ def getFunctionName(addy):
 	return fname,foffset
 
 
-def printDataArray(data,charsperline=16,prefix=""):
+def printDataArray(data,charsperline=16,prefix=b""):
 	maxlen = len(data)
 	charcnt = 0
 	charlinecnt = 0
@@ -671,6 +671,7 @@ def find_all_copies(tofind,data):
 
 def getAllStringOffsets(data,minlen,offsetstart = 0):
 	asciistrings = {}
+	data = ensure_text(data)
 	for match in re.finditer("(([\x20-\x7e]){%d,})" % minlen,data): 
 		thisloc = match.start() + offsetstart
 		thisend = match.end() + offsetstart
@@ -11877,9 +11878,9 @@ def args2criteria(args,modulecriteria,criteria):
 			bpos += 2
 		badchars = newbadchars
 		cnt = 0
-		strb = ""
+		strb = b""
 		while cnt < len(badchars):
-			strb=strb+ensure_text(binascii.a2b_hex(badchars[cnt]+badchars[cnt+1]))
+			strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
 			cnt=cnt+2
 		criteria["badchars"] = strb
 		dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
