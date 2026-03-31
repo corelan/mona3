@@ -2508,8 +2508,6 @@ class MnConfig:
 	Class to perform config file operations
 	"""
 	def __init__(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
 	
 		global configwarningshown
 		self.configfile = "mona.ini"
@@ -6792,7 +6790,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					adcnt = adcnt - 0.5
 				done = tc * updateth
 				if adcnt > done:
-					thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+					thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
 					eta = get_eta(startmoment, done, tp)
 					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
 						done=done,
@@ -6923,7 +6921,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						step = -1
 					step += 1
 	
-	thistimestamp = datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+	thistimestamp = datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
 	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
@@ -7167,7 +7165,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 					with open(thislog, "a") as fh:
 						fh.write(ptrinfo)
-	thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+	thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
 	objprogressfile.write("Done (" + thistimestamp+")",progressfile)
 	dbg.log("Done")
 	return interestinggadgets,ropgadgets,suggestions,vplogtxt
@@ -7265,7 +7263,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 				if usefiles:
 					adcnt = adcnt - 0.5
 				if adcnt > (tc*1000):
-					thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+					thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
 					updatetext = "      - Progress update : " + str(tc*1000) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*1000*100)/tp)+"%)"
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
@@ -7309,7 +7307,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 									jopgadgets[startptr] = fullchain
 					startptr = startptr+1
 	
-	thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+	thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
 	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
@@ -9216,7 +9214,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			if thisreg in replacelist:
 				thistarget = replacelist[thisreg]
 			
-			thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
+			thistimestamp=datetime.datetime.now().strftime("%a %Y-%m-%d %I:%M:%S %p")
 			dbg.log("    %s: Step %d/%d: %s" % (thistimestamp,stepcnt,len(routinedefs[routine]),thisreg))
 			stepcnt += 1
 
