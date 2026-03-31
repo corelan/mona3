@@ -2655,7 +2655,7 @@ class Debugger:
 			wmod.setVersion(thismodversion)
 		except:
 			pykd.dprintln("** Error trying to process module %s" % modulename)
-			#dprintln(traceback.format_exc())
+			pykd.dprintln(traceback.format_exc())
 			wmod = None
 
 		return wmod

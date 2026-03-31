@@ -6437,6 +6437,10 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	Return:
 	Dictionary (pointers)
 	"""
+
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	found_opcodes = {}
 	all_opcodes = {}
 	ptr_counter = 0
@@ -6488,9 +6492,11 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	# now query IATs
 	# dbg.log("%s" % modulecriteria)		
 	isrebased = False
+	nrkeys = len(modulestosearch)
 	for key in modulestosearch:
+		keycnt = 1
 		curmod = dbg.getModule(key)
-		dbg.log("Searching in IAT of %s" % key)
+		dbg.log("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
 		#is this module going to get rebase ?
 		themodule = MnModule(key)
 		isrebased = themodule.isRebase
@@ -6547,6 +6553,8 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 						ptr_counter += 1
 						if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
 							ropfuncs,ropfuncoffsets
+		keycnt += 1
+
 	return ropfuncs,ropfuncoffsets
 
 def assemble(instructions,encoder=""):
@@ -9087,6 +9095,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	"""
 	Will attempt to produce ROP chains
 	"""
+
+	if DEBUG_MODE:
+		dbpg(get_current_function_name())
 	
 	global ptr_to_get
 	global ptr_counter
@@ -10066,6 +10077,10 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 	a pointer (integer value, 0 if no pointer was found)
 	text (with optional info)
 	"""
+
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	global silent
 	oldsilent = silent
 	silent = True
