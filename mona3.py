@@ -6596,7 +6596,53 @@ def assemble(instructions,encoder=""):
 	return allopcodes
 	
 
+def get_eta(startmoment, done, total):
+	"""
+	Returns ETA string or 'calculating eta...'
+	If remaining time < 10 minutes, also shows remaining duration.
 
+	Arguments:
+	startmoment - timestamp from time.time()
+	done        - number of items processed so far
+	total       - total number of items
+
+	Return:
+	string
+	"""
+
+	now = time.time()
+	elapsed = now - startmoment
+
+	if done <= 0 or elapsed <= 0:
+		return "calculating eta..."
+
+	rate = float(done) / elapsed
+	if rate <= 0:
+		return "calculating eta..."
+
+	remaining = total - done
+	if remaining <= 0:
+		return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+
+	eta_seconds = remaining / rate
+	eta_time = now + eta_seconds
+
+	eta_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(eta_time))
+
+	# If less than 10 minutes remaining → add human-readable duration
+	if eta_seconds < 600:
+		secs = int(eta_seconds)
+		mins = secs // 60
+		secs = secs % 60
+
+		if mins > 0:
+			duration = "%dm %ds" % (mins, secs)
+		else:
+			duration = "%ds" % secs
+
+		return "%s (%s remaining)" % (eta_str, duration)
+
+	return eta_str
 
 	
 def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5,split=False,pivotdistance=0,fast=False,mode="all", sortedprint=False, technique=""):
@@ -6734,6 +6780,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		updateth = 100
 	if DEBUG_MODE:
 		updateth = 50
+	startmoment = time.time()
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:
 			if DEBUG_MODE:
@@ -6742,9 +6789,17 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				adcnt=adcnt+1
 				if usefiles:
 					adcnt = adcnt - 0.5
-				if adcnt > (tc*updateth):
+				done = tc * updateth
+				if adcnt > done:
 					thistimestamp=datetime.datetime.now().strftime("%a %Y/%m/%d %I:%M:%S %p")
-					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%)".format( done=tc * updateth, total=tp, ts=thistimestamp, pct=(tc * updateth * 100.0) / tp)
+					eta = get_eta(startmoment, done, tp)
+					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
+						done=done,
+						total=tp,
+						ts=thistimestamp,
+						pct=(done * 100.0) / tp,
+						eta=eta
+					)
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
 					dbg.updateLog()
