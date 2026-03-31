@@ -2555,7 +2555,7 @@ class Debugger:
 	def getModule(self,modulename):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
-			dbgp(------)
+			dbgp("------")
 			dbgp("Transform '%s' into Module object" % modulename)
 
 		wmod = None
