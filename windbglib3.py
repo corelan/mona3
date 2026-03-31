@@ -2555,6 +2555,7 @@ class Debugger:
 	def getModule(self,modulename):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
+			dbgp(------)
 			dbgp("Transform '%s' into Module object" % modulename)
 
 		wmod = None
@@ -2574,8 +2575,6 @@ class Debugger:
 				if DEBUG_MODE:
 					dbgp("    Convert module into pykd module object: %s" % modulename)
 				thismod = pykd.module(modulename)
-				if DEBUG_MODE:
-					dbgp("    Module converted, thismod: %s" % thismod)
 				fullpath = modentry[1]
 			else:
 				# find a good one
@@ -2603,11 +2602,11 @@ class Debugger:
 			thismodpath = thismod.image()
 
 			if DEBUG_MODE:
-				dbgp("    - image: %s" % thisimagename)
-				dbgp("   - name: %s" % thismodname)
-				dbgp("    - begin: 0x%08x" % thismodbase)
-				dbgp("    - size: 0x%08x" % thismodsize)
-				dbgp("    - path: %s" % thismodpath)				
+				dbgp("       image: %s" % thisimagename)
+				dbgp("       name: %s" % thismodname)
+				dbgp("       begin: 0x%08x" % thismodbase)
+				dbgp("       size: 0x%08x" % thismodsize)
+				dbgp("       path: %s" % thismodpath)				
 
 			try:
 				if DEBUG_MODE:

@@ -6762,7 +6762,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					if DEBUG_MODE:
 						dbgp("Number of ropgadgets: %d" % len(ropgadgets))
 						dbgp("Number of stackpivots: %d" % len(stackpivots))
-						dbgp("Number of safeseh stackpivots: %d" % l(nstackpivots_safeseh))					
+						dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
 					tc += 1				
 				if not usefiles:
 					#first get max backward instruction
