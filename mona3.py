@@ -6913,11 +6913,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 														else:
 															stackpivots[stackpivotdistance] += [[startptr,fullchain]]
 													if DEBUG_MODE:
-														dbgp("Added 0x%08x to ropgadgets" % startptr)
+														dbgp("Added 0x%08x to interesting gadgets" % startptr)
 								
 											ropgadgets[startptr] = fullchain
 											if DEBUG_MODE:
-												dbgp("Added 0x%08x to ropgadgets %s" % startptr)
+												dbgp("Added 0x%08x to ropgadgets " % startptr)
 
 							startptr = startptr+1
 						except Exception as ropex:
