@@ -3118,7 +3118,7 @@ class Debugger:
 			try:
 				if DEBUG_MODE:
 					dbgp("    Trying to get version info (memory=%s)" % VERSION_FROM_MEMORY)
-				thismodversion = get_module_version(fullpath, modbase=thismodbase, debugger=self)
+				thismodversion = get_module_version(thismodpath, modbase=thismodbase, debugger=self)
 				if DEBUG_MODE:
 					dbgp("    -> %s" % thismodversion)
 			except Exception as e:
