@@ -954,15 +954,15 @@ def get_module_version(path, modbase=None, from_memory=False, debugger=None):
 	"""
 	Read the FileVersion of a PE module by parsing VS_VERSION_INFO.
 
-	When from_memory is True (or the global VERSION_FROM_MEMORY flag is set)
-	and modbase is provided, the resource data is read from the debuggee's live
-	address space. Otherwise the file at path is read from disk.
+	When from_memory is True and modbase is provided, the resource data is read
+	from the debuggee's live address space. Otherwise the file at path is read
+	from disk.
 
 	Args:
 		path:        Filesystem path to the PE file (used for disk reads).
 		modbase:     Virtual base address of the loaded module (required for
 		             memory reads; ignored for disk reads).
-		from_memory: If True, force a memory read regardless of the global flag.
+		from_memory: If True, read from the debuggee's memory instead of disk.
 		debugger:    Debugger instance whose readMemory() method is used for
 		             memory reads. Supports WinDBG (pykd) and Immunity Debugger.
 		             If None, pykd.loadBytes is used directly.
@@ -972,7 +972,7 @@ def get_module_version(path, modbase=None, from_memory=False, debugger=None):
 		string if the version resource cannot be found or parsed.
 	"""
 	try:
-		if (from_memory or VERSION_FROM_MEMORY) and modbase is not None:
+		if from_memory and modbase is not None:
 			return VSVersionInfo.from_memory(modbase, read_memory=debugger).fixed.file_version_str
 		return VSVersionInfo.from_file(path).fixed.file_version_str
 	except Exception:
@@ -3055,7 +3055,7 @@ class Debugger:
 	"""
 	Modules
 	"""
-	def getModule(self,modulename):
+	def getModule(self, modulename, from_memory=False):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 			dbgp("------")
@@ -3117,8 +3117,8 @@ class Debugger:
 
 			try:
 				if DEBUG_MODE:
-					dbgp("    Trying to get version info (memory=%s)" % VERSION_FROM_MEMORY)
-				thismodversion = get_module_version(thismodpath, modbase=thismodbase, debugger=self)
+					dbgp("    Trying to get version info (memory=%s)" % from_memory)
+				thismodversion = get_module_version(fullpath, modbase=thismodbase, from_memory=from_memory, debugger=self)
 				if DEBUG_MODE:
 					dbgp("    -> %s" % thismodversion)
 			except Exception as e:
@@ -3158,7 +3158,7 @@ class Debugger:
 		return wmod
 		
 
-	def getAllModules(self):
+	def getAllModules(self, from_memory=False):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
@@ -3171,7 +3171,7 @@ class Debugger:
 					dbgp("Modules in list now: %d" % len(PEBModList))
 			for imagename in PEBModList:
 				thismodname = PEBModList[imagename][0]
-				wmodobject = self.getModule(imagename)
+				wmodobject = self.getModule(imagename, from_memory=from_memory)
 				self.allmodules[thismodname] = wmodobject
 		return self.allmodules
 
