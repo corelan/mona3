@@ -6918,8 +6918,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											invalidinstr = True
 										avoidunlimitedloop += 1
 									if DEBUG_MODE:
-										dbgp("Chain at 0x%x, Invalidinstr: %s, chain %s" % (startptr,invalidinstr, thischain))	
-										dbgp("endingtypeptr 0x%x, chainptr 0x%x" % (endingtypeptr, chainptr))				
+										dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
 											fullchain = thischain + " # " + endingtype.upper()
