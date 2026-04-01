@@ -1122,21 +1122,59 @@ class Debugger:
 		PROCESS_VM_OPERATION = 0x0008
 		kernel32 = ctypes.windll.kernel32
 		pid = self.getDebuggedPid()
-		hprocess = kernel32.OpenProcess( PROCESS_VM_OPERATION, False, pid )
-		vaddr = kernel32.VirtualAllocEx(hprocess, lpAddress, dwSize, flAllocationType, flProtect)
-		kernel32.CloseHandle(hprocess)
-		return vaddr
+		hprocess = kernel32.OpenProcess(PROCESS_VM_OPERATION, False, pid)
 
-	def rVirtualProtect(self, lpAddress, dwSize, flNewProtect, lpflOldProtect = 0):
+		kernel32.VirtualAllocEx.argtypes = [
+			ctypes.c_void_p,
+			ctypes.c_void_p,
+			ctypes.c_size_t,
+			ctypes.c_ulong,
+			ctypes.c_ulong
+		]
+		kernel32.VirtualAllocEx.restype = ctypes.c_void_p
+
+		vaddr = kernel32.VirtualAllocEx(
+			ctypes.c_void_p(hprocess),
+			ctypes.c_void_p(lpAddress),
+			ctypes.c_size_t(dwSize),
+			ctypes.c_ulong(flAllocationType),
+			ctypes.c_ulong(flProtect)
+		)
+
+		kernel32.CloseHandle(hprocess)
+
+		if vaddr:
+			return int(vaddr)
+		return 0
+
+	def rVirtualProtect(self, lpAddress, dwSize, flNewProtect, lpflOldProtect=0):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
-		
+
 		PROCESS_VM_OPERATION = 0x0008
 		kernel32 = ctypes.windll.kernel32
 		pid = self.getDebuggedPid()
 		hprocess = kernel32.OpenProcess(PROCESS_VM_OPERATION, False, pid)
-		pold_protect = ctypes.addressof(ctypes.c_int32(0))
-		returnval = kernel32.VirtualProtectEx(hprocess, lpAddress, dwSize, flNewProtect, pold_protect)
+
+		kernel32.VirtualProtectEx.argtypes = [
+			ctypes.c_void_p,
+			ctypes.c_void_p,
+			ctypes.c_size_t,
+			ctypes.c_ulong,
+			ctypes.POINTER(ctypes.c_ulong)
+		]
+		kernel32.VirtualProtectEx.restype = ctypes.c_long
+
+		oldprotect = ctypes.c_ulong(0)
+
+		returnval = kernel32.VirtualProtectEx(
+			ctypes.c_void_p(hprocess),
+			ctypes.c_void_p(lpAddress),
+			ctypes.c_size_t(dwSize),
+			ctypes.c_ulong(flNewProtect),
+			ctypes.byref(oldprotect)
+		)
+
 		kernel32.CloseHandle(hprocess)
 		return returnval
 
