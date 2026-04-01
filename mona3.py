@@ -3238,7 +3238,6 @@ class MnModule:
 										modname = tptr.belongsTo()
 										tmod = MnModule(modname)
 										ofullname = thisfuncfullname
-										
 										if not tmod is None:
 											imagename = tmod.getShortName()
 											eatlist = tmod.getEAT()
@@ -3248,8 +3247,23 @@ class MnModule:
 											tparts = thisfuncfullname.split('!')
 											thisfuncfullname = tparts[0] + ("!%08x" % iatptr)
 									thisfuncname = thisfuncfullname.split('!')
-									IAT[ptr] = thisfuncname[1].strip(">")
-									
+									if len(thisfuncname) > 1:
+										IAT[ptr] = thisfuncname[1].strip(">")
+									else:
+										if DEBUG_MODE:
+											dbgp("Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
+											dbgp("thisfuncfullname: %s" % thisfuncfullname)
+
+				if len(IAT) == 0:
+					if DEBUG_MODE:
+						dbgp("No IAT found for module %s" % self.moduleKey)
+						dbgp("Adding fake IAT entry in cache, to avoid trying again")
+					# if we get here, it means we couldn't find anything
+					# avoid doing all of this again
+					# so we'll add an empty entry in the cache
+					# for this module
+					IAT[0] = "no_iat_found"
+
 				self.IAT = IAT
 				IATCache[self.moduleKey] = IAT
 			else:
@@ -6812,7 +6826,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if (tp < 2000):
 		updateth = 100
 	if DEBUG_MODE:
-		updateth = 50
+		updateth = updateth / 2
 	startmoment = time.time()
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:

@@ -3606,8 +3606,6 @@ class wmodule:
 		return self.database
 
 	def addressToSymbol(self, address):
-		# use a WinDBG command to force a symbol lookup for an address
-		# need double %% to avoid it is seen as format for python.
 		global FuncCache
 
 		if address in FuncCache:
