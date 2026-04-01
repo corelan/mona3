@@ -463,6 +463,7 @@ def getAddyArg(argaddy):
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
 	regs = dbg.getRegs()
 	thispart = ""
+	argaddy = argaddy.replace("`","")
 	for c in str(argaddy):
 		if c in delimchars:
 			thispart = thispart.replace(" ","")
@@ -18858,6 +18859,8 @@ def procToBp(args, procUsage = ""):
 	"""
 	Generate WinDBG syntax to create a logging breakpoint on a given location
 	"""
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	addy = 0
 	addyerror = False
 	executenow = False
@@ -18868,7 +18871,13 @@ def procToBp(args, procUsage = ""):
 	instructionparts = []
 	global silent
 	oldsilent = silent
-	regs = dbg.getRegs()
+	regs = Registers32BitsOrder
+	if arch == 64:
+		# add 64bit regs as well
+		regs = Registers64BitsOrder
+		regs += Registers32BitsOrder
+	if DEBUG_MODE:
+		dbgp("Regs used: %s" % regs)
 	silent = True
 	if "a" in args:
 		if type(args["a"]).__name__.lower() != "bool":
@@ -18876,7 +18885,10 @@ def procToBp(args, procUsage = ""):
 			if not addyok:
 				addyerror = True
 	else:
-		addy = regs["EIP"]
+		if arch == 32:
+			addy = regs["EIP"]
+		else:
+			addy = regs["RIP"]
 
 	if "e" in args:
 		executenow = True
@@ -18939,12 +18951,19 @@ def procToBp(args, procUsage = ""):
 		regsyntax += '\\",%s;' % argsyntax
 
 	if "CALL" in instruction.upper():
-		dmpsyntax += '.echo;.printf \\"Stack (esp: 0x%p):\\",esp;.echo;dps esp L 0x4;'
+		if arch == 32:
+			dmpsyntax += '.echo;.printf \\"Stack (esp: 0x%p):\\",esp;.echo;dps esp L 0x4;'
+		if arch == 64:
+			dmpsyntax += '.echo;.printf \\"rcx: 0x%p, rdx: 0x%p, r8: 0x%p, r9: 0x%p\\", @rcx, @rdx, @r8, @rc9;'
 
 	if instruction.upper().startswith("RET"):
-		dmpsyntax += '.echo;.printf \\"EAX: 0x%p, Ret To: 0x%p, Arg1: 0x%p, Arg2: 0x%p, Arg3: 0x%p, Arg4: 0x%p\\",eax,poi(esp),poi(esp+4),poi(esp+8),poi(esp+c),poi(esp+10);'
+		if arch == 32:
+			dmpsyntax += '.echo;.printf \\"EAX: 0x%p, Ret To: 0x%p, Arg1: 0x%p, Arg2: 0x%p, Arg3: 0x%p, Arg4: 0x%p\\",eax,poi(esp),poi(esp+4),poi(esp+8),poi(esp+c),poi(esp+10);'
+		if arch == 64:
+			dmpsyntax += '.echo;.printf \\"RAX: 0x%p, Ret To: 0x%p\\",rax,poi(rsp);'
 
-	bpsyntax = locsyntax + ' ".echo ---------------;u eip L 1;' + regsyntax + dmpsyntax + ".echo;g" + '"'
+
+	bpsyntax = locsyntax + ' ".echo ---------------;u @$ip L 1;' + regsyntax + dmpsyntax + ".echo;g" + '"'
 	filename = "logbps.txt"
 	logfile = MnLog(filename)
 	thislog = logfile.reset(False,False)
