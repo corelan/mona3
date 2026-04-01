@@ -24,8 +24,8 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-$Revision: 152 $
-$Id: windbglib3.py 152 2026-03-26 18:04:00Z corelanc0d3r $ 
+$Revision: 300 $
+$Id: windbglib3.py 300 2026-03-26 18:04:00Z corelanc0d3r $ 
 """
 
 __VERSION__ = '3.0'
@@ -993,30 +993,23 @@ def getModulesFromPEB():
 	offset = 0x20
 	if arch == 64:
 		offset = 0x40
-	moduleLst = pykd.typedVarList(peb.Ldr.deref().InLoadOrderModuleList, "ntdll!_LDR_DATA_TABLE_ENTRY", "InMemoryOrderLinks.Flink")
+	moduleLst = pykd.typedVarList(peb.Ldr.deref().InLoadOrderModuleList, "ntdll!_LDR_DATA_TABLE_ENTRY", "InLoadOrderLinks.Flink")
 	if DEBUG_MODE:
 		dbgp("moduleList: %d, PEBModlist: %d" % (len(moduleLst), len(PEBModList)))
 	if len(PEBModList) == 0:
 		for mod in moduleLst:
 			thismod = ensure_text(pykd.loadUnicodeString(mod.BaseDllName))
+			fullpath = ensure_text(pykd.loadUnicodeString(mod.FullDllName))
 			if DEBUG_MODE:
 				dbgp("Got name for mod.BaseDllName: %s" % thismod)
-			modparts = thismod.split("\\")
-			modulename = modparts[len(modparts)-1]
-			fullpath = thismod
+				dbgp("Full path: %s" % fullpath)
+
+			modulename = os.path.basename(fullpath)
 			exename = modulename
 
 			addtolist = True
 
-			moduleparts = modulename.split(".")
-			imagename = ""
-			if len(moduleparts) == 1:
-				imagename = moduleparts[0]
-			cnt = 0
-			while cnt < len(moduleparts)-1:
-				imagename = imagename + moduleparts[cnt] + "."
-				cnt += 1
-			imagename = imagename.strip(".")
+			imagename, fileext = os.path.splitext(modulename)
 
 			# no windbg love for +  -  .
 			imagename = imagename.replace("+","_")
@@ -1076,6 +1069,7 @@ def getModulesFromPEB():
 				PEBModList[imagename] = [exename, fullpath]
 				if DEBUG_MODE:
 					dbgp("    Added %s to PEBModList" % imagename)
+					dbgp("    With full path %s" % fullpath)
 	
 	return moduleLst
 
@@ -3115,6 +3109,7 @@ class Debugger:
 				modentry = PEBModList[modulename]
 				if DEBUG_MODE:
 					dbgp("    Convert module into pykd module object: %s" % modulename)
+					dbgp("    Modentry: %s" % modentry)
 				thismod = pykd.module(modulename)
 				fullpath = modentry[1]
 			else:
@@ -3144,7 +3139,7 @@ class Debugger:
 			thismodname = thismod.name()
 			thismodbase = thismod.begin()
 			thismodsize = thismod.size()
-			thismodpath = thismod.image()
+			thismodpath = fullpath
 
 			if DEBUG_MODE:
 				dbgp("       image: %s" % thisimagename)
