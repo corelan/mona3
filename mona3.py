@@ -6123,7 +6123,10 @@ def populateModuleInfo(from_memory=False):
 	g_modules={}
 	if DEBUG_MODE:
 		dbgp("Enumerating modules via getAllModules")
-	allmodules=dbg.getAllModules(from_memory=from_memory)
+	if __DEBUGGERAPP__ == "WinDBG":
+		allmodules=dbg.getAllModules(from_memory=from_memory)
+	else:
+		allmodules=dbg.getAllModules()
 	if DEBUG_MODE:
 		dbgp("Number of modules found: %d" % len(allmodules))
 	curmod = ""
