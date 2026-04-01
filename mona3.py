@@ -114,7 +114,6 @@ except:
 		import pykd
 		import windbglib3 as dbglib
 		#activate this with -debug flag
-		#dbglib.set_debug_mode(True)
 		from windbglib3 import LogBpHook
 		dbglib.checkVersion()
 		arch = dbglib.getArchitecture()
@@ -19951,6 +19950,20 @@ def _strip_launcher_and_script(argv):
 
 
 def _parse_mona_args_with_argparse(raw_args):
+
+	try:
+		_ = sys.argv
+	except AttributeError:
+		sys.argv = ["mona.py"]
+
+	if sys.argv is None:
+		sys.argv = ["mona.py"]
+
+	parser = argparse.ArgumentParser(
+		prog="mona.py",
+		add_help=False
+	)
+
 	"""
 	Return:
 		command  : first token after script name (or "")
@@ -19960,7 +19973,6 @@ def _parse_mona_args_with_argparse(raw_args):
 			- value = string for switches with argument(s)
 			- optional key "?" for free positional values after command
 	"""
-	parser = argparse.ArgumentParser(add_help=False)
 	# Python 3 only, so guard it
 	try:
 		parser.allow_abbrev = False
@@ -20069,7 +20081,8 @@ def main(args):
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
 	else:
 		DEBUG_MODE = False
-		dbglib.set_debug_mode(False)
+		if (__DEBUGGERAPP__ == "WinDBG"):
+			dbglib.set_debug_mode(False)
 
 	try:
 		starttime = datetime.datetime.now()
