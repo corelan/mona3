@@ -826,17 +826,21 @@ class VSVersionInfo(object):
 		return cls(data)
 
 	@classmethod
-	def from_memory(cls, modbase):
+	def from_memory(cls, modbase, read_memory=None):
 		"""
 		Construct a VSVersionInfo by reading RT_VERSION from a loaded module
-		in the debuggee's address space via pykd.
+		in the debuggee's address space.
 
 		Walks the in-memory PE headers starting at modbase to locate the
-		resource data directory, then traverses the RT_VERSION resource tree,
-		reading all data with pykd.loadBytes. Supports both PE32 and PE32+.
+		resource data directory, then traverses the RT_VERSION resource tree.
+		Supports both PE32 and PE32+.
 
 		Args:
-			modbase: Virtual base address (int) of the loaded module.
+			modbase:     Virtual base address (int) of the loaded module.
+			read_memory: Optional callable read_memory(addr, size) -> bytes.
+			             If None, falls back to pykd.loadBytes. Pass the
+			             Debugger instance (dbg) to use its readMemory method,
+			             which works across WinDBG and Immunity Debugger.
 
 		Returns:
 			VSVersionInfo instance.
@@ -845,20 +849,27 @@ class VSVersionInfo(object):
 			ValueError: If the headers are invalid, RT_VERSION is absent, or
 			            the VS_FIXEDFILEINFO signature is invalid.
 		"""
-		def mem_read(addr, size):
-			return bytes(bytearray(dbg.readMemory(addr, size)))
+		if read_memory is not None:
+			if hasattr(read_memory, 'readMemory'):
+				# A Debugger object was passed — use its readMemory method
+				_read = lambda addr, size: bytes(bytearray(read_memory.readMemory(addr, size)))
+			else:
+				# A bare callable was passed
+				_read = lambda addr, size: bytes(bytearray(read_memory(addr, size)))
+		else:
+			_read = lambda addr, size: bytes(bytearray(pykd.loadBytes(addr, size)))
 
 		def mem_dword(addr):
-			return struct.unpack("<I", mem_read(addr, 4))[0]
+			return struct.unpack("<I", _read(addr, 4))[0]
 
 		def mem_word(addr):
-			return struct.unpack("<H", mem_read(addr, 2))[0]
+			return struct.unpack("<H", _read(addr, 2))[0]
 
 		# DOS header -> NT header offset
 		nt_off = mem_dword(modbase + 0x3C)
 		nt_base = modbase + nt_off
 
-		if mem_read(nt_base, 4) != b"PE\x00\x00":
+		if _read(nt_base, 4) != b"PE\x00\x00":
 			raise ValueError("Not a valid PE file in memory at 0x%x" % modbase)
 
 		# COFF File Header
@@ -884,7 +895,7 @@ class VSVersionInfo(object):
 		sect_base = nt_base + 4 + 20 + size_opt_hdr
 		res_sec = None
 		for i in range(num_sections):
-			sd = mem_read(sect_base + i * 40, 40)
+			sd = _read(sect_base + i * 40, 40)
 			v_sz, v_addr = struct.unpack_from("<II", sd, 8)
 			if v_addr <= res_rva < v_addr + v_sz:
 				res_sec = (v_addr, modbase + v_addr)  # (rva, va)
@@ -898,9 +909,9 @@ class VSVersionInfo(object):
 			return modbase + rva
 
 		def read_dir_entries(dir_va):
-			hdr = mem_read(dir_va, 16)
+			hdr = _read(dir_va, 16)
 			num_named, num_id = struct.unpack("<HH", hdr[12:16])
-			entries_raw = mem_read(dir_va + 16, (num_named + num_id) * 8)
+			entries_raw = _read(dir_va + 16, (num_named + num_id) * 8)
 			count = num_named + num_id
 			return [struct.unpack_from("<II", entries_raw, i * 8) for i in range(count)]
 
@@ -930,29 +941,31 @@ class VSVersionInfo(object):
 		_, data_entry_off = lang_entries[0]
 
 		# IMAGE_RESOURCE_DATA_ENTRY
-		data_entry = mem_read(res_va + data_entry_off, 8)
+		data_entry = _read(res_va + data_entry_off, 8)
 		data_rva, data_size = struct.unpack("<II", data_entry)
-		data = mem_read(rva2va(data_rva), data_size)
+		data = _read(rva2va(data_rva), data_size)
 		return cls(data)
 
 	def __repr__(self):
 		return "VSVersionInfo(fixed=%r, string_tables=%r)" % (self.fixed, self.string_tables)
 
 
-def get_module_version(path, modbase=None, from_memory=False):
+def get_module_version(path, modbase=None, from_memory=False, debugger=None):
 	"""
 	Read the FileVersion of a PE module by parsing VS_VERSION_INFO.
 
 	When from_memory is True (or the global VERSION_FROM_MEMORY flag is set)
 	and modbase is provided, the resource data is read from the debuggee's live
-	address space via pykd (VSVersionInfo.from_memory). Otherwise the file at
-	path is read from disk (VSVersionInfo.from_file).
+	address space. Otherwise the file at path is read from disk.
 
 	Args:
 		path:        Filesystem path to the PE file (used for disk reads).
 		modbase:     Virtual base address of the loaded module (required for
 		             memory reads; ignored for disk reads).
 		from_memory: If True, force a memory read regardless of the global flag.
+		debugger:    Debugger instance whose readMemory() method is used for
+		             memory reads. Supports WinDBG (pykd) and Immunity Debugger.
+		             If None, pykd.loadBytes is used directly.
 
 	Returns:
 		Version string in 'major.minor.build.revision' format, or empty
@@ -960,7 +973,7 @@ def get_module_version(path, modbase=None, from_memory=False):
 	"""
 	try:
 		if (from_memory or VERSION_FROM_MEMORY) and modbase is not None:
-			return VSVersionInfo.from_memory(modbase).fixed.file_version_str
+			return VSVersionInfo.from_memory(modbase, read_memory=debugger).fixed.file_version_str
 		return VSVersionInfo.from_file(path).fixed.file_version_str
 	except Exception:
 		return ""
@@ -3105,7 +3118,7 @@ class Debugger:
 			try:
 				if DEBUG_MODE:
 					dbgp("    Trying to get version info (memory=%s)" % VERSION_FROM_MEMORY)
-				thismodversion = get_module_version(fullpath, modbase=thismodbase)
+				thismodversion = get_module_version(fullpath, modbase=thismodbase, debugger=self)
 				if DEBUG_MODE:
 					dbgp("    -> %s" % thismodversion)
 			except Exception as e:
