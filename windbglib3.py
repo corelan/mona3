@@ -825,24 +825,142 @@ class VSVersionInfo(object):
 				raise ValueError("RT_VERSION resource not found")
 		return cls(data)
 
+	@classmethod
+	def from_memory(cls, modbase):
+		"""
+		Construct a VSVersionInfo by reading RT_VERSION from a loaded module
+		in the debuggee's address space via pykd.
+
+		Walks the in-memory PE headers starting at modbase to locate the
+		resource data directory, then traverses the RT_VERSION resource tree,
+		reading all data with pykd.loadBytes. Supports both PE32 and PE32+.
+
+		Args:
+			modbase: Virtual base address (int) of the loaded module.
+
+		Returns:
+			VSVersionInfo instance.
+
+		Raises:
+			ValueError: If the headers are invalid, RT_VERSION is absent, or
+			            the VS_FIXEDFILEINFO signature is invalid.
+		"""
+		def mem_read(addr, size):
+			return bytes(bytearray(dbg.readMemory(addr, size)))
+
+		def mem_dword(addr):
+			return struct.unpack("<I", mem_read(addr, 4))[0]
+
+		def mem_word(addr):
+			return struct.unpack("<H", mem_read(addr, 2))[0]
+
+		# DOS header -> NT header offset
+		nt_off = mem_dword(modbase + 0x3C)
+		nt_base = modbase + nt_off
+
+		if mem_read(nt_base, 4) != b"PE\x00\x00":
+			raise ValueError("Not a valid PE file in memory at 0x%x" % modbase)
+
+		# COFF File Header
+		num_sections = mem_word(nt_base + 4 + 2)
+		size_opt_hdr = mem_word(nt_base + 4 + 16)
+
+		# Optional Header magic
+		magic = mem_word(nt_base + 4 + 20)
+		if magic == 0x10b:
+			dd_off = nt_base + 4 + 20 + 96
+		elif magic == 0x20b:
+			dd_off = nt_base + 4 + 20 + 112
+		else:
+			raise ValueError("Unrecognised Optional Header magic: %s" % hex(magic))
+
+		# IMAGE_DATA_DIRECTORY[2] = resource directory
+		res_rva = mem_dword(dd_off + 2 * 8)
+		res_size = mem_dword(dd_off + 2 * 8 + 4)
+		if res_rva == 0:
+			raise ValueError("No resource data directory in memory")
+
+		# Parse section table to find the section that contains res_rva
+		sect_base = nt_base + 4 + 20 + size_opt_hdr
+		res_sec = None
+		for i in range(num_sections):
+			sd = mem_read(sect_base + i * 40, 40)
+			v_sz, v_addr = struct.unpack_from("<II", sd, 8)
+			if v_addr <= res_rva < v_addr + v_sz:
+				res_sec = (v_addr, modbase + v_addr)  # (rva, va)
+				break
+		if res_sec is None:
+			raise ValueError("Resource section not found in memory")
+
+		sec_rva, sec_va = res_sec
+
+		def rva2va(rva):
+			return modbase + rva
+
+		def read_dir_entries(dir_va):
+			hdr = mem_read(dir_va, 16)
+			num_named, num_id = struct.unpack("<HH", hdr[12:16])
+			entries_raw = mem_read(dir_va + 16, (num_named + num_id) * 8)
+			count = num_named + num_id
+			return [struct.unpack_from("<II", entries_raw, i * 8) for i in range(count)]
+
+		RT_VERSION = 16
+		res_va = rva2va(res_rva)
+
+		# Level 1: find RT_VERSION by type ID
+		type_entries = read_dir_entries(res_va)
+		type_off = next(
+			(off for id_, off in type_entries
+			 if not (id_ & 0x80000000) and id_ == RT_VERSION),
+			None
+		)
+		if type_off is None:
+			raise ValueError("RT_VERSION not found in in-memory resource directory")
+
+		# Level 2: first name entry
+		name_entries = read_dir_entries(res_va + (type_off & 0x7FFFFFFF))
+		if not name_entries:
+			raise ValueError("RT_VERSION has no name entries in memory")
+		_, lang_off = name_entries[0]
+
+		# Level 3: first language entry
+		lang_entries = read_dir_entries(res_va + (lang_off & 0x7FFFFFFF))
+		if not lang_entries:
+			raise ValueError("RT_VERSION has no language entries in memory")
+		_, data_entry_off = lang_entries[0]
+
+		# IMAGE_RESOURCE_DATA_ENTRY
+		data_entry = mem_read(res_va + data_entry_off, 8)
+		data_rva, data_size = struct.unpack("<II", data_entry)
+		data = mem_read(rva2va(data_rva), data_size)
+		return cls(data)
+
 	def __repr__(self):
 		return "VSVersionInfo(fixed=%r, string_tables=%r)" % (self.fixed, self.string_tables)
 
 
-def get_module_version(path):
+def get_module_version(path, modbase=None, from_memory=False):
 	"""
-	Read the FileVersion from a PE file on disk by parsing VS_VERSION_INFO
-	directly from the resource section, without relying on pykd.
-	Supports both PE32 (32-bit) and PE32+ (64-bit) images.
+	Read the FileVersion of a PE module by parsing VS_VERSION_INFO.
+
+	When from_memory is True (or the global VERSION_FROM_MEMORY flag is set)
+	and modbase is provided, the resource data is read from the debuggee's live
+	address space via pykd (VSVersionInfo.from_memory). Otherwise the file at
+	path is read from disk (VSVersionInfo.from_file).
 
 	Args:
-		path: Filesystem path to the PE file.
+		path:        Filesystem path to the PE file (used for disk reads).
+		modbase:     Virtual base address of the loaded module (required for
+		             memory reads; ignored for disk reads).
+		from_memory: If True, force a memory read regardless of the global flag.
 
 	Returns:
 		Version string in 'major.minor.build.revision' format, or empty
 		string if the version resource cannot be found or parsed.
 	"""
 	try:
+		if (from_memory or VERSION_FROM_MEMORY) and modbase is not None:
+			return VSVersionInfo.from_memory(modbase).fixed.file_version_str
 		return VSVersionInfo.from_file(path).fixed.file_version_str
 	except Exception:
 		return ""
@@ -2986,8 +3104,8 @@ class Debugger:
 
 			try:
 				if DEBUG_MODE:
-					dbgp("    Trying to get version info")
-				thismodversion = get_module_version(fullpath)
+					dbgp("    Trying to get version info (memory=%s)" % VERSION_FROM_MEMORY)
+				thismodversion = get_module_version(fullpath, modbase=thismodbase)
 				if DEBUG_MODE:
 					dbgp("    -> %s" % thismodversion)
 			except Exception as e:

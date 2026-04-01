@@ -12507,6 +12507,12 @@ def procShowMODULES(args, procUsage = ""):
 	criteria={}
 	
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+
+	if "memory" in args and args["memory"]:
+		import windbglib3
+		windbglib3.VERSION_FROM_MEMORY = True
+		dbg.log("[+] Version info will be read from memory")
+
 	modulestosearch = getModulesToQuery(modulecriteria)
 	showModuleTable("",modulestosearch)
 	logfile = MnLog("modules.txt")
@@ -19379,7 +19385,9 @@ Mandatory argument :  -r <reg>  where reg is a valid register"""
 	ropfuncUsage = """Default module criteria : non aslr, non rebase, non os
 Output will be written to ropfunc.txt"""
 
-	modulesUsage = """Shows information about the loaded modules"""
+	modulesUsage = """Shows information about the loaded modules
+Optional parameters :
+-memory : read version info from the debuggee's live memory instead of from disk"""
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
