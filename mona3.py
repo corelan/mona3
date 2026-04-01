@@ -5988,7 +5988,7 @@ def getSearchSequences(searchtype,searchcriteria="",type="",criteria={}):
 	return search
 
 	
-def getModulesToQuery(criteria):
+def getModulesToQuery(criteria, from_memory=False):
 	"""
 	This function will return an array of modulenames
 	
@@ -5997,7 +5997,7 @@ def getModulesToQuery(criteria):
 	
 	Return:
 	array with module names that meet the given criteria
-	
+
 	"""	
 
 	if DEBUG_MODE:
@@ -6005,7 +6005,7 @@ def getModulesToQuery(criteria):
 		dbgp("function criteria: %s" % criteria)
 		dbgp("g_modules: %d entries" % len(g_modules))
 	if len(g_modules) == 0:
-		populateModuleInfo()
+		populateModuleInfo(from_memory=from_memory)
 	modulestoquery=[]
 	for thismodule,modproperties in g_modules.items():
 		#is this module excluded ?
@@ -6104,7 +6104,7 @@ def getModuleProperty(modname,parameter):
 	return valtoreturn
 
 
-def populateModuleInfo():
+def populateModuleInfo(from_memory=False):
 	"""
 	Populate global dictionary with information about all loaded modules
 	
@@ -6123,7 +6123,7 @@ def populateModuleInfo():
 	g_modules={}
 	if DEBUG_MODE:
 		dbgp("Enumerating modules via getAllModules")
-	allmodules=dbg.getAllModules()
+	allmodules=dbg.getAllModules(from_memory=from_memory)
 	if DEBUG_MODE:
 		dbgp("Number of modules found: %d" % len(allmodules))
 	curmod = ""
@@ -12508,12 +12508,11 @@ def procShowMODULES(args, procUsage = ""):
 	
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
 
-	if "memory" in args and args["memory"]:
-		import windbglib3
-		windbglib3.VERSION_FROM_MEMORY = True
+	from_memory = "memory" in args and bool(args["memory"])
+	if from_memory:
 		dbg.log("[+] Version info will be read from memory")
 
-	modulestosearch = getModulesToQuery(modulecriteria)
+	modulestosearch = getModulesToQuery(modulecriteria, from_memory=from_memory)
 	showModuleTable("",modulestosearch)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
