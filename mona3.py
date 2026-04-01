@@ -6904,11 +6904,16 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											thischain =  thischain + " # " + thisinstruction
 											msfchain.append([chainptr,thisinstruction])
 											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
-											if DEBUG_MODE:
-												dbgp("Current position: 0x%x" % chainptr)
-											chainptr = dbg.disasmForwardAddressOnly(chainptr,1)
-											if DEBUG_MODE:
-												dbgp("Next position: 0x%x" % chainptr)
+											#if DEBUG_MODE:
+											#	dbgp("Current position: 0x%x" % chainptr)
+											nextchainptr = dbg.disasmForwardAddressOnly(chainptr,1)
+											if nextchainptr == chainptr:
+												# problem disasmForward, just quit the loop
+												invalidinstr = True
+											else:
+												chainptr = nextchainptr
+											#if DEBUG_MODE:
+											#	dbgp("Next position: 0x%x" % chainptr)
 										else:
 											invalidinstr = True
 										avoidunlimitedloop += 1
