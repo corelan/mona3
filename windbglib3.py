@@ -2762,13 +2762,13 @@ class Debugger:
 		return pykd.ptrDWord(location)
 
 
-	def writeMemory(self,location,data):
+	def writeMemory(self, location, data):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
-		A = array.array('B')
-		A.fromstring(data)
-		pykd.writeBytes(location, A.tolist())
+		data = ensure_bytes(data)
+
+		pykd.writeBytes(location, list(bytearray(data)))
 		return
 
 	def writeLong(self,location,dword):
