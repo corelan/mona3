@@ -3002,8 +3002,8 @@ class Debugger:
 
 
 	def getMemoryPageByAddress(self,address):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		#if DEBUG_MODE:
+		#	dbgp(get_current_function_name())
 
 		if len(self.MemoryPages) == 0:
 			# may never get hit
@@ -3020,8 +3020,8 @@ class Debugger:
 		return []
 
 	def getPageContains(self,address):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		#if DEBUG_MODE:
+		#	dbgp(get_current_function_name())
 
 		if len(self.MemoryPages) == 0:
 			self.MemoryPages = self.getMemoryPages()

@@ -356,6 +356,9 @@ def get_current_function_name():
 def get_current_datetime():
 	return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
 
+def get_current_datetime_flat():
+	return time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time()))
+
 
 def getPythonVersion():
 	versioninfo = sys.version
@@ -20107,6 +20110,9 @@ def main(args):
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
+		objlogopenfile = MnLog("%s-windbg_debug.log" % get_current_datetime_flat())
+		logopenfile = objlogopenfile.reset()
+		dbg.nativeCommand(".logopen \"%s\"" % logopenfile)
 	else:
 		DEBUG_MODE = False
 		if (__DEBUGGERAPP__ == "WinDBG"):
