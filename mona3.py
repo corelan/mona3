@@ -12643,7 +12643,7 @@ def getAbsolutePath(filename):
 
 # ----- Config file management ----- #
 
-def procConfig(args,procUsage = ""):
+def procConfig(args):
 	#did we specify -get, -set or -add?
 	showerror = False
 	if not "set" in args and not "get" in args and not "add" in args:
@@ -12850,7 +12850,7 @@ _POST_SORT_DEFAULT_REVERSE = {
 	"os":      True,
 }
 
-def procShowMODULES(args, procUsage = ""):
+def procShowMODULES(args):
 	modulecriteria={}
 	criteria={}
 	
@@ -12887,7 +12887,7 @@ def procShowMODULES(args, procUsage = ""):
 
 
 # ----- ROP ----- #
-def procFindROPFUNC(args, procUsage = ""):
+def procFindROPFUNC(args):
 	#default criteria
 	modulecriteria={}
 	modulecriteria["aslr"] = False
@@ -12911,10 +12911,10 @@ def procFindROPFUNC(args, procUsage = ""):
 	thislog = logfile.reset()
 	processResults(ropfuncoffsets,logfile,thislog)			
 	
-def procStackPivots(args, procUsage = ""):
+def procStackPivots(args):
 	procROP(args,"stackpivot", procUsage)
 	
-def procROP(args,mode="all", procUsage = ""):
+def procROP(args,mode="all"):
 	#default criteria
 	modulecriteria={}
 	modulecriteria["aslr"] = False
@@ -12995,7 +12995,7 @@ def procROP(args,mode="all", procUsage = ""):
 	findROPGADGETS(modulecriteria,criteria,endings,maxoffset,depth,split,thedistance,fast,mode,sortedprint,technique)
 	
 
-def procJseh(args, procUsage = ""):
+def procJseh(args):
 	results = []
 	showred=0
 	showall=False
@@ -13074,7 +13074,7 @@ def procJseh(args, procUsage = ""):
 		return "Sorry, no addresses found"
 
 	
-def procJOP(args,mode="all", procUsage = ""):
+def procJOP(args,mode="all"):
 	#default criteria
 	modulecriteria={}
 	modulecriteria["aslr"] = False
@@ -13098,7 +13098,7 @@ def procJOP(args,mode="all", procUsage = ""):
 	findJOPGADGETS(modulecriteria,criteria,depth)			
 	
 	
-def procCreatePATTERN(args, procUsage = ""):
+def procCreatePATTERN(args):
 	size = 0
 	pattern = ""
 	if DEBUG_MODE:
@@ -13148,7 +13148,7 @@ def procCreatePATTERN(args, procUsage = ""):
 	return
 
 
-def procOffsetPATTERN(args, procUsage = ""):
+def procOffsetPATTERN(args):
 	egg = ""
 	if "?" in args and args["?"] != "":
 		try:
@@ -13162,7 +13162,7 @@ def procOffsetPATTERN(args, procUsage = ""):
 	return
 
 # ----- Comparing file output ----- #
-def procFileCOMPARE(args, procUsage = ""):
+def procFileCOMPARE(args):
 	modulecriteria={}
 	criteria={}
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
@@ -13219,7 +13219,7 @@ def procFileCOMPARE(args, procUsage = ""):
 		dbg.log("Please specify at least 2 filenames to compare",highlight=1)
 
 # ----- Find bytes in memory ----- #
-def procFind(args, procUsage = ""):
+def procFind(args):
 	modulecriteria={}
 	criteria={}
 	pattern = ""
@@ -13345,7 +13345,7 @@ def procFind(args, procUsage = ""):
 	
 	
 # ---- Find instructions, wildcard search ----- #
-def procFindWild(args, procUsage = ""):
+def procFindWild(args):
 	modulecriteria={}
 	criteria={}
 	pattern = ""
@@ -13438,7 +13438,7 @@ def procFindWild(args, procUsage = ""):
 
 	
 # ----- assemble: assemble instructions to opcodes ----- #
-def procAssemble(args, procUsage = ""):
+def procAssemble(args):
 	opcodes = ""
 	encoder = ""
 	
@@ -13459,7 +13459,7 @@ def procAssemble(args, procUsage = ""):
 	assemble(opcodes,encoder)
 	
 # ----- info: show information about an address ----- #
-def procInfo(args, procUsage = ""):
+def procInfo(args):
 	if not "a" in args:
 		dbg.log("Missing mandatory argument -a", highlight=1)
 		return
@@ -13549,7 +13549,7 @@ def procInfo(args, procUsage = ""):
 	dbg.log("")
 
 # ----- dump: Dump some memory to a file ----- #
-def procDump(args, procUsage = ""):
+def procDump(args):
 	
 	filename = ""
 	if "f" not in args:
@@ -13587,7 +13587,7 @@ def procDump(args, procUsage = ""):
 	dumpMemoryToFile(address,size,filename)
 
 # ----- compare : Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg or just a file with raw bytes with a copy in memory, indicate bad chars / corruption ----- #
-def procCompare(args, procUsage = ""):
+def procCompare(args):
 	startpos = 0
 	filename = ""
 	skipmodules = False
@@ -13618,7 +13618,7 @@ def procCompare(args, procUsage = ""):
 	compareFormattedFileWithMemory(filename,format,startpos,skipmodules,findunicode)				
 	
 # ----- offset: Calculate the offset between two addresses ----- #
-def procOffset(args, procUsage = ""):
+def procOffset(args):
 	extratext1 = ""
 	extratext2 = ""
 	isReg_a1 = False
@@ -13660,7 +13660,7 @@ def procOffset(args, procUsage = ""):
 	return		
 		
 # ----- bp: Set a breakpoint on read/write/exe access ----- #
-def procBp(args, procUsage = ""):
+def procBp(args):
 	isReg_a = False
 	regs = dbg.getRegs()
 	thistype = ""
@@ -13736,7 +13736,7 @@ def procBp(args, procUsage = ""):
 
 
 # ----- ct: calltrace ---- #
-def procCallTrace(args, procUsage = ""):
+def procCallTrace(args):
 	modulecriteria={}
 	criteria={}
 	criteria["accesslevel"] = "X"
@@ -13860,7 +13860,7 @@ def procCallTrace(args, procUsage = ""):
 	return "Done"
 	
 # ----- bu: set a deferred breakpoint ---- #
-def procBu(args, procUsage = ""):
+def procBu(args):
 	if not "a" in args:
 		dbg.log("No targets defined. (-a)",highlight=1)
 		return
@@ -13959,7 +13959,7 @@ def procBu(args, procUsage = ""):
 		return "Done"							
 	
 # ----- bf: Set a breakpoint on exported functions of a module ----- #
-def procBf(args, procUsage = ""):
+def procBf(args):
 
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
@@ -14013,7 +14013,7 @@ def procBf(args, procUsage = ""):
 
 
 # ----- Show info about modules -------#
-def procModInfoS(args, procUsage = ""):
+def procModInfoS(args):
 	modulecriteria = {}
 	criteria = {}
 	modulecriteria["safeseh"] = False
@@ -14022,7 +14022,7 @@ def procModInfoS(args, procUsage = ""):
 	showModuleTable("",modulestosearch)
 	return
 	
-def procModInfoSA(args, procUsage = ""):
+def procModInfoSA(args):
 	modulecriteria = {}
 	criteria = {}
 	modulecriteria["safeseh"] = False
@@ -14033,7 +14033,7 @@ def procModInfoSA(args, procUsage = ""):
 	showModuleTable("",modulestosearch)			
 	return
 
-def procModInfoA(args, procUsage = ""):
+def procModInfoA(args):
 	modulecriteria = {}
 	criteria = {}
 	modulecriteria["aslr"] = False
@@ -14045,7 +14045,7 @@ def procModInfoA(args, procUsage = ""):
 	
 # ----- Print byte array ----- #
 
-def procByteArray(args, procUsage = ""):
+def procByteArray(args):
 	badchars = ""
 	bytesperline = 32
 	startval = 0
@@ -14167,7 +14167,7 @@ def procByteArray(args, procUsage = ""):
 	
 	
 #----- Read binary file, print 'nice' header -----#
-def procPrintHeader(args, procUsage = ""):
+def procPrintHeader(args):
 	alltypes = ["ruby","rb","python","py"]
 	thistype = "ruby"
 	filename = ""
@@ -14338,7 +14338,7 @@ def procPrintHeader(args, procUsage = ""):
 
 #----- Update -----#
 
-def procUpdate(args, procUsage = ""):
+def procUpdate(args):
 	"""
 	Function to update mona and optionally windbglib to the latest version
 	
@@ -14463,7 +14463,7 @@ def procUpdate(args, procUsage = ""):
 	return
 	
 #----- GetPC -----#
-def procgetPC(args, procUsage = ""):
+def procgetPC(args):
 	r32 = ""
 	output = ""
 	if "r" in args:
@@ -14512,7 +14512,7 @@ def procgetPC(args, procUsage = ""):
 
 	
 #----- Egghunter -----#
-def procEgg(args, procUsage = ""):
+def procEgg(args):
 	filename = ""
 	egg = b"w00t"
 	usechecksum = False
@@ -14940,7 +14940,7 @@ def procEgg(args, procUsage = ""):
 
 #----- Find MSP ------ #
 
-def procFindMSP(args, procUsage = ""):
+def procFindMSP(args):
 	distance = 0
 	
 	if "distance" in args:
@@ -14955,7 +14955,7 @@ def procFindMSP(args, procUsage = ""):
 	mspresults = goFindMSP(distance,args)
 	return
 	
-def procSuggest(args, procUsage = ""):
+def procSuggest(args):
 	modulecriteria={}
 	criteria={}
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
@@ -15464,7 +15464,7 @@ def procSuggest(args, procUsage = ""):
 	return	
 
 #-----stacks-----#
-def procStacks(args, procUsage = ""):
+def procStacks(args):
 	stacks = getStacks()
 	if len(stacks) > 0:
 		dbg.log("Stacks :")
@@ -15477,7 +15477,7 @@ def procStacks(args, procUsage = ""):
 
 #------heapstuff-----#
 	
-def procHeap(args, procUsage = ""):
+def procHeap(args):
 
 	os = dbg.getOsVersion()
 	heapkey = 0
@@ -16282,13 +16282,13 @@ def procHeap(args, procUsage = ""):
 			
 	return
 
-def procGetIAT(args, procUsage = ""):
+def procGetIAT(args):
 	return procGetxAT(args,"iat")
 
-def procGetEAT(args, procUsage = ""):
+def procGetEAT(args):
 	return procGetxAT(args,"eat")
 
-def procFwptr(args, procUsage = ""):
+def procFwptr(args):
 	modulecriteria = {}
 	criteria = {}			
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
@@ -16470,7 +16470,7 @@ def procFwptr(args, procUsage = ""):
 
 	return
 
-def procGetxAT(args,mode="",procUsage = ""):
+def procGetxAT(args,mode=""):
 
 	keywords = []
 	keywordstring = ""
@@ -16585,7 +16585,7 @@ def procGetxAT(args,mode="",procUsage = ""):
 
 	
 #-----Metasploit module skeleton-----#
-def procSkeleton(args, procUsage = ""):
+def procSkeleton(args):
 
 	cyclicsize = 5000
 	if "c" in args:
@@ -16729,7 +16729,7 @@ def procSkeleton(args, procUsage = ""):
 	
 	return
 
-def procLoad(args, procUsage = ""):
+def procLoad(args):
 
 	# checks the args
 	# file ok?
@@ -16826,7 +16826,7 @@ def procLoad(args, procUsage = ""):
 	return
 
 
-def procFillChunk(args, procUsage = ""):
+def procFillChunk(args):
 
 	reference = ""
 	fillchar = "A"
@@ -16994,7 +16994,7 @@ def procFillChunk(args, procUsage = ""):
 			dbg.log("Done")
 	return
 
-def procInfoDump(args, procUsage = ""):
+def procInfoDump(args):
 	allpages = dbg.getMemoryPages()
 	filename = "infodump.xml"
 	xmldata = '<info>\n'
@@ -17074,7 +17074,7 @@ def procInfoDump(args, procUsage = ""):
 	return
 
 
-def procPEB(args, procUsage = ""):
+def procPEB(args):
 	"""
 	Show the address of the PEB
 	"""
@@ -17082,7 +17082,7 @@ def procPEB(args, procUsage = ""):
 	dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
 	return
 
-def procTEB(args, procUsage = ""):
+def procTEB(args):
 	"""
 	Show the address of the TEB for the current thread
 	"""
@@ -17090,7 +17090,7 @@ def procTEB(args, procUsage = ""):
 	dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
 	return
 
-def procPageACL(args, procUsage = ""):
+def procPageACL(args):
 	global silent
 	silent = True
 	findaddy = 0
@@ -17196,7 +17196,7 @@ def procPageACL(args, procUsage = ""):
 	silent = False
 	return
 
-def procMacro(args, procUsage = ""):
+def procMacro(args):
 	validcommands = ["run","set","list","del","add","show"]
 	validcommandfound = False
 	selectedcommand = ""
@@ -17463,7 +17463,7 @@ def procMacro(args, procUsage = ""):
 	return
 
 
-def procEnc(args, procUsage = ""):
+def procEnc(args):
 	validencoders = ['alphanum']
 	encodertyperror = True
 	byteerror = True
@@ -17576,7 +17576,7 @@ def procEnc(args, procUsage = ""):
 				logfile.write("%s" % fulllist_str,thislog)
 	return
 
-def procString(args, procUsage = ""):
+def procString(args):
 	mode = ""
 	useunicode = False
 	terminatestring = True
@@ -17676,7 +17676,7 @@ def procString(args, procUsage = ""):
 	return
 
 
-def procKb(args, procUsage = ""):
+def procKb(args):
 	validcommands = ['set','list','del']
 	validcommandfound = False
 	selectedcommand = ""
@@ -17801,7 +17801,7 @@ def procKb(args, procUsage = ""):
 			dbg.log("*** Object %s in ID %s removed from Knowledgebase" % (selectedvalue,selectedid))
 	return
 
-def procBPSeh(self, procUsage = ""):
+def procBPSeh(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
 	if len(sehchain) > 0:
@@ -17837,7 +17837,7 @@ def procBPSeh(self, procUsage = ""):
 	dbg.log("")
 	return "Done"
 
-def procSehChain(self, procUsage = ""):
+def procSehChain(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
 	handlersoverwritten = {}
@@ -17892,7 +17892,7 @@ def procSehChain(self, procUsage = ""):
 	return
 
 
-def procDumpLog(args, procUsage = ""):
+def procDumpLog(args):
 	logfile = ""
 	levels = 0
 	nestedsize = 0x28
@@ -18050,7 +18050,7 @@ def procDumpLog(args, procUsage = ""):
 	return
 
 
-def procDumpObj(args, procUsage = ""):
+def procDumpObj(args):
 	addy = 0
 	levels = 0
 	size = 0
@@ -18141,7 +18141,7 @@ def procDumpObj(args, procUsage = ""):
 
 
 # routine to copy bytes from one location to another
-def procCopy(args, procUsage = ""):
+def procCopy(args):
 	src = 0
 	dst = 0
 	nrbytes = 0
@@ -18197,7 +18197,7 @@ def procCopy(args, procUsage = ""):
 
 
 # unicode alignment routines written by floyd (http://www.floyd.ch, twitter: @floyd_ch)
-def procUnicodeAlign(args, procUsage = ""):
+def procUnicodeAlign(args):
 	leaks = False
 	address = 0
 	alignresults = {}
@@ -18660,7 +18660,7 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 # end unicode alignment routines
 
 
-def procHeapCookie(args, procUsage = ""):
+def procHeapCookie(args):
 	# first find all writeable pages
 	allpages = dbg.getMemoryPages()
 	filename="heapcookie.txt"
@@ -18732,7 +18732,7 @@ def procHeapCookie(args, procUsage = ""):
 	return
 
 
-def procFlags(args, procUsage = ""):
+def procFlags(args):
 	currentflag = getNtGlobalFlag()
 	dbg.log("[+] NtGlobalFlag: 0x%08x" % currentflag)
 	flagvalues = getNtGlobalFlagValues(currentflag)
@@ -18744,7 +18744,7 @@ def procFlags(args, procUsage = ""):
 	return
 
 
-def procEval(args, procUsage = ""):
+def procEval(args):
 	# put all args together
 	argline = ""
 	if len(currentArgs) > 1:
@@ -18768,7 +18768,7 @@ def procEval(args, procUsage = ""):
 
 
 
-def procDiffHeap(args, procUsage = ""):
+def procDiffHeap(args):
 
 	global ignoremodules
 	filenamebefore = "heapstate_before.db"
@@ -18840,7 +18840,7 @@ def procDiffHeap(args, procUsage = ""):
 	return
 
 
-def procFlow(args, procUsage = ""):
+def procFlow(args):
 
 	srplist = []
 	endlist = []
@@ -19217,7 +19217,7 @@ def procFlow(args, procUsage = ""):
 	return
 
 
-def procChangeACL(args, procUsage = ""):
+def procChangeACL(args):
 	size = 1
 	addy = 0
 	acl = ""
@@ -19255,7 +19255,7 @@ def procChangeACL(args, procUsage = ""):
 	return
 
 
-def procToBp(args, procUsage = ""):
+def procToBp(args):
 	"""
 	Generate WinDBG syntax to create a logging breakpoint on a given location
 	"""
@@ -19378,7 +19378,7 @@ def procToBp(args, procUsage = ""):
 	return
 
 
-def procAllocMem(args, procUsage = ""):
+def procAllocMem(args):
 	size = 0x1000
 	addy = 0
 	sizeerror = False
@@ -19486,7 +19486,7 @@ def procAllocMem(args, procUsage = ""):
 	return
 
 
-def procHideDebug(args, procUsage = ""):
+def procHideDebug(args):
 	peb = dbg.getPEBAddress()			
 	dbg.log("[+] Patching PEB (0x%08x)" % peb)
 	if peb == 0:
@@ -19750,7 +19750,7 @@ def procHelp(args, helpForCommand=None):
 					aliastxt = ""
 					if commands[item[0]].alias != "":
 						aliastxt = " / " + commands[item[0]].alias
-					dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
+					dbg.logLines("  %s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
 		dbg.log("")
 
 	else:
