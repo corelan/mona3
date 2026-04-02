@@ -7211,6 +7211,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
 									dbg.log("    Update: %s" % eta)
+									objprogressfile.write("    Enumerating (sorted) - update: %s" % eta)
 									flipover = 0	
 						else:	
 							for gadget in ropgadgets:
@@ -7224,6 +7225,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
 									dbg.log("    Update: %s" % eta)
+									objprogressfile.write("    Enumerating - update: %s" % eta)
 									flipover = 0	
 
 						dbg.log("    Wrote %d other gadgets to file" % len(ropgadgets))
