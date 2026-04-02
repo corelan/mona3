@@ -19725,6 +19725,7 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("                          only executable pointers will be returned.")
 		dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
 		dbg.log(" -debug                 : Enable debug routines in mona/windbglib")
+		dbg.log(" -h                     : Show help / usage for the selected command ")
 
 	scriptname = get_script_name()
 	launchcmd = "!" + scriptname		
@@ -20541,6 +20542,16 @@ def main(args):
 		# ----- execute the chosen command ----- #
 		if DEBUG_MODE:
 			dbgp("You're trying to run command '%s'" % command)
+			dbgp("Args: %s" % monaArgs)
+
+		# special case - if you are invoking a real command
+		# but specified -h
+		# then I need to run 'help' on that command
+		if "h" in monaArgs:
+			if monaArgs["h"] == True:
+				# move the actual command to "?"
+				monaArgs["?"] = command
+				command = "help"
 
 		dbg.log("")
 		# make a list of all supported commands and aliases
