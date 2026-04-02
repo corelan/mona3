@@ -11299,25 +11299,43 @@ def getStackPivotDistance(gadget,distance=0):
 
 	gadgets = filter(lambda x: x.strip(), gadget.split(" # "))
 
-	for g in gadgets:
-		if "ADD ESP," in g:
-			offset += hexStrToInt(g.split(",")[1])
-		elif "SUB ESP," in g:
-			offset += hexStrToInt(g.split(",")[1])
-		elif "INC ESP" in g:
-			offset += 1
-		elif "DEC ESP" in g:
-			offset -= 1
-		elif "POP " in g:
-			offset += 4
-		elif "PUSH " in g:
-			offset -= 4
-		elif "POPAD" in g:
-			offset += 32
-		elif "PUSHAD" in g:
-			offset -= 32
-		elif ("DWORD PTR" in g or "[" in g) and "FS" not in g:
-			return 0
+	if arch == 32:
+		for g in gadgets:
+			if "ADD ESP," in g:
+				offset += hexStrToInt(g.split(",")[1])
+			elif "SUB ESP," in g:
+				offset += hexStrToInt(g.split(",")[1])
+			elif "INC ESP" in g:
+				offset += 1
+			elif "DEC ESP" in g:
+				offset -= 1
+			elif "POP " in g:
+				offset += 4
+			elif "PUSH " in g:
+				offset -= 4
+			elif "POPAD" in g:
+				offset += 32
+			elif "PUSHAD" in g:
+				offset -= 32
+			elif ("DWORD PTR" in g or "[" in g) and "FS" not in g:
+				return 0
+			
+	if arch == 64:
+		for g in gadgets:
+			if "ADD RSP," in g:
+				offset += hexStrToInt(g.split(",")[1])
+			elif "SUB RSP," in g:
+				offset += hexStrToInt(g.split(",")[1])
+			elif "INC RSP" in g:
+				offset += 1
+			elif "DEC RSP" in g:
+				offset -= 1
+			elif "POP " in g:
+				offset += 8
+			elif "PUSH " in g:
+				offset -= 8
+			elif ("QWORD PTR" in g or "[" in g) and "FS" not in g:
+				return 0
 
 	if mindistance <= offset and offset <= maxdistance:
 		return offset
