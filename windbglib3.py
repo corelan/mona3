@@ -3645,7 +3645,7 @@ class wmodule:
 			pSize = 8
 		
 		iatlist = self.getIATList(ntHeader,pSize)
-		
+
 		if DEBUG_MODE:
 			dbgp("iatlist has %d elements" % len(iatlist))
 

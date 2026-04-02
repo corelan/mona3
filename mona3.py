@@ -3151,15 +3151,17 @@ class MnModule:
 	def getIAT(self):
 		IAT = {}
 		global IATCache
+		dbg.log("")
 		dbg.logLines("    Getting IAT for %s." % (self.moduleKey))
 		try:
 			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
-				dbg.log("    Enumerating IAT, method 1 (Symbols)") 
+				dbg.log("      Enumerating IAT, method 1 (Symbols - this might take a while)") 
 				# this may not work well on Immunity.  Module.getSymbols() may not return anything         
 				try:
 					themod = dbg.getModule(self.moduleKey)
 					syms = themod.getSymbols()
 					thename = ""
+					dbg.log("         %d symbols found" % len(syms))
 					if DEBUG_MODE:
 						dbgp("%d symbols found for %s" % (len(syms), self.moduleKey))
 					for sym in syms:
@@ -3175,8 +3177,8 @@ class MnModule:
 					dbg.logLines(traceback.format_exc())
 					pass
 				# merge
-				dbg.log("    -> %d entries so far" % len(IAT))
-				dbg.log("    Enumerating IAT, method 2 (read strings)")
+				dbg.log("      -> Filtered %d relevant symbols so far" % len(IAT))
+				dbg.log("      Enumerating IAT, method 2 (read strings)")
 				if DEBUG_MODE:
 					dbgp("Current number of IAT entries found: %d" % len(IAT))
 					dbgp("Reading strings in Import table now...")
@@ -3325,10 +3327,11 @@ class MnModule:
 
 								desc_index += 1
 
+				dbg.log("      -> After parsing IAT strings, we now have %d relevant symbols" % len(IAT))
 
 				if len(IAT) == 0:
 					# another search method, not accurate, but might find *something*
-					dbg.log("    Enumerating IAT, method 3 (getFunctionCalls)")
+					dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
 					funccalls = self.getFunctionCalls()
 
 					ptr_fmt = '<L'
@@ -3413,8 +3416,6 @@ class MnModule:
 										if DEBUG_MODE:
 											dbgp("Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
 											dbgp("thisfuncfullname: %s" % thisfuncfullname)
-
-
 
 				if len(IAT) == 0:
 					if DEBUG_MODE:
@@ -7405,7 +7406,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							gcount += 1
 							if flipover > 5000:
 								eta = get_eta(startmoment, gcount , len(ropgadgets))
-								dbg.log("    Update: %s" % eta)
+								dbg.log("    Update: ETA: %s" % eta)
 								flipover = 0	
 
 					else:
@@ -7419,7 +7420,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							gcount += 1
 							if flipover > 5000:
 								eta = get_eta(startmoment, gcount , len(ropgadgets))
-								dbg.log("    Update: %s" % eta)
+								dbg.log("    Update: ETA: %s" % eta)
 								flipover = 0
 					objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
 					fh.writelines(arrtowrite)
@@ -7456,7 +7457,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								gcount += 1
 								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
-									dbg.log("    Update: %s" % eta)
+									dbg.log("    Update: ETA: %s" % eta)
 									objprogressfile.write("    Enumerating (sorted) - update: %s" % eta)
 									flipover = 0	
 						else:	
@@ -7470,7 +7471,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								gcount += 1
 								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
-									dbg.log("    Update: %s" % eta)
+									dbg.log("    Update: ETA: %s" % eta)
 									objprogressfile.write("    Enumerating - update: %s" % eta)
 									flipover = 0	
 
