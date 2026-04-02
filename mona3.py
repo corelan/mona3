@@ -2956,61 +2956,58 @@ class MnModule:
 					modisos = "WINDOWS" in path.upper()
 				else:
 					modisos = True
+
 				mztop = mzbase + mzsize
 				if mzbase > 0:
-					peoffset=struct.unpack('<L',dbg.readMemory(mzbase+0x3c,4))[0]
-					pebase=mzbase+peoffset
-					osver=dbg.getOsVersion()
-					safeseh_offset = [0x5f, 0x5f, 0x5e]
-					safeseh_flag = [0x4, 0x4, 0x400]
-					os_index = 0
-					# Vista / Win7 / Win8
-					if win7mode:
-						os_index = 2
-					flags=struct.unpack('<H',dbg.readMemory(pebase+safeseh_offset[os_index],2))[0]
-					numberofentries=struct.unpack('<L',dbg.readMemory(pebase+0x74,4))[0]
-					#safeseh ?
-					if (flags&safeseh_flag[os_index])!=0:
-						modissafeseh=True
-					else:
-						if numberofentries>10:
-							sectionaddress,sectionsize=struct.unpack('<LL',dbg.readMemory(pebase+0x78+8*10,8))
-							sectionaddress+=mzbase
-							data=struct.unpack('<L',dbg.readMemory(sectionaddress,4))[0]
-							condition = False
-							if os_index < 2:
-								condition=(sectionsize!=0) and ((sectionsize==0x40) or (sectionsize==data))
+					peoffset = struct.unpack('<L', dbg.readMemory(mzbase + 0x3c, 4))[0]
+					pebase = mzbase + peoffset
+
+					pesig = struct.unpack('<I', dbg.readMemory(pebase, 4))[0]
+					if pesig == 0x4550:
+						pemagic = struct.unpack('<H', dbg.readMemory(pebase + 0x18, 2))[0]
+						is_pe64 = (pemagic == 0x20b)
+
+						dll_characteristics_flags = struct.unpack('<H', dbg.readMemory(pebase + 0x5e, 2))[0]
+						mdllcharacteristics = dll_characteristics_flags
+
+						modisaslr = ((dll_characteristics_flags & 0x0040) != 0)
+						modisnx   = ((dll_characteristics_flags & 0x0100) != 0)
+						modiscfg  = ((dll_characteristics_flags & 0x4000) != 0)
+
+						if is_pe64:
+							modissafeseh = False
+						else:
+							safeseh_offset = [0x5f, 0x5f, 0x5e]
+							safeseh_flag = [0x4, 0x4, 0x400]
+							os_index = 0
+							if win7mode:
+								os_index = 2
+
+							flags = struct.unpack('<H', dbg.readMemory(pebase + safeseh_offset[os_index], 2))[0]
+							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + 0x74, 4))[0]
+
+							if (flags & safeseh_flag[os_index]) != 0:
+								modissafeseh = True
 							else:
-								condition=(sectionsize!=0) and ((sectionsize==0x40))
-							if condition==False:
-								modissafeseh=False
-							else:
-								sehlistaddress,sehlistsize=struct.unpack('<LL',dbg.readMemory(sectionaddress+0x40,8))
-								if sehlistaddress!=0 and sehlistsize!=0:
-									modissafeseh=True
-								else:
-									modissafeseh=False
-				
-					# IMAGE_DLL_CHARACTERISTICS FIELD
-					# Sits at offset 0x5e in Optional Header
-					dll_characteristics_flags=struct.unpack('<H',dbg.readMemory(pebase+0x5e,2))[0]
-					mdllcharacteristics = dll_characteristics_flags
-					#dbg.log("%s: Flags: 0x%x" % (path, dll_characteristics_flags))
-					#aslr
-					if (dll_characteristics_flags&0x0040)==0:
-						modisaslr=False
-					#nx
-					if (flags&0x0100)==0:
-						modisnx=False
-					#cfg
-					if (dll_characteristics_flags&0x4000)==0:
-						modiscfg=False
-					else:
-						modiscfg=True
-					#rebase
-					if mzrebase != mzbase:
-						modrebased=True
-		
+								modissafeseh = False
+								if numberofentries > 10:
+									sectionaddress, sectionsize = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + 8 * 10, 8))
+									sectionaddress += mzbase
+									data = struct.unpack('<L', dbg.readMemory(sectionaddress, 4))[0]
+
+									if os_index < 2:
+										condition = (sectionsize != 0) and ((sectionsize == 0x40) or (sectionsize == data))
+									else:
+										condition = (sectionsize != 0) and (sectionsize == 0x40)
+
+									if condition:
+										sehlistaddress, sehlistsize = struct.unpack('<LL', dbg.readMemory(sectionaddress + 0x40, 8))
+										if sehlistaddress != 0 and sehlistsize != 0:
+											modissafeseh = True
+
+						if mzrebase != mzbase:
+							modrebased = True
+	
 
 		else:
 			# should never be hit
@@ -3082,7 +3079,10 @@ class MnModule:
 		"""			
 		outstring = ""
 		if self.moduleKey != "":
-			outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
+			if arch == 32:
+				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
+			else:
+								outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 		else:
 			outstring = "[None]"
 		return outstring
@@ -6490,12 +6490,12 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 		populateModuleInfo()
 	
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
-	thistable += " Nr of modules found: %d | Details below :\n" % len(g_modules)
+	thistable += " Total nr of modules loaded: %d | Details below :\n" % len(g_modules)
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
 	if arch == 32:
 		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, Modulename & Path, DLLCharacteristics\n"
 	elif arch == 64:
-		thistable += " Base               | Top                | Size               | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, Modulename & Path, DLLCharacteristics\n"
+		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, Modulename & Path, DLLCharacteristics\n"
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
 
 	_POST_SORT_KEYS = {
@@ -6533,7 +6533,10 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 			path 	= str(modproperties["path"])
 			name	= str(modproperties["name"])
 			dllflag = "0x%x" % modproperties["dllcharacteristics"]
-			thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+			if arch == 32:
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+			if arch == 64:
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
 	thistable += "-----------------------------------------------------------------------------------------------------------------------------------------\n"
 	tableinfo = thistable.split('\n')
 	if logfile == "":
