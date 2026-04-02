@@ -3341,24 +3341,31 @@ class MnModule:
 					dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
 					funccalls = self.getFunctionCalls()
 
-					ptr_fmt = '<L'
-					ptr_size = 4
-					ptr_mask = 0xffffffff
-					if arch == 64:
-						ptr_fmt = '<Q'
-						ptr_size = 8
-						ptr_mask = 0xffffffffffffffff
-
-					call_stub_size = 2 + ptr_size   # FF 15 + disp/addr field
-
 					for functype in funccalls:
 						for fptr in funccalls[functype]:
+
+							ptr = 0
+
 							try:
-								rawptr = dbg.readMemory(fptr + 2, ptr_size)
-								if len(rawptr) != ptr_size:
-									continue
-								ptr = struct.unpack(ptr_fmt, rawptr)[0]
+								# x86: FF 15 <addr32>  => absolute memory operand
+								if arch == 32:
+									rawptr = dbg.readMemory(fptr + 2, 4)
+									if len(rawptr) != 4:
+										continue
+									ptr = struct.unpack('<L', rawptr)[0]
+
+								# x64: FF 15 <disp32> => CALL QWORD PTR [RIP+disp32]
+								elif arch == 64:
+									rawdisp = dbg.readMemory(fptr + 2, 4)
+									if len(rawdisp) != 4:
+										continue
+									disp = struct.unpack('<l', rawdisp)[0]
+									ptr = fptr + 6 + disp
+
 							except:
+								continue
+
+							if ptr <= 0:
 								continue
 
 							# keep old behavior: only consider references that point inside this module
@@ -3381,11 +3388,18 @@ class MnModule:
 
 									if unknownmatch or thisfuncfullname == "":
 										try:
-											raw_iat_target = dbg.readMemory(ptr, ptr_size)
-											if len(raw_iat_target) != ptr_size:
-												iatptr = 0
+											if arch == 32:
+												raw_iat_target = dbg.readMemory(ptr, 4)
+												if len(raw_iat_target) != 4:
+													iatptr = 0
+												else:
+													iatptr = struct.unpack('<L', raw_iat_target)[0]
 											else:
-												iatptr = struct.unpack(ptr_fmt, raw_iat_target)[0]
+												raw_iat_target = dbg.readMemory(ptr, 8)
+												if len(raw_iat_target) != 8:
+													iatptr = 0
+												else:
+													iatptr = struct.unpack('<Q', raw_iat_target)[0]
 										except:
 											iatptr = 0
 
