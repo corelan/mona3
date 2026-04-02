@@ -19753,13 +19753,8 @@ def procHelp(args, helpForCommand=None):
 					dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
 		dbg.log("")
 
-		dbg.log("Want more info about a given command?  Run %s help command" % launchcmd,highlight=1)
-		dbg.log("")
-
 	else:
 		# help for a specific command
-		dbg.log("")
-		dbg.log("[+] You've requested help for command '%s': " % helpForCommand.name, highlight = 1)
 		if not arch in helpForCommand.supportedarchs:
 			dbg.log("")
 			dbg.log(" *** Please note that this command is not supported on %sbit ***" % str(arch))
@@ -19774,7 +19769,6 @@ def procHelp(args, helpForCommand=None):
 		dbg.logLines(helpForCommand.usage)
 		dbg.log("")
 		dbg.log("")		
-		dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (launchcmd, str(arch)))
 	return
 
 
@@ -19782,497 +19776,491 @@ def procHelp(args, helpForCommand=None):
 def populateCommands(args):
 	global commands
 
-	sehUsage = """Default module criteria : non safeseh, non aslr, non rebase
-This function will retrieve all stackpivot pointers that will bring you back to nseh in a seh overwrite exploit
-Optional argument: 
--all : also search outside of loaded modules"""
+	sehUsage = """  Default module criteria : non safeseh, non aslr, non rebase
+  This function will retrieve all stackpivot pointers that will bring you back to nseh in a seh overwrite exploit
+  Optional argument       : 
+  -all                    : also search outside of loaded modules"""
 
-	configUsage = """Change config of mona.py
-Available options are : -get <parameter>, -set <parameter> <value> or -add <parameter> <value_to_add>
-Valid parameters are : workingfolder, excluded_modules, author"""
+	configUsage = """  Change config of mona.py
+  Available options are : -get <parameter>, -set <parameter> <value> or -add <parameter> <value_to_add>
+  Valid parameters are  : workingfolder, excluded_modules, author"""
 
-	jmpUsage = """Default module criteria : non aslr, non rebase 
-Mandatory argument :  -r <reg>  where reg is a valid register"""
+	jmpUsage = """  Default module criteria : non aslr, non rebase 
+  Mandatory argument      : -r <reg>  where reg is a valid register"""
 
-	ropfuncUsage = """Default module criteria : non aslr, non rebase, non os
-Output will be written to ropfunc.txt"""
+	ropfuncUsage = """  Default module criteria : non aslr, non rebase, non os
+  Output will be written to ropfunc.txt"""
 
-	modulesUsage = """Shows information about the loaded modules
-Optional parameters :
--memory       : read version info from the debuggee's live memory instead of from disk
--sort <order> : select sort order for the output (default: load)
-                PEB list traversal order:
-                  load    - InLoadOrderModuleList (DLL load order, default)
-                  memory  - InMemoryOrderModuleList
-                  init    - InInitializationOrderModuleList (DllMain order)
-                Post-traversal sort (applied after PEB walk):
-                  base    - ascending base address
-                  size    - ascending module size
-                  rebase  - modules with Rebase=True first
-                  safeseh - modules with SafeSEH=True first
-                  aslr    - modules with ASLR=True first
-                  cfg     - modules with CFG=True first
-                  nx      - modules with NXCompat=True first
-                  os      - modules with OS Dll=True first
--order <dir>  : override sort direction (only valid with a post-traversal -sort)
-                  asc   - ascending / False-first for boolean keys
-                  desc  - descending / True-first for boolean keys (default for boolean keys)"""
+	modulesUsage = """  Shows information about the loaded modules
+  Optional parameters                          : 
+  -memory                                      : read version info from the debuggee's live memory instead of from disk
+  -sort <order>                                : select sort order for the output (default: load)
+                  PEB list traversal order                     : 
+                    load    - InLoadOrderModuleList (DLL load order, default)
+                    memory  - InMemoryOrderModuleList
+                    init    - InInitializationOrderModuleList (DllMain order)
+                  Post-traversal sort (applied after PEB walk) : 
+                    base    - ascending base address
+                    size    - ascending module size
+                    rebase  - modules with Rebase=True first
+                    safeseh - modules with SafeSEH=True first
+                    aslr    - modules with ASLR=True first
+                    cfg     - modules with CFG=True first
+                    nx      - modules with NXCompat=True first
+                    os      - modules with OS Dll=True first
+  -order <dir>                                 : override sort direction (only valid with a post-traversal -sort)
+                    asc   - ascending / False-first for boolean keys
+                    desc  - descending / True-first for boolean keys (default for boolean keys)"""
 	
-	ropUsage="""Default module criteria : non aslr,non rebase,non os
-Optional parameters : 
--offset <value> : define the maximum offset for RET instructions (integer, default : 40)
--distance <value> : define the minimum distance for stackpivots (integer, default : 8).
-					If you want to specify a min and max distance, set the value to min,max
--depth <value> : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 6)
--split : write gadgets to individual files, grouped by the module the gadget belongs to
--fast : skip the 'non-interesting' gadgets
--end <instruction(s)> : specify one or more instructions that will be used as chain end. 
-							(Separate instructions with #). Default ending is RETN
--f \"file1,file2,..filen\" : use mona generated rop files as input instead of searching in memory
--rva : use RVA's in rop chain
--s <technique> : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
--sort : sort the output in rop.txt (sort on pointer value)"""
+	ropUsage="""  Default module criteria    : non aslr,non rebase,non os
+  Optional parameters        : 
+  -offset <value>            : define the maximum offset for RET instructions (integer, default : 40)
+  -distance <value>          : define the minimum distance for stackpivots (integer, default : 8).
+  					If you want to specify a min and max distance, set the value to min,max
+  -depth <value>             : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 6)
+  -split                     : write gadgets to individual files, grouped by the module the gadget belongs to
+  -fast                      : skip the 'non-interesting' gadgets
+  -end <instruction(s)>      : specify one or more instructions that will be used as chain end. 
+  							(Separate instructions with #). Default ending is RETN
+  -f \"file1,file2,..filen\" : use mona generated rop files as input instead of searching in memory
+  -rva                       : use RVA's in rop chain
+  -s <technique>             : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
+  -sort                      : sort the output in rop.txt (sort on pointer value)"""
 
-	jopUsage="""Default module criteria : non aslr,non rebase,non os
-Optional parameters : 
--depth <value> : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 8)"""	
+	jopUsage="""  Default module criteria : non aslr,non rebase,non os
+  Optional parameters     : 
+  -depth <value>          : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 8)"""	
 							
 							
-	stackpivotUsage="""Default module criteria : non aslr,non rebase,non os
-Optional parameters : 
--offset <value> : define the maximum offset for RET instructions (integer, default : 40)
--distance <value> : define the minimum distance for stackpivots (integer, default : 8)
-					If you want to specify a min and max distance, set the value to min,max
--depth <value> : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 6)"""							   
+	stackpivotUsage="""  Default module criteria : non aslr,non rebase,non os
+  Optional parameters     : 
+  -offset <value>         : define the maximum offset for RET instructions (integer, default : 40)
+  -distance <value>       : define the minimum distance for stackpivots (integer, default : 8)
+  					If you want to specify a min and max distance, set the value to min,max
+  -depth <value>          : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 6)"""							   
 							
-	filecompareUsage="""Compares 2 or more files created by mona using the same output commands
-Make sure to use files that are created with the same version of mona and 
-contain the output of the same mona command.
-Mandatory argument : -f \"file1,file2,...filen\"
-Put all filenames between one set of double quotes, and separate files with comma's.
-You can specify a foldername as well with -f, all files in the root of that folder will be part of the compare.
-Output will be written to filecompare.txt and filecompare_not.txt (not matching pointers)
-Optional parameters : 
--contains \"INSTRUCTION\"  (will only list if instruction is found)
--nostrict (will also list pointer is instructions don't match in all files)
--range <number> : find overlapping ranges for all pointers + range. 
-					When using -range, the -contains and -nostrict options will be ignored
--ptronly : only show matching pointers (slightly faster). Doesn't work when 'range' is used"""
+	filecompareUsage="""  Compares 2 or more files created by mona using the same output commands
+  Make sure to use files that are created with the same version of mona and 
+  contain the output of the same mona command.
+  Mandatory argument  : -f \"file1,file2,...filen\"
+  Put all filenames between one set of double quotes, and separate files with comma's.
+  You can specify a foldername as well with -f, all files in the root of that folder will be part of the compare.
+  Output will be written to filecompare.txt and filecompare_not.txt (not matching pointers)
+  Optional parameters : 
+  -contains \"INSTRUCTION\"  (will only list if instruction is found)
+  -nostrict (will also list pointer is instructions don't match in all files)
+  -range <number>     : find overlapping ranges for all pointers + range. 
+  					When using -range, the -contains and -nostrict options will be ignored
+  -ptronly            : only show matching pointers (slightly faster). Doesn't work when 'range' is used"""
 
-	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.txt
-in ascii, hex and unescape() javascript format
-Mandatory argument : size (numberic value)
-Optional arguments :
--extended : extend the 3rd characterset (numbers) with punctuation marks etc
--c1 <chars> : set the first charset to this string of characters
--c2 <chars> : set the second charset to this string of characters
--c3 <chars> : set the third charset to this string of characters"""
+	patcreateUsage="""  Create a cyclic pattern of a given size. Output will be written to pattern.txt
+  in ascii, hex and unescape() javascript format
+  Mandatory argument : size (numberic value)
+  Optional arguments : 
+  -extended          : extend the 3rd characterset (numbers) with punctuation marks etc
+  -c1 <chars>        : set the first charset to this string of characters
+  -c2 <chars>        : set the second charset to this string of characters
+  -c3 <chars>        : set the third charset to this string of characters"""
 
-	patoffsetUsage="""Find the location of 4 bytes in a cyclic pattern
-Mandatory argument : the 4 bytes to look for
-Note :  you can also specify a register
-Optional arguments :
--extended : extend the 3rd characterset (numbers) with punctuation marks etc
--c1 <chars> : set the first charset to this string of characters
--c2 <chars> : set the second charset to this string of characters
--c3 <chars> : set the third charset to this string of characters
-Note : the charset must match the charset that was used to create the pattern !
-"""
+	patoffsetUsage="""  Find the location of 4 bytes in a cyclic pattern
+  Mandatory argument : the 4 bytes to look for
+  Note               : you can also specify a register
+  Optional arguments : 
+  -extended          : extend the 3rd characterset (numbers) with punctuation marks etc
+  -c1 <chars>        : set the first charset to this string of characters
+  -c2 <chars>        : set the second charset to this string of characters
+  -c3 <chars>        : set the third charset to this string of characters
+  Note               : the charset must match the charset that was used to create the pattern !"""
 
-	findwildUsage = """Find instructions in memory, accepts wildcards :
-Mandatory arguments :
-	-s <instruction#instruction#instruction>  (separate instructions with #)
-Optional arguments :
-	-b <address> : base/bottom address of the search range
-	-t <address> : top address of the search range
-	-depth <nr>  : number of instructions to go deep
-	-all : show all instruction chains, even if it contains something that might break the chain	
-	-distance min=nr,max=nr : you can use a numeric offset wildcard (a single *) in the first instruction of the search
-	the distance parameter allows you to specify the range of the offset		
-Inside the instructions string, you can use the following wildcards :
-	* = any instruction
-	r32 = any register
-Example : pop r32#*#xor eax,eax#*#pop esi#ret
-	"""
-
-
-	findUsage= """Find a sequence of bytes in memory.
-Mandatory argument : -s <pattern> : the sequence to search for. If you specified type 'file', then use -s to specify the file.
-This file needs to be a file created with mona.py, containing pointers at the begin of each line.
-Optional arguments:
--type <type>    : Type of pattern to search for : bin,asc,ptr,instr,file
--b <address> : base/bottom address of the search range
--t <address> : top address of the search range
--c : skip consecutive pointers but show length of the pattern instead
--p2p : show pointers to pointers to the pattern (might take a while !)
-		this setting equals setting -level to 1
--level <number> : do recursive (p2p) searches, specify number of levels deep
-					if you want to look for pointers to pointers, set level to 1
--offset <number> : subtract a value from a pointer at a certain level
--offsetlevel <number> : level to subtract a value from a pointer
--r <number> : if p2p is used, you can tell the find to also find close pointers by specifying -r with a value.
-				This value indicates the number of bytes to step backwards for each search
--unicode : used in conjunction with search type asc, this will convert the search pattern to unicode first 
--ptronly : Only show the pointers, skip showing info about the pointer (slightly faster)"""
-
-	assembleUsage = """Convert instructions to opcode. Separate multiple instructions with #.
-Mandatory argument : -s <instructions> : the sequence of instructions to assemble to opcode"""
-
-	infoUsage = """Show information about a given address in the context of the loaded application
-Mandatory argument : -a <address> : the address to query"""
-
-	dumpUsage = """Dump the specified memory range to a file. Either the end address or the size of
-buffer needs to be specified.
-Mandatory arguments :
--s <address> : start address
--f <filename> : the name of the file where to write the bytes
-Optional arguments:
--n <size> : the number of bytes to copy (size of the buffer)
--e <address> : the end address of the copy"""
-
-# 		compareUsage = """Compares contents of a binary file with locations in memory.
-# Mandatory argument :
-#     -f <filename> : full path to binary file
-# Optional argument :
-#     -a <address> : the exact address of the bytes in memory (address or register). 
-#                    If you don't specify an address, I will try to locate the bytes in memory 
-#                    by looking at the first 8 bytes.
-#     -s : skip locations that belong to a module
-#     -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically"""
+	findwildUsage = """  Find instructions in memory, accepts wildcards                      : 
+  Mandatory arguments                                                 : 
+  	-s <instruction#instruction#instruction>  (separate instructions with #)
+  Optional arguments                                                  : 
+  	-b <address>                                                        : base/bottom address of the search range
+  	-t <address>                                                        : top address of the search range
+  	-depth <nr>                                                         : number of instructions to go deep
+  	-all                                                                : show all instruction chains, even if it contains something that might break the chain	
+  	-distance min=nr,max=nr                                             : you can use a numeric offset wildcard (a single *) in the first instruction of the search
+  	the distance parameter allows you to specify the range of the offset		
+  Inside the instructions string, you can use the following wildcards : 
+  	* = any instruction
+  	r32 = any register
+  Example                                                             : pop r32#*#xor eax,eax#*#pop esi#ret
+  	"""
 
 
-	compareUsage = """Compare a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
-Mandatory argument :
--f <filename> : full path to input file
-Optional argument :
--a <address> : the exact address of the bytes in memory (address or register). 
-				If you don't specify an address, I will try to locate the bytes in memory 
-				by looking at the first 8 bytes.
--s : skip locations that belong to a module
--unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically
--t : input file type format. If no file type format is specified, I will try to guess the input file type format.
-		
-		Available formats:
-	'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'
-"""
+	findUsage= """  Find a sequence of bytes in memory.
+  Mandatory argument    : -s <pattern> : the sequence to search for. If you specified type 'file', then use -s to specify the file.
+  This file needs to be a file created with mona.py, containing pointers at the begin of each line.
+  Optional arguments    : 
+  -type <type>          : Type of pattern to search for : bin,asc,ptr,instr,file
+  -b <address>          : base/bottom address of the search range
+  -t <address>          : top address of the search range
+  -c                    : skip consecutive pointers but show length of the pattern instead
+  -p2p                  : show pointers to pointers to the pattern (might take a while !)
+  		this setting equals setting -level to 1
+  -level <number>       : do recursive (p2p) searches, specify number of levels deep
+  					if you want to look for pointers to pointers, set level to 1
+  -offset <number>      : subtract a value from a pointer at a certain level
+  -offsetlevel <number> : level to subtract a value from a pointer
+  -r <number>           : if p2p is used, you can tell the find to also find close pointers by specifying -r with a value.
+  				This value indicates the number of bytes to step backwards for each search
+  -unicode              : used in conjunction with search type asc, this will convert the search pattern to unicode first 
+  -ptronly              : Only show the pointers, skip showing info about the pointer (slightly faster)"""
 
-	offsetUsage = """Calculate the number of bytes between two addresses. You can use 
-registers instead of addresses. 
-Mandatory arguments :
--a1 <address> : the first address/register
--a2 <address> : the second address/register"""
+	assembleUsage = """  Convert instructions to opcode. Separate multiple instructions with #.
+  Mandatory argument : -s <instructions> : the sequence of instructions to assemble to opcode"""
 
-	bpUsage = """Set a breakpoint when a given address is read from, written to or executed
-Mandatory arguments :
--a <address> : the address where to set the breakpoint
-				(absolute address / register / modulename!functionname)
--t <type> : type of the breakpoint, can be READ, WRITE or SFX"""
+	infoUsage = """  Show information about a given address in the context of the loaded application
+  Mandatory argument : -a <address> : the address to query"""
 
-	bfUsage = """Set a breakpoint on exported or imported function(s) of the selected modules. 
-Mandatory argument :
--t <type> : type of breakpoint action. Can be 'add', 'del' or 'list'
-Optional arguments :
--f <function type> : set to 'import' or 'export' to read IAT or EAT. Default : export
--s <func,func,func> : specify function names. 
-						If you want a bp on all functions, set -s to *"""	
+	dumpUsage = """  Dump the specified memory range to a file. Either the end address or the size of
+  buffer needs to be specified.
+  Mandatory arguments : 
+  -s <address>        : start address
+  -f <filename>       : the name of the file where to write the bytes
+  Optional arguments  : 
+  -n <size>           : the number of bytes to copy (size of the buffer)
+  -e <address>        : the end address of the copy"""
 
-	nosafesehUsage = """Show modules that are not safeseh protected"""
-	nosafesehaslrUsage = """Show modules that are not safeseh protected, not subject to ASLR, and won't get rebased either"""
-	noaslrUsage = """Show modules that are not subject to ASLR and won't get rebased"""
-	findmspUsage = """Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern
-or points into a cyclic pattern. findmsp will also look if a SEH record is overwritten and finally, 
-it will look for cyclic patterns on the stack, and pointers to cyclic pattern on the stack.
-Optional argument :
--distance <value> : distance from ESP, applies to search on the stack. Default : search entire stack
-Note : you can use the same options as with pattern_create and pattern_offset in terms of defining the character set to use"""
+# 		compareUsage = """  Compares contents of a binary file with locations in memory.
+  # Mandatory argument : 
+  #     -f <filename>  : full path to binary file
+  # Optional argument  : 
+  #     -a <address>   : the exact address of the bytes in memory (address or register). 
+  #                    If you don't specify an address, I will try to locate the bytes in memory 
+  #                    by looking at the first 8 bytes.
+  #     -s             : skip locations that belong to a module
+  #     -unicode       : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically"""
 
-	suggestUsage = """Suggests an exploit buffer structure based on pointers to a cyclic pattern
-Note : you can use the same options as with pattern_create and pattern_offset in terms of defining the character set to use
-Mandatory argument in case you are using WinDBG:
--t <type:arg> : skeletontype. Valid types are :
-			tcpclient:port, udpclient:port, fileformat:extension
-			Examples : -t tcpclient:21
-						-t fileformat:pdf"""
+
+	compareUsage = """  Compare a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
+  Mandatory argument : 
+  -f <filename>      : full path to input file
+  Optional argument  : 
+  -a <address>       : the exact address of the bytes in memory (address or register). 
+  				If you don't specify an address, I will try to locate the bytes in memory 
+  				by looking at the first 8 bytes.
+  -s                 : skip locations that belong to a module
+  -unicode           : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically
+  -t                 : input file type format. If no file type format is specified, I will try to guess the input file type format.
+  		
+  		Available formats  : 
+  	'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'"""
+
+	offsetUsage = """  Calculate the number of bytes between two addresses. You can use 
+  registers instead of addresses. 
+  Mandatory arguments : 
+  -a1 <address>       : the first address/register
+  -a2 <address>       : the second address/register"""
+
+	bpUsage = """  Set a breakpoint when a given address is read from, written to or executed
+  Mandatory arguments : 
+  -a <address>        : the address where to set the breakpoint
+  				(absolute address / register / modulename!functionname)
+  -t <type>           : type of the breakpoint, can be READ, WRITE or SFX"""
+
+	bfUsage = """  Set a breakpoint on exported or imported function(s) of the selected modules. 
+  Mandatory argument  : 
+  -t <type>           : type of breakpoint action. Can be 'add', 'del' or 'list'
+  Optional arguments  : 
+  -f <function type>  : set to 'import' or 'export' to read IAT or EAT. Default : export
+  -s <func,func,func> : specify function names. 
+  						If you want a bp on all functions, set -s to *"""	
+
+	nosafesehUsage = """  Show modules that are not safeseh protected"""
+	nosafesehaslrUsage = """  Show modules that are not safeseh protected, not subject to ASLR, and won't get rebased either"""
+	noaslrUsage = """  Show modules that are not subject to ASLR and won't get rebased"""
+	findmspUsage = """  Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern
+  or points into a cyclic pattern. findmsp will also look if a SEH record is overwritten and finally, 
+  it will look for cyclic patterns on the stack, and pointers to cyclic pattern on the stack.
+  Optional argument : 
+  -distance <value> : distance from ESP, applies to search on the stack. Default : search entire stack
+  Note              : you can use the same options as with pattern_create and pattern_offset in terms of defining the character set to use"""
+
+	suggestUsage = """  Suggests an exploit buffer structure based on pointers to a cyclic pattern
+  Note                                            : you can use the same options as with pattern_create and pattern_offset in terms of defining the character set to use
+  Mandatory argument in case you are using WinDBG : 
+  -t <type                                        : arg> : skeletontype. Valid types are :
+  			tcpclient                                       : port, udpclient:port, fileformat:extension
+  			Examples                                        : -t tcpclient:21
+  						-t fileformat                                   : pdf"""
 	
-	bytearrayUsage = """Creates a byte array, can be used to find bad characters
-Optional arguments :
--cpb <bytes> : bytes to exclude from the array. Example : '\\x00\\x0a\\x0d'
-				Note: you can specify wildcards using .. 
-				Example: '\\x00\\x0a..\\x20\\x32\\x7f..\\xff'
--s : optional starting hex, example: '\\x7f'
--e : optional ending hex, example: '\\xff'
-		Example: -s \\x01 -e \\x7f to have all bytes from 0x01 to 0x7f
-				-s \\xff -e \\x7f to have all bytes from 0xff to 0x7f in reverse
--r : show array backwards (reversed), starting at \\xff
-Output will be written to bytearray.txt, and binary output will be written to bytearray.bin"""
+	bytearrayUsage = """  Creates a byte array, can be used to find bad characters
+  Optional arguments : 
+  -cpb <bytes>       : bytes to exclude from the array. Example : '\\x00\\x0a\\x0d'
+  				Note               : you can specify wildcards using .. 
+  				Example            : '\\x00\\x0a..\\x20\\x32\\x7f..\\xff'
+  -s                 : optional starting hex, example: '\\x7f'
+  -e                 : optional ending hex, example: '\\xff'
+  		Example            : -s \\x01 -e \\x7f to have all bytes from 0x01 to 0x7f
+  				-s \\xff -e \\x7f to have all bytes from 0xff to 0x7f in reverse
+  -r                 : show array backwards (reversed), starting at \\xff
+  Output will be written to bytearray.txt, and binary output will be written to bytearray.bin"""
 
-	headerUsage = """Convert contents of a binary file to code that can be run to produce the file
-Mandatory argument :
--f <filename> : source filename
-Optional argument:
--t <type>     : specify type of output. Valid choices are 'ruby' (default) or 'python' """
+	headerUsage = """  Convert contents of a binary file to code that can be run to produce the file
+  Mandatory argument : 
+  -f <filename>      : source filename
+  Optional argument  : 
+  -t <type>          : specify type of output. Valid choices are 'ruby' (default) or 'python' """
 
-	updateUsage = """Update mona to the latest version"""
-	getpcUsage = """Find getpc routine for specific register
-Mandatory argument :
--r : register (ex: eax)"""
+	updateUsage = """  Update mona to the latest version"""
+	getpcUsage = """  Find getpc routine for specific register
+  Mandatory argument : 
+  -r                 : register (ex: eax)"""
 
-	eggUsage = """Creates an egghunter routine
-Optional arguments :
--t : tag (ex: w00t). Default value is w00t
--c : enable checksum routine. Only works in conjunction with parameter -f
--f <filename> : file containing the shellcode
--startreg <reg> : start searching at the address pointed by this reg
--wow64 : generate wow64 egghunter (Win7 and Win10). Default is traditional 32bit egghunter
--winver <ver> : indicate Windows version for wow64 egghunter. Default is Windows 10. 
-				valid values are 7 and 10.	
-DEP Bypass options :
--depmethod <method> : method can be "virtualprotect", "copy" or "copy_size"
--depreg <reg> : sets the register that contains a pointer to the API function to bypass DEP. 
-				By default this register is set to ESI
--depsize <value> : sets the size for the dep bypass routine
--depdest <reg> : this register points to the location of the egghunter itself.  
-					When bypassing DEP, the egghunter is already marked as executable. 
-					So when using the copy or copy_size methods, the DEP bypass in the egghunter 
-					would do a "copy 2 self".  In order to be able to do so, it needs a register 
-					where it can copy the shellcode to. 
-					If you leave this empty, the code will contain a GetPC routine."""
+	eggUsage = """  Creates an egghunter routine
+  Optional arguments  : 
+  -t                  : tag (ex: w00t). Default value is w00t
+  -c                  : enable checksum routine. Only works in conjunction with parameter -f
+  -f <filename>       : file containing the shellcode
+  -startreg <reg>     : start searching at the address pointed by this reg
+  -wow64              : generate wow64 egghunter (Win7 and Win10). Default is traditional 32bit egghunter
+  -winver <ver>       : indicate Windows version for wow64 egghunter. Default is Windows 10. 
+  				valid values are 7 and 10.	
+  DEP Bypass options  : 
+  -depmethod <method> : method can be "virtualprotect", "copy" or "copy_size"
+  -depreg <reg>       : sets the register that contains a pointer to the API function to bypass DEP. 
+  				By default this register is set to ESI
+  -depsize <value>    : sets the size for the dep bypass routine
+  -depdest <reg>      : this register points to the location of the egghunter itself.  
+  					When bypassing DEP, the egghunter is already marked as executable. 
+  					So when using the copy or copy_size methods, the DEP bypass in the egghunter 
+  					would do a "copy 2 self".  In order to be able to do so, it needs a register 
+  					where it can copy the shellcode to. 
+  					If you leave this empty, the code will contain a GetPC routine."""
 	
-	stacksUsage = """Shows all stacks for each thread in the running application"""
+	stacksUsage = """  Shows all stacks for each thread in the running application"""
 	
-	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
-Mandatory argument in case you are using WinDBG:
--t <type:arg> : skeletontype. Valid types are :
-			tcpclient:port, udpclient:port, fileformat:extension
-			Examples : -t tcpclient:21
-						-t fileformat:pdf
-Optional arguments :
--s : size of the cyclic pattern (default : 5000)
-"""
+	skeletonUsage = """  Creates a Metasploit exploit module skeleton for a specific type of exploit
+  Mandatory argument in case you are using WinDBG : 
+  -t <type                                        : arg> : skeletontype. Valid types are :
+  			tcpclient                                       : port, udpclient:port, fileformat:extension
+  			Examples                                        : -t tcpclient:21
+  						-t fileformat                                   : pdf
+  Optional arguments                              : 
+  -s                                              : size of the cyclic pattern (default : 5000)"""
 
-	heapUsage = """Show information about various heap chunk lists
-Mandatory arguments :
--h <address> : base address of the heap to query
--t <type> : where type is 'segments', 'chunks', 'layout',
-			'fea' (let mona determine the frontend allocator),
-			'lal' (force display of LAL FEA, only on XP/2003),
-			'lfh' (force display of LFH FEA (Vista/Win7/...)),
-			'bea' (backend allocator, mona will automatically determine what it is),
-			'all' (show all information)
-Note: 'layout' will show all heap chunks and their vtables & strings. Use on WinDBG for maximum results.
-Optional arguments :
--expand : Works only in combination with 'layout', will include VA/LFH/... chunks in the search.
-			VA/LFH chunks may be very big, so this might slow down the search.
--stat : show statistics (also works in combination with -h heap, -t segments or -t chunks
--size <nr> : only show strings of at least the specified size. Works in combination with 'layout'
--after <data> : only show current & next chunk layout entries when an entry contains this data
-				(Only works in combination with 'layout')
--v : show data / write verbose info to the Log window"""
+	heapUsage = """  Show information about various heap chunk lists
+  Mandatory arguments : 
+  -h <address>        : base address of the heap to query
+  -t <type>           : where type is 'segments', 'chunks', 'layout',
+  			'fea' (let mona determine the frontend allocator),
+  			'lal' (force display of LAL FEA, only on XP/2003),
+  			'lfh' (force display of LFH FEA (Vista/Win7/...)),
+  			'bea' (backend allocator, mona will automatically determine what it is),
+  			'all' (show all information)
+  Note                : 'layout' will show all heap chunks and their vtables & strings. Use on WinDBG for maximum results.
+  Optional arguments  : 
+  -expand             : Works only in combination with 'layout', will include VA/LFH/... chunks in the search.
+  			VA/LFH chunks may be very big, so this might slow down the search.
+  -stat               : show statistics (also works in combination with -h heap, -t segments or -t chunks
+  -size <nr>          : only show strings of at least the specified size. Works in combination with 'layout'
+  -after <data>       : only show current & next chunk layout entries when an entry contains this data
+  				(Only works in combination with 'layout')
+  -v                  : show data / write verbose info to the Log window"""
 
-	getiatUsage = """Show IAT entries from selected module(s)
-Optional arguments :
--s <keywords> : only show IAT entries that contain one of these keywords"""
+	getiatUsage = """  Show IAT entries from selected module(s)
+  Optional arguments : 
+  -s <keywords>      : only show IAT entries that contain one of these keywords"""
 
-	geteatUsage = """Show EAT entries from selected module(s)
-Optional arguments :
--s <keywords> : only show EAT entries that contain one of these keywords"""
+	geteatUsage = """  Show EAT entries from selected module(s)
+  Optional arguments : 
+  -s <keywords>      : only show EAT entries that contain one of these keywords"""
 
-	deferUsage = """Set a deferred breakpoint
-Mandatory arguments :
--a <target>,<target>,... 
-target can be an address, a modulename.functionname or module.dll+offset (hex value)
-Warning, modulename.functionname is case sensitive !
-""" 
+	deferUsage = """  Set a deferred breakpoint
+  Mandatory arguments : 
+  -a <target>,<target>,... 
+  target can be an address, a modulename.functionname or module.dll+offset (hex value)
+  Warning, modulename.functionname is case sensitive !""" 
 
-	calltraceUsage = """Logs all CALL instructions
-Mandatory arguments :
--m module : specify what module to search for CALL instructions (global option)	
-Optional arguments :
--a <number> : number of arguments to show for each CALL
--r : also trace RETN instructions (will slow down process!)""" 	
+	calltraceUsage = """  Logs all CALL instructions
+  Mandatory arguments : 
+  -m module           : specify what module to search for CALL instructions (global option)	
+  Optional arguments  : 
+  -a <number>         : number of arguments to show for each CALL
+  -r                  : also trace RETN instructions (will slow down process!)""" 	
 
-	fillchunkUsage = """Fills a heap chunk, referenced by a register, with A's (or another character)
-Mandatory arguments :
--r <reg/reference> : reference to heap chunk to fill
-Optional arguments :
--b <character or byte to use to fill up chunk>
--s <size> : if the referenced chunk is not found, and a size is defined with -s,
-			memory will be filled anyway, up to the specified size"""
+	fillchunkUsage = """  Fills a heap chunk, referenced by a register, with A's (or another character)
+  Mandatory arguments : 
+  -r <reg/reference>  : reference to heap chunk to fill
+  Optional arguments  : 
+  -b <character or byte to use to fill up chunk>
+  -s <size>           : if the referenced chunk is not found, and a size is defined with -s,
+  			memory will be filled anyway, up to the specified size"""
 
-	getpageACLUsage = """List all mapped pages and show the ACL associated with each page
-Optional arguments : 
--a <address> : only show page information around this address.
-				(Page before, current page and page after will be displayed)"""
+	getpageACLUsage = """  List all mapped pages and show the ACL associated with each page
+  Optional arguments : 
+  -a <address>       : only show page information around this address.
+  				(Page before, current page and page after will be displayed)"""
 	
-	bpsehUsage = """Sets a breakpoint on all current SEH Handler function pointers"""
+	bpsehUsage = """  Sets a breakpoint on all current SEH Handler function pointers"""
 
-	kbUsage = """Manage knowledgebase data
-Mandatory arguments:
--<type> : type can be 'list', 'set' or 'del'
-To 'set' ( = add / update ) a KB entry, or 'del' an entry, 
-you will need to specify 2 additional arguments:
-	-id <id> : the Knowledgebase ID
-	-value <value> : the value to add/update.  In case of lists, use a comma to separate entries.
-The -list parameter will show all current ID's
-To see the contents of a specific ID, use the -id <id> parameter."""
+	kbUsage = """  Manage knowledgebase data
+  Mandatory arguments                             : 
+  -<type>                                         : type can be 'list', 'set' or 'del'
+  To 'set' ( = add / update ) a KB entry, or 'del' an entry, 
+  you will need to specify 2 additional arguments : 
+  	-id <id>                                        : the Knowledgebase ID
+  	-value <value>                                  : the value to add/update.  In case of lists, use a comma to separate entries.
+  The -list parameter will show all current ID's
+  To see the contents of a specific ID, use the -id <id> parameter."""
 
-	macroUsage = """Manage macros for WinDBG
-Arguments:
--run <macroname> : run the commands defined in the specified macro
--show <macroname> : show all commands defined in the specified macro
--add <macroname> : create a new macro
--set <macroname> -index <nr> -cmd <windbg command(s)> : edit a macro
-			If you set the -command value to #, the command at the specified index
-			will be removed.  If you have specified an existing index, the command 
-			at that position will be replaced, unless you've also specified the -insert parameter.
-			If you have not specified an index, the command will be appended to he list.
--set <macroname> -file <filename> : will tell this macro to execute all instructions in the
-			specified file. You can only enter one file per macro.
--del <macroname> -iamsure: remove the specified macro. Use with care, I won't ask if you're sure."""
+	macroUsage = """  Manage macros for WinDBG
+  Arguments                                             : 
+  -run <macroname>                                      : run the commands defined in the specified macro
+  -show <macroname>                                     : show all commands defined in the specified macro
+  -add <macroname>                                      : create a new macro
+  -set <macroname> -index <nr> -cmd <windbg command(s)> : edit a macro
+  			If you set the -command value to #, the command at the specified index
+  			will be removed.  If you have specified an existing index, the command 
+  			at that position will be replaced, unless you've also specified the -insert parameter.
+  			If you have not specified an index, the command will be appended to he list.
+  -set <macroname> -file <filename>                     : will tell this macro to execute all instructions in the
+  			specified file. You can only enter one file per macro.
+  -del <macroname> -iamsure                             : remove the specified macro. Use with care, I won't ask if you're sure."""
 
-	sehchainUsage = """Displays the SEH chain for the current thread.
-This command will also attempt to display offsets and suggest a payload structure
-in case a cyclic pattern was used to overwrite the chain."""
+	sehchainUsage = """  Displays the SEH chain for the current thread.
+  This command will also attempt to display offsets and suggest a payload structure
+  in case a cyclic pattern was used to overwrite the chain."""
 
-	heapCookieUsage = """Will attempt to find reliable writeable pointers that can help avoiding
-a heap cookie check during an arbitrary free on Windows XP"""
+	heapCookieUsage = """  Will attempt to find reliable writeable pointers that can help avoiding
+  a heap cookie check during an arbitrary free on Windows XP"""
 
-	hidedebugUsage = """Will attempt to hide the debugger from the process"""
-	gflagsUsage = """Will show the currently set GFlags, based on the PEB.NtGlobalFlag value"""
-	fwptrUsage = """Search for calls to pointers in a writeable location, 
-will assist with finding a good target for 4byte arbitrary writes
-Optional arguments:
--bp : Set breakpoints on all found CALL instructions
--patch : Patch the target of each CALL with 0x41414141
--chunksize <nr> : only list the pointer if location-8 bytes contains a size value larger than <nr>
-					(size in blocks, not bytes)
--offset <nr> : add <nr> bytes of offset within chunk, after flink/blink pointer 
-				(use in combination with -freelist and -chunksize <nr>)
--freelist : Search for fwptr that are preceeded by 2 readable pointers that can act as flink/blink"""
+	hidedebugUsage = """  Will attempt to hide the debugger from the process"""
+	gflagsUsage = """  Will show the currently set GFlags, based on the PEB.NtGlobalFlag value"""
+	fwptrUsage = """  Search for calls to pointers in a writeable location, 
+  will assist with finding a good target for 4byte arbitrary writes
+  Optional arguments : 
+  -bp                : Set breakpoints on all found CALL instructions
+  -patch             : Patch the target of each CALL with 0x41414141
+  -chunksize <nr>    : only list the pointer if location-8 bytes contains a size value larger than <nr>
+  					(size in blocks, not bytes)
+  -offset <nr>       : add <nr> bytes of offset within chunk, after flink/blink pointer 
+  				(use in combination with -freelist and -chunksize <nr>)
+  -freelist          : Search for fwptr that are preceeded by 2 readable pointers that can act as flink/blink"""
 
-	allocmemUsage = """Allocate RWX memory in the debugged process.
-Optional arguments:
--s <size>    : desired size of allocated chunk. VirtualAlloc will allocate at least 0x1000 bytes,
-				but this size argument is only useful when used in combination with -fill.
--a <address> : desired target location for allocation, set to start of chunk to allocate.
--acl <level> : overrule default RWX memory protection.
--fill        : fill 'size' bytes (-s) of memory at specified address (-a) with A's.
--force       : use in combination with -fill, in case page was already mapped but you still want to
-				fill the chunk at the desired location.
--b <byte>    : Specify what byte to write to the desired location. Defaults to '\\x41'    
-"""  
+	allocmemUsage = """  Allocate RWX memory in the debugged process.
+  Optional arguments : 
+  -s <size>          : desired size of allocated chunk. VirtualAlloc will allocate at least 0x1000 bytes,
+  				but this size argument is only useful when used in combination with -fill.
+  -a <address>       : desired target location for allocation, set to start of chunk to allocate.
+  -acl <level>       : overrule default RWX memory protection.
+  -fill              : fill 'size' bytes (-s) of memory at specified address (-a) with A's.
+  -force             : use in combination with -fill, in case page was already mapped but you still want to
+  				fill the chunk at the desired location.
+  -b <byte>          : Specify what byte to write to the desired location. Defaults to '\\x41'    """  
 
-	changeaclUsage = """Change the ACL of a given page.
-Arguments:
--a <address>   : Address belonging to the page that needs to be changed
--acl <level>   : New ACL. Valid values are R,RW,RXW,RX,N,GUARD,NOCACHE,WC""" 
+	changeaclUsage = """  Change the ACL of a given page.
+  Arguments    : 
+  -a <address> : Address belonging to the page that needs to be changed
+  -acl <level> : New ACL. Valid values are R,RW,RXW,RX,N,GUARD,NOCACHE,WC""" 
 
-	infodumpUsage = """Dumps contents of memory to file. Contents will include all pages that don't
-belong to stack, heap or loaded modules.
-Output will be written to infodump.xml"""
+	infodumpUsage = """  Dumps contents of memory to file. Contents will include all pages that don't
+  belong to stack, heap or loaded modules.
+  Output will be written to infodump.xml"""
 
-	pebUsage = """Show the address of the Process Environment Block (PEB)"""
+	pebUsage = """  Show the address of the Process Environment Block (PEB)"""
 
-	tebUsage = """Show the address of the Thread Environment Block (TEB) for the current thread"""
+	tebUsage = """  Show the address of the Thread Environment Block (TEB) for the current thread"""
 
-	jsehUsage = """(look for jmp/call dword ptr[ebp/esp+nn and ebp-nn] + add esp,8+ret) 
-Only addresses outside address range of modules will be listed unless parameter '-all' is given. 
-In that case, all addresses will be listed. TRY THIS ONE !"""
+	jsehUsage = """  (look for jmp/call dword ptr[ebp/esp+nn and ebp-nn] + add esp,8+ret) 
+  Only addresses outside address range of modules will be listed unless parameter '-all' is given. 
+  In that case, all addresses will be listed. TRY THIS ONE !"""
 	
 	
-	encUsage = """Encode a series of bytes
-Arguments:
--t <type>         : Type of encoder to use.  Allowed value(s) are alphanum 
--s <bytes>        : The bytes to encode (or use -f instead)
--f <path to file> : The full path to the binary file that contains the bytes to encode"""
+	encUsage = """  Encode a series of bytes
+  Arguments         : 
+  -t <type>         : Type of encoder to use.  Allowed value(s) are alphanum 
+  -s <bytes>        : The bytes to encode (or use -f instead)
+  -f <path to file> : The full path to the binary file that contains the bytes to encode"""
 	
-	stringUsage = """Read a string from memory or write a string to memory
-Arguments:
--r                : Read a string, use in combination with -a
--w                : Write a string, use in combination with -a and -s
--noterminate      : Do not terminate the string (using in combination with -w)
--u                : use UTF-16 (Unicode) mode
--s <string>       : The string to write
--a <address>      : The location to read from or write to"""
+	stringUsage = """  Read a string from memory or write a string to memory
+  Arguments    : 
+  -r           : Read a string, use in combination with -a
+  -w           : Write a string, use in combination with -a and -s
+  -noterminate : Do not terminate the string (using in combination with -w)
+  -u           : use UTF-16 (Unicode) mode
+  -s <string>  : The string to write
+  -a <address> : The location to read from or write to"""
 
-	unicodealignUsage = """Generates a venetian shellcode alignment stub which can be placed directly before unicode shellcode.
+	unicodealignUsage = """  Generates a venetian shellcode alignment stub which can be placed directly before unicode shellcode.
+  
+  Arguments    : 
+  -a <address> : Specify the address where the alignment code will start/be placed
+  				             : If -a is not specified, the current value in EIP will be used.
+  -l           : Prepend alignment with a null byte compensating nop equivalent
+  					(Use this if the last instruction before the alignment routine 'leaks' a null byte)
+  -b <reg>     : Set the bufferregister, defaults to eax
+  -t <seconds> : Time in seconds to run heuristics (defaults to 15)
+  -ebp <value> : Overrule the use of the 'current' value of ebp, 
+  					ebp/address will be used to calculate offset to shellcode"""
 
-Arguments:
--a <address>      : Specify the address where the alignment code will start/be placed
-					: If -a is not specified, the current value in EIP will be used.
--l                : Prepend alignment with a null byte compensating nop equivalent
-					(Use this if the last instruction before the alignment routine 'leaks' a null byte)
--b <reg>          : Set the bufferregister, defaults to eax
--t <seconds>      : Time in seconds to run heuristics (defaults to 15)
--ebp <value>      : Overrule the use of the 'current' value of ebp, 
-					ebp/address will be used to calculate offset to shellcode"""
+	copyUsage = """  Copies bytes from one location to another.
+  
+  Arguments      : 
+  -src <address> : The source address
+  -dst <address> : The destination address
+  -n <number>    : The number of bytes to copy""" 
 
-	copyUsage = """Copies bytes from one location to another.
+	dumpobjUsage = """  Dump the contents of an object.
+  
+  Arguments          : 
+  -a <address>       : Address of object
+  -s <number>        : Size of object (default value: 0x28 or size of chunk)
+  Optional arguments : 
+  -l <number>        : Recursively dump objects
+  -m <number>        : Size for recursive objects (default value: 0x28)"""
 
-Arguments:
--src <address>    : The source address
--dst <address>    : The destination address
--n <number>       : The number of bytes to copy""" 
+	dumplogUsage = """  Dump all objects recorded in an alloc/free log
+  Note                            : dumplog will only dump objects that have not been freed in the same logfile.
+  Expected syntax for log entries : 
+  Alloc                           : 'alloc(size in hex) = address'
+  Free                            : 'free(address)'
+  Additional text after the alloc & free info is fine.
+  Just make sure the syntax matches exactly with the examples above.
+  Arguments                       : 
+  -f <path/to/logfile>            : Full path to the logfile
+  Optional arguments              : 
+  -l <number>                     : Recursively dump objects
+  -m <number>                     : Size for recursive objects (default value: 0x28)
+  -s <number>                     : Only take allocated chunks of this exact size into consideration
+  -nofree                         : Ignore all free() events, show all allocations (including those that were freed)""" 
 
-	dumpobjUsage = """Dump the contents of an object.
+	tobpUsage = """  Generate WinDBG syntax to set a logging breakpoint at a given location
+  Arguments          : 
+  -a <address>       : Location (address, register) for logging breakpoint
+  Optional arguments : 
+  -e                 : Execute breakpoint command right away"""
 
-Arguments:
--a <address>      : Address of object
--s <number>       : Size of object (default value: 0x28 or size of chunk)
-Optional arguments:
--l <number>       : Recursively dump objects
--m <number>       : Size for recursive objects (default value: 0x28)
-"""
+	flowUsage = """  Simulates execution flows from current location (EIP), tries all conditional jump combinations
+  Optional arguments           : 
+  -e <address>                 : Show execution flows that will reach specified address
+  -avoid <address,address,...> : Only show paths that don't contain any of the pointers to avoid
+  -n <nr>                      : Max nr of instructions, default: 60
+  -cl <nr>                     : Max level of CALL to follow in detail, default: 3
+  -cs <nr>                     : Don't show details of first <nr> CALL/child functions. default: 0
+  -func                        : Show function names (slows down process)."""
 
-	dumplogUsage = """Dump all objects recorded in an alloc/free log
-Note: dumplog will only dump objects that have not been freed in the same logfile.
-Expected syntax for log entries:
-Alloc : 'alloc(size in hex) = address'
-Free  : 'free(address)'
-Additional text after the alloc & free info is fine.
-Just make sure the syntax matches exactly with the examples above.
-Arguments:
--f <path/to/logfile> : Full path to the logfile
-Optional arguments:
--l <number>       : Recursively dump objects
--m <number>       : Size for recursive objects (default value: 0x28)
--s <number>       : Only take allocated chunks of this exact size into consideration
--nofree           : Ignore all free() events, show all allocations (including those that were freed)""" 
+	evalUsage = """  Evaluates an expression
+  Arguments                : 
+  <the expression to evaluate>
+  
+  Accepted syntax includes : 
+  hex values, decimal values (prefixed with 0n), registers, 
+  module names, 'heap' ( = address of default process heap),
+  module!functionname
+  simple math operations"""
 
-	tobpUsage = """Generate WinDBG syntax to set a logging breakpoint at a given location
-Arguments:
--a <address>      : Location (address, register) for logging breakpoint
-Optional arguments:
--e                : Execute breakpoint command right away"""
+	diffheapUsage = """  Compare current heap layout with previously saved state
+  Arguments : 
+  -save     : save current state to disk 
+  -diff     : compare current state with previously saved state""" 
 
-	flowUsage = """Simulates execution flows from current location (EIP), tries all conditional jump combinations
-Optional arguments:
--e <address>                 : Show execution flows that will reach specified address
--avoid <address,address,...> : Only show paths that don't contain any of the pointers to avoid
--n <nr>                      : Max nr of instructions, default: 60
--cl <nr>                     : Max level of CALL to follow in detail, default: 3
--cs <nr>                     : Don't show details of first <nr> CALL/child functions. default: 0
--func                        : Show function names (slows down process)."""
-
-	evalUsage = """Evaluates an expression
-Arguments:
-<the expression to evaluate>
-
-Accepted syntax includes: 
-hex values, decimal values (prefixed with 0n), registers, 
-module names, 'heap' ( = address of default process heap),
-module!functionname
-simple math operations"""
-
-	diffheapUsage = """Compare current heap layout with previously saved state
-Arguments:
--save     : save current state to disk 
--diff     : compare current state with previously saved state""" 
-
-	loadUsage = """Read the contents from a file and write to a memory location
-Arguments:
--f     : Full path to the file to read 
--a     : address (or register) to write to""" 
+	loadUsage = """  Read the contents from a file and write to a memory location
+  Arguments : 
+  -f        : Full path to the file to read 
+  -a        : address (or register) to write to""" 
 
 	# initialize list of available mona commands
 	global scriptname
@@ -20566,6 +20554,11 @@ def main(args):
 
 		invokingCommand = None
 
+		scriptname = get_script_name()
+		launchcmd = "!" + scriptname		
+		if __DEBUGGERAPP__ == "WinDBG":
+			launchcmd = "!py " + scriptname
+
 		if command == "":
 			command = "help"
 
@@ -20601,6 +20594,10 @@ def main(args):
 						invokingCommand.parseProc(monaArgs)	
 				else:
 					invokingCommand.parseProc(monaArgs)
+		else:
+			dbg.log("Sorry, command '%s' does not exist" % command, highlight = 1)
+			dbg.log("")
+			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (launchcmd, str(arch)))
 
 		
 		# ----- report ----- #
