@@ -176,6 +176,7 @@ TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 STACK_POINTER = "ESP" if arch == 32 else "RSP"
 PTR_SIZE_DIRECTIVE = "DWORD PTR" if arch == 32 else "QWORD PTR"
 g_modules={}
+g_modulesOrder=None
 MemoryPageACL={}
 global CritCache
 global vtableCache
@@ -6016,7 +6017,7 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 		dbgp(get_current_function_name())
 		dbgp("function criteria: %s" % criteria)
 		dbgp("g_modules: %d entries" % len(g_modules))
-	if len(g_modules) == 0:
+	if len(g_modules) == 0 or g_modulesOrder != peb_order:
 		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
 	for thismodule,modproperties in g_modules.items():
@@ -6131,7 +6132,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 		dbg.log("[+] Generating module info table, hang on...")
 		dbg.log("    - Processing modules")
 		#dbg.updateLog()
-	global g_modules
+	global g_modules, g_modulesOrder
 	g_modules={}
 	if DEBUG_MODE:
 		dbgp("Enumerating modules via getAllModules")
@@ -6182,6 +6183,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 		dbg.log("    - Done. Let's rock 'n roll.")
 		dbg.setStatusBar("")	
 		dbg.updateLog()
+	g_modulesOrder = peb_order
 
 def ModInfoCached(modulename):
 	"""
