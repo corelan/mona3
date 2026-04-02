@@ -3155,34 +3155,9 @@ class MnModule:
 		dbg.logLines("    Getting IAT for %s." % (self.moduleKey))
 		try:
 			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
-				dbg.log("      Enumerating IAT, method 1 (Symbols - this might take a while)") 
-				# this may not work well on Immunity.  Module.getSymbols() may not return anything         
-				try:
-					themod = dbg.getModule(self.moduleKey)
-					syms = themod.getSymbols()
-					thename = ""
-					dbg.log("         %d symbols found" % len(syms))
-					if DEBUG_MODE:
-						dbgp("%d symbols found for %s" % (len(syms), self.moduleKey))
-					for sym in syms:
-						#dbg.log("   - symbol: %s" % sym)
-						if syms[sym].getType().startswith("Import"):
-							thename = syms[sym].getName()
-							theaddress = syms[sym].getAddress()
-							if not theaddress in IAT:
-								IAT[theaddress] = thename
-				except Exception as e:
-					dbg.log(str(e))
-					import traceback
-					dbg.logLines(traceback.format_exc())
-					pass
-				# merge
-				dbg.log("      -> Filtered %d relevant symbols so far" % len(IAT))
-				dbg.log("      Enumerating IAT, method 2 (read strings)")
-				if DEBUG_MODE:
-					dbgp("Current number of IAT entries found: %d" % len(IAT))
-					dbgp("Reading strings in Import table now...")
 				
+				# METHOD 1 - Parse the strings from the IAT.  Fastest way 
+
 				# find optional header
 				PEHeader_ref = self.moduleBase + 0x3c
 				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
@@ -3327,7 +3302,38 @@ class MnModule:
 
 								desc_index += 1
 
-				dbg.log("      -> After parsing IAT strings, we now have %d relevant symbols" % len(IAT))
+				dbg.log("      -> We have extracted %d names from the IAT" % len(IAT))
+
+				# METHOD 2 - Fallback in case we did not get a lot of strings.
+				# Let's say less than 10
+
+				if len(IAT) < 10:
+					before_method2_cnt = len(IAT)
+					dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)") 
+					# this may not work well on Immunity.  Module.getSymbols() may not return anything         
+					try:
+						themod = dbg.getModule(self.moduleKey)
+						syms = themod.getSymbols()
+						thename = ""
+						dbg.log("         %d symbols found" % len(syms))
+						if DEBUG_MODE:
+							dbgp("%d symbols found for %s" % (len(syms), self.moduleKey))
+						for sym in syms:
+							#dbg.log("   - symbol: %s" % sym)
+							if syms[sym].getType().startswith("Import"):
+								thename = syms[sym].getName()
+								theaddress = syms[sym].getAddress()
+								#if not theaddress in IAT:
+								#just overwrite it if it exists
+								IAT[theaddress] = thename
+					except Exception as e:
+						dbg.log(str(e))
+						import traceback
+						dbg.logLines(traceback.format_exc())
+						pass
+					# merge
+					dbg.log("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
+
 
 				if len(IAT) == 0:
 					# another search method, not accurate, but might find *something*
