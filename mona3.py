@@ -19679,7 +19679,7 @@ def getBanner():
 	return banners[bannerlist[0]]
 
 # Show Help
-def procHelp(args, procUsage = ""):
+def procHelp(args, helpForCommand=None):
 	global commands
 	global scriptname
 	dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
@@ -19691,70 +19691,49 @@ def procHelp(args, procUsage = ""):
 	dbg.log("     Written by Corelan - https://www.corelan.be")
 	dbg.log("     Project page : https://github.com/corelan/mona")
 	dbg.logLines(getBanner(),highlight=1)
-	dbg.log("Global options :")
-	dbg.log("----------------")
-	dbg.log("You can use one or more of the following global options on any command that will perform")
-	dbg.log("a search in one or more modules, returning a list of pointers :")
-	dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
-	dbg.log("                          option -cp nonull instead")
-	dbg.log(" -o                     : Ignore OS modules")
-	dbg.log(" -cmp <regex>           : Only include modules whose full path matches the given regex (case-insensitive)")
-	dbg.log("                          Example : -cmp kernel32  -cmp \"C:\\\\Windows\"  -cmp \"\\.dll$\"")
-	dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
-	dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
-	dbg.log("                          You can specify multiple modules (comma separated)")
-	dbg.log("                          Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
-	dbg.log("                          Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
-	dbg.log("                          blah or *blah* = contains blah")
-	dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
-	dbg.log("                          You can use one or more of the following criteria :")
-	dbg.log("                          aslr,safeseh,rebase,nx,cfg,os")
-	dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
-	dbg.log("                          Example :  -cm aslr=true,safeseh=false")
-	dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")
-	dbg.log("                          !mona seh -cm aslr")
-	dbg.log(" -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
-	dbg.log("                          Available options are :")
-	dbg.log("                          unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
-	dbg.log("                          Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
-	dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
-	dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
-	dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
-	dbg.log("                          only executable pointers will be returned.")
-	dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
-	dbg.log(" -debug                 : Enable debug routines in mona/windbglib")
 
-	if not args:
-		args = []
-	if len(args) > 1:
-		thiscmd = args[1].lower().strip()
-		if thiscmd in commands:
-			dbg.log("")
-			if arch in commands[thiscmd].supportedarchs:
-				dbg.log("Usage of command '%s' :" % thiscmd)
-				dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-				dbg.logLines(commands[thiscmd].usage)
-			else:
-				dbg.log("You're running in a %sbit environment," % arch)
-				dbg.log("but the '%s' command is only supported in %sbit" % commands[thiscmd].supportedarchs )
-			dbg.log("")
-		else:
-			aliasfound = False
-			for cmd in commands:
-				if commands[cmd].alias == thiscmd:
-					dbg.log("")
-					if arch in commands[cmd].supportedarchs:
-						dbg.log("Usage of command '%s' :" % thiscmd)
-						dbg.log("%s" % ("-" * (22 + len(thiscmd))))
-						dbg.logLines(commands[cmd].usage)
-						dbg.log("")
-					else:
-						dbg.log("You're running in a %sbit environment," % arch)
-						dbg.log("but the '%s' command is only supported in %sbit" % commands[cmd].supportedarchs )
-					aliasfound = True
-			if not aliasfound:
-				dbg.logLines("\nCommand %s does not exist. Run 'mona' without arguments to get a list of available commands\n" % thiscmd,highlight=1)
-	else:
+	if helpForCommand == None:
+		dbg.log("Global options :")
+		dbg.log("----------------")
+		dbg.log("You can use one or more of the following global options on any command that will perform")
+		dbg.log("a search in one or more modules, returning a list of pointers :")
+		dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
+		dbg.log("                          option -cp nonull instead")
+		dbg.log(" -o                     : Ignore OS modules")
+		dbg.log(" -cmp <regex>           : Only include modules whose full path matches the given regex (case-insensitive)")
+		dbg.log("                          Example : -cmp kernel32  -cmp \"C:\\\\Windows\"  -cmp \"\\.dll$\"")
+		dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
+		dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
+		dbg.log("                          You can specify multiple modules (comma separated)")
+		dbg.log("                          Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
+		dbg.log("                          Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
+		dbg.log("                          blah or *blah* = contains blah")
+		dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
+		dbg.log("                          You can use one or more of the following criteria :")
+		dbg.log("                          aslr,safeseh,rebase,nx,cfg,os")
+		dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
+		dbg.log("                          Example :  -cm aslr=true,safeseh=false")
+		dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")
+		dbg.log("                          !mona seh -cm aslr")
+		dbg.log(" -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
+		dbg.log("                          Available options are :")
+		dbg.log("                          unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
+		dbg.log("                          Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
+		dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
+		dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
+		dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
+		dbg.log("                          only executable pointers will be returned.")
+		dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
+		dbg.log(" -debug                 : Enable debug routines in mona/windbglib")
+
+	scriptname = get_script_name()
+	launchcmd = "!" + scriptname		
+	if __DEBUGGERAPP__ == "WinDBG":
+		launchcmd = "!py " + scriptname
+
+	if helpForCommand == None:
+		# show all commands
+
 		dbg.logLines("\n\nUsage :")
 		dbg.logLines("-------\n")
 		if __DEBUGGERAPP__ == "WinDBG":
@@ -19773,12 +19752,30 @@ def procHelp(args, procUsage = ""):
 						aliastxt = " / " + commands[item[0]].alias
 					dbg.logLines("%s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
 		dbg.log("")
-		scriptname = get_script_name()
-		launchcmd = "!" + scriptname
-		if __DEBUGGERAPP__ == "WinDBG":
-			launchcmd = "!py " + scriptname
-		dbg.log("Want more info about a given command ?  Run %s help <command>" % launchcmd,highlight=1)
+
+		dbg.log("Want more info about a given command?  Run %s help command" % launchcmd,highlight=1)
 		dbg.log("")
+
+	else:
+		# help for a specific command
+		dbg.log("")
+		dbg.log("[+] You've requested help for command '%s': " % helpForCommand.name, highlight = 1)
+		if not arch in helpForCommand.supportedarchs:
+			dbg.log("")
+			dbg.log(" *** Please note that this command is not supported on %sbit ***" % str(arch))
+		dbg.log("")
+		dbg.log("Basic command:") 
+		dbg.log("   %s %s" % (launchcmd,helpForCommand.name ))
+		if helpForCommand.name != helpForCommand.alias:
+			dbg.log("   %s %s" % (launchcmd,helpForCommand.alias ))
+		dbg.log("")
+		dbg.log("Usage:")
+		dbg.log("------")
+		dbg.logLines(helpForCommand.usage)
+		dbg.log("")
+		dbg.log("")		
+		dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (launchcmd, str(arch)))
+	return
 
 
 # populate the commands dict
@@ -20557,36 +20554,54 @@ def main(args):
 		if DEBUG_MODE:
 			dbgp("You're trying to run command '%s'" % command)
 
-		if command in commands:
-			if DEBUG_MODE:
-				dbgp("Supported on %s" % commands[command].supportedarchs)
+		dbg.log("")
+		# make a list of all supported commands and aliases
+		acceptedcommands = {}
+		acceptedaliases = {}
+		for monacommand in commands:
+			maincmd = commands[monacommand].name
+			aliascmd = commands[monacommand].alias
+			acceptedcommands[maincmd] = commands[monacommand]
+			acceptedaliases[aliascmd] = commands[monacommand]
 
-			if command.lower().strip() == "help":
-				commands[command].parseProc(args, commands[command].usage)
+		invokingCommand = None
+
+		if command == "":
+			command = "help"
+
+		# is user trying to run a valid command or alias?
+		if command in acceptedcommands or command in acceptedaliases:
+			# good. is it accepted on this architecture?
+			arch_compatible = False
+			if command in acceptedcommands:
+				if arch in acceptedcommands[command].supportedarchs:
+					arch_compatible = True
+					invokingCommand = acceptedcommands[command]
+			if command in acceptedaliases:
+				if arch in acceptedaliases[command].supportedarchs:
+					arch_compatible = True
+					invokingCommand = acceptedaliases[command]
+
+			if not arch_compatible:
+				dbg.log("*** Sorry, command '%s' is not supported in %sbit ***" % (command, str(arch)), highlight = 1)
 			else:
-				if arch in commands[command].supportedarchs:
-					commands[command].parseProc(monaArgs, commands[command].usage)
-				else:
-					dbg.log("Sorry, the '%s' command is not supported in %sbit" % (command, arch), highlight=1)
-		else:
-			# maybe it's an alias
-			aliasfound = False
-			for cmd in commands:
-				if (commands[cmd].alias == command) and (command != ""):
-					if DEBUG_MODE:
-						dbgp("Supported on %s" % commands[cmd].supportedarchs)
-					if arch in commands[cmd].supportedarchs:
+				# 'help' is a special case
+				if invokingCommand.name == "help":
+					if "?" in monaArgs:
+						help_for_command = monaArgs["?"]
+						helpForCommand = None
 						if DEBUG_MODE:
-							dbgp("Running alias command '%s'" % command)
-						commands[cmd].parseProc(monaArgs, commands[cmd].usage)
+							dbgp("You're asking for help on using the '%s' command" % help_for_command)
+						if help_for_command in acceptedcommands:
+							helpForCommand = acceptedcommands[help_for_command]
+						elif help_for_command in acceptedaliases:
+							helpForCommand = acceptedaliases[help_for_command]
+						invokingCommand.parseProc(monaArgs, helpForCommand )	
 					else:
-						dbg.log("Sorry, the '%s' command is not supported in %sbit" % (cmd, arch), highlight=1)
-					aliasfound = True
-			if not aliasfound:
-				if DEBUG_MODE:
-					dbgp("'%s' is not a valid command" % command)
-				commands["help"].parseProc(None)
-				return("** Please provide a valid command **")
+						invokingCommand.parseProc(monaArgs)	
+				else:
+					invokingCommand.parseProc(monaArgs)
+
 		
 		# ----- report ----- #
 		endtime = datetime.datetime.now()
