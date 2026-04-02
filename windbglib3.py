@@ -82,6 +82,7 @@ PageSections = {}
 ModuleCache = {}
 FuncCache = {}
 PEBModList = {}
+_PEBModListOrder = None
 disAsmCache = {}
 
 Registers32BitsOrder = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"]
@@ -988,11 +989,17 @@ def get_module_version(path, modbase=None, from_memory=False, debugger=None):
 		return ""
 
 
-def getModulesFromPEB():
+_PEB_LDR_LISTS = {
+	"load":   ("InLoadOrderModuleList",           "InLoadOrderLinks.Flink"),
+	"memory": ("InMemoryOrderModuleList",          "InMemoryOrderLinks.Flink"),
+	"init":   ("InInitializationOrderModuleList",  "InInitializationOrderLinks.Flink"),
+}
+
+def getModulesFromPEB(peb_order="load"):
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
 
-	global PEBModList
+	global PEBModList, _PEBModListOrder
 	peb = getPEBInfo()
 	imagenames = []
 	# http://www.nirsoft.net/kernel_struct/vista/PEB.html
@@ -1002,9 +1009,12 @@ def getModulesFromPEB():
 	offset = 0x20
 	if arch == 64:
 		offset = 0x40
-	moduleLst = pykd.typedVarList(peb.Ldr.deref().InLoadOrderModuleList, "ntdll!_LDR_DATA_TABLE_ENTRY", "InLoadOrderLinks.Flink")
+	list_attr, flink_attr = _PEB_LDR_LISTS.get(peb_order, _PEB_LDR_LISTS["load"])
+	moduleLst = pykd.typedVarList(getattr(peb.Ldr.deref(), list_attr), "ntdll!_LDR_DATA_TABLE_ENTRY", flink_attr)
 	if DEBUG_MODE:
-		dbgp("moduleList: %d, PEBModlist: %d" % (len(moduleLst), len(PEBModList)))
+		dbgp("moduleList: %d, PEBModlist: %d, order: %s" % (len(moduleLst), len(PEBModList), peb_order))
+	if len(PEBModList) != 0 and _PEBModListOrder != peb_order:
+		PEBModList = {}
 	if len(PEBModList) == 0:
 		for mod in moduleLst:
 			thismod = ensure_text(pykd.loadUnicodeString(mod.BaseDllName))
@@ -1079,8 +1089,7 @@ def getModulesFromPEB():
 				if DEBUG_MODE:
 					dbgp("    Added %s to PEBModList" % imagename)
 					dbgp("    With full path %s" % fullpath)
-	
-	return moduleLst
+	_PEBModListOrder = peb_order
 
 
 
@@ -3184,15 +3193,17 @@ class Debugger:
 		return wmod
 		
 
-	def getAllModules(self, from_memory=False):
+	def getAllModules(self, from_memory=False, peb_order="load"):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
+		if peb_order != _PEBModListOrder and len(self.allmodules) > 0:
+			self.allmodules = {}
 		if len(self.allmodules) == 0:
-			if len(PEBModList) == 0:
+			if len(PEBModList) == 0 or peb_order != _PEBModListOrder:
 				if DEBUG_MODE:
-					dbgp("Get modules from PEB")
-				getModulesFromPEB()
+					dbgp("Get modules from PEB (order=%s)" % peb_order)
+				getModulesFromPEB(peb_order=peb_order)
 				if DEBUG_MODE:
 					dbgp("Modules in list now: %d" % len(PEBModList))
 			for imagename in PEBModList:
