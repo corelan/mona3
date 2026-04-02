@@ -16778,9 +16778,10 @@ def procPageACL(args, procUsage = ""):
 		aclfile = objfile.reset()
 		addr_width = 10
 		if arch == 64:
-		    addr_width = 18   # "0x" + 16 hex chars
-		# we'll print size without leading nulls, needs less space
-		size_width = addr_width - 2
+			addr_width = 18   # "0x" + 16 hex chars
+			size_width = addr_width - 2
+		else:
+			size_width = addr_width
 		acl_width = 22
 		# Left aligned / Left aligned / left aligned, left aligned 
 		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds %%s" % (addr_width, addr_width, size_width, acl_width)
@@ -16806,9 +16807,11 @@ def procPageACL(args, procUsage = ""):
 				pass
 			if mod == "":
 				if ptr.isOnStack():
-					mod = "(Stack)"
+					if not "Stack" in pageusage:
+						mod = "(Stack)"
 				elif ptr.isInHeap():
-					mod = "(Heap)"
+					if not "Heap" in pageusage:
+						mod = "(Heap)"
 			acl = page.getAccess(human=True)
 			tolog = ""
 			pusage = ""
