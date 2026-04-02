@@ -16779,10 +16779,11 @@ def procPageACL(args, procUsage = ""):
 		addr_width = 10
 		if arch == 64:
 		    addr_width = 18   # "0x" + 16 hex chars
-		size_width = addr_width + 2
+		# we'll print size without leading nulls, needs less space
+		size_width = addr_width - 2
 		acl_width = 22
 		# Left aligned / Left aligned / left aligned, left aligned 
-		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds %%s" % (addr_width, acl_width, size_width, 22)
+		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds %%s" % (addr_width, addr_width, size_width, acl_width)
 		tolog = fmt % ("Start","End","Size","ACL", "Info")
 		dbg.log(tolog)
 		objfile.write(tolog,aclfile)
@@ -16825,7 +16826,7 @@ def procPageACL(args, procUsage = ""):
 				pend = "0x%016x" % (pagestart + pagesize)
 				psize = "0x%x" % pagesize
 				
-			tolog = fmt % (pstart, pend, psize, acl, pusage)
+			tolog = fmt % (pstart, pend, psize, acl, pusage.strip())
 
 			objfile.write(tolog,aclfile)
 			dbg.log(tolog)
