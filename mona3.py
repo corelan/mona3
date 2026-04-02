@@ -6116,7 +6116,7 @@ def getModuleProperty(modname,parameter):
 	return valtoreturn
 
 
-def populateModuleInfo(from_memory=False):
+def populateModuleInfo(from_memory=False, peb_order="load"):
 	"""
 	Populate global dictionary with information about all loaded modules
 	
@@ -6136,7 +6136,7 @@ def populateModuleInfo(from_memory=False):
 	if DEBUG_MODE:
 		dbgp("Enumerating modules via getAllModules")
 	if __DEBUGGERAPP__ == "WinDBG":
-		allmodules=dbg.getAllModules(from_memory=from_memory)
+		allmodules=dbg.getAllModules(from_memory=from_memory, peb_order=peb_order)
 	else:
 		allmodules=dbg.getAllModules()
 	if DEBUG_MODE:
