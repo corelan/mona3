@@ -6864,7 +6864,6 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 						ptr_counter += 1
 						if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
 							ropfuncs,ropfuncoffsets
-		keycnt += 1
 
 	return ropfuncs,ropfuncoffsets
 
