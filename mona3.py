@@ -6529,9 +6529,9 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 		isrebased = themodule.isRebase
 		if not silent:
 			dbg.log("     - Querying %s" % (key))
-		dbg.log("         Enumerating IAT")   
+		dbg.log("    Enumerating IAT")   
 		allfuncs = themodule.getIAT()
-		dbg.log("         Done enumerating IAT for %s" % key)
+		dbg.log("    Done enumerating IAT for %s" % key)
 		dbg.updateLog()
 		for fn in allfuncs:
 			thisfuncname = allfuncs[fn].lower()
@@ -6571,7 +6571,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 							extra = " [Warning : module is likely to get rebased !]"
 							extrafunc = "-rebased"
 						if not silent:
-							dbg.log("       0x%s : ptr to %s (0x%s) (%s) %s" % (toHex(fn),thisfuncname,toHex(ptr),key,extra))
+							dbg.log("    0x%s : ptr to %s (0x%s) (%s) %s" % (toHex(fn),thisfuncname,toHex(ptr),key,extra))
 						logtxt = thisfuncfullname.lower().strip()+extrafunc+" | 0x" + toHex(ptr)
 						if logtxt in ropfuncs:
 								ropfuncs[logtxt] += [fn]
