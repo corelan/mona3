@@ -7052,7 +7052,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	dbg.log("")
 	logfile = MnLog("stackpivot.txt")
 	thislog = logfile.reset()	
-	objprogressfile.write("Writing " + str(len(stackpivots)+len(stackpivots_safeseh))+" stackpivots with minimum offset " + str(pivotdistance)+" to file " + thislog,progressfile)
+	objprogressfile.write("Writing records for " + str(len(stackpivots)+len(stackpivots_safeseh))+" unique stackpivot distances (with minimum offset " + str(pivotdistance)+") to file " + thislog,progressfile)
 	dbg.log("[+] Writing stackpivots to file " + thislog)
 	logfile.write("Stack pivots, minimum distance " + str(pivotdistance) + ", in descending order",thislog)
 	logfile.write("------------------------------------------------------------------------------",thislog)
