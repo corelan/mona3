@@ -6000,7 +6000,7 @@ def getSearchSequences(searchtype,searchcriteria="",type="",criteria={}):
 	return search
 
 	
-def getModulesToQuery(criteria, from_memory=False):
+def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 	"""
 	This function will return an array of modulenames
 	
@@ -6017,7 +6017,7 @@ def getModulesToQuery(criteria, from_memory=False):
 		dbgp("function criteria: %s" % criteria)
 		dbgp("g_modules: %d entries" % len(g_modules))
 	if len(g_modules) == 0:
-		populateModuleInfo(from_memory=from_memory)
+		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
 	for thismodule,modproperties in g_modules.items():
 		#is this module excluded ?
@@ -12521,6 +12521,8 @@ def procFindSEH(args, procUsage=""):
 	
 	
 # ----- MODULES ------ #
+PEB_ORDER_VALID = ("load", "memory", "init")
+
 def procShowMODULES(args, procUsage = ""):
 	modulecriteria={}
 	criteria={}
@@ -12531,8 +12533,15 @@ def procShowMODULES(args, procUsage = ""):
 	if from_memory:
 		dbg.log("[+] Version info will be read from memory")
 
-	modulestosearch = getModulesToQuery(modulecriteria, from_memory=from_memory)
-	showModuleTable("",modulestosearch)
+	peb_order = "load"
+	if "sort" in args and args["sort"]:
+		peb_order = str(args["sort"]).lower().strip()
+		if peb_order not in PEB_ORDER_VALID:
+			dbg.log("[!] Unknown sort value '%s', valid options: %s" % (peb_order, ", ".join(PEB_ORDER_VALID)))
+			return
+
+	modulestosearch = getModulesToQuery(modulecriteria, from_memory=from_memory, peb_order=peb_order)
+	showModuleTable("", modulestosearch)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
 
@@ -19445,7 +19454,11 @@ Output will be written to ropfunc.txt"""
 
 	modulesUsage = """Shows information about the loaded modules
 Optional parameters :
--memory : read version info from the debuggee's live memory instead of from disk"""
+-memory : read version info from the debuggee's live memory instead of from disk
+-sort <order> : select PEB LDR_DATA list order for the output (default: load)
+                load   - InLoadOrderModuleList (DLL load order)
+                memory - InMemoryOrderModuleList (ascending base address)
+                init   - InInitializationOrderModuleList (DllMain call order)"""
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
