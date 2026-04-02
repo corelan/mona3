@@ -4575,33 +4575,6 @@ class MnPointer:
 		silent = oldsilent
 		return [foundinheap, foundinsegment, foundinva, foundinchunk]
 
-	def getHeapInfo_old(self):
-		"""
-		Returns heap related information about a given pointer
-		"""
-		heapinfo = {}
-		heapinfo["heap"] = 0
-		heapinfo["segment"] = 0
-		heapinfo["chunk"] = 0
-		heapinfo["size"] = 0
-		allheaps = dbg.getHeapsAddress()
-		for heap in allheaps:
-			dbg.log("checking heap 0x%08x for 0x%08x" % (heap,self.address))
-			theap = dbg.getHeap(heap)
-			heapchunks = theap.getChunks(heap)
-			if len(heapchunks) > 0 and not silent:
-				dbg.log("Querying segment(s) for heap 0x%s" % toHex(heap))
-			for hchunk in heapchunks:
-				chunkbase = hchunk.get("address")
-				chunksize = hchunk.get("size")
-				if self.address >= chunkbase and self.address <= (chunkbase+chunksize):
-					heapinfo["heap"] = heap
-					heapinfo["segment"] = 0
-					heapinfo["chunk"] = chunkbase
-					heapinfo["size"] = chunksize
-					return heapinfo
-		return heapinfo
-
 
 	def showObjectInfo(self):
 		# check if chunk is a DOM object
