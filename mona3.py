@@ -12101,6 +12101,9 @@ def args2criteria(args,modulecriteria,criteria):
 	# filter modules by path ?
 	if "cmp" in args and args["cmp"]:
 		pattern = str(args["cmp"])
+		# convert glob wildcards (* and ?) to regex equivalents so that
+		# patterns like *system32* work as expected; raw regex still works
+		pattern = pattern.replace("*", ".*").replace("?", ".")
 		try:
 			re.compile(pattern)
 		except re.error as e:
