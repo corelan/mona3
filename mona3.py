@@ -2973,37 +2973,30 @@ class MnModule:
 						modisaslr = ((dll_characteristics_flags & 0x0040) != 0)
 						modisnx   = ((dll_characteristics_flags & 0x0100) != 0)
 						modiscfg  = ((dll_characteristics_flags & 0x4000) != 0)
+						modissafeseh = False
 
-						if is_pe64:
-							modissafeseh = False
-						else:
-							safeseh_offset = [0x5f, 0x5f, 0x5e]
-							safeseh_flag = [0x4, 0x4, 0x400]
-							os_index = 0
-							if win7mode:
-								os_index = 2
-
-							flags = struct.unpack('<H', dbg.readMemory(pebase + safeseh_offset[os_index], 2))[0]
+						if not is_pe64:
+							# PE32 only
 							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + 0x74, 4))[0]
 
-							if (flags & safeseh_flag[os_index]) != 0:
-								modissafeseh = True
-							else:
-								modissafeseh = False
-								if numberofentries > 10:
-									sectionaddress, sectionsize = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + 8 * 10, 8))
-									sectionaddress += mzbase
-									data = struct.unpack('<L', dbg.readMemory(sectionaddress, 4))[0]
+							# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
+							if numberofentries > 10:
+								loadcfg_rva, loadcfg_size = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + (8 * 10), 8))[0:2]
 
-									if os_index < 2:
-										condition = (sectionsize != 0) and ((sectionsize == 0x40) or (sectionsize == data))
-									else:
-										condition = (sectionsize != 0) and (sectionsize == 0x40)
+								if loadcfg_rva != 0 and loadcfg_size != 0:
+									loadcfg = mzbase + loadcfg_rva
 
-									if condition:
-										sehlistaddress, sehlistsize = struct.unpack('<LL', dbg.readMemory(sectionaddress + 0x40, 8))
-										if sehlistaddress != 0 and sehlistsize != 0:
+									try:
+										# IMAGE_LOAD_CONFIG_DIRECTORY32
+										# SafeSEH fields:
+										#   SEHandlerTable @ +0x40
+										#   SEHandlerCount @ +0x44
+										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
+
+										if sehtable != 0 and sehcount != 0:
 											modissafeseh = True
+									except:
+										modissafeseh = False
 
 						if mzrebase != mzbase:
 							modrebased = True
