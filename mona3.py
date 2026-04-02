@@ -6474,8 +6474,9 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	thistable = ""
 	if len(g_modules) == 0:
 		populateModuleInfo()
+	
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
-	thistable += " Module info :\n"
+	thistable += " Nr of modules found: %d | Details below :\n" % len(g_modules)
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
 	if arch == 32:
 		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, Modulename & Path, DLLCharacteristics\n"
