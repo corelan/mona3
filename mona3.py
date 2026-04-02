@@ -6200,7 +6200,7 @@ def ModInfoCached(modulename):
 	else:
 		return True
 
-def showModuleTable(logfile="", modules=[]):
+def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	"""
 	Shows table with all loaded modules and their properties.
 
@@ -6209,7 +6209,9 @@ def showModuleTable(logfile="", modules=[]):
 	or
 	filename - output will be written to the filename
 	
-	modules - dictionary with modules to query - result of a populateModuleInfo() call
+	modules    - dictionary with modules to query - result of a populateModuleInfo() call
+	sort_by    - optional post-traversal sort key (see POST_SORT_VALID)
+	sort_order - 'asc' or 'desc'; overrides the default direction for the chosen key
 	"""	
 	thistable = ""
 	if len(g_modules) == 0:
@@ -6223,7 +6225,27 @@ def showModuleTable(logfile="", modules=[]):
 		thistable += " Base               | Top                | Size               | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, Modulename & Path, DLLCharacteristics\n"
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
 
-	for thismodule,modproperties in g_modules.items():
+	_POST_SORT_KEYS = {
+		"base":    lambda x: x[1]["base"],
+		"size":    lambda x: x[1]["size"],
+		"rebase":  lambda x: x[1]["rebase"],
+		"safeseh": lambda x: x[1]["safeseh"],
+		"aslr":    lambda x: x[1]["aslr"],
+		"cfg":     lambda x: x[1]["cfg"],
+		"nx":      lambda x: x[1]["nx"],
+		"os":      lambda x: x[1]["os"],
+	}
+	items = list(g_modules.items())
+	if sort_by in _POST_SORT_KEYS:
+		default_reverse = _POST_SORT_DEFAULT_REVERSE.get(sort_by, False)
+		if sort_order == "asc":
+			reverse = False
+		elif sort_order == "desc":
+			reverse = True
+		else:
+			reverse = default_reverse
+		items = sorted(items, key=_POST_SORT_KEYS[sort_by], reverse=reverse)
+	for thismodule,modproperties in items:
 		if (len(modules) > 0 and modproperties["name"] in modules or len(logfile)>0):
 			rebase	= toSize(str(modproperties["rebase"]),7)
 			base 	= toSize(str("0x" + toHex(modproperties["base"])),10)
@@ -12524,6 +12546,19 @@ def procFindSEH(args, procUsage=""):
 	
 # ----- MODULES ------ #
 PEB_ORDER_VALID = ("load", "memory", "init")
+POST_SORT_VALID = ("base", "size", "rebase", "safeseh", "aslr", "cfg", "nx", "os")
+# For boolean sorts, True-first is considered 'desc' (default); False-first is 'asc'
+# For numeric sorts, ascending is default; 'desc' reverses
+_POST_SORT_DEFAULT_REVERSE = {
+	"base":    False,
+	"size":    False,
+	"rebase":  True,
+	"safeseh": True,
+	"aslr":    True,
+	"cfg":     True,
+	"nx":      True,
+	"os":      True,
+}
 
 def procShowMODULES(args, procUsage = ""):
 	modulecriteria={}
@@ -12536,14 +12571,27 @@ def procShowMODULES(args, procUsage = ""):
 		dbg.log("[+] Version info will be read from memory")
 
 	peb_order = "load"
+	sort_by = None
+	sort_order = None
 	if "sort" in args and args["sort"]:
-		peb_order = str(args["sort"]).lower().strip()
-		if peb_order not in PEB_ORDER_VALID:
-			dbg.log("[!] Unknown sort value '%s', valid options: %s" % (peb_order, ", ".join(PEB_ORDER_VALID)))
+		sort_val = str(args["sort"]).lower().strip()
+		if sort_val in PEB_ORDER_VALID:
+			peb_order = sort_val
+		elif sort_val in POST_SORT_VALID:
+			sort_by = sort_val
+		else:
+			all_valid = ", ".join(PEB_ORDER_VALID + POST_SORT_VALID)
+			dbg.log("[!] Unknown sort value '%s', valid options: %s" % (sort_val, all_valid))
 			return
+	if sort_by is not None and "order" in args and args["order"]:
+		order_val = str(args["order"]).lower().strip()
+		if order_val not in ("asc", "desc"):
+			dbg.log("[!] Unknown order value '%s', valid options: asc, desc" % order_val)
+			return
+		sort_order = order_val
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=from_memory, peb_order=peb_order)
-	showModuleTable("", modulestosearch)
+	showModuleTable("", modulestosearch, sort_by=sort_by, sort_order=sort_order)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
 
@@ -19457,10 +19505,23 @@ Output will be written to ropfunc.txt"""
 	modulesUsage = """Shows information about the loaded modules
 Optional parameters :
 -memory : read version info from the debuggee's live memory instead of from disk
--sort <order> : select PEB LDR_DATA list order for the output (default: load)
-                load   - InLoadOrderModuleList (DLL load order)
-                memory - InMemoryOrderModuleList (ascending base address)
-                init   - InInitializationOrderModuleList (DllMain call order)"""
+-sort <order> : select sort order for the output (default: load)
+                PEB list traversal order:
+                  load    - InLoadOrderModuleList (DLL load order, default)
+                  memory  - InMemoryOrderModuleList
+                  init    - InInitializationOrderModuleList (DllMain order)
+                Post-traversal sort (applied after PEB walk):
+                  base    - ascending base address
+                  size    - ascending module size
+                  rebase  - modules with Rebase=True first
+                  safeseh - modules with SafeSEH=True first
+                  aslr    - modules with ASLR=True first
+                  cfg     - modules with CFG=True first
+                  nx      - modules with NXCompat=True first
+                  os      - modules with OS Dll=True first
+-order <dir>  : override sort direction (only valid with a post-traversal -sort)
+                  asc   - ascending / False-first for boolean keys
+                  desc  - descending / True-first for boolean keys (default for boolean keys)"""
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
