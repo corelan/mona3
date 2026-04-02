@@ -6040,6 +6040,13 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 				included = False				
 		else:
 			included = False
+		# filter by path regex ?
+		if included and ("cmp" in criteria) and criteria["cmp"]:
+			try:
+				if not re.search(criteria["cmp"], str(thismod.modulePath), re.IGNORECASE):
+					included = False
+			except re.error:
+				included = False
 		#override all previous decision if "modules" criteria was provided
 		thismodkey = thismod.moduleKey.lower().strip()
 		if ("modules" in criteria) and (criteria["modules"] != ""):
@@ -12090,6 +12097,17 @@ def args2criteria(args,modulecriteria,criteria):
 	if "o" in args and args["o"]:
 		modulecriteria["os"] = False
 		dbg.log("    - Ignoring OS modules")
+
+	# filter modules by path ?
+	if "cmp" in args and args["cmp"]:
+		pattern = str(args["cmp"])
+		try:
+			re.compile(pattern)
+		except re.error as e:
+			dbg.log("[!] Invalid regex for -cmp: %s" % e)
+			return modulecriteria, criteria
+		modulecriteria["cmp"] = pattern
+		dbg.log("    - Filtering modules by path matching : %s" % pattern)
 	
 	# allow nulls ?
 	if "n" in args and args["n"]:
@@ -19402,6 +19420,8 @@ def procHelp(args, procUsage = ""):
 	dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
 	dbg.log("                          option -cp nonull instead")
 	dbg.log(" -o                     : Ignore OS modules")
+	dbg.log(" -cmp <regex>           : Only include modules whose full path matches the given regex (case-insensitive)")
+	dbg.log("                          Example : -cmp kernel32  -cmp \"C:\\\\Windows\"  -cmp \"\\.dll$\"")
 	dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
 	dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
 	dbg.log("                          You can specify multiple modules (comma separated)")
@@ -19504,7 +19524,7 @@ Output will be written to ropfunc.txt"""
 
 	modulesUsage = """Shows information about the loaded modules
 Optional parameters :
--memory : read version info from the debuggee's live memory instead of from disk
+-memory       : read version info from the debuggee's live memory instead of from disk
 -sort <order> : select sort order for the output (default: load)
                 PEB list traversal order:
                   load    - InLoadOrderModuleList (DLL load order, default)
