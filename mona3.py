@@ -5538,10 +5538,10 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 				
 				mem = dbg.MemoryPages[a].getMemory()
 				if DEBUG_MODE:
-					dbgp("      + Page is within scope, loading memory contents")
+					dbgp("      + Page 0x%08x is within scope, loading memory contents" % a)
 				if not mem:
 					if DEBUG_MODE:
-						dbgp("        Failed to load page!!")
+						dbgp("        Failed to load page 0x%08x!!" % a)
 					continue
 				else:
 					if DEBUG_MODE:
@@ -13152,6 +13152,8 @@ def procInfo(args, procUsage = ""):
 				stackref = " (Thread 0x%08x, Stack Base : 0x%08x, Stack Top : 0x%08x)" % (tid,currstack[0],currstack[1])
 				break
 		dbg.log("    This address is in a stack segment %s" % stackref)
+	
+	
 	if modinfo:
 		dbg.log("    Address is part of a module:")
 		dbg.log("    %s" % modinfo.__str__())
@@ -13173,7 +13175,15 @@ def procInfo(args, procUsage = ""):
 			dbg.log("")
 			ptr.showHeapBlockInfo()
 		else:
-			dbg.log("    Module: None")					
+			dbg.log("    Module: None")	
+
+	if __DEBUGGERAPP__ == "WinDBG":
+		funcinfo = dbglib.Function(dbg,address)
+		symname = funcinfo.addressToSymbol()
+		if symname != "":
+			dbg.log("")
+			dbg.log("[+] Function found at 0x%08x, Symbol name: %s" % (address,symname))
+
 	try:
 		dbg.log("")
 		dbg.log("[+] Disassembly:")

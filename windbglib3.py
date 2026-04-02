@@ -2896,8 +2896,8 @@ class Debugger:
 	"""
 
 	def readMemory(self, location, size):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		#if DEBUG_MODE:
+		#	dbgp(get_current_function_name())
 		try:
 			data = bytes(bytearray(pykd.loadBytes(location, size)))
 			return ensure_bytes(data)
@@ -3731,6 +3731,8 @@ class wmodule:
 				# IMAGE_EXPORT_DIRECTORY.AddressOfFunctions[i](DWORD)
 				eatAddress = self.modbase + pykd.ptrDWord(address_of_functions + 4*i)
 				eatlist[eatName] = eatAddress
+				if DEBUG_MODE:
+					dbgp("Added to EATList: %s!%s at 0x%08x" % (self.modname, eatName, eatAddress))
 		return eatlist
 
 	def getSectionAddress(self,sectionname):
@@ -3940,11 +3942,12 @@ class Function:
 								break
 		else:
 			if DEBUG_MODE:
-				dbgp("Splitting module & symbol name")
+				dbgp("Splitting module & symbol name %s" % symname)
 			if "!" in symname:
-				symname.split("!")
-				if len(symname) > 1:
-					funcname = symname[1]
+				symnameparts = symname.split("!")
+				if len(symnameparts) > 1:
+					modname = symnameparts[0]
+					funcname = symnameparts[1]
 			if DEBUG_MODE:
 				dbgp("Function name: %s" % funcname)
 		thename = "%s!%s" % (modname,funcname)
