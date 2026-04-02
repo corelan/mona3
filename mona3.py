@@ -16782,7 +16782,7 @@ def procPageACL(args, procUsage = ""):
 			size_width = addr_width - 2
 		else:
 			size_width = addr_width
-		acl_width = 22
+		acl_width = 25
 		# Left aligned / Left aligned / left aligned, left aligned 
 		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds %%s" % (addr_width, addr_width, size_width, acl_width)
 		tolog = fmt % ("Start","End","Size","ACL", "Info")
