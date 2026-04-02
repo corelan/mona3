@@ -1084,11 +1084,11 @@ def getModulesFromPEB(peb_order="load"):
 							addtolist = False
 
 			if addtolist:
-			imagenames.append(imagename)
-			PEBModList[imagename] = [exename, fullpath]
-			if DEBUG_MODE:
-				dbgp("    Added %s to PEBModList" % imagename)
-				dbgp("    With full path %s" % fullpath)
+				imagenames.append(imagename)
+				PEBModList[imagename] = [exename, fullpath]
+				if DEBUG_MODE:
+					dbgp("    Added %s to PEBModList" % imagename)
+					dbgp("    With full path %s" % fullpath)
 	_PEBModListOrder = peb_order
 
 
