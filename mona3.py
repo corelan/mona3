@@ -4304,6 +4304,8 @@ class MnPointer:
 		
 		self.HexAddress = toHex(address)
 
+		self.ownerName  = ""
+
 		# define the characteristics of the pointer
 		byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = (0,)*8
 
@@ -4429,10 +4431,16 @@ class MnPointer:
 			
 		outstring = outstring.rstrip(",")
 		outstring += " {" + getPointerAccess(self.address)+"}"
+		if self.ownerName != "":
+			outstring += " - %s" % self.ownerName
+
 		return outstring
 
 	def getAddress(self):
 		return self.address
+
+	def getOwnerName(self):
+		return self.ownerName
 	
 	def isUnicode(self):
 		return self.isUnicode
@@ -4486,13 +4494,20 @@ class MnPointer:
 		"""		
 		if len(g_modules)==0:
 			populateModuleInfo()
-		for thismodule,modproperties in g_modules.items():
-				thisbase = getModuleProperty(thismodule,"base")
-				thistop = getModuleProperty(thismodule,"top")
-				if (self.address >= thisbase) and (self.address <= thistop):
-					return thismodule
+		if self.ownerName == "":
+			for thismodule,modproperties in g_modules.items():
+					thisbase = getModuleProperty(thismodule,"base")
+					thistop = getModuleProperty(thismodule,"top")
+					if (self.address >= thisbase) and (self.address <= thistop):
+						#self.ownerName = thismodule
+						return thismodule
+			# if it's not a module, maybe it's stack or heap
+			# just call the functions, to populate owner
+			if not self.isOnStack():
+				self.isInHeap()
 		return ""
 	
+
 	def isOnStack(self):
 		"""
 		Checks if the pointer is on one of the stacks of one of the threads in the process
@@ -4506,9 +4521,11 @@ class MnPointer:
 		stacks = getStacks()
 		for stack in stacks:
 			if (stacks[stack][0] <= self.address) and (self.address < stacks[stack][1]):
+				self.ownerName = "Stack"
 				return True
 		return False
 	
+
 	def isInHeap(self):
 		"""
 		Checks if the pointer is part of one of the pages associated with process heaps/segments
@@ -4528,11 +4545,13 @@ class MnPointer:
 					if segmentcnt == 0:
 						# in heap data structure
 						if self.address >= heap and self.address <= segment:
+							self.ownerName = "Heap Segment"
 							return True
 						segmentcnt += 1
 					if self.address >= segment:
 						last = segments[segment][3]
 						if self.address >= segment and self.address <= last:
+							self.ownerName = "Heap Segment"
 							return True
 		# maybe it's in a VA List ?
 		for heap in dbg.getHeapsAddress():
@@ -4543,6 +4562,7 @@ class MnPointer:
 					thischunk = valist[vachunk]
 					#dbg.log("self: 0x%08x, vachunk: 0x%08x, commitsize: 0x%08x, vachunk+(thischunk.commitsize)*8: 0x%08x" % (self.address,vachunk,thischunk.commitsize,vachunk+(thischunk.commitsize*8)))
 					if self.address >= vachunk and self.address <= (vachunk+(thischunk.commitsize*heapgranularity)):
+						self.ownerName = "VirtualAllocdBlock"
 						return True
 		return False
 		
@@ -5302,6 +5322,8 @@ def getSegmentList(heapbase):
 
 def getSegmentsForHeap(heapbase):
 	# either return the base of the segment, or the base of the default process heap
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 	allsegmentsfound = False
 	segmentinfo = {}
 	global segmentlistCache
@@ -16808,10 +16830,10 @@ def procPageACL(args, procUsage = ""):
 			if mod == "":
 				if ptr.isOnStack():
 					if not "Stack" in pageusage:
-						mod = "(Stack)"
+						mod = "(%s)" % ptr.getOwnerName()
 				elif ptr.isInHeap():
 					if not "Heap" in pageusage:
-						mod = "(Heap)"
+						mod = "(%s)" % ptr.getOwnerName()
 			acl = page.getAccess(human=True)
 			tolog = ""
 			pusage = ""
