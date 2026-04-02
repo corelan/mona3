@@ -7452,10 +7452,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							flipover += 1
 							gcount += 1
 							if flipover > 5000:
-								eta = get_eta(startmoment, gcount , len(ropgadgets))
+								eta = get_eta(startmoment, gcount , len(arrptrs))
 								dbg.log("    Update: ETA: %s" % eta)
 								flipover = 0	
-
 					else:
 						for gadget in interestinggadgets:
 							ptrx = MnPointer(gadget)
@@ -7466,7 +7465,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							flipover += 1
 							gcount += 1
 							if flipover > 5000:
-								eta = get_eta(startmoment, gcount , len(ropgadgets))
+								eta = get_eta(startmoment, gcount , len(interestinggadgets))
 								dbg.log("    Update: ETA: %s" % eta)
 								flipover = 0
 					objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
@@ -20251,7 +20250,7 @@ Arguments:
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
 	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC)
-	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP exploit and do ROP magic with them",ropUsage,procROP)
+	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP exploit and do ROP magic with them",ropUsage,procROP,"",[32,64])
 	commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP exploit",jopUsage,procJOP)		
 	commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
 	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
