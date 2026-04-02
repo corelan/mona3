@@ -2962,10 +2962,14 @@ class Debugger:
 			address_output_lines = address_output.splitlines()
 
 			row_regex = re.compile(
-				r'^\s*\+?\s*'                 # optional leading "+"
-				r'([0-9A-Fa-f`]+)\s+'         # BaseAddress
-				r'([0-9A-Fa-f`]+)\s+'         # EndAddress+1
-				r'([0-9A-Fa-f`]+)\b'          # RegionSize
+				r'^\s*\+?\s*'                    # optional leading "+"
+				r'([0-9A-Fa-f`]+)\s+'            # BaseAddress
+				r'([0-9A-Fa-f`]+)\s+'            # EndAddress+1
+				r'([0-9A-Fa-f`]+)\s+'            # RegionSize
+				r'(\S*)\s+'                      # Type (may be blank)
+				r'(\S*)\s+'                      # State (may be blank)
+				r'(\S*)\s+'                      # Protect (may be blank)
+				r'(.+?)\s*$'                     # Usage (rest of line)
 			)
 
 			for memory_page_info in address_output_lines:
@@ -2976,42 +2980,18 @@ class Debugger:
 
 				starting_address = int(m.group(1).replace('`', ''), 16)
 				size = int(m.group(3).replace('`', ''), 16)
+				pageprotect = m.group(6).strip()
+				pageusage = m.group(7).strip()
 
 				#if DEBUG_MODE:
-				#	dbgp("      OK - Including page: 0x%08x, size 0x%08x" % (starting_address, size))
+				#	dbgp("      OK - Including page: 0x%08x, size 0x%08x, protect: %s, usage: %s" % (
+				#		starting_address, size, pageprotect, pageusage))
 
-				page_obj = wpage(starting_address, size)
+				page_obj = wpage(starting_address, size, pageusage)
 				self.MemoryPages[starting_address] = page_obj
 
 		return self.MemoryPages
 
-
-	def getMemoryPages_old(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-
-		if not self.MemoryPages:
-			address_output = pykd.dbgCommand('!address -c:".printf\\"%1 %3 \\\\n\\""')
-			address_output_lines = address_output.split('\n')
-			info_regex = re.compile(r'0x[\da-fA-F]+ 0x[\da-fA-F]+')
-			for memory_page_info in address_output_lines:
-				memory_page_info = memory_page_info.strip()
-				if info_regex.match(memory_page_info):
-					info = memory_page_info.split(' ')
-					starting_address = int(info[0].replace('`', ''), base=16)
-					size = int(info[1].replace('`', ''), base=16)
-					page_obj = wpage(starting_address, size)
-					self.MemoryPages[starting_address] = page_obj
-
-		if DEBUG_MODE:
-			dbgp("--- THIS SHOULD BE HIDDEN ---")
-			address_output = pykd.dbgCommand("!address")
-			dbgp("--- END THIS SHOULD BE HIDDEN ---")
-			address_output_lines = address_output.split('\n')
-			for mmm in address_output_lines:
-				dbgp(" Line: %s" % mmm)
-
-		return self.MemoryPages
 
 
 	def getMemoryPageByAddress(self,address):
@@ -3021,12 +3001,12 @@ class Debugger:
 		if len(self.MemoryPages) == 0:
 			# may never get hit
 			self.MemoryPages = self.getMemoryPages()
-		pagesize = 0
+
 		startaddress = self.getPageContains(address)
 		if startaddress in self.MemoryPages:
 			return self.MemoryPages[startaddress]
 		else:
-			page = wpage(startaddress,pagesize)
+			page = wpage(startaddress,0,"")
 			return page
 
 	def getMemoryPageByOwner(self,ownerobj):
@@ -3797,14 +3777,18 @@ class wsymbol():
 
 
 class wpage():
-	def __init__(self,begin,size):
+	def __init__(self, begin, size, usage):
 		self.begin = begin
 		self.size = size
 		self.end = self.begin+self.size
 		self.protect = None
+		self.usage = usage.strip()
 
 	def getSize(self):
 		return self.size
+
+	def getUsage(self):
+		return self.usage
 
 	def getMemory(self):
 		if self.getAccess() > 0x1:
@@ -3819,29 +3803,6 @@ class wpage():
 		else:
 			return None
 
-
-	def getMemoryOld(self):
-		if self.getAccess() > 0x1:
-			try:
-				nrofdwords = self.size // 4
-				delta = self.size - (nrofdwords * 4)
-				dwords = pykd.loadDWords(self.begin,nrofdwords)
-				curpos = self.begin + (nrofdwords * 4)
-				remainingbytes = pykd.loadBytes(curpos,delta)
-				allbytes = []
-				for dword in dwords:
-					dwordhex = "%08x" % dword
-					allbytes.append(dwordhex[6:8] + dwordhex[4:6] + dwordhex[2:4] + dwordhex[0:2])
-				dwords = None
-				for byte in remainingbytes:
-					allbytes.append("%02x" % bytes)
-				data = hex2bin(''.join(allbytes))
-				#return hex2bin(''.join(("%02X" % n) for n in loadBytes(self.begin,self.size)))
-				return data
-			except:
-				return None
-		else:
-			return None
 
 	def getAccess(self,human=False):
 		humanaccess = {

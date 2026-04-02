@@ -16780,23 +16780,26 @@ def procPageACL(args, procUsage = ""):
 		if arch == 64:
 		    addr_width = 18   # "0x" + 16 hex chars
 		size_width = addr_width + 2
-		# Left aligned / Left aligned / left aligned, rest
-		fmt = "%%-%ds  %%-%ds  %%-%ds  %%s" % (addr_width, addr_width, size_width)
-		tolog = fmt % ("Start","End","Size","ACL")
+		acl_width = 22
+		# Left aligned / Left aligned / left aligned, left aligned 
+		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds %%s" % (addr_width, acl_width, size_width, 22)
+		tolog = fmt % ("Start","End","Size","ACL", "Info")
 		dbg.log(tolog)
 		objfile.write(tolog,aclfile)
 		for thispage in orderedpages:
 			page = allpages[thispage]
 			pagestart = page.getBaseAddress()
 			pagesize = page.getSize()
+			pageusage = ""
+			if __DEBUGGERAPP__ == "WinDBG":
+				pageusage = page.getUsage().strip()
 			ptr = MnPointer(pagestart)
 			mod = ""
 			sectionname = ""
 			try:
 				mod = ptr.belongsTo()
 				if not mod == "":
-					mod = "(" + mod + ")"
-					sectionname = page.getSection()
+					sectionname = page.getSection().strip()
 			except:
 				#print traceback.format_exc()
 				pass
@@ -16806,9 +16809,14 @@ def procPageACL(args, procUsage = ""):
 				elif ptr.isInHeap():
 					mod = "(Heap)"
 			acl = page.getAccess(human=True)
-
 			tolog = ""
-			acldata = "%s %s %s" % (acl, mod, sectionname)
+			pusage = ""
+			if len(mod) > 0:
+				if not mod in pageusage and len(mod) > 1:
+					pusage += "%s %s " % (mod, sectionname)
+				else:
+					pusage += "%s " % (sectionname)
+			pusage += "%s" % pageusage
 			pstart = "0x%08x" % pagestart
 			pend = "0x%08x" % (pagestart + pagesize)
 			psize = "0x%x" % pagesize	
@@ -16817,7 +16825,7 @@ def procPageACL(args, procUsage = ""):
 				pend = "0x%016x" % (pagestart + pagesize)
 				psize = "0x%x" % pagesize
 				
-			tolog = fmt % (pstart, pend, psize, acldata)
+			tolog = fmt % (pstart, pend, psize, acl, pusage)
 
 			objfile.write(tolog,aclfile)
 			dbg.log(tolog)
