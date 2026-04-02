@@ -69,8 +69,14 @@ global cpebaddress
 global PEBModList
 global FuncCache
 
+global currentPID
+global currentTEBAddress
+
 arch = 32
 cpebaddress = 0
+
+currentPID = 0
+currentTEBAddress = 0
 
 PageSections = {}
 ModuleCache = {}
@@ -275,23 +281,26 @@ def getPEBAddress():
 def getTEBInfo():
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
-
 	return pykd.typedVar("_TEB", pykd.getImplicitThread())
+
 
 def getTEBAddress():
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
 
-	tebinfo = pykd.dbgCommand("!teb")
-	if len(tebinfo) > 0:
-		teblines = tebinfo.split("\n")
-		tebline = teblines[0]
-		tebparts = tebline.split(" ")
-		if len(tebparts) > 2:
-			return hexStrToInt(tebparts[-1])
-	# slow
-	teb = getTEBInfo()
-	return int(teb.Self)
+	global currentTEBAddress
+	if currentTEBAddress == 0:
+		tebinfo = pykd.dbgCommand("!teb")
+		if len(tebinfo) > 0:
+			teblines = tebinfo.split("\n")
+			tebline = teblines[0]
+			tebparts = tebline.split(" ")
+			if len(tebparts) > 2:
+				return hexStrToInt(tebparts[-1])
+		# slow
+		teb = getTEBInfo()
+		currentTEBAddress = int(teb.Self)
+	return currentTEBAddress
 
 def bin2hex(binbytes):
 	if DEBUG_MODE:
@@ -2772,15 +2781,19 @@ class Debugger:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
-		# http://www.nirsoft.net/kernel_struct/vista/TEB.html
-		# http://www.nirsoft.net/kernel_struct/vista/CLIENT_ID.html
-		teb = getTEBAddress()
-		offset = 0x20
-		if arch == 64:
-			offset = 0x40
-		# _TEB.ClientId(CLIENT_ID).UniqueProcess(PVOID)
-		pid = pykd.ptrDWord(teb+offset)
-		return pid
+		global currentPID
+
+		if currentPID == 0:
+			# http://www.nirsoft.net/kernel_struct/vista/TEB.html
+			# http://www.nirsoft.net/kernel_struct/vista/CLIENT_ID.html
+			teb = getTEBAddress()
+			offset = 0x20
+			if arch == 64:
+				offset = 0x40
+			# _TEB.ClientId(CLIENT_ID).UniqueProcess(PVOID)
+			currentPID = pykd.ptrDWord(teb+offset)
+
+		return currentPID
 
 	
 	"""

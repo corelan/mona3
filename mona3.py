@@ -2906,7 +2906,7 @@ class MnModule:
 			# if info is cached, retrieve from cache
 			if ModInfoCached(modulename):
 				if DEBUG_MODE:
-					dbgp("module cached: %s" % modulename)
+					dbgp("Module %s retrieved from cache" % modulename)
 				modisaslr = getModuleProperty(modulename,"aslr")
 				modissafeseh = getModuleProperty(modulename,"safeseh")
 				modrebased = getModuleProperty(modulename,"rebase")
@@ -6829,7 +6829,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if (tp < 2000):
 		updateth = 100
 	if DEBUG_MODE:
-		updateth = updateth / 2
+		updateth = updateth // 2
 	startmoment = time.time()
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:
