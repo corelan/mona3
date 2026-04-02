@@ -11611,7 +11611,7 @@ def getRopSuggestion(ropchains,allchains):
 	# empty
 	# =====
 	for reg in regs:
-		empty_allowed = ["XOR "+reg+","+reg+" # RETN","MOV "+reg+",FFFFFFFF # INC "+reg+" # RETN", "SUB "+reg+","+reg+" # RETN", "PUSH 0 # POP "+reg + " # RETN", "IMUL "+reg+","+reg+",0 # RETN"]
+		empty_allowed = ["XOR "+reg+","+reg+" # RETN","MOV "+reg+",FFFFFFFF # INC "+reg+" # RETN", "SUB "+reg+","+reg+" # RETN", "PUSH 0 # POP "+reg + " # RETN", "IMUL "+reg+","+reg+",0 # RETN", "AND "+reg+", 0 # RETN", "MOV "+reg+", 0 # RETN"]
 		empty_notallowed = []
 		for gadget in ropchains:
 			gadgetinstructions = ropchains[gadget].strip()
@@ -11635,7 +11635,7 @@ def getRegToReg(type,fromreg,toreg,ropchains,moveptr_allowed,moveptr_notallowed)
 	musthave = ""
 	if type == "MOVE":
 		moveptr.append("MOV "+toreg+","+fromreg)
-		moveptr.append("LEA "+toreg+","+fromreg)
+		#moveptr.append("LEA "+toreg+", ["+fromreg+"+")
 		#if not (fromreg == "ESP" or toreg == "ESP"):
 		moveptr.append("XCHG "+fromreg+","+toreg)
 		moveptr.append("XCHG "+toreg+","+fromreg)
