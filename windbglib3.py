@@ -3098,6 +3098,9 @@ class Debugger:
 
 		wmod = None
 		self.origmodname = modulename
+
+		foundmodulename = modulename
+
 		fullpath = ""
 		if len(PEBModList) == 0:
 			getModulesFromPEB()
@@ -3108,28 +3111,29 @@ class Debugger:
 				dbgp("    Modules were already loaded into PEBModList, continue")
 		try:
 			thismod = None
-			if modulename in PEBModList:
-				modentry = PEBModList[modulename]
-				if DEBUG_MODE:
-					dbgp("    Convert module into pykd module object: %s" % modulename)
-					dbgp("    Modentry: %s" % modentry)
-				thismod = pykd.module(modulename)
-				fullpath = modentry[1]
-			else:
-				if DEBUG_MODE:
-					dbgp("Module %s not found in PEBModList" % modulename)
-				# find a good one
-				for modentry in PEBModList:
-					modrecord = PEBModList[modentry]
-					# 0 : file
-					# 1 : path
-					if DEBUG_MODE:
-						dbgp("Modrecord: %s" % modrecord)
-					if modulename == modrecord[0]:
-						thismod = pykd.module(modentry)
-						fullpath = modrecord[1]
-						break
 
+			modulefoundinPEB = False
+			fname, fext = os.path.splitext(modulename) 
+			modulevariations = [modulename,fname, modulename.upper(), modulename.lower()]
+			for modvariation in modulevariations:
+				
+				if DEBUG_MODE:
+					dbgp("Looking for name %s in PEBModList" % modvariation)
+				if modvariation in PEBModList:
+					modentry = PEBModList[modvariation]
+					if DEBUG_MODE:
+						dbgp("    Convert module into pykd module object: %s" % modvariation)
+						dbgp("    Selected modentry from PEBModList: %s" % modentry)
+					thismod = pykd.module(modvariation)
+					fullpath = modentry[1]
+					if not thismod == None:
+						modulefoundinPEB = True
+						break
+					foundmodulename = modvariation
+				else:
+					if DEBUG_MODE:
+						dbgp("Module name %s not found in PEBModList" % modvariation)
+						
 			if thismod == None:
 				pykd.dprintln("I was not able to run pykd.module('%s')" % modulename)
 				pykd.dprintln("Modules in PEBModList: %s" % PEBModList)
@@ -3212,7 +3216,8 @@ class Debugger:
 			for imagename in PEBModList:
 				thismodname = PEBModList[imagename][0]
 				wmodobject = self.getModule(imagename, from_memory=from_memory)
-				self.allmodules[thismodname] = wmodobject
+				#self.allmodules[thismodname] = wmodobject
+				self.allmodules[imagename] = wmodobject
 		return self.allmodules
 
 

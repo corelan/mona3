@@ -6524,6 +6524,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 		allmodules=dbg.getAllModules()
 	if DEBUG_MODE:
 		dbgp("Number of modules found: %d" % len(allmodules))
+		dbgp("keys: %s" % allmodules.keys())
 	curmod = ""
 	for key in allmodules.keys():
 		try:    
@@ -7197,7 +7198,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			found_opcodes = searchInModule(search,thismodule,criteria)
 			#merge results
 			all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
-		dbg.log("    - Search for gadget endings complete. Results:")
+		dbg.log("    - Search for gadget endings complete.")
+		dbg.log("      Results:")
 		dbg.log("")
 	else:
 		dbg.log("[+] Reading input files")
@@ -7465,19 +7467,19 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				vplogtxt = createRopChains(suggestions,interestinggadgets,ropgadgets,modulecriteria,criteria,objprogressfile,progressfile,technique)
 				dbg.logLines(vplogtxt.replace("\t","    "))
 				dbg.log("    ROP generator finished")
-			if arch == 64:
-				dbg.log("[+] There is no automated ROP generator for 64bit in mona (yet)")
-				dbg.log("    But I will get you some IAT locations where you can find interesting functions")
-				updatetext = "[+] Getting ropfunc information"
-				objprogressfile.write(updatetext.strip(),progressfile)
-				routines = "virtualalloc", "virtualprotect"
-				for routine in routines:
-					dbg.log("    - Looking for IAT entries to %s" % routine)
-					funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"iat", objprogressfile, progressfile)
-					if funcptr > 0:
-						updatetext = "   0x%x : 0x%s" % (funcptr, functext)
-						dbg.log(updatetext)
-						objprogressfile.write(updatetext.strip(),progressfile)
+		if arch == 64:
+			dbg.log("[+] There is no automated ROP generator for 64bit in mona (yet)")
+			dbg.log("    But I will get you some IAT locations where you can find interesting functions")
+			updatetext = "[+] Getting ropfunc information"
+			objprogressfile.write(updatetext.strip(),progressfile)
+			routines = "virtualalloc", "virtualprotect"
+			for routine in routines:
+				dbg.log("    - Looking for IAT entries to %s" % routine)
+				funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"iat", objprogressfile, progressfile)
+				if funcptr > 0:
+					updatetext = "   0x%x : 0x%s" % (funcptr, functext)
+					dbg.log(updatetext)
+					objprogressfile.write(updatetext.strip(),progressfile)
 
 		else:
 			updatetext = "[+] Oops, no gadgets found, aborting.."
