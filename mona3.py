@@ -3225,7 +3225,10 @@ class MnModule:
 		
 	def modulePath(self):
 		return self.modulePath
-	
+
+	def moduleFilename(self):
+		return self.moduleFilename
+
 	def moduleBase(self):
 		return self.moduleBase
 	
