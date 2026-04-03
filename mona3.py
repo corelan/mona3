@@ -7028,7 +7028,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 			isos 	= toSize(str(modproperties["os"]),7)
 			version = str(modproperties["version"])
 			path 	= str(modproperties["path"])
-			name	= str(modproperties["name"])
+			name	= str(modproperties["filename"] or modproperties["name"])
 			dllflag = "0x%x" % modproperties["dllcharacteristics"]
 			if arch == 32:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
