@@ -3130,7 +3130,9 @@ class Debugger:
 						fullpath = modrecord[1]
 						break
 
-			#if thismod == None:
+			if thismod == None:
+				pykd.dprintln("I was not able to run pykd.module('%s')" % modulename)
+				pykd.dprintln("Modules in PEBModList: %s" % PEBModList)
 			#	# should never hit, as we have tested if modules can be loaded already
 			#	imagename = self.getImageNameForModule(self.origmodname)
 			#	thismod = pykd.module(str(imagename))

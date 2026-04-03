@@ -414,6 +414,123 @@ def DwordToBits(srcDword):
 	return bit_array
 
 
+def print_dict_table(data, headers, types, ptr_size=None, padding=""):
+	"""
+	Prints a table from a dict, Python 2/3 compatible.
+
+	padding : string to prepend to every printed line
+	"""
+
+	if ptr_size is None:
+		ptr_size = 16 if sys.maxsize > 2**32 else 8
+
+	if len(headers) != len(types):
+		raise ValueError("headers and types must have the same number of elements")
+
+	def _ensure_text(v):
+		if v is None:
+			return ""
+		if sys.version_info[0] >= 3:
+			if isinstance(v, bytes):
+				try:
+					return v.decode("latin-1", "replace")
+				except:
+					return repr(v)
+			return str(v)
+		else:
+			if isinstance(v, unicode):
+				try:
+					return v.encode("latin-1", "replace")
+				except:
+					return repr(v)
+			return str(v)
+
+	def _format_value(v, vtype):
+		if v is None:
+			return ""
+
+		vtype = vtype.lower()
+
+		if vtype == "pointer":
+			try:
+				ival = int(v)
+				return "0x%0*X" % (ptr_size, ival)
+			except:
+				return _ensure_text(v)
+
+		elif vtype == "int":
+			try:
+				return str(int(v))
+			except:
+				return _ensure_text(v)
+
+		elif vtype == "bytes":
+			if sys.version_info[0] >= 3:
+				if isinstance(v, bytes):
+					try:
+						return v.decode("latin-1", "replace")
+					except:
+						return repr(v)
+				return str(v)
+			else:
+				if isinstance(v, str):
+					return v
+				return str(v)
+
+		elif vtype == "string":
+			return _ensure_text(v)
+
+		else:
+			return _ensure_text(v)
+
+	def _normalize_row(key, value):
+		if isinstance(value, (list, tuple)):
+			return [key] + list(value)
+		return [key, value]
+
+	# Build formatted rows
+	formatted_rows = []
+	expected_cols = len(headers)
+
+	for key, value in data.items():
+		row = _normalize_row(key, value)
+
+		if len(row) != expected_cols:
+			raise ValueError(
+				"Row for key %r has %d columns, expected %d"
+				% (key, len(row), expected_cols)
+			)
+
+		formatted_rows.append([
+			_format_value(row[i], types[i]) for i in range(expected_cols)
+		])
+
+	# Determine column widths
+	col_widths = []
+	for i in range(expected_cols):
+		max_width = len(_ensure_text(headers[i]))
+		for row in formatted_rows:
+			max_width = max(max_width, len(_ensure_text(row[i])))
+		col_widths.append(max_width)
+
+	# Build format string
+	fmt = "  ".join(["%%-%ds" % w for w in col_widths])
+
+	# Helper to print with padding
+	def _p(line):
+		print("%s%s" % (padding, line))
+
+	# Header
+	_p(fmt % tuple([_ensure_text(h) for h in headers]))
+
+	# Separator
+	_p(fmt % tuple([("-" * w) for w in col_widths]))
+
+	# Rows
+	for row in formatted_rows:
+		_p(fmt % tuple([_ensure_text(c) for c in row]))
+
+
 def getDisasmInstruction(disasmentry):
 	""" returns instruction string, checks if ASM is uppercase and converts to upper if needed """
 	instrline = disasmentry.getDisasm()
@@ -7080,7 +7197,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			found_opcodes = searchInModule(search,thismodule,criteria)
 			#merge results
 			all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
-		dbg.log("    - Search complete :")
+		dbg.log("    - Search for gadget endings complete. Results:")
+		dbg.log("")
 	else:
 		dbg.log("[+] Reading input files")
 		for filename in filestouse:
@@ -7089,14 +7207,25 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			
 	dbg.updateLog()
 	tp = 0
+	ending_cnt = {}
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:
 			if usefiles:
-				dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype]) // 2))
+				#dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype]) // 2))
 				tp = tp + len(all_opcodes[endingtype]) // 2
 			else:
-				dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype])))
+				#dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype])))
 				tp = tp + len(all_opcodes[endingtype])
+
+			ending_cnt[endingtype] = len(all_opcodes[endingtype])
+
+
+	headers = ["Ending", "Count"]
+	types   = ["string", "int"]
+
+	print_dict_table(ending_cnt, headers, types, padding = "      ")
+	dbg.log("")
+
 	global silent
 	if not usefiles:		
 		dbg.log("[+] Expanding and filtering gadgets for %d endings" % tp)
