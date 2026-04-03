@@ -2742,7 +2742,7 @@ class MnLog:
 
 		if clear:
 			if not silent:
-				dbg.log("    - (Re)setting logfile %s" % logfile)
+				dbg.log("    - (Re)setting output file %s" % logfile)
 			try:
 				if os.path.exists(logfile):
 					try:
@@ -7351,10 +7351,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	logfile.write("Stack pivots, minimum distance " + str(pivotdistance) + ", in descending order",thislog)
 	logfile.write("------------------------------------------------------------------------------",thislog)
 	logfile.write("", thislog)
-	logfile.write("", thislog)	
-	logfile.write("Non-SafeSEH protected pivots :",thislog)
-	logfile.write("------------------------------",thislog)
-	logfile.write("", thislog)	
+	logfile.write("", thislog)
+	if arch == 32:
+		logfile.write("Non-SafeSEH protected pivots :",thislog)
+		logfile.write("------------------------------",thislog)
+		logfile.write("", thislog)	
 	arrtowrite = ""	
 	pivotcount = 0
 	startmoment = time.time()
@@ -7377,14 +7378,15 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		pass
 	logfile.write("", thislog)
 	logfile.write("", thislog)
-	logfile.write("", thislog)	
-	logfile.write("**********************************************************************************************************", thislog)
-	logfile.write("", thislog)		
-	logfile.write("", thislog)	
-	logfile.write("", thislog)		
-	logfile.write("SafeSEH protected pivots :",thislog)
-	logfile.write("--------------------------",thislog)	
-	logfile.write("", thislog)	
+	if arch == 32:
+		logfile.write("", thislog)	
+		logfile.write("**********************************************************************************************************", thislog)
+		logfile.write("", thislog)		
+		logfile.write("", thislog)	
+		logfile.write("", thislog)		
+		logfile.write("SafeSEH protected pivots :",thislog)
+		logfile.write("--------------------------",thislog)	
+		logfile.write("", thislog)	
 	arrtowrite = ""	
 	startmoment = time.time()
 	flipover = 0
@@ -7453,7 +7455,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							gcount += 1
 							if flipover > 5000:
 								eta = get_eta(startmoment, gcount , len(arrptrs))
-								dbg.log("    Update: ETA: %s" % eta)
+								dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(arrptrs)))
 								flipover = 0	
 					else:
 						for gadget in interestinggadgets:
@@ -7466,7 +7468,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							gcount += 1
 							if flipover > 5000:
 								eta = get_eta(startmoment, gcount , len(interestinggadgets))
-								dbg.log("    Update: ETA: %s" % eta)
+								dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(interestinggadgets)))
 								flipover = 0
 					objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
 					fh.writelines(arrtowrite)
@@ -7503,7 +7505,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								gcount += 1
 								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
-									dbg.log("    Update: ETA: %s" % eta)
+									dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(ropgadgets)))
 									objprogressfile.write("    Enumerating (sorted) - update: %s" % eta)
 									flipover = 0	
 						else:	
@@ -7517,7 +7519,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								gcount += 1
 								if flipover > 2000:
 									eta = get_eta(startmoment, gcount , len(ropgadgets))
-									dbg.log("    Update: ETA: %s" % eta)
+									dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(ropgadgets)))
 									objprogressfile.write("    Enumerating - update: %s" % eta)
 									flipover = 0	
 
