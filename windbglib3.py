@@ -532,6 +532,7 @@ class Debugger:
 		self.allmodules = {}
 		self.OpcodeCache = {}
 		self.ModCache = {}
+		self._peb_list = None
 		self.fillAsmCache()
 		self.knowledgedb = "windbglib.db"
 
@@ -2378,10 +2379,17 @@ class Debugger:
 		Yield (dll_base, base_name, full_path) for every entry in
 		PEB.InLoadOrderModuleList using only self.readMemory.
 
+		Results are cached in self._peb_list after the first walk.
+
 		LDR_DATA_TABLE_ENTRY offsets:
 		  x86: DllBase +0x18, FullDllName +0x24, BaseDllName +0x2C
 		  x64: DllBase +0x30, FullDllName +0x48, BaseDllName +0x58
 		"""
+		if self._peb_list is not None:
+			for entry in self._peb_list:
+				yield entry
+			return
+
 		ptr_size = 8 if arch == 64 else 4
 		fmt_ptr  = '<Q' if arch == 64 else '<L'
 
@@ -2407,12 +2415,16 @@ class Debugger:
 		base_name_off = 0x58 if arch == 64 else 0x2C
 
 		flink = _ptr(list_head)
+		results = []
 		while flink != list_head and flink != 0:
 			dll_base  = _ptr(flink + dll_base_off)
 			full_path = _wstr(flink, full_name_off)
 			base_name = _wstr(flink, base_name_off)
-			yield dll_base, base_name, full_path
+			results.append((dll_base, base_name, full_path))
 			flink = _ptr(flink)
+		self._peb_list = results
+		for entry in self._peb_list:
+			yield entry
 
 	def getModule(self, modulename, from_memory=False):
 		if DEBUG_MODE:
