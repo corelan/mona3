@@ -6591,13 +6591,13 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	_POST_SORT_KEYS = {
 		"base":    lambda x: x[1]["base"],
 		"size":    lambda x: x[1]["size"],
-		# boolean keys: negate so that ascending order puts True first
-		"rebase":  lambda x: not x[1]["rebase"],
-		"safeseh": lambda x: not x[1]["safeseh"],
-		"aslr":    lambda x: not x[1]["aslr"],
-		"cfg":     lambda x: not x[1]["cfg"],
-		"nx":      lambda x: not x[1]["nx"],
-		"os":      lambda x: not x[1]["os"],
+		# boolean keys: False=0 sorts before True=1 in ascending order (False-first default)
+		"rebase":  lambda x: x[1]["rebase"],
+		"safeseh": lambda x: x[1]["safeseh"],
+		"aslr":    lambda x: x[1]["aslr"],
+		"cfg":     lambda x: x[1]["cfg"],
+		"nx":      lambda x: x[1]["nx"],
+		"os":      lambda x: x[1]["os"],
 	}
 	items = list(g_modules.items())
 	if sort_by in _POST_SORT_KEYS:
@@ -12984,8 +12984,8 @@ def procFindSEH(args, procUsage=""):
 # ----- MODULES ------ #
 PEB_ORDER_VALID = ("load", "memory", "init")
 POST_SORT_VALID = ("base", "size", "rebase", "safeseh", "aslr", "cfg", "nx", "os")
-# For boolean sorts: keys are negated, so ascending (reverse=False) puts True first.
-# -order asc = True-first, -order desc = False-first.
+# For boolean sorts: False=0 sorts before True=1, so ascending (reverse=False) puts False first.
+# -order asc = False-first (default), -order desc = True-first.
 # For numeric sorts: ascending (reverse=False) is the default.
 _POST_SORT_DEFAULT_REVERSE = {
 	"base":    False,
@@ -19954,8 +19954,8 @@ Optional parameters :
                        size    - ascending module size
                        rebase / safeseh / aslr / cfg / nx / os - True-first
 -order <dir>       : override sort direction (only valid with -sort)
-                       asc   - ascending for numeric keys; True-first for boolean keys (default)
-                       desc  - descending for numeric keys; False-first for boolean keys"""
+                       asc   - ascending for numeric keys; False-first for boolean keys (default)
+                       desc  - descending for numeric keys; True-first for boolean keys"""
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
