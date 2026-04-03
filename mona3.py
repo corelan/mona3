@@ -12682,7 +12682,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 			themod = dbg.getModule(thismodule)
 			tmod = MnModule(thismodule)
 			shortname = tmod.getShortName()
-			syms = themod.getSymbols()
+			#syms = themod.getSymbols()
 			# get funcs
 			funcs = {}
 			if type == "export":
@@ -12730,8 +12730,13 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 				for crit in namecrit:
 					if crit.find("*") == -1:
 						crit = "*" + crit + "*"
+					dbg.log("      Performing WinDBG Symbol lookup. This may cause symbols to be downloaded first")
+					if DEBUG_MODE:
+						dbg.nativeCommand("!sym noisy")
 					modsearch = "x %s!%s" % (shortname,crit)
 					output = dbg.nativeCommand(modsearch)
+					if DEBUG_MODE:
+						dbg.nativeCommand("!sym quiet")
 					if DEBUG_MODE:
 						dbgp("output: %s" % output)
 					outputlines = output.split("\n")
@@ -12739,17 +12744,22 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 						if line.replace(" ","") != "":
 							linefields = line.split(" ")
 							if len(linefields) > 1:
-								ptr = hexStrToInt(linefields[0])
+								ptr = hexStrToInt(linefields[0].replace("`",""))
 								cnt = 1
 								while cnt < len(linefields)-1:
 									if linefields[cnt] != "":
 										funcname = linefields[cnt]
 										break
 									cnt += 1
+								if "!" in funcname:
+									funcnamesplit = funcname.split("!")
+									if len(funcnamesplit) > 1:
+										funcname = funcnamesplit[1]
 								if not ptr in bpfuncs:
 									bpfuncs[ptr] = funcname
 
 		if not silent:
+			dbg.log("")
 			dbg.log("[+] Total nr of breakpoints to process : %d" % len(bpfuncs))
 		if len(bpfuncs) > 0:
 			for funcptr in bpfuncs:
@@ -12769,6 +12779,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 					dbg.log("Match found at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
 						
 	return
+
 
 def getAbsolutePath(filename):
 	# attempt to read input file from workingfolder (if any)
@@ -19007,6 +19018,105 @@ def procDiffHeap(args):
 	return
 
 
+def procSymclean(args):
+	
+	# remove .error files from symbol path folders
+	# if user provided a folder
+
+	folders_to_clean = []
+	seen_folders = set()
+
+	if "p" in args:
+		if type(args["p"]).__name__.lower() != "bool":
+			folders_to_clean.append(args["p"])
+
+
+	if len(folders_to_clean) == 0:
+		symout = dbg.nativeCommand(".sympath")
+
+		for thisline in symout.splitlines():
+			thisline = thisline.strip()
+			if not thisline:
+				continue
+
+			pathstr = ""
+
+			if thisline.startswith("Symbol search path is:"):
+				pathstr = thisline.split(":", 1)[1].strip()
+			elif thisline.startswith("Expanded Symbol search path is:"):
+				pathstr = thisline.split(":", 1)[1].strip()
+			else:
+				# path validation summary rows, such as:
+				# Deferred                                       srv*c:\symbols*http://msdl.microsoft.com/download/symbols
+				lineparts = thisline.split(None, 2)
+				if len(lineparts) >= 3:
+					maybe_path = lineparts[2].strip()
+					if "*" in maybe_path:
+						pathstr = maybe_path
+
+			if not pathstr:
+				continue
+
+			for thiscfg in pathstr.split(";"):
+				thiscfg = thiscfg.strip()
+				if not thiscfg:
+					continue
+
+				cfgparts = thiscfg.split("*")
+				if len(cfgparts) >= 3:
+					thisfolder = cfgparts[1].strip().strip('"')
+					if thisfolder:
+						folderkey = thisfolder.lower()
+						if folderkey not in seen_folders:
+							seen_folders.add(folderkey)
+							folders_to_clean.append(thisfolder)
+
+
+	dbg.log("[+] Found %d unique folder(s) to inspect" % len(folders_to_clean))
+	for thisfolder in folders_to_clean:
+		dbg.log("    %s" % thisfolder)
+
+	deleted_files = []
+	total_recovered = 0
+
+	for basefolder in folders_to_clean:
+		if not os.path.isdir(basefolder):
+			dbg.log("[-] Folder does not exist: %s" % basefolder)
+			continue
+
+		dbg.log("[+] Scanning folder: %s" % basefolder)
+
+		for root, dirs, files in os.walk(basefolder):
+			for filename in files:
+				if filename.lower().endswith(".error"):
+					fullpath = os.path.join(root, filename)
+					try:
+						filesize = os.path.getsize(fullpath)
+					except:
+						filesize = 0
+
+					try:
+						os.remove(fullpath)
+						deleted_files.append((fullpath, filesize))
+						total_recovered += filesize
+						dbg.log("[+] Deleted: %s (%.2f Mb)" % (fullpath, float(filesize) / (1024.0 * 1024.0)))
+					except Exception as e:
+						dbg.log("[-] Failed to delete %s : %s" % (fullpath, str(e)))
+
+	dbg.log("")
+	dbg.log("=" * 60)
+	if len(deleted_files) == 0:
+		dbg.log("[+] No .error files were found/deleted")
+	else:
+		dbg.log("[+] Deleted %d .error file(s):" % len(deleted_files))
+		for fullpath, filesize in deleted_files:
+			dbg.log("    %s --> %.2f Mb" % (fullpath, float(filesize) / (1024.0 * 1024.0)))
+		dbg.log("[+] Total space recovered: %.2f Mb" % (float(total_recovered) / (1024.0 * 1024.0)))
+	
+	dbg.log("=" * 60)
+
+	
+
 def procFlow(args):
 
 	srplist = []
@@ -19949,6 +20059,8 @@ def populateCommands(args):
 	
 	sehUsage = """Default module criteria : non safeseh, non aslr, non rebase
 This function will retrieve all stackpivot pointers that will bring you back to nseh in a seh overwrite exploit
+
+
 Optional argument: 
     -all : also search outside of loaded modules"""
 	
@@ -19957,6 +20069,7 @@ Available options are : -get <parameter>, -set <parameter> <value> or -add <para
 Valid parameters are : workingfolder, excluded_modules, author"""
 	
 	jmpUsage = """Default module criteria : non aslr, non rebase 
+
 Mandatory argument :  -r <reg>  where reg is a valid register"""
 	
 	ropfuncUsage = """Default module criteria : non aslr, non rebase, non os
@@ -20007,6 +20120,7 @@ Optional parameters :
 	filecompareUsage="""Compares 2 or more files created by mona using the same output commands
 Make sure to use files that are created with the same version of mona and 
 contain the output of the same mona command.
+
 Mandatory argument : -f \"file1,file2,...filen\"
 Put all filenames between one set of double quotes, and separate files with comma's.
 You can specify a foldername as well with -f, all files in the root of that folder will be part of the compare.
@@ -20020,17 +20134,21 @@ Optional parameters :
 
 	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.txt
 in ascii, hex and unescape() javascript format
+
 Mandatory argument : size (numberic value)
-Optional arguments :
+
+Optional arguments:
     -extended : extend the 3rd characterset (numbers) with punctuation marks etc
     -c1 <chars> : set the first charset to this string of characters
     -c2 <chars> : set the second charset to this string of characters
     -c3 <chars> : set the third charset to this string of characters"""
 	
 	patoffsetUsage="""Find the location of 4 bytes in a cyclic pattern
+
 Mandatory argument : the 4 bytes to look for
 Note :  you can also specify a register
-Optional arguments :
+
+Optional arguments:
     -extended : extend the 3rd characterset (numbers) with punctuation marks etc
     -c1 <chars> : set the first charset to this string of characters
     -c2 <chars> : set the second charset to this string of characters
@@ -20039,9 +20157,11 @@ Note : the charset must match the charset that was used to create the pattern !
 """
 
 	findwildUsage = """Find instructions in memory, accepts wildcards :
+
 Mandatory arguments :
         -s <instruction#instruction#instruction>  (separate instructions with #)
-Optional arguments :
+
+Optional arguments:
         -b <address> : base/bottom address of the search range
         -t <address> : top address of the search range
         -depth <nr>  : number of instructions to go deep
@@ -20056,8 +20176,10 @@ Example : pop r32#*#xor eax,eax#*#pop esi#ret
 
 
 	findUsage= """Find a sequence of bytes in memory.
+
 Mandatory argument : -s <pattern> : the sequence to search for. If you specified type 'file', then use -s to specify the file.
 This file needs to be a file created with mona.py, containing pointers at the begin of each line.
+
 Optional arguments:
     -type <type>    : Type of pattern to search for : bin,asc,ptr,instr,file
     -b <address> : base/bottom address of the search range
@@ -20075,24 +20197,30 @@ Optional arguments:
     -ptronly : Only show the pointers, skip showing info about the pointer (slightly faster)"""
 	
 	assembleUsage = """Convert instructions to opcode. Separate multiple instructions with #.
+
 Mandatory argument : -s <instructions> : the sequence of instructions to assemble to opcode"""
 	
 	infoUsage = """Show information about a given address in the context of the loaded application
+
 Mandatory argument : -a <address> : the address to query"""
 
 	dumpUsage = """Dump the specified memory range to a file. Either the end address or the size of
 buffer needs to be specified.
+
 Mandatory arguments :
     -s <address> : start address
     -f <filename> : the name of the file where to write the bytes
+
 Optional arguments:
     -n <size> : the number of bytes to copy (size of the buffer)
     -e <address> : the end address of the copy"""
 	
 
 	compareUsage = """Compare a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
+
 Mandatory argument :
     -f <filename> : full path to input file
+
 Optional argument :
     -a <address> : the exact address of the bytes in memory (address or register). 
                    If you don't specify an address, I will try to locate the bytes in memory 
@@ -20106,20 +20234,24 @@ Optional argument :
 
 	offsetUsage = """Calculate the number of bytes between two addresses. You can use 
 registers instead of addresses. 
+
 Mandatory arguments :
     -a1 <address> : the first address/register
     -a2 <address> : the second address/register"""
 	
 	bpUsage = """Set a breakpoint when a given address is read from, written to or executed
+
 Mandatory arguments :
     -a <address> : the address where to set the breakpoint
                    (absolute address / register / modulename!functionname)
     -t <type> : type of the breakpoint, can be READ, WRITE or SFX"""
 	
 	bfUsage = """Set a breakpoint on exported or imported function(s) of the selected modules. 
+
 Mandatory argument :
     -t <type> : type of breakpoint action. Can be 'add', 'del' or 'list'
-Optional arguments :
+
+Optional arguments:
     -f <function type> : set to 'import' or 'export' to read IAT or EAT. Default : export
     -s <func,func,func> : specify function names. 
                           If you want a bp on all functions, set -s to *"""	
@@ -20130,12 +20262,14 @@ Optional arguments :
 	findmspUsage = """Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern
 or points into a cyclic pattern. findmsp will also look if a SEH record is overwritten and finally, 
 it will look for cyclic patterns on the stack, and pointers to cyclic pattern on the stack.
+
 Optional argument :
     -distance <value> : distance from ESP, applies to search on the stack. Default : search entire stack
 Note : you can use the same options as with pattern_create and pattern_offset in terms of defining the character set to use"""
 
 	suggestUsage = """Suggests an exploit buffer structure based on pointers to a cyclic pattern
 Note : you can use the same options as with pattern_create and pattern_offset in terms of defining the character set to use
+
 Mandatory argument in case you are using WinDBG:
     -t <type:arg> : skeletontype. Valid types are :
                 tcpclient:port, udpclient:port, fileformat:extension
@@ -20143,7 +20277,8 @@ Mandatory argument in case you are using WinDBG:
                            -t fileformat:pdf"""
 	
 	bytearrayUsage = """Creates a byte array, can be used to find bad characters
-Optional arguments :
+
+Optional arguments:
     -cpb <bytes> : bytes to exclude from the array. Example : '\\x00\\x0a\\x0d'
                    Note: you can specify wildcards using .. 
                    Example: '\\x00\\x0a..\\x20\\x32\\x7f..\\xff'
@@ -20155,18 +20290,22 @@ Optional arguments :
     Output will be written to bytearray.txt, and binary output will be written to bytearray.bin"""
 	
 	headerUsage = """Convert contents of a binary file to code that can be run to produce the file
+
 Mandatory argument :
     -f <filename> : source filename
+
 Optional argument:
     -t <type>     : specify type of output. Valid choices are 'ruby' (default) or 'python' """
 	
 	updateUsage = """Update mona to the latest version"""
 	getpcUsage = """Find getpc routine for specific register
+
 Mandatory argument :
     -r : register (ex: eax)"""
 
 	eggUsage = """Creates an egghunter routine
-Optional arguments :
+
+Optional arguments:
     -t : tag (ex: w00t). Default value is w00t
     -c : enable checksum routine. Only works in conjunction with parameter -f
     -f <filename> : file containing the shellcode
@@ -20189,16 +20328,19 @@ DEP Bypass options :
 	stacksUsage = """Shows all stacks for each thread in the running application"""
 	
 	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
+
 Mandatory argument in case you are using WinDBG:
     -t <type:arg> : skeletontype. Valid types are :
                 tcpclient:port, udpclient:port, fileformat:extension
                 Examples : -t tcpclient:21
                            -t fileformat:pdf
-Optional arguments :
+
+Optional arguments:
     -s : size of the cyclic pattern (default : 5000)
 """
 	
 	heapUsage = """Show information about various heap chunk lists
+
 Mandatory arguments :
     -h <address> : base address of the heap to query
     -t <type> : where type is 'segments', 'chunks', 'layout',
@@ -20208,7 +20350,8 @@ Mandatory arguments :
                 'bea' (backend allocator, mona will automatically determine what it is),
                 'all' (show all information)
     Note: 'layout' will show all heap chunks and their vtables & strings. Use on WinDBG for maximum results.
-Optional arguments :
+
+Optional arguments:
     -expand : Works only in combination with 'layout', will include VA/LFH/... chunks in the search.
               VA/LFH chunks may be very big, so this might slow down the search.
     -stat : show statistics (also works in combination with -h heap, -t segments or -t chunks
@@ -20218,14 +20361,17 @@ Optional arguments :
     -v : show data / write verbose info to the Log window"""
 	
 	getiatUsage = """Show IAT entries from selected module(s)
-Optional arguments :
+
+Optional arguments:
     -s <keywords> : only show IAT entries that contain one of these keywords"""
 
 	geteatUsage = """Show EAT entries from selected module(s)
-Optional arguments :
+
+Optional arguments:
     -s <keywords> : only show EAT entries that contain one of these keywords"""
 	
 	deferUsage = """Set a deferred breakpoint
+
 Mandatory arguments :
     -a <target>,<target>,... 
     target can be an address, a modulename.functionname or module.dll+offset (hex value)
@@ -20233,28 +20379,34 @@ Mandatory arguments :
 	""" 
 	
 	calltraceUsage = """Logs all CALL instructions
+
 Mandatory arguments :
     -m module : specify what module to search for CALL instructions (global option)	
-Optional arguments :
+
+Optional arguments:
     -a <number> : number of arguments to show for each CALL
     -r : also trace RETN instructions (will slow down process!)""" 	
 
 	fillchunkUsage = """Fills a heap chunk, referenced by a register, with A's (or another character)
+
 Mandatory arguments :
     -r <reg/reference> : reference to heap chunk to fill
-Optional arguments :
+
+Optional arguments:
     -b <character or byte to use to fill up chunk>
     -s <size> : if the referenced chunk is not found, and a size is defined with -s,
                 memory will be filled anyway, up to the specified size"""
 
 	getpageACLUsage = """List all mapped pages and show the ACL associated with each page
-Optional arguments : 
+
+Optional arguments: 
     -a <address> : only show page information around this address.
                    (Page before, current page and page after will be displayed)"""
 	
 	bpsehUsage = """Sets a breakpoint on all current SEH Handler function pointers"""
 
 	kbUsage = """Manage knowledgebase data
+
 Mandatory arguments:
     -<type> : type can be 'list', 'set' or 'del'
     To 'set' ( = add / update ) a KB entry, or 'del' an entry, 
@@ -20289,6 +20441,7 @@ a heap cookie check during an arbitrary free on Windows XP"""
 	gflagsUsage = """Will show the currently set GFlags, based on the PEB.NtGlobalFlag value"""
 	fwptrUsage = """Search for calls to pointers in a writeable location, 
 will assist with finding a good target for 4byte arbitrary writes
+
 Optional arguments:
     -bp : Set breakpoints on all found CALL instructions
     -patch : Patch the target of each CALL with 0x41414141
@@ -20299,6 +20452,7 @@ Optional arguments:
     -freelist : Search for fwptr that are preceeded by 2 readable pointers that can act as flink/blink"""
 
 	allocmemUsage = """Allocate RWX memory in the debugged process.
+
 Optional arguments:
     -s <size>    : desired size of allocated chunk. VirtualAlloc will allocate at least 0x1000 bytes,
                    but this size argument is only useful when used in combination with -fill.
@@ -20367,6 +20521,7 @@ Arguments:
 Arguments:
     -a <address>      : Address of object
     -s <number>       : Size of object (default value: 0x28 or size of chunk)
+
 Optional arguments:
     -l <number>       : Recursively dump objects
     -m <number>       : Size for recursive objects (default value: 0x28)
@@ -20381,6 +20536,7 @@ Additional text after the alloc & free info is fine.
 Just make sure the syntax matches exactly with the examples above.
 Arguments:
     -f <path/to/logfile> : Full path to the logfile
+
 Optional arguments:
     -l <number>       : Recursively dump objects
     -m <number>       : Size for recursive objects (default value: 0x28)
@@ -20390,10 +20546,12 @@ Optional arguments:
 	tobpUsage = """Generate WinDBG syntax to set a logging breakpoint at a given location
 Arguments:
     -a <address>      : Location (address, register) for logging breakpoint
+
 Optional arguments:
     -e                : Execute breakpoint command right away"""
 
 	flowUsage = """Simulates execution flows from current location (EIP), tries all conditional jump combinations
+
 Optional arguments:
     -e <address>                 : Show execution flows that will reach specified address
     -avoid <address,address,...> : Only show paths that don't contain any of the pointers to avoid
@@ -20401,6 +20559,16 @@ Optional arguments:
     -cl <nr>                     : Max level of CALL to follow in detail, default: 3
     -cs <nr>                     : Don't show details of first <nr> CALL/child functions. default: 0
     -func                        : Show function names (slows down process)."""
+
+	symcleanUsage = """This functions removes .error files from symbol folder(s).
+  By default, it will try to obtain the active symbol path and run through the relevant folder.
+  You can also specify a folder yourself (but that's optional)
+
+Optional argument:
+    -p <path/folder>   :  remove .error files from this folder
+
+NOTE: Files will be deleted automatically, without asking for confirmation. 
+	"""
 
 	evalUsage = """Evaluates an expression
 Arguments:
@@ -20485,7 +20653,7 @@ Arguments:
 		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
 		commands["flow"]		= MnCommand("flow","Simulate execution flows, including all branch combinations",flowUsage,procFlow,"flw")
 		commands["load"]		= MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
-		#commands["diffheap"]	= MnCommand("diffheap", "Compare current heap layout with previously saved state", diffheapUsage, procDiffHeap, "dh")
+		commands["symclean"]		= MnCommand("symclean","Remove .error files from all symbol folders", symcleanUsage, procSymclean,"symjunk",[32,64])
 	commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
 	commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain",[32])
 	commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd",[32,64])
@@ -20496,6 +20664,8 @@ Arguments:
 	commands["string"]			= MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str",[32,64])
 	commands["copy"]			= MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp",[32,64])
 	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])
+
+
 	return
 
 

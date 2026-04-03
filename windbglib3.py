@@ -3699,12 +3699,19 @@ class wmodule:
 					dbgp("Returning symbol from cache. 0x%x = %s" % (address, FuncCache[address]))
 				return FuncCache[address]
 		else:
+			if DEBUG_MODE:
+				dbgp("Performing symbol lookup, this may cause symbols to be downloaded")
+				pykd.dbgCommand("!sym noisy")
 
 			cmd2run = '.printf "%y", 0x{0:x}'.format(address)
 
 			if DEBUG_MODE:
 				dbgp("Running %s" % cmd2run)
 			output = pykd.dbgCommand(cmd2run)
+
+			if DEBUG_MODE:
+				pykd.dbgCommand("!sym quiet")
+				
 			if not output:
 					return ""
 
@@ -4171,7 +4178,10 @@ class opcode:
 				if "DS:" in extrainfo:
 					self.instruction = self.instruction.replace("PTR [","PTR DS:[")
 				self.instruction = self.instruction.replace("RET","RETN")	
-				self.instruction = self.instruction.replace(",[",",DWORD PTR DS:[")
+				if arch == 32:
+					self.instruction = self.instruction.replace(",[",",DWORD PTR DS:[")
+				if arch == 64:
+					self.instruction = self.instruction.replace(",[",",QWORD PTR DS:[")
 				if ",OFFSET" in self.instruction:
 					# find the value between ()
 					instrparts=self.instruction.split("(")
