@@ -3114,11 +3114,11 @@ class Debugger:
 
 			modulefoundinPEB = False
 			fname, fext = os.path.splitext(modulename) 
-			modulevariations = [modulename,fname, modulename.upper(), modulename.lower()]
+			modulevariations = [modulename,fname, fname.upper(), fname.lower(), modulename.upper(), modulename.lower()]
 			for modvariation in modulevariations:
 				
 				if DEBUG_MODE:
-					dbgp("Looking for name %s in PEBModList" % modvariation)
+					dbgp("Looking for key '%s' in PEBModList" % modvariation)
 				if modvariation in PEBModList:
 					modentry = PEBModList[modvariation]
 					if DEBUG_MODE:
@@ -3132,7 +3132,7 @@ class Debugger:
 					foundmodulename = modvariation
 				else:
 					if DEBUG_MODE:
-						dbgp("Module name %s not found in PEBModList" % modvariation)
+						dbgp(". Module name '%s' not found in PEBModList" % modvariation)
 						
 			if thismod == None:
 				pykd.dprintln("I was not able to run pykd.module('%s')" % modulename)
