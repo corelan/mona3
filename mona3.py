@@ -38,6 +38,7 @@ __VERSION__ = '3.0'
 __REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
 
 DEBUG_MODE = False
+USE_OLD_MODULE = False
 
 
 ## Some Python2/Python3 compatibility stuff
@@ -4042,6 +4043,699 @@ class MnModule:
 	def getShortName(self):
 		return stripExtension(self.moduleKey)
 
+class MnModuleOld:
+	"""
+	Class to access module properties
+	"""
+	def __init__(self, modulename):
+		#if DEBUG_MODE:
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+		modisaslr = True
+		modissafeseh = True
+		modrebased = True
+		modisnx = True
+		modisos = True
+		modiscfg = True		
+		self.IAT = {}
+		self.EAT = {}
+		path = ""
+		filename = ""
+		mzbase = 0
+		mzsize = 0
+		mztop = 0
+		mcodebase = 0
+		mcodesize = 0
+		mcodetop = 0
+		mentry = 0
+		mdllcharacteristics = 0
+		mversion = ""
+		self.internalname = modulename
+		if modulename != "":
+			# if info is cached, retrieve from cache
+			if ModInfoCached(modulename):
+				if DEBUG_MODE:
+					dbgp("Module %s retrieved from cache" % modulename)
+				modisaslr = getModuleProperty(modulename,"aslr")
+				modissafeseh = getModuleProperty(modulename,"safeseh")
+				modrebased = getModuleProperty(modulename,"rebase")
+				modisnx = getModuleProperty(modulename,"nx")
+				modisos = getModuleProperty(modulename,"os")
+				modiscfg = getModuleProperty(modulename,"cfg")
+				path = getModuleProperty(modulename,"path")
+				filename = getModuleProperty(modulename,"filename")
+				mzbase = getModuleProperty(modulename,"base")
+				mzsize = getModuleProperty(modulename,"size")
+				mztop = getModuleProperty(modulename,"top")
+				mversion = getModuleProperty(modulename,"version")
+				mentry = getModuleProperty(modulename,"entry")
+				mcodebase = getModuleProperty(modulename,"codebase")
+				mcodesize = getModuleProperty(modulename,"codesize")
+				mcodetop = getModuleProperty(modulename,"codetop")
+				mdllcharacteristics = getModuleProperty(modulename, "dllcharacteristics")
+			else:
+				#gather info manually - this code should only get called from populateModuleInfo()
+				self.moduleobj = dbg.getModule(modulename)
+				modissafeseh = True
+				modisaslr = True
+				modisnx = True
+				modrebased = False
+				modisos = False
+				modiscfg = False
+				#if self.moduleobj == None:
+				#	dbg.log("*** Error - self.moduleobj is None, key %s" % modulename, highlight=1)
+				mod       = self.moduleobj
+				mzbase    = mod.getBaseAddress()
+				mzrebase  = mod.getFixupbase()
+				mzsize    = mod.getSize()
+				mversion  = mod.getVersion()
+				mentry    = mod.getEntry() 
+				mcodebase = mod.getCodebase()
+				mcodesize = mod.getCodesize()
+				mcodetop  = mcodebase + mcodesize
+				mdllcharacteristics = 0
+				mversion=mversion.replace(", ",".")
+				mversionfields=mversion.split('(')
+				mversion=mversionfields[0].replace(" ","")
+								
+				if mversion=="":
+					mversion="-1.0-"
+				path     = mod.getPath()
+				filename = os.path.basename(path)
+
+				_OS_PRODUCT_NAME = "Microsoft\u00ae Windows\u00ae Operating System"
+				if __DEBUGGERAPP__ == "WinDBG":
+					modisos = False
+					try:
+						vi = dbglib.VSVersionInfo.from_memory(mzbase, read_memory=dbg)
+						if vi is None or not vi.fixed.file_version_str:
+							vi = dbglib.VSVersionInfo.from_file(path)
+					except Exception:
+						try:
+							vi = dbglib.VSVersionInfo.from_file(path)
+						except Exception:
+							vi = None
+					if vi is not None:
+						for st in vi.string_tables:
+							if st.get("ProductName", "").strip() == _OS_PRODUCT_NAME:
+								modisos = True
+								break
+				else:
+					if mod.getIssystemdll() == 0:
+						modisos = "WINDOWS" in path.upper()
+					else:
+						modisos = True
+
+				mztop = mzbase + mzsize
+				if mzbase > 0:
+					peoffset = struct.unpack('<L', dbg.readMemory(mzbase + 0x3c, 4))[0]
+					pebase = mzbase + peoffset
+
+					pesig = struct.unpack('<I', dbg.readMemory(pebase, 4))[0]
+					if pesig == 0x4550:
+						pemagic = struct.unpack('<H', dbg.readMemory(pebase + 0x18, 2))[0]
+						is_pe64 = (pemagic == 0x20b)
+
+						dll_characteristics_flags = struct.unpack('<H', dbg.readMemory(pebase + 0x5e, 2))[0]
+						mdllcharacteristics = dll_characteristics_flags
+
+						modisaslr = ((dll_characteristics_flags & 0x0040) != 0)
+						modisnx   = ((dll_characteristics_flags & 0x0100) != 0)
+						modiscfg  = ((dll_characteristics_flags & 0x4000) != 0)
+						modissafeseh = False
+
+						if not is_pe64:
+							# PE32 only
+							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + 0x74, 4))[0]
+
+							# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
+							if numberofentries > 10:
+								loadcfg_rva, loadcfg_size = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + (8 * 10), 8))[0:2]
+
+								if loadcfg_rva != 0 and loadcfg_size != 0:
+									loadcfg = mzbase + loadcfg_rva
+
+									try:
+										# IMAGE_LOAD_CONFIG_DIRECTORY32
+										# SafeSEH fields:
+										#   SEHandlerTable @ +0x40
+										#   SEHandlerCount @ +0x44
+										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
+
+										if sehtable != 0 and sehcount != 0:
+											modissafeseh = True
+									except:
+										modissafeseh = False
+
+						if mzrebase != mzbase:
+							modrebased = True
+	
+
+		else:
+			# should never be hit
+			#print "No module specified !!!"
+			#print "stacktrace : "
+			#print traceback.format_exc()
+			return None
+
+		#check if module is excluded
+		thisconfig = MnConfig()
+		allexcluded = []
+		excludedlist = thisconfig.get("excluded_modules")
+		modfound = False
+		if excludedlist:
+			allexcluded = excludedlist.split(',')
+			for exclentry in allexcluded:
+				if exclentry.lower().strip() == modulename.lower().strip():
+					modfound = True
+		self.isExcluded = modfound
+		
+		#done - populate variables
+		self.isAslr = modisaslr
+		
+		self.isSafeSEH = modissafeseh
+		
+		self.isRebase = modrebased
+		
+		self.isNX = modisnx
+		
+		self.isOS = modisos
+
+		self.isCFG = modiscfg
+		
+		self.moduleKey = modulename
+	
+		self.modulePath = path
+
+		self.moduleFilename = filename
+		
+		self.moduleBase = mzbase
+		
+		self.moduleSize = mzsize
+		
+		self.moduleTop = mztop
+		
+		self.moduleVersion = mversion
+		
+		self.moduleEntry = mentry
+		
+		self.moduleCodesize = mcodesize
+		
+		self.moduleCodetop = mcodetop
+		
+		self.moduleCodebase = mcodebase
+
+		self.moduleDllCharacteristics = mdllcharacteristics
+		
+			
+	
+	def __str__(self):
+		#return general info about the module
+		#modulename + info
+		"""
+		Get information about a module (human readable format)
+
+		Arguments:
+		None
+
+		Return:
+		String with various properties about a module
+		"""			
+		outstring = ""
+		if self.moduleKey != "":
+			if arch == 32:
+				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
+			else:
+								outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
+		else:
+			outstring = "[None]"
+		return outstring
+		
+	def isAslr(self):
+		return self.isAslr
+		
+	def isSafeSEH(self):
+		return self.isSafeSEH
+		
+	def isRebase(self):
+		return self.isRebase
+		
+	def isOS(self):
+		return self.isOS
+
+	def isCFG(self):
+		return self.isCFG
+	
+	def isNX(self):
+		return self.isNX
+		
+	def moduleKey(self):
+		return self.moduleKey
+		
+	def modulePath(self):
+		return self.modulePath
+
+	def moduleFilename(self):
+		return self.moduleFilename
+
+	def moduleBase(self):
+		return self.moduleBase
+	
+	def moduleSize(self):
+		return self.moduleSize
+	
+	def moduleTop(self):
+		return self.moduleTop
+	
+	def moduleEntry(self):
+		return self.moduleEntry
+		
+	def moduleCodebase(self):
+		return self.moduleCodebase
+	
+	def moduleCodesize(self):
+		return self.moduleCodesize
+		
+	def moduleCodetop(self):
+		return self.moduleCodetop
+		
+	def moduleVersion(self):
+		return self.moduleVersion
+
+	def moduleDllCharacteristics(self):
+		return self.moduleDllCharacteristics
+		
+	def isExcluded(self):
+		return self.isExcluded
+	
+	def getFunctionCalls(self,criteria={}):
+		funccalls = {}
+		sequences = []
+		sequences.append(["call","\xff\x15"])
+		funccalls = searchInRange(sequences, self.moduleBase, self.moduleTop,criteria)
+		return funccalls
+
+		
+	def getIAT(self):
+		IAT = {}
+		global IATCache
+		#dbg.log("")
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+			dbgp("    Getting IAT for %s." % (self.moduleKey))
+		try:
+			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
+				
+				# METHOD 1 - Parse the strings from the IAT.  Fastest way 
+
+				# find optional header
+				PEHeader_ref = self.moduleBase + 0x3c
+				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
+
+				# do we have an optional header ?
+				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location + 0x14, 2)
+				sizeOfOptionalHeader = struct.unpack('<L', bsizeOfOptionalHeader + b"\x00\x00")[0]
+				OptionalHeader_location = PEHeader_location + 0x18
+
+				if sizeOfOptionalHeader > 0:
+
+					# PE32 vs PE32+
+					optional_magic = struct.unpack('<H', dbg.readMemory(OptionalHeader_location, 2))[0]
+
+					if optional_magic == 0x10b:
+						# PE32
+						DataDirectory_location = OptionalHeader_location + 0x60
+						thunk_size = 4
+						thunk_fmt = '<L'
+						ordinal_flag = 0x80000000
+					elif optional_magic == 0x20b:
+						# PE32+
+						DataDirectory_location = OptionalHeader_location + 0x70
+						thunk_size = 8
+						thunk_fmt = '<Q'
+						ordinal_flag = 0x8000000000000000
+					else:
+						DataDirectory_location = 0
+						thunk_size = 0
+
+					if DataDirectory_location > 0:
+
+						# Import Directory = DataDirectory[1]
+						importtable_rva  = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x08, 4))[0]
+						importtable_size = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x0c, 4))[0]
+
+						if importtable_rva > 0 and importtable_size > 0:
+							importDescAddr = self.moduleBase + importtable_rva
+							if DEBUG_MODE:
+								dbgp("    Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
+
+							desc_index = 0
+							while True:
+								thisdesc = importDescAddr + (desc_index * 20)
+
+								orig_first_thunk = struct.unpack('<L', dbg.readMemory(thisdesc + 0x00, 4))[0]
+								time_date_stamp  = struct.unpack('<L', dbg.readMemory(thisdesc + 0x04, 4))[0]
+								forwarder_chain  = struct.unpack('<L', dbg.readMemory(thisdesc + 0x08, 4))[0]
+								name_rva         = struct.unpack('<L', dbg.readMemory(thisdesc + 0x0c, 4))[0]
+								first_thunk      = struct.unpack('<L', dbg.readMemory(thisdesc + 0x10, 4))[0]
+
+								# null descriptor = end
+								if orig_first_thunk == 0 and time_date_stamp == 0 and forwarder_chain == 0 and name_rva == 0 and first_thunk == 0:
+									break
+
+								if name_rva == 0 or first_thunk == 0:
+									desc_index += 1
+									continue
+
+								dllname = dbg.readString(self.moduleBase + name_rva)
+								if dllname is None:
+									dllname = ""
+								dllname = ensure_text(dllname).lower()
+
+								lookup_rva = orig_first_thunk
+								if lookup_rva == 0:
+									lookup_rva = first_thunk
+
+								lookup_va = self.moduleBase + lookup_rva
+								iat_va = self.moduleBase + first_thunk
+
+								if DEBUG_MODE:
+									dbgp("Import descriptor for %s" % dllname)
+									dbgp("  lookup_va : 0x%x" % lookup_va)
+									dbgp("  iat_va    : 0x%x" % iat_va)
+
+								thunk_index = 0
+								while True:
+									thunk_entry_va = lookup_va + (thunk_index * thunk_size)
+									iat_entry_va = iat_va + (thunk_index * thunk_size)
+
+									thunk_data = dbg.readMemory(thunk_entry_va, thunk_size)
+									if len(thunk_data) != thunk_size:
+										break
+
+									thunk_value = struct.unpack(thunk_fmt, thunk_data)[0]
+									if thunk_value == 0:
+										break
+
+									funcname = ""
+
+									# import by ordinal
+									if (thunk_value & ordinal_flag) != 0:
+										ordinal = thunk_value & 0xffff
+										funcname = "%s!#%d" % (stripExtension(dllname), ordinal)
+									else:
+										# IMAGE_IMPORT_BY_NAME = WORD Hint + ASCII name
+										import_by_name_va = self.moduleBase + thunk_value
+										try:
+											name = dbg.readString(import_by_name_va + 2)
+										except:
+											name = ""
+
+										name = ensure_text(name)
+										if name.strip() != "":
+											funcname = "%s!%s" % (stripExtension(dllname), name)
+
+									# fallback: resolve current IAT contents through symbols/EAT
+									if funcname == "":
+										try:
+											current_iat_target = struct.unpack(thunk_fmt, dbg.readMemory(iat_entry_va, thunk_size))[0]
+										except:
+											current_iat_target = 0
+
+										if current_iat_target > 0:
+											ptrx = MnPointer(current_iat_target)
+											modname = ptrx.belongsTo()
+											tmod = MnModuleOld(modname)
+											thisfunc = dbglib.Function(dbg, current_iat_target)
+											thisfuncfullname = ensure_text(thisfunc.getName()).lower()
+
+											if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % current_iat_target):
+												if not tmod is None:
+													imagename = tmod.getShortName()
+													eatlist = tmod.getEAT()
+													if current_iat_target in eatlist:
+														funcname = imagename + "!" + eatlist[current_iat_target]
+													else:
+														if arch == 32:
+															funcname = imagename + "!0x%08x" % current_iat_target
+														else:
+															funcname = imagename + "!0x%016x" % current_iat_target
+											else:
+												funcname = thisfuncfullname.replace(".", "!")
+
+									if funcname != "":
+										IAT[iat_entry_va] = funcname
+										if DEBUG_MODE:
+											dbgp("Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
+
+									thunk_index += 1
+
+								desc_index += 1
+
+				dbg.log("      -> We have extracted %d names from the IAT" % len(IAT))
+
+				# METHOD 2 - Fallback in case we did not get a lot of strings.
+				# Let's say less than 10
+
+				if len(IAT) < 10:
+					before_method2_cnt = len(IAT)
+					dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)") 
+					# this may not work well on Immunity.  Module.getSymbols() may not return anything         
+					try:
+						themod = dbg.getModule(self.moduleKey)
+						syms = themod.getSymbols()
+						thename = ""
+						dbg.log("         %d symbols found" % len(syms))
+						if DEBUG_MODE:
+							dbgp("%d symbols found for %s" % (len(syms), self.moduleKey))
+						for sym in syms:
+							#dbg.log("   - symbol: %s" % sym)
+							if syms[sym].getType().startswith("Import"):
+								thename = syms[sym].getName()
+								theaddress = syms[sym].getAddress()
+								#if not theaddress in IAT:
+								#just overwrite it if it exists
+								IAT[theaddress] = thename
+					except Exception as e:
+						dbg.log(str(e))
+						import traceback
+						dbg.logLines(traceback.format_exc())
+						pass
+					# merge
+					dbg.log("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
+
+
+				if len(IAT) == 0:
+					# another search method, not accurate, but might find *something*
+					dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
+					funccalls = self.getFunctionCalls()
+
+					for functype in funccalls:
+						for fptr in funccalls[functype]:
+
+							ptr = 0
+
+							try:
+								# x86: FF 15 <addr32>  => absolute memory operand
+								if arch == 32:
+									rawptr = dbg.readMemory(fptr + 2, 4)
+									if len(rawptr) != 4:
+										continue
+									ptr = struct.unpack('<L', rawptr)[0]
+
+								# x64: FF 15 <disp32> => CALL QWORD PTR [RIP+disp32]
+								elif arch == 64:
+									rawdisp = dbg.readMemory(fptr + 2, 4)
+									if len(rawdisp) != 4:
+										continue
+									disp = struct.unpack('<l', rawdisp)[0]
+									ptr = fptr + 6 + disp
+
+							except:
+								continue
+
+							if ptr <= 0:
+								continue
+
+							# keep old behavior: only consider references that point inside this module
+							if ptr >= self.moduleBase and ptr <= self.moduleTop:
+								if not ptr in IAT:
+									thisfuncfullname = ""
+									thisfuncname = []
+
+									try:
+										thisfunc = dbglib.Function(dbg, ptr)
+										thisfuncfullname = ensure_text(thisfunc.getName()).lower()
+									except:
+										thisfuncfullname = ""
+
+									unknownmatch = False
+									if arch == 32:
+										unknownmatch = thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % ptr)
+									else:
+										unknownmatch = thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%016x" % ptr)
+
+									if unknownmatch or thisfuncfullname == "":
+										try:
+											if arch == 32:
+												raw_iat_target = dbg.readMemory(ptr, 4)
+												if len(raw_iat_target) != 4:
+													iatptr = 0
+												else:
+													iatptr = struct.unpack('<L', raw_iat_target)[0]
+											else:
+												raw_iat_target = dbg.readMemory(ptr, 8)
+												if len(raw_iat_target) != 8:
+													iatptr = 0
+												else:
+													iatptr = struct.unpack('<Q', raw_iat_target)[0]
+										except:
+											iatptr = 0
+
+										# see if we can find the original function name using the EAT
+										tptr = MnPointer(ptr)
+										modname = tptr.belongsTo()
+										tmod = _MnMod(modname)
+										ofullname = thisfuncfullname
+
+										if not tmod is None:
+											imagename = tmod.getShortName()
+											eatlist = tmod.getEAT()
+											if iatptr in eatlist:
+												thisfuncfullname = "." + imagename + "!" + eatlist[iatptr]
+
+										if thisfuncfullname == ofullname or thisfuncfullname == "":
+											tparts = thisfuncfullname.split('!')
+											if len(tparts) > 0 and tparts[0] != "":
+												if arch == 32:
+													thisfuncfullname = tparts[0] + ("!%08x" % iatptr)
+												else:
+													thisfuncfullname = tparts[0] + ("!%016x" % iatptr)
+											else:
+												if arch == 32:
+													thisfuncfullname = "unknown!%08x" % iatptr
+												else:
+													thisfuncfullname = "unknown!%016x" % iatptr
+
+									thisfuncname = thisfuncfullname.split('!')
+									if len(thisfuncname) > 1:
+										IAT[ptr] = thisfuncname[1].strip(">")
+										if DEBUG_MODE:
+											dbgp("Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
+									else:
+										if DEBUG_MODE:
+											dbgp("Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
+											dbgp("thisfuncfullname: %s" % thisfuncfullname)
+
+				if len(IAT) == 0:
+					if DEBUG_MODE:
+						dbgp("No IAT found for module %s" % self.moduleKey)
+						dbgp("Adding fake IAT entry in cache, to avoid trying again")
+					# if we get here, it means we couldn't find anything
+					# avoid doing all of this again
+					# so we'll add an empty entry in the cache
+					# for this module
+					IAT[0] = "no_iat_found"
+
+				self.IAT = IAT
+				IATCache[self.moduleKey] = IAT
+			else:
+				dbg.log("    Retrieving IAT from cache")             
+				IAT = IATCache[self.moduleKey] #IAT = self.IAT
+		except:
+			import traceback
+			dbg.logLines(traceback.format_exc())
+			return IAT
+		return IAT
+		
+	
+	def getEAT(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+		eatlist = {}
+		if len(self.EAT) == 0:
+			try:
+				# avoid major suckage, let's do it ourselves
+				# find optional header
+				PEHeader_ref = self.moduleBase + 0x3c
+				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
+
+				# do we have an optional header ?
+				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location + 0x14, 2)
+				sizeOfOptionalHeader = struct.unpack('<L', bsizeOfOptionalHeader + b"\x00\x00")[0]
+				OptionalHeader_location = PEHeader_location + 0x18
+
+				if sizeOfOptionalHeader > 0:
+
+					# PE32 vs PE32+
+					optional_magic = struct.unpack('<H', dbg.readMemory(OptionalHeader_location, 2))[0]
+
+					if optional_magic == 0x10b:
+						# PE32
+						DataDirectory_location = OptionalHeader_location + 0x60
+					elif optional_magic == 0x20b:
+						# PE32+
+						DataDirectory_location = OptionalHeader_location + 0x70
+					else:
+						DataDirectory_location = 0
+
+					if DataDirectory_location > 0:
+						# Export Directory = DataDirectory[0]
+						exporttable_rva = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x00, 4))[0]
+						exporttable_size = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x04, 4))[0]
+
+						if exporttable_rva > 0 and exporttable_size > 0:
+							eatAddr = self.moduleBase + exporttable_rva
+
+							# IMAGE_EXPORT_DIRECTORY
+							# 0x14 NumberOfFunctions
+							# 0x18 NumberOfNames
+							# 0x1c AddressOfFunctions
+							# 0x20 AddressOfNames
+							# 0x24 AddressOfNameOrdinals
+							nr_of_functions = struct.unpack('<L', dbg.readMemory(eatAddr + 0x14, 4))[0]
+							nr_of_names = struct.unpack('<L', dbg.readMemory(eatAddr + 0x18, 4))[0]
+							address_of_functions = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x1c, 4))[0]
+							rva_of_names = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x20, 4))[0]
+							address_of_name_ordinals = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x24, 4))[0]
+
+							if DEBUG_MODE:
+								dbgp("Export table at 0x%x, size 0x%x" % (eatAddr, exporttable_size))
+								dbgp("NumberOfFunctions: %d" % nr_of_functions)
+								dbgp("NumberOfNames: %d" % nr_of_names)
+								dbgp("AddressOfFunctions: 0x%x" % address_of_functions)
+								dbgp("AddressOfNames: 0x%x" % rva_of_names)
+								dbgp("AddressOfNameOrdinals: 0x%x" % address_of_name_ordinals)
+
+							for i in range(0, nr_of_names):
+								name_rva = struct.unpack('<L', dbg.readMemory(rva_of_names + (4 * i), 4))[0]
+								eatName = dbg.readString(self.moduleBase + name_rva)
+								eatName = ensure_text(eatName)
+
+								ordinal_index = struct.unpack('<H', dbg.readMemory(address_of_name_ordinals + (2 * i), 2))[0]
+
+								if ordinal_index < nr_of_functions:
+									func_rva = struct.unpack('<L', dbg.readMemory(address_of_functions + (4 * ordinal_index), 4))[0]
+									eatAddress = self.moduleBase + func_rva
+									eatlist[eatAddress] = eatName
+
+									if DEBUG_MODE:
+										dbgp("EAT[0x%x] = %s (ordinal index %d)" % (eatAddress, eatName, ordinal_index))
+
+				self.EAT = eatlist
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)))
+					dbgp("%s" % traceback.format_exc())
+					dbgp("eatlist: %s" % eatlist)
+				return eatlist
+		else:
+			eatlist = self.EAT
+		return eatlist
+
+	
+	def getShortName(self):
+		return stripExtension(self.moduleKey)
 
 def getNtGlobalFlag():
 	flagoffset = 0x68
@@ -4163,6 +4857,15 @@ def getNtGlobalFlagValueName(flagvalue):
 	toreturn += " - "
 	toreturn += data[1]
 	return toreturn
+
+
+def _MnMod(modulename):
+	"""
+	Factory that returns either MnModule or MnModuleOld depending on the -modold flag.
+	"""
+	if USE_OLD_MODULE:
+		return MnModuleOld(modulename)
+	return MnModule(modulename)
 
 
 #---------------------------------------#
@@ -6883,7 +7586,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 			modinfo={}
 			if DEBUG_MODE:
 				dbgp("Transforming %s into a MnModule object" % key)
-			thismod = MnModule(key)
+			thismod = _MnMod(key)
 			if DEBUG_MODE:
 				dbgp("Result: %s" % thismod)
 			if not thismod is None:
@@ -21164,9 +21867,11 @@ def main(args):
 	global scriptname
 	global commands
 	global DEBUG_MODE
+	global USE_OLD_MODULE
 	commands = {}
 
 	currentArgs = copy.copy(args)
+	USE_OLD_MODULE = "-modold" in args
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
