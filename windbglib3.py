@@ -1056,21 +1056,21 @@ def getModulesFromPEB(peb_order="load"):
 					dbgp("Checking if we can run pykd.module('%s')" % mod2test)
 				try:
 					modcheck = pykd.module(mod2test)
-					if DEBUG_MODE:
-						if not modcheck == None:
+					if not modcheck == None:
+						if DEBUG_MODE:
 							dbgp("Success: imagename: %s, modcheck.name: %s, modcheck.image: %s" % (mod2test, modcheck.name(), modcheck.image()))
 					# check it it's the same file!
-							if modcheck.image().lower() == fullpath.lower():
-								foundimagename = mod2test
-								modulefound = True
-								addtolist = True
-								break
-							else:
-								if DEBUG_MODE:
-									dbgp("ERROR - Possible module name collision. Let's try to find the right imagename")
+						if modcheck.image().lower() == fullpath.lower():
+							foundimagename = mod2test
+							modulefound = True
+							addtolist = True
+							break
 						else:
 							if DEBUG_MODE:
-								dbgp("Error, unable to convert '%s' to pykd.module()" % mod2test)
+								dbgp("ERROR - Possible module name collision. Let's try to find the right imagename")
+					else:
+						if DEBUG_MODE:
+							dbgp("Error, unable to convert '%s' to pykd.module()" % mod2test)
 				except:
 					if DEBUG_MODE:
 						dbgp("Error running pykd.module('%s')" % mod2test)
