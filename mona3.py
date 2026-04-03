@@ -3255,60 +3255,11 @@ class MnModule:
 
 	@staticmethod
 	def _get_peb_addr():
-		"""
-		Return the PEB address by reading the $peb WinDBG pseudo-register via a
-		native command — no pykd typed variables or symbol resolution required.
-		"""
-		try:
-			out = dbg.nativeCommand("r $peb")
-			m = re.search(r'\$peb=([0-9A-Fa-f`]+)', out)
-			if m:
-				return int(m.group(1).replace('`', ''), 16)
-		except Exception:
-			pass
-		return 0
+		return dbg._get_peb_addr()
 
 	@staticmethod
 	def _peb_walk():
-		"""
-		Yield (dll_base, base_name, full_path) for every entry in
-		PEB.InLoadOrderModuleList using only dbg.readMemory.
-		The single pykd call is getCurrentProcess() for the PEB address.
-
-		LDR_DATA_TABLE_ENTRY offsets:
-		  x86: DllBase +0x18, FullDllName +0x24, BaseDllName +0x2C
-		  x64: DllBase +0x30, FullDllName +0x48, BaseDllName +0x58
-		"""
-		ptr_size = 8 if arch == 64 else 4
-		fmt_ptr  = '<Q' if arch == 64 else '<L'
-
-		def _ptr(addr):
-			return struct.unpack(fmt_ptr, bytes(bytearray(dbg.readMemory(addr, ptr_size))))[0]
-
-		def _wstr(entry, off):
-			"""Read a UNICODE_STRING at *off* inside *entry* and return the decoded string."""
-			length  = struct.unpack('<H', bytes(bytearray(dbg.readMemory(entry + off, 2))))[0]
-			buf_ptr = _ptr(entry + off + (8 if arch == 64 else 4))  # Buffer: +4 x86, +8 x64 (alignment padding)
-			if length == 0 or buf_ptr == 0:
-				return ""
-			raw = bytes(bytearray(dbg.readMemory(buf_ptr, length)))
-			return raw.decode('utf-16-le', errors='replace')
-
-		peb_addr  = MnModule._get_peb_addr()
-		ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
-		list_head = ldr_addr + (0x10 if arch == 64 else 0x0C)
-
-		dll_base_off      = 0x30 if arch == 64 else 0x18
-		full_name_off     = 0x48 if arch == 64 else 0x24
-		base_name_off     = 0x58 if arch == 64 else 0x2C
-
-		flink = _ptr(list_head)
-		while flink != list_head and flink != 0:
-			dll_base  = _ptr(flink + dll_base_off)
-			full_path = _wstr(flink, full_name_off)
-			base_name = _wstr(flink, base_name_off)
-			yield dll_base, base_name, full_path
-			flink = _ptr(flink)  # LIST_ENTRY.Flink at offset 0
+		return dbg._peb_walk()
 
 	@staticmethod
 	def _base_from_peb(modulename):

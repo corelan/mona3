@@ -66,7 +66,6 @@ global InstructionCache
 global PageSections
 global ModuleCache
 global cpebaddress
-global PEBModList
 global FuncCache
 
 global currentPID
@@ -81,8 +80,6 @@ currentTEBAddress = 0
 PageSections = {}
 ModuleCache = {}
 FuncCache = {}
-PEBModList = {}
-_PEBModListOrder = None
 disAsmCache = {}
 
 Registers32BitsOrder = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"]
@@ -492,281 +489,32 @@ def checkVersion():
 	return
 
 
-def getModulesFromPEB(peb_order="load"):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-
-	global PEBModList, _PEBModListOrder
-	peb = getPEBInfo()
-	imagenames = []
-	# http://www.nirsoft.net/kernel_struct/vista/PEB.html
-	# http://www.nirsoft.net/kernel_struct/vista/PEB_LDR_DATA.html
-	# http://www.nirsoft.net/kernel_struct/vista/LDR_DATA_TABLE_ENTRY.html
-	# The usage of _LDR_DATA_TABLE_ENTRY.SizeOfImage is very confusing and appears to actually contain the module base
-	offset = 0x20
-	if arch == 64:
-		offset = 0x40
-	list_attr, flink_attr = _PEB_LDR_LISTS.get(peb_order, _PEB_LDR_LISTS["load"])
-	moduleLst = pykd.typedVarList(getattr(peb.Ldr.deref(), list_attr), "ntdll!_LDR_DATA_TABLE_ENTRY", flink_attr)
-	if DEBUG_MODE:
-		dbgp("moduleList: %d, PEBModlist: %d, order: %s" % (len(moduleLst), len(PEBModList), peb_order))
-	if len(PEBModList) != 0 and _PEBModListOrder != peb_order:
-		PEBModList = {}
-	if len(PEBModList) == 0:
-		for mod in moduleLst:
-			thismod = ensure_text(pykd.loadUnicodeString(mod.BaseDllName))
-			fullpath = ensure_text(pykd.loadUnicodeString(mod.FullDllName))
-			if DEBUG_MODE:
-				dbgp("Got name for mod.BaseDllName: %s" % thismod)
-				dbgp("Full path: %s" % fullpath)
-
-			modulename = os.path.basename(fullpath)
-			exename = modulename
-
-			addtolist = False
-
-			imagename, fileext = os.path.splitext(modulename)
-
-			# no windbg love for +  -  .
-			imagename = imagename.replace("+","_")
-			imagename = imagename.replace("-","_")
-			imagename = imagename.replace(".","_")
-
-			if imagename in imagenames:
-				# duplicate name ?  Append _<baseaddress>
-				# mod.getAddress() + offset = _LDR_DATA_TABLE_ENTRY.SizeOfImage
-				baseaddy = int(pykd.ptrPtr(mod.getAddress() + offset))
-				imagename = imagename+"_%08x" % baseaddy
-
-			# check if module can be loaded
-
-			imagename_with_ext = modulename.replace(".","_").replace("-","_").replace("+","_")
-			modulevariations = [imagename, imagename_with_ext]
-
-			foundimagename = ""
-
-			modulefound = False
-
-			for mod2test in modulevariations:
-
-				if DEBUG_MODE:
-					dbgp("Checking if we can run pykd.module('%s')" % mod2test)
-				try:
-					modcheck = pykd.module(mod2test)
-					if not modcheck == None:
-						filebasename = os.path.basename(modcheck.image())
-						if DEBUG_MODE:
-							dbgp("Success: imagename: %s, modcheck.name: %s" %  (mod2test, modcheck.name()))
-							dbgp("         Full path: %s" % modcheck.image())
-							dbgp("Check if imagename matches with what we're looking for")
-							dbgp("We're looking for '%s'" % thismod)
-							dbgp("and the module gave us '%s'" % filebasename)
-						# check it it's the same file!
-
-						if (filebasename.lower().strip() == thismod.lower().strip()):
-							foundimagename = mod2test
-							modulefound = True
-							addtolist = True
-							break
-						else:
-							if DEBUG_MODE:
-								dbgp("ERROR - Possible module name collision. Let's try to find the right imagename")
-					else:
-						if DEBUG_MODE:
-							dbgp("Error, unable to convert '%s' to pykd.module()" % mod2test)
-				except:
-					if DEBUG_MODE:
-						dbgp("Error running pykd.module('%s')" % mod2test)
-
-
-			if not modulefound:
-				# fall back to finding the name via windbg native command
-				cmd2run = "?%s" % thismod
-				output = pykd.dbgCommand(cmd2run)
-				parts = output.split("=", 1)
-				if len(parts) > 1:
-					modaddress = parts[1].strip().replace("`","").lower()
-					# now look for it in the output of lm
-					cmd2run = "lm"
-					lm_output = pykd.dbgCommand(cmd2run)
-					lines = lm_output.splitlines()
-
-					for line in lines:
-						line = line.strip().replace("`","")
-						if not line:
-							continue
-
-						# skip header line
-						if line.lower().startswith("start"):
-							continue
-
-						parts = line.split()
-						if len(parts) < 3:
-							continue
-
-						start_addr = parts[0].lower()
-
-						if start_addr == modaddress:
-							imagename = parts[2]
-							# we may have found the imagename now
-
-							try:
-								modcheck = pykd.module(imagename)
-								addToList = True
-							except:
-								# try with base addy
-								try:
-									modcheck = pykd.module(baseaddy)
-									imagename = modcheck.name()
-									#print "Name: %s" % modcheck.name()
-									#print "Imagename: %s" % modcheck.image()
-								except:
-									# try finding it with windbg 'ln'
-									cmd2run = "ln 0x%08x" % baseaddy
-									output = pykd.dbgCommand(cmd2run)
-									if "!__ImageBase" in output:
-										outputlines = output.split("\n")
-										for l in outputlines:
-											if "!__ImageBase" in l:
-												lparts = l.split("!__ImageBase")
-												leftpart = lparts[0]
-												leftparts = leftpart.split(" ")
-												imagename = leftparts[len(leftparts)-1]
-									try:
-										modcheck = pykd.module(imagename)
-									except:
-										print("")
-										print("   *** Error parsing module '%s' ('%s') at 0x%08x ***" % (imagename,modulename,baseaddy))
-										print("   *** If this is a problem, ")
-										print("   *** please open a github issue ticket at https://github.com/corelan/windbglib ***")
-										print("   *** and provide the output of the following 2 windbg commands in the ticket: ***")
-										print("         lm")
-										print("         !peb")
-										print("   *** Thanks")
-										print("")
-										addtolist = False
-
-			if addtolist:
-				imagenames.append(foundimagename)
-				PEBModList[foundimagename] = [exename, fullpath]
-				if DEBUG_MODE:
-					dbgp("    Added key '%s' to PEBModList" % foundimagename)
-					dbgp("       -> exe name: %s" % exename)
-					dbgp("       -> Full path %s" % fullpath)
-	_PEBModListOrder = peb_order
-
 
 
 def getModuleFromAddress(address):
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
 
-	offset = 0x20
-	if arch == 64:
-		offset = 0x40
-
 	global ModuleCache
-	# try fastest way first
 	try:
 		thismod = pykd.module(address)
-		# if that worked, we could add it to the cache if needed
-		modbase = thismod.begin()
-		modsize = thismod.size()
-		modend = modbase + modsize
-		modulename = thismod.image()
-		ModuleCache[modulename] = [modbase,modsize]
-		if (address >= modbase) and (address <= modend):
-			return thismod
+		if thismod is not None:
+			modbase = thismod.begin()
+			modsize = thismod.size()
+			ModuleCache[thismod.image()] = [modbase, modsize]
+			if modbase <= address <= modbase + modsize:
+				return thismod
 	except:
 		pass
 
-
-	# maybe cached	
 	for modname in ModuleCache:
-		modparts = ModuleCache[modname]
-		# 0 : base
-		# 1 : size
-		modbase = modparts[0]
-		modsize = modparts[1]
-		modend = modbase + modsize
-		if (address >= modbase) and (address <= modend):
-			#print "0x%08x belongs to %s" % (address,modname)
-			return pykd.module(modname)
-	# not cached, find it
-	moduleLst = getModulesFromPEB()
-	for mod in moduleLst:
-		thismod = ensure_text(pykd.loadUnicodeString(mod.BaseDllName))
-		modparts = thismod.split("\\")
-		modulename = modparts[len(modparts)-1].lower()
-		moduleparts = modulename.split(".")
-		modulename = ""
-		if len(moduleparts) == 1:
-			modulename = moduleparts[0]
-		cnt = 0
-		while cnt < len(moduleparts)-1:
-			modulename = modulename + moduleparts[cnt] + "."
-			cnt += 1
-		modulename = modulename.strip(".")
-		thismod = ""
-		imagename = ""
-
-		try:
-			moduleLst = getModulesFromPEB()
-			for mod in moduleLst:
-				thismod = ensure_text(pykd.loadUnicodeString(mod.BaseDllName))
-				modparts = thismod.split("\\")
-				thismodname = modparts[len(modparts)-1]
-				moduleparts = thismodname.split(".")
-				if len(moduleparts) > 1:
-					thismodname = ""
-					cnt = 0
-					while cnt < len(moduleparts)-1:
-						thismodname = thismodname + moduleparts[cnt] + "."
-						cnt += 1
-					thismodname = thismodname.strip(".")					
-				if thismodname.lower() == modulename.lower():
-					# mod.getAddress() + offset = _LDR_DATA_TABLE_ENTRY.SizeOfImage
-					baseaddy = int(pykd.ptrPtr(mod.getAddress() + offset))
-					baseaddr = "%08x" % baseaddy
-					lmcommand = pykd.dbgCommand("lm")
-					lmlines = lmcommand.split("\n")
-					foundinlm = False
-					for lmline in lmlines:
-						linepieces = lmline.split(" ")
-						if linepieces[0].upper() == baseaddr.upper():
-							cnt = 2
-							while cnt < len(linepieces) and not foundinlm:
-								if linepieces[cnt].strip(" ") != "":
-									imagename = linepieces[cnt]
-									foundinlm = True
-									break
-								cnt += 1
-					if not foundinlm:
-						imagename = "image%s" % baseaddr.lower()
-						break
-		except:
-			pykd.dprintln(traceback.format_exc())
-
-		try:
-			modulename = imagename
-			thismod = pykd.module(imagename)
-			modbase = thismod.begin()
-			modsize = thismod.size()
-			modend = modbase + modsize
-			ModuleCache[modulename] = [modbase,modsize]
-			if (address >= modbase) and (address <= modend):
-				return thismod
-		except:
-			thismod = pykd.module(address)
-
-			modbase = thismod.begin()
-			modsize = thismod.size()
-			modend = modbase + modsize
-			modulename = thismod.image()
-			ModuleCache[modulename] = [modbase,modsize]
-			if (address >= modbase) and (address <= modend):
-				return thismod			
-
+		modbase = ModuleCache[modname][0]
+		modsize = ModuleCache[modname][1]
+		if modbase <= address <= modbase + modsize:
+			try:
+				return pykd.module(modname)
+			except:
+				pass
 	return None
 
 # Classes
@@ -2615,6 +2363,57 @@ class Debugger:
 	"""
 	Modules
 	"""
+	def _get_peb_addr(self):
+		try:
+			out = self.nativeCommand("r $peb")
+			m = re.search(r'\$peb=([0-9A-Fa-f`]+)', out)
+			if m:
+				return int(m.group(1).replace('`', ''), 16)
+		except Exception:
+			pass
+		return 0
+
+	def _peb_walk(self):
+		"""
+		Yield (dll_base, base_name, full_path) for every entry in
+		PEB.InLoadOrderModuleList using only self.readMemory.
+
+		LDR_DATA_TABLE_ENTRY offsets:
+		  x86: DllBase +0x18, FullDllName +0x24, BaseDllName +0x2C
+		  x64: DllBase +0x30, FullDllName +0x48, BaseDllName +0x58
+		"""
+		ptr_size = 8 if arch == 64 else 4
+		fmt_ptr  = '<Q' if arch == 64 else '<L'
+
+		def _ptr(addr):
+			return struct.unpack(fmt_ptr, bytes(bytearray(self.readMemory(addr, ptr_size))))[0]
+
+		def _wstr(entry, off):
+			length  = struct.unpack('<H', bytes(bytearray(self.readMemory(entry + off, 2))))[0]
+			buf_ptr = _ptr(entry + off + (8 if arch == 64 else 4))
+			if length == 0 or buf_ptr == 0:
+				return ""
+			raw = bytes(bytearray(self.readMemory(buf_ptr, length)))
+			return raw.decode('utf-16-le', errors='replace')
+
+		peb_addr = self._get_peb_addr()
+		if peb_addr == 0:
+			return
+		ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
+		list_head = ldr_addr + (0x10 if arch == 64 else 0x0C)
+
+		dll_base_off  = 0x30 if arch == 64 else 0x18
+		full_name_off = 0x48 if arch == 64 else 0x24
+		base_name_off = 0x58 if arch == 64 else 0x2C
+
+		flink = _ptr(list_head)
+		while flink != list_head and flink != 0:
+			dll_base  = _ptr(flink + dll_base_off)
+			full_path = _wstr(flink, full_name_off)
+			base_name = _wstr(flink, base_name_off)
+			yield dll_base, base_name, full_path
+			flink = _ptr(flink)
+
 	def getModule(self, modulename, from_memory=False):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
@@ -2623,72 +2422,43 @@ class Debugger:
 
 		wmod = None
 		self.origmodname = modulename
-
-		foundmodulename = modulename
-
-		fullpath = ""
-		if len(PEBModList) == 0:
-			getModulesFromPEB()
-			if DEBUG_MODE:
-				dbgp("    Loaded modules from PEB")
-		else:
-			if DEBUG_MODE:
-				dbgp("    Modules were already loaded into PEBModList, continue")
+		fname = os.path.splitext(modulename)[0].lower()
 		try:
-			thismod = None
+			dll_base = 0
+			fullpath = ""
+			for _base, base_name, full_path in self._peb_walk():
+				bname = os.path.splitext(base_name)[0].lower()
+				bname_sane = bname.replace("+","_").replace("-","_").replace(".","_")
+				if bname == fname or bname_sane == fname:
+					dll_base = _base
+					fullpath = full_path
+					break
 
-			modulefoundinPEB = False
-			fname, fext = os.path.splitext(modulename) 
-			modulevariations = [modulename,fname, fname.upper(), fname.lower(), modulename.upper(), modulename.lower()]
-			for modvariation in modulevariations:
-				
+			if dll_base == 0:
 				if DEBUG_MODE:
-					dbgp("Looking for key '%s' in PEBModList" % modvariation)
-				if modvariation in PEBModList:
-					modentry = PEBModList[modvariation]
-					if DEBUG_MODE:
-						dbgp("    Convert module into pykd module object: %s" % modvariation)
-						dbgp("    Selected modentry from PEBModList: %s" % modentry)
-					thismod = pykd.module(modvariation)
-					fullpath = modentry[1]
-					if not thismod == None:
-						modulefoundinPEB = True
-						break
-					foundmodulename = modvariation
-				else:
-					if DEBUG_MODE:
-						dbgp(". Module name '%s' not found in PEBModList" % modvariation)
-						
-			if thismod == None:
-				pykd.dprintln("I was not able to run pykd.module('%s')" % modulename)
-				pykd.dprintln("Modules in PEBModList: %s" % PEBModList)
-			#	# should never hit, as we have tested if modules can be loaded already
-			#	imagename = self.getImageNameForModule(self.origmodname)
-			#	thismod = pykd.module(str(imagename))
+					dbgp("Module '%s' not found via PEB walk" % modulename)
+				pykd.dprintln("I was not able to find '%s' via PEB walk" % modulename)
+				return None
 
-			if DEBUG_MODE:
-				dbgp("    Getting module properties (name, start, end, size, etc)")
-			
+			thismod = pykd.module(dll_base)
+			if thismod is None:
+				return None
+
 			thisimagename = thismod.image()
-			thismodname = thismod.name()
-			thismodbase = thismod.begin()
-			thismodsize = thismod.size()
-			thismodpath = fullpath
+			thismodname   = thismod.name()
+			thismodbase   = thismod.begin()
+			thismodsize   = thismod.size()
 
 			if DEBUG_MODE:
 				dbgp("       image: %s" % thisimagename)
-				dbgp("       name: %s" % thismodname)
+				dbgp("       name: %s"  % thismodname)
 				dbgp("       begin: 0x%08x" % thismodbase)
-				dbgp("       size: 0x%08x" % thismodsize)
-				dbgp("       path: %s" % thismodpath)				
-
-			if DEBUG_MODE:
+				dbgp("       size: 0x%08x"  % thismodsize)
 				dbgp("    Building wmodule for %s. Base: 0x%08x" % (thisimagename, thismodbase))
 
 			wmod = wmodule(thismodname)
-
 			wmod.setBaseAddress(thismodbase)
-			wmod.setPath(thismodpath)
+			wmod.setPath(fullpath)
 			wmod.setSize(thismodsize)
 		except:
 			pykd.dprintln("** Error trying to process module %s" % modulename)
@@ -2702,60 +2472,40 @@ class Debugger:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
-		if peb_order != _PEBModListOrder and len(self.allmodules) > 0:
-			self.allmodules = {}
 		if len(self.allmodules) == 0:
-			if len(PEBModList) == 0 or peb_order != _PEBModListOrder:
-				if DEBUG_MODE:
-					dbgp("Get modules from PEB (order=%s)" % peb_order)
-				getModulesFromPEB(peb_order=peb_order)
-				if DEBUG_MODE:
-					dbgp("Modules in list now: %d" % len(PEBModList))
-			for imagename in PEBModList:
-				thismodname = PEBModList[imagename][0]
-				wmodobject = self.getModule(imagename, from_memory=from_memory)
-				#self.allmodules[thismodname] = wmodobject
-				self.allmodules[imagename] = wmodobject
+			seen_names = []
+			for dll_base, base_name, full_path in self._peb_walk():
+				modulename = os.path.basename(full_path)
+				imagename, _ = os.path.splitext(modulename)
+				imagename = imagename.replace("+","_").replace("-","_").replace(".","_")
+				if imagename in seen_names:
+					imagename = imagename + "_%08x" % dll_base
+				seen_names.append(imagename)
+				try:
+					thismod = pykd.module(dll_base)
+					if thismod is None:
+						continue
+					wmod = wmodule(thismod.name())
+					wmod.setBaseAddress(thismod.begin())
+					wmod.setPath(full_path)
+					wmod.setSize(thismod.size())
+					self.allmodules[imagename] = wmod
+				except:
+					continue
 		return self.allmodules
 
 
-	def getImageNameForModule(self,modulename):
+	def getImageNameForModule(self, modulename):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
-		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
-		# http://www.nirsoft.net/kernel_struct/vista/PEB_LDR_DATA.html
-		# http://www.nirsoft.net/kernel_struct/vista/LDR_DATA_TABLE_ENTRY.html
-		offset = 0x20
-		if arch == 64:
-			offset = 0x40
+		fname = os.path.splitext(modulename)[0].lower()
 		try:
-			imagename = ""
-			moduleLst = getModulesFromPEB()
-			for mod in moduleLst:
-				thismod = ensure_text(pykd.loadUnicodeString(mod.BaseDllName))
-				modparts = thismod.split("\\")
-				thismodname = modparts[len(modparts)-1]
-				moduleparts = thismodname.split(".")
-				if thismodname.lower() == modulename.lower():
-					# mod.getAddress() + offset = _LDR_DATA_TABLE_ENTRY.SizeOfImage
-					baseaddy = int(pykd.ptrPtr(mod.getAddress() + offset))
-					baseaddr = "%08x" % baseaddy
-					lmcommand = self.nativeCommand("lm")
-					lmlines = lmcommand.split("\n")
-					foundinlm = False
-					for lmline in lmlines:
-						linepieces = lmline.split(" ")
-						if linepieces[0].upper() == baseaddr.upper():
-							cnt = 2
-							while cnt < len(linepieces) and not foundinlm:
-								if linepieces[cnt].strip(" ") != "":
-									imagename = linepieces[cnt]
-									foundinlm = True
-								cnt += 1
-					if not foundinlm:
-						imagename = "image%s" % baseaddr.lower()
-					return imagename
+			for dll_base, base_name, _ in self._peb_walk():
+				if os.path.splitext(base_name)[0].lower() == fname:
+					thismod = pykd.module(dll_base)
+					if thismod is not None:
+						return thismod.name()
 		except:
 			pykd.dprintln(traceback.format_exc())
 		return None
