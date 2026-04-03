@@ -514,7 +514,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding=""):
 		col_widths.append(max_width)
 
 	# Build format string
-	fmt = "  ".join(["%%-%ds" % w for w in col_widths])
+	fmt = "   ".join(["%%-%ds" % w for w in col_widths])
 
 	# Helper to print with padding
 	def _p(line):
@@ -546,7 +546,7 @@ def getDisasmInstruction(disasmentry):
 			disasmIsUpper = True
 		else:
 			disasmIsUpper = False
-			dbg.log("** It looks like you've configured the debugger to produce lowercase disassembly. Got it, all good **", highlight=1)
+			#dbg.log("** It looks like you've configured the debugger to produce lowercase disassembly. Got it, all good **", highlight=1)
 			instrline = instrline.upper()
 	return instrline
 	
