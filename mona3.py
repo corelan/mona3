@@ -2992,11 +2992,293 @@ class MnQueue:
 #---------------------------------------#
 #  Class to access module properties    #
 #---------------------------------------#
-	
 class MnModule:
 	"""
 	Class to access module properties
 	"""
+
+	# ------------------------------------------------------------------
+	# VS_VERSION_INFO parsing — inlined from windbglib so MnModule has
+	# no dbglib dependency for OS-module detection.
+	# ------------------------------------------------------------------
+
+	class _FixedFileInfo:
+		"""Mirrors VS_FIXEDFILEINFO (winver.h). Signature must be 0xFEEF04BD."""
+		SIGNATURE = 0xFEEF04BD
+
+		def __init__(self, data, offset):
+			(self.dw_signature, dw_struc_version,
+			 dw_file_version_ms, dw_file_version_ls,
+			 dw_product_version_ms, dw_product_version_ls,
+			 self.dw_file_flags_mask, self.dw_file_flags,
+			 self.dw_file_os, self.dw_file_type, self.dw_file_subtype,
+			 self.dw_file_date_ms, self.dw_file_date_ls) = struct.unpack_from("<13I", data, offset)
+			if self.dw_signature != self.SIGNATURE:
+				raise ValueError("Invalid VS_FIXEDFILEINFO signature: %s" % hex(self.dw_signature))
+			self.file_version = (dw_file_version_ms >> 16, dw_file_version_ms & 0xFFFF,
+			                     dw_file_version_ls >> 16, dw_file_version_ls & 0xFFFF)
+
+		@property
+		def file_version_str(self):
+			return "%d.%d.%d.%d" % self.file_version
+
+
+	class _StringTable:
+		"""One language/codepage block inside StringFileInfo."""
+		def __init__(self, lang_id, strings):
+			self.lang_id = lang_id
+			self.strings = strings
+
+		def get(self, key, default=None):
+			return self.strings.get(key, default)
+
+
+	class VSVersionInfo:
+		"""
+		Parse a VS_VERSION_INFO resource blob.
+		Use from_memory(modbase) or from_file(path) to construct.
+		"""
+
+		@staticmethod
+		def _align4(n):
+			return (n + 3) & ~3
+
+		def __init__(self, data):
+			self._data = data
+			self._parse()
+
+		def _read_node_header(self, offset):
+			w_length, w_value_length, w_type = struct.unpack_from("<HHH", self._data, offset)
+			pos = offset + 6
+			end = pos
+			while end + 1 < len(self._data) and self._data[end:end + 2] != b'\x00\x00':
+				end += 2
+			key = self._data[pos:end].decode('utf-16-le')
+			value_start = self._align4(end + 2)
+			return w_length, w_value_length, w_type, key, value_start
+
+		def _parse(self):
+			data = self._data
+			self.w_length, self.w_value_length, self.w_type, _, pos = self._read_node_header(0)
+			self.fixed = MnModule._FixedFileInfo(data, pos)
+			self.string_tables = []
+			pos = self._align4(pos + self.w_value_length)
+			root_end = self.w_length
+			while pos < root_end:
+				c_length, _, _, c_key, c_pos = self._read_node_header(pos)
+				if c_length == 0:
+					break
+				if c_key == 'StringFileInfo':
+					st_pos = c_pos
+					st_end = pos + c_length
+					while st_pos < st_end:
+						st_length, _, _, lang_key, s_pos = self._read_node_header(st_pos)
+						if st_length == 0:
+							break
+						strings = {}
+						s_end = st_pos + st_length
+						while s_pos < s_end:
+							s_length, s_value_length, _, s_key, s_val_pos = self._read_node_header(s_pos)
+							if s_length == 0:
+								break
+							raw = data[s_val_pos:s_val_pos + s_value_length * 2]
+							strings[s_key] = raw.decode('utf-16-le').rstrip('\x00')
+							s_pos = self._align4(s_pos + s_length)
+						self.string_tables.append(MnModule._StringTable(lang_key, strings))
+						st_pos = self._align4(st_pos + st_length)
+				pos = self._align4(pos + c_length)
+
+		@classmethod
+		def from_memory(cls, modbase):
+			"""Parse VS_VERSION_INFO from the loaded module in debuggee memory."""
+			def _read(addr, size):
+				return bytes(bytearray(dbg.readMemory(addr, size)))
+			def _dword(addr): return struct.unpack("<I", _read(addr, 4))[0]
+			def _word(addr):  return struct.unpack("<H", _read(addr, 2))[0]
+
+			nt_off = _dword(modbase + 0x3C)
+			nt_base = modbase + nt_off
+			if _read(nt_base, 4) != b"PE\x00\x00":
+				raise ValueError("Not a valid PE in memory at 0x%x" % modbase)
+			num_sections = _word(nt_base + 6)
+			size_opt_hdr = _word(nt_base + 20)
+			magic = _word(nt_base + 24)
+			if magic == 0x10b:
+				dd_off = nt_base + 24 + 96
+			elif magic == 0x20b:
+				dd_off = nt_base + 24 + 112
+			else:
+				raise ValueError("Unknown Optional Header magic: %s" % hex(magic))
+			res_rva  = _dword(dd_off + 2 * 8)
+			if res_rva == 0:
+				raise ValueError("No resource directory")
+			sect_base = nt_base + 4 + 20 + size_opt_hdr
+			res_sec = None
+			for i in range(num_sections):
+				sd = _read(sect_base + i * 40, 40)
+				v_sz, v_addr = struct.unpack_from("<II", sd, 8)
+				if v_addr <= res_rva < v_addr + v_sz:
+					res_sec = (v_addr, modbase + v_addr)
+					break
+			if res_sec is None:
+				raise ValueError("Resource section not found")
+			_, sec_va = res_sec
+
+			def read_dir_entries(dir_va):
+				hdr = _read(dir_va, 16)
+				num_named, num_id = struct.unpack("<HH", hdr[12:16])
+				raw = _read(dir_va + 16, (num_named + num_id) * 8)
+				return [struct.unpack_from("<II", raw, i * 8) for i in range(num_named + num_id)]
+
+			res_va = modbase + res_rva
+			RT_VERSION = 16
+			type_off = next((off for id_, off in read_dir_entries(res_va)
+			                 if not (id_ & 0x80000000) and id_ == RT_VERSION), None)
+			if type_off is None:
+				raise ValueError("RT_VERSION not found")
+			name_entries = read_dir_entries(res_va + (type_off & 0x7FFFFFFF))
+			if not name_entries: raise ValueError("RT_VERSION: no name entries")
+			_, lang_off = name_entries[0]
+			lang_entries = read_dir_entries(res_va + (lang_off & 0x7FFFFFFF))
+			if not lang_entries: raise ValueError("RT_VERSION: no language entries")
+			_, data_entry_off = lang_entries[0]
+			data_entry = _read(res_va + data_entry_off, 8)
+			data_rva, data_size = struct.unpack("<II", data_entry)
+			data = _read(modbase + data_rva, data_size)
+			return cls(data)
+
+		@classmethod
+		def from_file(cls, path):
+			"""Parse VS_VERSION_INFO from a PE file on disk."""
+			with open(path, 'rb') as f:
+				data = f.read()
+			if len(data) < 0x40:
+				raise ValueError("File too small")
+			nt_off = struct.unpack("<I", data[0x3C:0x40])[0]
+			if data[nt_off:nt_off + 4] != b"PE\x00\x00":
+				raise ValueError("Not a valid PE file")
+			magic = struct.unpack("<H", data[nt_off + 0x18:nt_off + 0x1a])[0]
+			if magic == 0x10b:
+				dd_off = nt_off + 0x18 + 0x60
+			elif magic == 0x20b:
+				dd_off = nt_off + 0x18 + 0x70
+			else:
+				raise ValueError("Unknown Optional Header magic")
+			res_rva, _ = struct.unpack("<II", data[dd_off + 2 * 8:dd_off + 2 * 8 + 8])
+			if res_rva == 0:
+				raise ValueError("No resource directory")
+			num_sections = struct.unpack("<H", data[nt_off + 6:nt_off + 8])[0]
+			opt_hdr_size = struct.unpack("<H", data[nt_off + 0x14:nt_off + 0x16])[0]
+			secs_off = nt_off + 0x18 + opt_hdr_size
+			res_sec = None
+			for i in range(num_sections):
+				sec = secs_off + i * 40
+				v_addr, v_sz = struct.unpack("<II", data[sec + 12:sec + 20])
+				raw_ptr       = struct.unpack("<I",  data[sec + 20:sec + 24])[0]
+				if v_addr <= res_rva < v_addr + v_sz:
+					res_sec = (v_addr, raw_ptr)
+					break
+			if res_sec is None:
+				raise ValueError("Resource section not found")
+			sec_va, sec_raw = res_sec
+
+			def rva2off(rva):
+				return rva - sec_va + sec_raw
+
+			def read_dir_entries(dir_rva):
+				off = rva2off(dir_rva)
+				num_named, num_id = struct.unpack("<HH", data[off + 12:off + 16])
+				count = num_named + num_id
+				return [struct.unpack_from("<II", data, off + 16 + i * 8) for i in range(count)]
+
+			RT_VERSION = 16
+			type_off = next((off for id_, off in read_dir_entries(res_rva)
+			                 if not (id_ & 0x80000000) and id_ == RT_VERSION), None)
+			if type_off is None:
+				raise ValueError("RT_VERSION not found")
+			name_entries = read_dir_entries(res_rva + (type_off & 0x7FFFFFFF))
+			if not name_entries: raise ValueError("RT_VERSION: no name entries")
+			_, lang_off = name_entries[0]
+			lang_entries = read_dir_entries(res_rva + (lang_off & 0x7FFFFFFF))
+			if not lang_entries: raise ValueError("RT_VERSION: no language entries")
+			_, data_entry_off = lang_entries[0]
+			data_rva, data_size = struct.unpack("<II", data[rva2off(res_rva + data_entry_off):rva2off(res_rva + data_entry_off) + 8])
+			blob = data[rva2off(data_rva):rva2off(data_rva) + data_size]
+			return cls(blob)
+
+	# ------------------------------------------------------------------
+
+	@staticmethod
+	def _peb_walk():
+		"""
+		Yield (dll_base, base_name, full_path) for every entry in
+		PEB.InLoadOrderModuleList using only dbg.readMemory.
+		The single pykd call is getCurrentProcess() for the PEB address.
+
+		LDR_DATA_TABLE_ENTRY offsets:
+		  x86: DllBase +0x18, FullDllName +0x24, BaseDllName +0x2C
+		  x64: DllBase +0x30, FullDllName +0x48, BaseDllName +0x58
+		"""
+		ptr_size = 8 if arch == 64 else 4
+		fmt_ptr  = '<Q' if arch == 64 else '<L'
+
+		def _ptr(addr):
+			return struct.unpack(fmt_ptr, bytes(bytearray(dbg.readMemory(addr, ptr_size))))[0]
+
+		def _wstr(entry, off):
+			"""Read a UNICODE_STRING at *off* inside *entry* and return the decoded string."""
+			length  = struct.unpack('<H', bytes(bytearray(dbg.readMemory(entry + off, 2))))[0]
+			buf_ptr = _ptr(entry + off + (8 if arch == 64 else 4))
+			if length == 0 or buf_ptr == 0:
+				return ""
+			raw = bytes(bytearray(dbg.readMemory(buf_ptr, length)))
+			return raw.decode('utf-16-le', errors='replace')
+
+		peb_addr  = pykd.getCurrentProcess()
+		ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
+		list_head = ldr_addr + (0x10 if arch == 64 else 0x0C)
+
+		dll_base_off      = 0x30 if arch == 64 else 0x18
+		full_name_off     = 0x48 if arch == 64 else 0x24
+		base_name_off     = 0x58 if arch == 64 else 0x2C
+
+		flink = _ptr(list_head)
+		while flink != list_head and flink != 0:
+			dll_base  = _ptr(flink + dll_base_off)
+			full_path = _wstr(flink, full_name_off)
+			base_name = _wstr(flink, base_name_off)
+			yield dll_base, base_name, full_path
+			flink = _ptr(flink)  # LIST_ENTRY.Flink at offset 0
+
+	@staticmethod
+	def _base_from_peb(modulename):
+		"""
+		Return the load address (DllBase) for *modulename* by walking the PEB.
+		Returns 0 if not found.
+		"""
+		try:
+			name_lower = os.path.splitext(modulename.lower())[0]
+			for dll_base, base_name, _ in MnModule._peb_walk():
+				if os.path.splitext(base_name.lower())[0] == name_lower:
+					return dll_base
+			return 0
+		except Exception:
+			return 0
+
+	@staticmethod
+	def _path_from_peb(mzbase):
+		"""
+		Return the full filesystem path for the module loaded at *mzbase*.
+		Returns "" if not found.
+		"""
+		try:
+			for dll_base, _, full_path in MnModule._peb_walk():
+				if dll_base == mzbase:
+					return full_path
+			return ""
+		except Exception:
+			return ""
+
 	def __init__(self, modulename):
 		#if DEBUG_MODE:
 		if DEBUG_MODE:
@@ -3045,44 +3327,123 @@ class MnModule:
 				mdllcharacteristics = getModuleProperty(modulename, "dllcharacteristics")
 			else:
 				#gather info manually - this code should only get called from populateModuleInfo()
-				self.moduleobj = dbg.getModule(modulename)
 				modissafeseh = True
 				modisaslr = True
 				modisnx = True
 				modrebased = False
 				modisos = False
 				modiscfg = False
-				#if self.moduleobj == None:
-				#	dbg.log("*** Error - self.moduleobj is None, key %s" % modulename, highlight=1)
-				mod       = self.moduleobj
-				mzbase    = mod.getBaseAddress()
-				mzrebase  = mod.getFixupbase()
-				mzsize    = mod.getSize()
-				mversion  = mod.getVersion()
-				mentry    = mod.getEntry() 
-				mcodebase = mod.getCodebase()
-				mcodesize = mod.getCodesize()
-				mcodetop  = mcodebase + mcodesize
-				mdllcharacteristics = 0
-				mversion=mversion.replace(", ",".")
-				mversionfields=mversion.split('(')
-				mversion=mversionfields[0].replace(" ","")
-								
-				if mversion=="":
-					mversion="-1.0-"
-				path     = mod.getPath()
+				mzbase = MnModule._base_from_peb(modulename)
+				if mzbase == 0:
+					# fall back to pykd if PEB walk fails
+					self.moduleobj = dbg.getModule(modulename)
+					mzbase = self.moduleobj.getBaseAddress() if self.moduleobj else 0
+
+				path = MnModule._path_from_peb(mzbase)
 				filename = os.path.basename(path)
+
+				# Version: parse VS_VERSION_INFO directly (no pykd symbol access).
+				mversion = ""
+				try:
+					vi = MnModule.VSVersionInfo.from_file(path) if path else None
+					if vi is None or not vi.fixed.file_version_str:
+						vi = MnModule.VSVersionInfo.from_memory(mzbase)
+					mversion = vi.fixed.file_version_str
+				except Exception:
+					try:
+						vi = MnModule.VSVersionInfo.from_memory(mzbase)
+						mversion = vi.fixed.file_version_str
+					except Exception:
+						mversion = ""
+				if not mversion:
+					mversion = "-1.0-"
+
+				mdllcharacteristics = 0
+				mzrebase  = mzbase  # default: assume not rebased
+				mzsize    = 0
+				mentry    = 0
+				mcodebase = 0
+				mcodesize = 0
+
+				if mzbase > 0:
+					peoffset = struct.unpack('<L', dbg.readMemory(mzbase + 0x3c, 4))[0]
+					pebase = mzbase + peoffset
+
+					pesig = struct.unpack('<I', dbg.readMemory(pebase, 4))[0]
+					if pesig == 0x4550:
+						optional_magic = struct.unpack('<H', dbg.readMemory(pebase + 0x18, 2))[0]
+						is_pe64 = (optional_magic == 0x20b)
+
+						# SizeOfImage — same offset in PE32 and PE32+
+						mzsize = struct.unpack('<L', dbg.readMemory(pebase + 0x50, 4))[0]
+
+						# ImageBase (preferred load address) — arch-dependent
+						if is_pe64:
+							mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + 0x30, 8))[0]
+						else:
+							mzrebase = struct.unpack('<L', dbg.readMemory(pebase + 0x34, 4))[0]
+
+						# AddressOfEntryPoint RVA — same offset in PE32 and PE32+
+						aoe_rva = struct.unpack('<L', dbg.readMemory(pebase + 0x28, 4))[0]
+						mentry  = mzbase + aoe_rva if aoe_rva != 0 else 0
+
+						# DllCharacteristics — same offset in both
+						dll_characteristics_flags = struct.unpack('<H', dbg.readMemory(pebase + 0x5e, 2))[0]
+						mdllcharacteristics = dll_characteristics_flags
+						modisaslr = ((dll_characteristics_flags & 0x0040) != 0)
+						modisnx   = ((dll_characteristics_flags & 0x0100) != 0)
+						modiscfg  = ((dll_characteristics_flags & 0x4000) != 0)
+						modissafeseh = False
+
+						# Walk section headers for first code section (IMAGE_SCN_CNT_CODE = 0x20)
+						num_sections = struct.unpack('<H', dbg.readMemory(pebase + 0x06, 2))[0]
+						opt_hdr_size = struct.unpack('<H', dbg.readMemory(pebase + 0x14, 2))[0]
+						sections_va  = pebase + 0x18 + opt_hdr_size
+						for i in range(num_sections):
+							sec       = sections_va + (i * 40)
+							sec_vsize = struct.unpack('<L', dbg.readMemory(sec + 0x08, 4))[0]
+							sec_vaddr = struct.unpack('<L', dbg.readMemory(sec + 0x0c, 4))[0]
+							sec_chars = struct.unpack('<L', dbg.readMemory(sec + 0x24, 4))[0]
+							if sec_chars & 0x00000020:  # IMAGE_SCN_CNT_CODE
+								mcodebase = mzbase + sec_vaddr
+								mcodesize = sec_vsize
+								break
+
+						# SafeSEH: PE32 only (no SEH in 64-bit)
+						if not is_pe64:
+							# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
+							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + 0x74, 4))[0]
+							if numberofentries > 10:
+								loadcfg_rva, loadcfg_size = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + (8 * 10), 8))[0:2]
+								if loadcfg_rva != 0 and loadcfg_size != 0:
+									loadcfg = mzbase + loadcfg_rva
+									try:
+										# IMAGE_LOAD_CONFIG_DIRECTORY32
+										# SafeSEH fields:
+										#   SEHandlerTable @ +0x40
+										#   SEHandlerCount @ +0x44
+										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
+										if sehtable != 0 and sehcount != 0:
+											modissafeseh = True
+									except:
+										modissafeseh = False
+
+						if mzrebase != mzbase:
+							modrebased = True
+
+				mztop    = mzbase + mzsize
+				mcodetop = mcodebase + mcodesize
 
 				_OS_PRODUCT_NAME = "Microsoft\u00ae Windows\u00ae Operating System"
 				if __DEBUGGERAPP__ == "WinDBG":
 					modisos = False
 					try:
-						vi = dbglib.VSVersionInfo.from_memory(mzbase, read_memory=dbg)
+						vi = MnModule.VSVersionInfo.from_memory(mzbase)
 						if vi is None or not vi.fixed.file_version_str:
-							vi = dbglib.VSVersionInfo.from_file(path)
+							vi = MnModule.VSVersionInfo.from_file(path)
 					except Exception:
 						try:
-							vi = dbglib.VSVersionInfo.from_file(path)
+							vi = MnModule.VSVersionInfo.from_file(path)
 						except Exception:
 							vi = None
 					if vi is not None:
@@ -3091,54 +3452,7 @@ class MnModule:
 								modisos = True
 								break
 				else:
-					if mod.getIssystemdll() == 0:
-						modisos = "WINDOWS" in path.upper()
-					else:
-						modisos = True
-
-				mztop = mzbase + mzsize
-				if mzbase > 0:
-					peoffset = struct.unpack('<L', dbg.readMemory(mzbase + 0x3c, 4))[0]
-					pebase = mzbase + peoffset
-
-					pesig = struct.unpack('<I', dbg.readMemory(pebase, 4))[0]
-					if pesig == 0x4550:
-						pemagic = struct.unpack('<H', dbg.readMemory(pebase + 0x18, 2))[0]
-						is_pe64 = (pemagic == 0x20b)
-
-						dll_characteristics_flags = struct.unpack('<H', dbg.readMemory(pebase + 0x5e, 2))[0]
-						mdllcharacteristics = dll_characteristics_flags
-
-						modisaslr = ((dll_characteristics_flags & 0x0040) != 0)
-						modisnx   = ((dll_characteristics_flags & 0x0100) != 0)
-						modiscfg  = ((dll_characteristics_flags & 0x4000) != 0)
-						modissafeseh = False
-
-						if not is_pe64:
-							# PE32 only
-							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + 0x74, 4))[0]
-
-							# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
-							if numberofentries > 10:
-								loadcfg_rva, loadcfg_size = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + (8 * 10), 8))[0:2]
-
-								if loadcfg_rva != 0 and loadcfg_size != 0:
-									loadcfg = mzbase + loadcfg_rva
-
-									try:
-										# IMAGE_LOAD_CONFIG_DIRECTORY32
-										# SafeSEH fields:
-										#   SEHandlerTable @ +0x40
-										#   SEHandlerCount @ +0x44
-										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
-
-										if sehtable != 0 and sehcount != 0:
-											modissafeseh = True
-									except:
-										modissafeseh = False
-
-						if mzrebase != mzbase:
-							modrebased = True
+					modisos = "WINDOWS" in path.upper()
 	
 
 		else:
