@@ -1057,10 +1057,16 @@ def getModulesFromPEB(peb_order="load"):
 				try:
 					modcheck = pykd.module(mod2test)
 					if not modcheck == None:
+						filebasename = os.path.basename(modcheck.image())
 						if DEBUG_MODE:
-							dbgp("Success: imagename: %s, modcheck.name: %s, modcheck.image: %s" % (mod2test, modcheck.name(), modcheck.image()))
-					# check it it's the same file!
-						if modcheck.image().lower() == fullpath.lower():
+							dbgp("Success: imagename: %s, modcheck.name: %s" %  (mod2test, modcheck.name()))
+							dbgp("         Full path: %s" % modcheck.image())
+							dbgp("Check if imagename matches with what we're looking for")
+							dbgp("We're looking for '%s'" % thismod)
+							dbgp("and the module gave us '%s'" % filebasename)
+						# check it it's the same file!
+
+						if (filebasename.lower().strip() == thismod.lower().strip()):
 							foundimagename = mod2test
 							modulefound = True
 							addtolist = True
@@ -1147,8 +1153,9 @@ def getModulesFromPEB(peb_order="load"):
 				imagenames.append(foundimagename)
 				PEBModList[foundimagename] = [exename, fullpath]
 				if DEBUG_MODE:
-					dbgp("    Added %s to PEBModList" % foundimagename)
-					dbgp("    With full path %s" % fullpath)
+					dbgp("    Added key '%s' to PEBModList" % foundimagename)
+					dbgp("       -> exe name: %s" % exename)
+					dbgp("       -> Full path %s" % fullpath)
 	_PEBModListOrder = peb_order
 
 
