@@ -6598,14 +6598,15 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	if len(g_modules) == 0:
 		populateModuleInfo()
 	
-	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
+	linelength = 175
+	thistable += ("-" * linelength) + "\n"
 	thistable += " Total nr of modules loaded: %d \n" % len(g_modules)
-	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
+	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
 		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
 	elif arch == 64:
 		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
-	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
+	thistable += ("-" * linelength) + "\n"
 
 	_POST_SORT_KEYS = {
 		"base":    lambda x: x[1]["base"],
@@ -6647,7 +6648,7 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
 			if arch == 64:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
-	thistable += "-----------------------------------------------------------------------------------------------------------------------------------------\n"
+	thistable += ("-" * linelength) + "\n"
 	tableinfo = thistable.split('\n')
 	if logfile == "":
 		for tline in tableinfo:
