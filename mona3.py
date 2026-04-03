@@ -3072,10 +3072,29 @@ class MnModule:
 					mversion="-1.0-"
 				path     = mod.getPath()
 				filename = os.path.basename(path)
-				if mod.getIssystemdll() == 0:
-					modisos = "WINDOWS" in path.upper()
+
+				_OS_PRODUCT_NAME = "Microsoft\u00ae Windows\u00ae Operating System"
+				if __DEBUGGERAPP__ == "WinDBG":
+					modisos = False
+					try:
+						vi = dbglib.VSVersionInfo.from_memory(mzbase, read_memory=dbg)
+						if vi is None or not vi.fixed.file_version_str:
+							vi = dbglib.VSVersionInfo.from_file(path)
+					except Exception:
+						try:
+							vi = dbglib.VSVersionInfo.from_file(path)
+						except Exception:
+							vi = None
+					if vi is not None:
+						for st in vi.string_tables:
+							if st.get("ProductName", "").strip() == _OS_PRODUCT_NAME:
+								modisos = True
+								break
 				else:
-					modisos = True
+					if mod.getIssystemdll() == 0:
+						modisos = "WINDOWS" in path.upper()
+					else:
+						modisos = True
 
 				mztop = mzbase + mzsize
 				if mzbase > 0:
