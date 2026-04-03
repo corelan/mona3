@@ -518,7 +518,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding=""):
 
 	# Helper to print with padding
 	def _p(line):
-		print("%s%s" % (padding, line))
+		dbg.log("%s%s" % (padding, line))
 
 	# Header
 	_p(fmt % tuple([_ensure_text(h) for h in headers]))
