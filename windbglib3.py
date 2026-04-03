@@ -491,516 +491,6 @@ def checkVersion():
 		return
 	return
 
-def _pe_parse_sections(f, nt_off):
-	"""
-	Parse the PE section table from an already-open file handle.
-
-	Args:
-		f:      Open binary file handle, positioned anywhere.
-		nt_off: File offset of the PE signature ("PE\\0\\0").
-
-	Returns:
-		List of dicts with keys: 'virtual_address', 'virtual_size',
-		'raw_ptr', 'raw_size'.
-	"""
-	f.seek(nt_off + 4)
-	file_header = f.read(20)
-	num_sections = struct.unpack("<H", file_header[2:4])[0]
-	size_opt_hdr = struct.unpack("<H", file_header[16:18])[0]
-	sect_table_off = nt_off + 4 + 20 + size_opt_hdr
-	f.seek(sect_table_off)
-	sections = []
-	for _ in range(num_sections):
-		sd = f.read(40)
-		v_sz, v_addr, raw_sz, raw_ptr = struct.unpack("<IIII", sd[8:24])
-		sections.append({
-			'virtual_address': v_addr,
-			'virtual_size':    v_sz,
-			'raw_ptr':         raw_ptr,
-			'raw_size':        raw_sz,
-		})
-	return sections
-
-
-def _pe_get_resource_dd(f, nt_off):
-	"""
-	Return the RVA and size of IMAGE_DIRECTORY_ENTRY_RESOURCE (index 2).
-	Supports PE32 (magic 0x10b) and PE32+ (magic 0x20b).
-
-	Args:
-		f:      Open binary file handle.
-		nt_off: File offset of the PE signature.
-
-	Returns:
-		Tuple (rva: int, size: int), or (0, 0) if magic is unrecognised.
-	"""
-	f.seek(nt_off + 4 + 20)
-	magic = struct.unpack("<H", f.read(2))[0]
-	if magic == 0x10b:
-		dd_off = nt_off + 4 + 20 + 96
-	elif magic == 0x20b:
-		dd_off = nt_off + 4 + 20 + 112
-	else:
-		return 0, 0
-	f.seek(dd_off + 2 * 8)
-	return struct.unpack("<II", f.read(8))
-
-
-def _pe_get_rt_version_data(f, sections, res_rva):
-	"""
-	Walk the PE resource directory tree and return the raw VS_VERSION_INFO
-	bytes for RT_VERSION (type ID 16).
-
-	Args:
-		f:        Open binary file handle.
-		sections: List of section dicts from _pe_parse_sections.
-		res_rva:  RVA of the root resource directory.
-
-	Returns:
-		bytes of the VS_VERSION_INFO blob, or None if not found.
-	"""
-	res_sec = next(
-		(s for s in sections
-		 if s['virtual_address'] <= res_rva < s['virtual_address'] + s['virtual_size']),
-		None
-	)
-	if res_sec is None:
-		return None
-
-	sec_va  = res_sec['virtual_address']
-	sec_raw = res_sec['raw_ptr']
-
-	def rva2off(rva):
-		return rva - sec_va + sec_raw
-
-	def read_dir_entries(dir_rva):
-		f.seek(rva2off(dir_rva))
-		hdr = f.read(16)
-		num_named, num_id = struct.unpack("<HH", hdr[12:16])
-		return [struct.unpack("<II", f.read(8)) for _ in range(num_named + num_id)]
-
-	RT_VERSION = 16
-	type_entries = read_dir_entries(res_rva)
-	type_off = next(
-		(off for id_, off in type_entries
-		 if not (id_ & 0x80000000) and id_ == RT_VERSION),
-		None
-	)
-	if type_off is None:
-		return None
-
-	name_entries = read_dir_entries(res_rva + (type_off & 0x7FFFFFFF))
-	if not name_entries:
-		return None
-	_, lang_off = name_entries[0]
-
-	lang_entries = read_dir_entries(res_rva + (lang_off & 0x7FFFFFFF))
-	if not lang_entries:
-		return None
-	_, data_entry_off = lang_entries[0]
-
-	f.seek(rva2off(res_rva + data_entry_off))
-	data_rva, data_size = struct.unpack("<II", f.read(8))
-	f.seek(rva2off(data_rva))
-	return f.read(data_size)
-
-
-class FixedFileInfo(object):
-	"""
-	Maps to VS_FIXEDFILEINFO as defined in winver.h.
-	https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo
-
-	Attributes:
-		dw_signature       -- Must equal 0xFEEF04BD.
-		struc_version      -- Tuple (major, minor).
-		file_version       -- Tuple (major, minor, build, revision).
-		product_version    -- Tuple (major, minor, build, revision).
-		dw_file_flags_mask -- Bitmask of valid bits in dw_file_flags.
-		dw_file_flags      -- File attribute flags (e.g. VS_FF_DEBUG).
-		dw_file_os         -- Target OS (e.g. VOS_NT_WINDOWS32).
-		dw_file_type       -- File type (e.g. VFT_DLL).
-		dw_file_subtype    -- File subtype (driver/font type, or 0).
-		dw_file_date_ms    -- High 32 bits of the 64-bit file timestamp.
-		dw_file_date_ls    -- Low  32 bits of the 64-bit file timestamp.
-	"""
-
-	SIGNATURE = 0xFEEF04BD
-
-	def __init__(self, data, offset):
-		"""
-		Parse VS_FIXEDFILEINFO from a bytes buffer at the given offset.
-
-		Args:
-			data:   Raw bytes of the VS_VERSION_INFO blob.
-			offset: Byte offset within data where VS_FIXEDFILEINFO begins.
-
-		Raises:
-			ValueError: If the signature field does not equal 0xFEEF04BD.
-		"""
-		(self.dw_signature, dw_struc_version,
-		 dw_file_version_ms, dw_file_version_ls,
-		 dw_product_version_ms, dw_product_version_ls,
-		 self.dw_file_flags_mask, self.dw_file_flags,
-		 self.dw_file_os, self.dw_file_type, self.dw_file_subtype,
-		 self.dw_file_date_ms, self.dw_file_date_ls) = struct.unpack_from("<13I", data, offset)
-
-		if self.dw_signature != self.SIGNATURE:
-			raise ValueError("Invalid VS_FIXEDFILEINFO signature: %s" % hex(self.dw_signature))
-
-		self.struc_version   = (dw_struc_version >> 16, dw_struc_version & 0xFFFF)
-		self.file_version    = (dw_file_version_ms >> 16,    dw_file_version_ms & 0xFFFF,
-		                        dw_file_version_ls >> 16,    dw_file_version_ls & 0xFFFF)
-		self.product_version = (dw_product_version_ms >> 16, dw_product_version_ms & 0xFFFF,
-		                        dw_product_version_ls >> 16, dw_product_version_ls & 0xFFFF)
-
-	@property
-	def file_version_str(self):
-		"""File version as a 'major.minor.build.revision' string."""
-		return "%d.%d.%d.%d" % self.file_version
-
-	@property
-	def product_version_str(self):
-		"""Product version as a 'major.minor.build.revision' string."""
-		return "%d.%d.%d.%d" % self.product_version
-
-	@property
-	def struc_version_str(self):
-		"""Structure version as a 'major.minor' string."""
-		return "%d.%d" % self.struc_version
-
-	def __repr__(self):
-		return ("FixedFileInfo(file_version=%r, product_version=%r, "
-		        "file_os=%s, file_type=%s, file_flags=%s)" % (
-		        self.file_version_str, self.product_version_str,
-		        hex(self.dw_file_os), hex(self.dw_file_type), hex(self.dw_file_flags)))
-
-
-class StringTable(object):
-	"""
-	Maps to a StringTable node inside StringFileInfo.
-
-	One StringTable exists per language/codepage combination. The lang_id
-	is an 8-character hex string whose upper 4 digits are the Windows LCID
-	and lower 4 digits are the code page (e.g. "040904b0" = en-US / UTF-16).
-
-	Attributes:
-		lang_id -- 8-character hex string identifying language and code page.
-		strings -- Dict mapping string key names to their values.
-	"""
-
-	def __init__(self, lang_id, strings):
-		"""
-		Args:
-			lang_id: 8-character hex string (language + code page).
-			strings: Dict of {key: value} string resource pairs.
-		"""
-		self.lang_id = lang_id
-		self.strings = strings
-
-	@property
-	def language(self):
-		"""Upper 16 bits of lang_id as a Windows LCID (int)."""
-		return int(self.lang_id[:4], 16)
-
-	@property
-	def code_page(self):
-		"""Lower 16 bits of lang_id as a code page number (int)."""
-		return int(self.lang_id[4:], 16)
-
-	def get(self, key, default=None):
-		"""Return the string value for key, or default if not present."""
-		return self.strings.get(key, default)
-
-	def __getitem__(self, key):
-		"""Return the string value for key, raising KeyError if not present."""
-		return self.strings[key]
-
-	def __repr__(self):
-		return "StringTable(lang_id=%r, keys=%r)" % (self.lang_id, list(self.strings))
-
-
-class VSVersionInfo(object):
-	"""
-	Maps to VS_VERSIONINFO (verrsrc.h).
-	https://learn.microsoft.com/en-us/windows/win32/menurc/vs-versioninfo
-
-	Attributes:
-		w_length       -- Total byte length of the VS_VERSION_INFO structure.
-		w_value_length -- Byte length of the VS_FIXEDFILEINFO value.
-		w_type         -- 0 = binary value, 1 = text value.
-		fixed          -- FixedFileInfo instance (VS_FIXEDFILEINFO).
-		string_tables  -- List of StringTable, one per language/codepage.
-	"""
-
-	def __init__(self, data):
-		"""
-		Parse a VS_VERSION_INFO blob from raw bytes.
-
-		Args:
-			data: Raw bytes of the VS_VERSION_INFO resource.
-
-		Raises:
-			ValueError: If the VS_FIXEDFILEINFO signature is invalid.
-		"""
-		self._data = data
-		self._parse()
-
-	@staticmethod
-	def _align4(n):
-		"""Round n up to the next 4-byte boundary."""
-		return (n + 3) & ~3
-
-	def _read_node_header(self, offset):
-		"""
-		Read a variable-length node header at the given offset.
-
-		Returns:
-			Tuple (w_length, w_value_length, w_type, key, value_start_offset).
-		"""
-		w_length, w_value_length, w_type = struct.unpack_from("<HHH", self._data, offset)
-		pos = offset + 6
-		end = pos
-		while end + 1 < len(self._data) and self._data[end:end + 2] != b'\x00\x00':
-			end += 2
-		key = self._data[pos:end].decode('utf-16-le')
-		value_start = self._align4(end + 2)
-		return w_length, w_value_length, w_type, key, value_start
-
-	def _parse(self):
-		"""
-		Deserialise the VS_VERSION_INFO tree, populating w_length,
-		w_value_length, w_type, fixed, and string_tables.
-		"""
-		data = self._data
-		self.w_length, self.w_value_length, self.w_type, _, pos = self._read_node_header(0)
-		self.fixed = FixedFileInfo(data, pos)
-		self.string_tables = []
-		pos = self._align4(pos + self.w_value_length)
-		root_end = self.w_length
-
-		while pos < root_end:
-			c_length, _, _, c_key, c_pos = self._read_node_header(pos)
-			if c_length == 0:
-				break
-			if c_key == 'StringFileInfo':
-				st_pos = c_pos
-				st_end = pos + c_length
-				while st_pos < st_end:
-					st_length, _, _, lang_key, s_pos = self._read_node_header(st_pos)
-					if st_length == 0:
-						break
-					strings = {}
-					s_end = st_pos + st_length
-					while s_pos < s_end:
-						s_length, s_value_length, _, s_key, s_val_pos = self._read_node_header(s_pos)
-						if s_length == 0:
-							break
-						raw = data[s_val_pos:s_val_pos + s_value_length * 2]
-						strings[s_key] = raw.decode('utf-16-le').rstrip('\x00')
-						s_pos = self._align4(s_pos + s_length)
-					self.string_tables.append(StringTable(lang_key, strings))
-					st_pos = self._align4(st_pos + st_length)
-			pos = self._align4(pos + c_length)
-
-	@classmethod
-	def from_file(cls, path):
-		"""
-		Construct a VSVersionInfo by reading RT_VERSION from a PE file on disk.
-
-		Locates the RT_VERSION resource data via the PE resource directory,
-		reads the raw VS_VERSION_INFO bytes, and parses them. Supports both
-		PE32 (32-bit) and PE32+ (64-bit) images.
-
-		Args:
-			path: Filesystem path to the PE file.
-
-		Returns:
-			VSVersionInfo instance.
-
-		Raises:
-			ValueError: If the file is not valid, RT_VERSION is absent, or
-			            the VS_FIXEDFILEINFO signature is invalid.
-		"""
-		with open(path, 'rb') as f:
-			f.seek(0x3C)
-			nt_off = struct.unpack("<I", f.read(4))[0]
-			f.seek(nt_off)
-			if f.read(4) != b"PE\x00\x00":
-				raise ValueError("Not a valid PE file")
-			sections = _pe_parse_sections(f, nt_off)
-			res_rva, _ = _pe_get_resource_dd(f, nt_off)
-			if res_rva == 0:
-				raise ValueError("No resource data directory")
-			data = _pe_get_rt_version_data(f, sections, res_rva)
-			if data is None:
-				raise ValueError("RT_VERSION resource not found")
-		return cls(data)
-
-	@classmethod
-	def from_memory(cls, modbase, read_memory=None):
-		"""
-		Construct a VSVersionInfo by reading RT_VERSION from a loaded module
-		in the debuggee's address space.
-
-		Walks the in-memory PE headers starting at modbase to locate the
-		resource data directory, then traverses the RT_VERSION resource tree.
-		Supports both PE32 and PE32+.
-
-		Args:
-			modbase:     Virtual base address (int) of the loaded module.
-			read_memory: Optional callable read_memory(addr, size) -> bytes.
-			             If None, falls back to pykd.loadBytes. Pass the
-			             Debugger instance (dbg) to use its readMemory method,
-			             which works across WinDBG and Immunity Debugger.
-
-		Returns:
-			VSVersionInfo instance.
-
-		Raises:
-			ValueError: If the headers are invalid, RT_VERSION is absent, or
-			            the VS_FIXEDFILEINFO signature is invalid.
-		"""
-		if read_memory is not None:
-			if hasattr(read_memory, 'readMemory'):
-				# A Debugger object was passed — use its readMemory method
-				_read = lambda addr, size: bytes(bytearray(read_memory.readMemory(addr, size)))
-			else:
-				# A bare callable was passed
-				_read = lambda addr, size: bytes(bytearray(read_memory(addr, size)))
-		else:
-			_read = lambda addr, size: bytes(bytearray(pykd.loadBytes(addr, size)))
-
-		def mem_dword(addr):
-			return struct.unpack("<I", _read(addr, 4))[0]
-
-		def mem_word(addr):
-			return struct.unpack("<H", _read(addr, 2))[0]
-
-		# DOS header -> NT header offset
-		nt_off = mem_dword(modbase + 0x3C)
-		nt_base = modbase + nt_off
-
-		if _read(nt_base, 4) != b"PE\x00\x00":
-			raise ValueError("Not a valid PE file in memory at 0x%x" % modbase)
-
-		# COFF File Header
-		num_sections = mem_word(nt_base + 4 + 2)
-		size_opt_hdr = mem_word(nt_base + 4 + 16)
-
-		# Optional Header magic
-		magic = mem_word(nt_base + 4 + 20)
-		if magic == 0x10b:
-			dd_off = nt_base + 4 + 20 + 96
-		elif magic == 0x20b:
-			dd_off = nt_base + 4 + 20 + 112
-		else:
-			raise ValueError("Unrecognised Optional Header magic: %s" % hex(magic))
-
-		# IMAGE_DATA_DIRECTORY[2] = resource directory
-		res_rva = mem_dword(dd_off + 2 * 8)
-		res_size = mem_dword(dd_off + 2 * 8 + 4)
-		if res_rva == 0:
-			raise ValueError("No resource data directory in memory")
-
-		# Parse section table to find the section that contains res_rva
-		sect_base = nt_base + 4 + 20 + size_opt_hdr
-		res_sec = None
-		for i in range(num_sections):
-			sd = _read(sect_base + i * 40, 40)
-			v_sz, v_addr = struct.unpack_from("<II", sd, 8)
-			if v_addr <= res_rva < v_addr + v_sz:
-				res_sec = (v_addr, modbase + v_addr)  # (rva, va)
-				break
-		if res_sec is None:
-			raise ValueError("Resource section not found in memory")
-
-		sec_rva, sec_va = res_sec
-
-		def rva2va(rva):
-			return modbase + rva
-
-		def read_dir_entries(dir_va):
-			hdr = _read(dir_va, 16)
-			num_named, num_id = struct.unpack("<HH", hdr[12:16])
-			entries_raw = _read(dir_va + 16, (num_named + num_id) * 8)
-			count = num_named + num_id
-			return [struct.unpack_from("<II", entries_raw, i * 8) for i in range(count)]
-
-		RT_VERSION = 16
-		res_va = rva2va(res_rva)
-
-		# Level 1: find RT_VERSION by type ID
-		type_entries = read_dir_entries(res_va)
-		type_off = next(
-			(off for id_, off in type_entries
-			 if not (id_ & 0x80000000) and id_ == RT_VERSION),
-			None
-		)
-		if type_off is None:
-			raise ValueError("RT_VERSION not found in in-memory resource directory")
-
-		# Level 2: first name entry
-		name_entries = read_dir_entries(res_va + (type_off & 0x7FFFFFFF))
-		if not name_entries:
-			raise ValueError("RT_VERSION has no name entries in memory")
-		_, lang_off = name_entries[0]
-
-		# Level 3: first language entry
-		lang_entries = read_dir_entries(res_va + (lang_off & 0x7FFFFFFF))
-		if not lang_entries:
-			raise ValueError("RT_VERSION has no language entries in memory")
-		_, data_entry_off = lang_entries[0]
-
-		# IMAGE_RESOURCE_DATA_ENTRY
-		data_entry = _read(res_va + data_entry_off, 8)
-		data_rva, data_size = struct.unpack("<II", data_entry)
-		data = _read(rva2va(data_rva), data_size)
-		return cls(data)
-
-	def __repr__(self):
-		return "VSVersionInfo(fixed=%r, string_tables=%r)" % (self.fixed, self.string_tables)
-
-
-def get_module_version(path, modbase=None, from_memory=False, debugger=None):
-	"""
-	Read the FileVersion of a PE module by parsing VS_VERSION_INFO.
-
-	When from_memory is True and modbase is provided, the resource data is read
-	from the debuggee's live address space. Otherwise the file at path is read
-	from disk.
-
-	Args:
-		path:        Filesystem path to the PE file (used for disk reads).
-		modbase:     Virtual base address of the loaded module (required for
-		             memory reads; ignored for disk reads).
-		from_memory: If True, read from the debuggee's memory instead of disk.
-		debugger:    Debugger instance whose readMemory() method is used for
-		             memory reads. Supports WinDBG (pykd) and Immunity Debugger.
-		             If None, pykd.loadBytes is used directly.
-
-	Returns:
-		Version string in 'major.minor.build.revision' format, or empty
-		string if the version resource cannot be found or parsed.
-	"""
-	if from_memory and modbase is not None:
-		try:
-			result = VSVersionInfo.from_memory(modbase, read_memory=debugger).fixed.file_version_str
-			if result:
-				return result
-		except Exception:
-			pass
-	# fall back to disk (memory read unavailable, raised, or returned empty)
-	try:
-		return VSVersionInfo.from_file(path).fixed.file_version_str
-	except Exception:
-		return ""
-
-
-_PEB_LDR_LISTS = {
-	"load":   ("InLoadOrderModuleList",           "InLoadOrderLinks.Flink"),
-	"memory": ("InMemoryOrderModuleList",          "InMemoryOrderLinks.Flink"),
-	"init":   ("InInitializationOrderModuleList",  "InInitializationOrderLinks.Flink"),
-}
 
 def getModulesFromPEB(peb_order="load"):
 	if DEBUG_MODE:
@@ -1278,25 +768,6 @@ def getModuleFromAddress(address):
 				return thismod			
 
 	return None
-
-def getImageBaseOnDisk(fullpath):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-
-	with open(fullpath, "rb") as pe: 
-		data = pe.read()
-		nt_header_offset = struct.unpack("<I", data[0x3c:0x40])[0]
-		optional_header_offset = nt_header_offset + 0x18
-		magic = struct.unpack("<H", data[optional_header_offset:optional_header_offset+2])[0]
-		if magic == 0x10b:
-			#32bit
-			imageBase = struct.unpack("<I", data[optional_header_offset+28:optional_header_offset+28+4])[0]
-		else:
-			# 64bit
-			imageBase = struct.unpack("<Q", data[optional_header_offset+24:optional_header_offset+24+8])[0]
-	return imageBase
-
-
 
 # Classes
 
@@ -2766,22 +2237,6 @@ class Debugger:
 			pickle.dump(allk,fh,-1)
 		return
 
-	def cleanUp(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-
-		self.cleanKnowledge()
-		return
-
-	"""
-	Placeholders
-	"""
-	def analysecode(self):
-		return
-
-	def isAnalysed(self):
-		return True
-
 	"""
 	LOGGING
 	"""
@@ -3092,9 +2547,6 @@ class Debugger:
 			page = wpage(startaddress,0,"")
 			return page
 
-	def getMemoryPageByOwner(self,ownerobj):
-		return []
-
 	def getPageContains(self,address):
 		#if DEBUG_MODE:
 		#	dbgp(get_current_function_name())
@@ -3230,41 +2682,14 @@ class Debugger:
 				dbgp("       size: 0x%08x" % thismodsize)
 				dbgp("       path: %s" % thismodpath)				
 
-			try:
-				if DEBUG_MODE:
-					dbgp("    Trying to get version info (memory=%s)" % from_memory)
-				thismodversion = get_module_version(fullpath, modbase=thismodbase, from_memory=from_memory, debugger=self)
-				if DEBUG_MODE:
-					dbgp("    -> %s" % thismodversion)
-			except Exception as e:
-				thismodversion = ""
-				if DEBUG_MODE:
-					dbgp("    Error: %s (might be ok)" % str(e))
-				
 			if DEBUG_MODE:
-				dbgp("    Getting NT Headers for %s. Base: 0x%08x" % (thisimagename, thismodbase))
-			ntHeader = getNtHeaders(thismodbase)
-			#preferredbase = ntHeader.OptionalHeader.ImageBase
-			preferredbase = getImageBaseOnDisk(fullpath)
-			entrypoint = ntHeader.OptionalHeader.AddressOfEntryPoint
-			codebase = ntHeader.OptionalHeader.BaseOfCode
-			if arch == 64:
-				database = 0
-			else:
-				database = ntHeader.OptionalHeader.BaseOfData
-			sizeofcode = ntHeader.OptionalHeader.SizeOfCode
+				dbgp("    Building wmodule for %s. Base: 0x%08x" % (thisimagename, thismodbase))
 
 			wmod = wmodule(thismodname)
 
 			wmod.setBaseAddress(thismodbase)
-			wmod.setFixupBase(preferredbase)
 			wmod.setPath(thismodpath)
 			wmod.setSize(thismodsize)
-			wmod.setEntry(entrypoint)
-			wmod.setCodeBase(codebase)
-			wmod.setCodeSize(sizeofcode)
-			wmod.setDatabase(database)
-			wmod.setVersion(thismodversion)
 		except:
 			pykd.dprintln("** Error trying to process module %s" % modulename)
 			pykd.dprintln(traceback.format_exc())
@@ -3605,41 +3030,16 @@ class wmodule:
 		self.modpath = None
 		self.modbase = None
 		self.modsize = None
-		self.modend  = None
-		self.entrypoint = None
-		self.preferredbase = None
-		self.codebase = None
-		self.sizeofcode = None
-		self.database = None
-		self.modversion = None
 
 	# setters
 	def setBaseAddress(self,value):
 		self.modbase = value
-
-	def setFixupBase(self,value):
-		self.preferredbase = value
 
 	def setPath(self,value):
 		self.modpath = value
 
 	def setSize(self,value):
 		self.modsize = value
-
-	def setVersion(self,value):
-		self.modversion = value
-
-	def setEntry(self,value):
-		self.entrypoint = value
-
-	def setCodeBase(self,value):
-		self.codebase = value
-
-	def setCodeSize(self,value):
-		self.sizeofcode = value
-
-	def setDatabase(self,value):
-		self.database = value
 
 	# getters
 	def __str__(self):
@@ -3653,42 +3053,12 @@ class wmodule:
 	
 	def getBaseAddress(self):
 		return self.modbase
-	
-	def getFixupbase(self):
-		return self.preferredbase
 
 	def getPath(self):
 		return self.modpath
 	
 	def getSize(self):
 		return self.modsize
-
-	def getIssystemdll(self):
-		modisos = False
-		if "WINDOWS" in self.modpath.upper():
-			modisos = True
-		else:
-			modisos = False
-		# exceptions
-		if self.modname.lower()=="ntdll":
-			modisos = True
-		self.issystemdll = modisos
-		return self.issystemdll
-	
-	def getVersion(self):
-		return self.modversion
-	
-	def getEntry(self):
-		return self.entrypoint
-	
-	def getCodebase(self):
-		return self.codebase
-		
-	def getCodesize(self):
-		return self.sizeofcode
-
-	def getDatabase(self):
-		return self.database
 
 	def addressToSymbol(self, address):
 		global FuncCache
@@ -3835,8 +3205,6 @@ class wmodule:
 				if DEBUG_MODE:
 					dbgp("Added to EATList: %s!%s at 0x%08x" % (self.modname, eatName, eatAddress))
 		return eatlist
-
-	def getSectionAddress(self,sectionname):
 		ntHeader = getNtHeaders(self.modbase)
 		nrsections = int(ntHeader.FileHeader.NumberOfSections)
 		sectionsize = 40
@@ -4003,11 +3371,6 @@ class wpage():
 				return sectiontoreturn
 			else:
 				return ""
-
-
-class LogBpHook():
-	def __init__(self):
-		return
 
 
 class Function:
