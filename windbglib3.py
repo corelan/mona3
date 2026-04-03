@@ -982,9 +982,15 @@ def get_module_version(path, modbase=None, from_memory=False, debugger=None):
 		Version string in 'major.minor.build.revision' format, or empty
 		string if the version resource cannot be found or parsed.
 	"""
+	if from_memory and modbase is not None:
+		try:
+			result = VSVersionInfo.from_memory(modbase, read_memory=debugger).fixed.file_version_str
+			if result:
+				return result
+		except Exception:
+			pass
+	# fall back to disk (memory read unavailable, raised, or returned empty)
 	try:
-		if from_memory and modbase is not None:
-			return VSVersionInfo.from_memory(modbase, read_memory=debugger).fixed.file_version_str
 		return VSVersionInfo.from_file(path).fixed.file_version_str
 	except Exception:
 		return ""

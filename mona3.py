@@ -6591,12 +6591,13 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	_POST_SORT_KEYS = {
 		"base":    lambda x: x[1]["base"],
 		"size":    lambda x: x[1]["size"],
-		"rebase":  lambda x: x[1]["rebase"],
-		"safeseh": lambda x: x[1]["safeseh"],
-		"aslr":    lambda x: x[1]["aslr"],
-		"cfg":     lambda x: x[1]["cfg"],
-		"nx":      lambda x: x[1]["nx"],
-		"os":      lambda x: x[1]["os"],
+		# boolean keys: negate so that ascending order puts True first
+		"rebase":  lambda x: not x[1]["rebase"],
+		"safeseh": lambda x: not x[1]["safeseh"],
+		"aslr":    lambda x: not x[1]["aslr"],
+		"cfg":     lambda x: not x[1]["cfg"],
+		"nx":      lambda x: not x[1]["nx"],
+		"os":      lambda x: not x[1]["os"],
 	}
 	items = list(g_modules.items())
 	if sort_by in _POST_SORT_KEYS:
@@ -12983,17 +12984,18 @@ def procFindSEH(args, procUsage=""):
 # ----- MODULES ------ #
 PEB_ORDER_VALID = ("load", "memory", "init")
 POST_SORT_VALID = ("base", "size", "rebase", "safeseh", "aslr", "cfg", "nx", "os")
-# For boolean sorts, True-first is considered 'desc' (default); False-first is 'asc'
-# For numeric sorts, ascending is default; 'desc' reverses
+# For boolean sorts: keys are negated, so ascending (reverse=False) puts True first.
+# -order asc = True-first, -order desc = False-first.
+# For numeric sorts: ascending (reverse=False) is the default.
 _POST_SORT_DEFAULT_REVERSE = {
 	"base":    False,
 	"size":    False,
-	"rebase":  True,
-	"safeseh": True,
-	"aslr":    True,
-	"cfg":     True,
-	"nx":      True,
-	"os":      True,
+	"rebase":  False,
+	"safeseh": False,
+	"aslr":    False,
+	"cfg":     False,
+	"nx":      False,
+	"os":      False,
 }
 
 def procShowMODULES(args):
@@ -13002,23 +13004,22 @@ def procShowMODULES(args):
 	
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
 
-	from_memory = "memory" in args and bool(args["memory"])
-	if from_memory:
-		dbg.log("[+] Version info will be read from memory")
-
 	peb_order = "load"
+	if "peborder" in args and args["peborder"]:
+		peb_val = str(args["peborder"]).lower().strip()
+		if peb_val not in PEB_ORDER_VALID:
+			dbg.log("[!] Unknown -peborder value '%s', valid options: %s" % (peb_val, ", ".join(PEB_ORDER_VALID)))
+			return
+		peb_order = peb_val
+
 	sort_by = None
 	sort_order = None
 	if "sort" in args and args["sort"]:
 		sort_val = str(args["sort"]).lower().strip()
-		if sort_val in PEB_ORDER_VALID:
-			peb_order = sort_val
-		elif sort_val in POST_SORT_VALID:
-			sort_by = sort_val
-		else:
-			all_valid = ", ".join(PEB_ORDER_VALID + POST_SORT_VALID)
-			dbg.log("[!] Unknown sort value '%s', valid options: %s" % (sort_val, all_valid))
+		if sort_val not in POST_SORT_VALID:
+			dbg.log("[!] Unknown sort value '%s', valid options: %s" % (sort_val, ", ".join(POST_SORT_VALID)))
 			return
+		sort_by = sort_val
 	if sort_by is not None and "order" in args and args["order"]:
 		order_val = str(args["order"]).lower().strip()
 		if order_val not in ("asc", "desc"):
@@ -13026,7 +13027,7 @@ def procShowMODULES(args):
 			return
 		sort_order = order_val
 
-	modulestosearch = getModulesToQuery(modulecriteria, from_memory=from_memory, peb_order=peb_order)
+	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True, peb_order=peb_order)
 	showModuleTable("", modulestosearch, sort_by=sort_by, sort_order=sort_order)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
@@ -19942,7 +19943,19 @@ Mandatory argument :  -r <reg>  where reg is a valid register"""
 Output will be written to ropfunc.txt"""
 	
 	modulesUsage = """Shows information about the loaded modules.
-Check the global options above to filter and/or sort the modules as needed"""
+Check the global options above to filter modules as needed.
+Optional parameters :
+-peborder <list>   : select which PEB LDR_DATA list to walk (default: load)
+                       load   - InLoadOrderModuleList (DLL load order)
+                       memory - InMemoryOrderModuleList
+                       init   - InInitializationOrderModuleList (DllMain call order)
+-sort <key>        : sort the output after the PEB walk
+                       base    - ascending base address
+                       size    - ascending module size
+                       rebase / safeseh / aslr / cfg / nx / os - True-first
+-order <dir>       : override sort direction (only valid with -sort)
+                       asc   - ascending for numeric keys; True-first for boolean keys (default)
+                       desc  - descending for numeric keys; False-first for boolean keys"""
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
