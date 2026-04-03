@@ -3010,6 +3010,7 @@ class MnModule:
 		self.IAT = {}
 		self.EAT = {}
 		path = ""
+		filename = ""
 		mzbase = 0
 		mzsize = 0
 		mztop = 0
@@ -3068,7 +3069,8 @@ class MnModule:
 								
 				if mversion=="":
 					mversion="-1.0-"
-				path=mod.getPath()
+				path     = mod.getPath()
+				
 				if mod.getIssystemdll() == 0:
 					modisos = "WINDOWS" in path.upper()
 				else:
@@ -6425,27 +6427,36 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 			except re.error:
 				included = False
 		#override all previous decision if "modules" criteria was provided
-		thismodkey = thismod.moduleKey.lower().strip()
+		
+		just_filename = os.path.basename(thismod.modulePath.lower().strip())
+
 		if ("modules" in criteria) and (criteria["modules"] != ""):
 			included = False
 			modulenames=criteria["modules"].split(",")
 			for modulename in modulenames:
+				# don't use the imagename, but use the filename instead
+				# extract it from the full path first
+
 				modulename = modulename.strip('"').strip("'").lower()
 				modulenamewithout = modulename.replace("*","")
-				if len(modulenamewithout) <= len(thismodkey):
+
+				if DEBUG_MODE:
+					dbgp("Module criteria. Check %s for %s" % (just_filename,modulenamewithout))
+		  
+				if len(modulenamewithout) <= len(just_filename):
 					#endswith ?
 					if modulename[0] == "*":
-						if modulenamewithout == thismodkey[len(thismodkey)-len(modulenamewithout):len(thismodkey)]:
+						if modulenamewithout == just_filename[len(just_filename)-len(modulenamewithout):len(just_filename)]:
 							if not thismod.moduleKey in modulestoquery and not thismod.isExcluded:
 								modulestoquery.append(thismod.moduleKey)
 					#startswith ?
 					if modulename[len(modulename)-1] == "*":
-						if (modulenamewithout == thismodkey[0:len(modulenamewithout)] and not thismod.isExcluded):
+						if (modulenamewithout == just_filename[0:len(modulenamewithout)] and not thismod.isExcluded):
 							if not thismod.moduleKey in modulestoquery:
 								modulestoquery.append(thismod.moduleKey)
 					#contains ?
 					if ((modulename[0] == "*" and modulename[len(modulename)-1] == "*") or (modulename.find("*") == -1)) and not thismod.isExcluded:
-						if thismodkey.find(modulenamewithout) > -1:
+						if just_filename.find(modulenamewithout) > -1:
 							if not thismod.moduleKey in modulestoquery:
 								modulestoquery.append(thismod.moduleKey)
 
@@ -20475,7 +20486,7 @@ Arguments:
 		commands["load"]		= MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
 		#commands["diffheap"]	= MnCommand("diffheap", "Compare current heap layout with previously saved state", diffheapUsage, procDiffHeap, "dh")
 	commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
-	commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain")
+	commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain",[32])
 	commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd",[32,64])
 	commands["gflags"]			= MnCommand("gflags", "Show current GFlags settings from PEB.NtGlobalFlag", gflagsUsage, procFlags, "gf", [32,64])
 	commands["infodump"]		= MnCommand("infodump","Dumps specific parts of memory to file", infodumpUsage, procInfoDump,"if")
@@ -20766,6 +20777,8 @@ def main(args):
 		dbg.log("[+] This mona.py action took %s" % str(delta))	
 		dbg.log("    Current date/time: %s" % get_current_datetime())
 		dbg.setStatusBar("Done")
+		if DEBUG_MODE:
+			dbg.nativeCommand(".logclose")
 				
 	except:
 		dbg.log("*" * 80,highlight=True)

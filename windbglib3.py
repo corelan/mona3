@@ -210,6 +210,7 @@ def getNtHeaders(modulebase):
 def clearvars():
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
+		
 
 	global MemoryPages
 	global AsmCache
