@@ -3033,6 +3033,7 @@ class MnModule:
 				modisos = getModuleProperty(modulename,"os")
 				modiscfg = getModuleProperty(modulename,"cfg")
 				path = getModuleProperty(modulename,"path")
+				filename = getModuleProperty(modulename,"filename")
 				mzbase = getModuleProperty(modulename,"base")
 				mzsize = getModuleProperty(modulename,"size")
 				mztop = getModuleProperty(modulename,"top")
@@ -3070,7 +3071,7 @@ class MnModule:
 				if mversion=="":
 					mversion="-1.0-"
 				path     = mod.getPath()
-				
+				filename = os.path.basename(path)
 				if mod.getIssystemdll() == 0:
 					modisos = "WINDOWS" in path.upper()
 				else:
@@ -3156,6 +3157,8 @@ class MnModule:
 		self.moduleKey = modulename
 	
 		self.modulePath = path
+
+		self.moduleFilename = filename
 		
 		self.moduleBase = mzbase
 		
@@ -3573,47 +3576,6 @@ class MnModule:
 			return IAT
 		return IAT
 		
-		
-	def getEATold(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())		
-		eatlist = {}
-		if len(self.EAT) == 0:
-			try:
-				# avoid major suckage, let's do it ourselves
-				# find optional header
-				PEHeader_ref = self.moduleBase + 0x3c
-				PEHeader_location = self.moduleBase + struct.unpack('<L',dbg.readMemory(PEHeader_ref,4))[0]
-				# do we have an optional header ?
-				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location+0x14,2)
-				sizeOfOptionalHeader = struct.unpack('<L',bsizeOfOptionalHeader+b"\x00\x00")[0]
-				OptionalHeader_location = PEHeader_location + 0x18
-				if sizeOfOptionalHeader > 0:
-					# get address of DataDirectory
-					DataDirectory_location = OptionalHeader_location + 0x60
-					# get size of Export Table
-					exporttable_size = struct.unpack('<L',dbg.readMemory(DataDirectory_location+4,4) )[0]
-					exporttable_rva = struct.unpack('<L',dbg.readMemory(DataDirectory_location,4) )[0]
-					if exporttable_size > 0:
-						# get start of export table
-						eatAddr = self.moduleBase + exporttable_rva
-						nr_of_names = struct.unpack('<L',dbg.readMemory(eatAddr + 0x18,4))[0]
-						rva_of_names = self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x20,4))[0]
-						address_of_functions =  self.moduleBase + struct.unpack('<L',dbg.readMemory(eatAddr + 0x1c,4))[0]
-						for i in range(0, nr_of_names):
-							eatName = dbg.readString(self.moduleBase + struct.unpack('<L',dbg.readMemory(rva_of_names + (4 * i),4))[0])
-							eatAddress = self.moduleBase + struct.unpack('<L',dbg.readMemory(address_of_functions + (4 * i),4))[0]
-							eatlist[eatAddress] = eatName
-				self.EAT = eatlist
-			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)))
-					dbgp("%s" % traceback.format_exc())
-					dbgp("eatlist: %s" % eatlist)
-				return eatlist
-		else:
-			eatlist = self.EAT
-		return eatlist
 	
 	def getEAT(self):
 		if DEBUG_MODE:
@@ -6549,6 +6511,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 				dbgp("Result: %s" % thismod)
 			if not thismod is None:
 				modinfo["path"]		= thismod.modulePath
+				modinfo["filename"] = thismod.moduleFilename
 				modinfo["base"] 	= thismod.moduleBase
 				modinfo["size"] 	= thismod.moduleSize
 				modinfo["top"]  	= thismod.moduleTop
