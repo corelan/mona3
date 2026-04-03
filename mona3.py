@@ -3797,8 +3797,8 @@ class MnModule:
 									thunk_index += 1
 
 								desc_index += 1
-
-				dbg.log("      -> We have extracted %d names from the IAT" % len(IAT))
+				if DEBUG_MODE:
+					dbgp("      -> We have extracted %d names from the IAT of %s" % (len(IAT), self.moduleKey))
 
 				# METHOD 2 - Fallback in case we did not get a lot of strings.
 				# Let's say less than 10
@@ -3828,7 +3828,8 @@ class MnModule:
 						dbg.logLines(traceback.format_exc())
 						pass
 					# merge
-					dbg.log("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
+					if DEBUG_MODE:
+						dbgp("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
 
 
 				if len(IAT) == 0:
@@ -17742,6 +17743,7 @@ def procGetxAT(args,mode=""):
 				thisxat = thismod.getEAT()
 
 			thismodule = thismod.getShortName()
+			thismodule_fullname = thismod.moduleFilename
 
 			for thisfunc in thisxat:
 				thisfuncname = thisxat[thisfunc].lower()
@@ -17808,10 +17810,10 @@ def procGetxAT(args,mode=""):
 
 					if mode == "iat":
 						thedelta = thisfunc - thismod.moduleBase
-						logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s) %s" % (toHex(thisfunc),thismodule.lower(),toHex(thedelta),toHex(theptr),origfuncname,modinfohr)
+						logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s) %s" % (toHex(thisfunc),thismodule_fullname.lower(),toHex(thedelta),toHex(theptr),origfuncname,modinfohr)
 					else:
 						thedelta = thisfunc - thismod.moduleBase
-						logentry = "0x%08x : %s!%s (0x%08x+0x%08x)" % (thisfunc,thismodule.lower(),origfuncname,thismod.moduleBase,thedelta)
+						logentry = "0x%08x : %s!%s (0x%08x+0x%08x)" % (thisfunc,thismodule_fullname.lower(),origfuncname,thismod.moduleBase,thedelta)
 					dbg.log(logentry,address = thisfunc)
 					objxatfilename.write(logentry,xatfile)
 		if not silent:
