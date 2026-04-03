@@ -38,7 +38,6 @@ __VERSION__ = '3.0'
 __REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
 
 DEBUG_MODE = False
-USE_OLD_MODULE = False
 
 
 ## Some Python2/Python3 compatibility stuff
@@ -4641,7 +4640,7 @@ class MnModuleOld:
 										# see if we can find the original function name using the EAT
 										tptr = MnPointer(ptr)
 										modname = tptr.belongsTo()
-										tmod = _MnMod(modname)
+										tmod = MnModuleOld(modname)
 										ofullname = thisfuncfullname
 
 										if not tmod is None:
@@ -4903,15 +4902,6 @@ def getNtGlobalFlagValueName(flagvalue):
 	toreturn += " - "
 	toreturn += data[1]
 	return toreturn
-
-
-def _MnMod(modulename):
-	"""
-	Factory that returns either MnModule or MnModuleOld depending on the -modold flag.
-	"""
-	if USE_OLD_MODULE:
-		return MnModuleOld(modulename)
-	return MnModule(modulename)
 
 
 #---------------------------------------#
@@ -7654,7 +7644,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 			modinfo={}
 			if DEBUG_MODE:
 				dbgp("Transforming %s into a MnModule object" % key)
-			thismod = _MnMod(key)
+			thismod = MnModule(key)
 			if DEBUG_MODE:
 				dbgp("Result: %s" % thismod)
 			if not thismod is None:
@@ -21981,11 +21971,9 @@ def main(args):
 	global scriptname
 	global commands
 	global DEBUG_MODE
-	global USE_OLD_MODULE
 	commands = {}
 
 	currentArgs = copy.copy(args)
-	USE_OLD_MODULE = "-modold" in args
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
