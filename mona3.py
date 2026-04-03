@@ -17840,7 +17840,7 @@ def procGetxAT(args,mode=""):
 		if mode == "eat":
 			dbg.log("")
 			dbg.log("Results of the EAT search: %d entries found" % entriesfound )
-			headers = ["EAT Loc", "Module!Exported Function Name", "Module Base + Offset", "Info about this module" ]
+			headers = ["FuncPtr", "Module!Exported Function Name", "Module Base + Offset", "Info about this module" ]
 			types   = ["pointer", "string", "string", "string"]
 			dbg.log("")
 			print_dict_table(eat_table, headers, types, padding = "   ")			
