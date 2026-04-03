@@ -3355,6 +3355,14 @@ class MnModule:
 					mzbase = self.moduleobj.getBaseAddress() if self.moduleobj else 0
 
 				path = MnModule._path_from_peb(mzbase)
+				if not path:
+					if not hasattr(self, 'moduleobj'):
+						self.moduleobj = dbg.getModule(modulename)
+					if self.moduleobj:
+						try:
+							path = self.moduleobj.getPath()
+						except Exception:
+							pass
 				filename = os.path.basename(path)
 
 				# Version: parse VS_VERSION_INFO directly (no pykd symbol access).
@@ -3392,11 +3400,29 @@ class MnModule:
 						# SizeOfImage — same offset in PE32 and PE32+
 						mzsize = struct.unpack('<L', dbg.readMemory(pebase + 0x50, 4))[0]
 
-						# ImageBase (preferred load address) — arch-dependent
-						if is_pe64:
-							mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + 0x30, 8))[0]
-						else:
-							mzrebase = struct.unpack('<L', dbg.readMemory(pebase + 0x34, 4))[0]
+# ImageBase: read from disk file — loader patches in-memory ImageBase to actual load address
+							if path:
+								try:
+									with open(path, 'rb') as _f:
+										_f.seek(0x3c)
+										_peo = struct.unpack('<L', _f.read(4))[0]
+										_f.seek(_peo + 0x18)
+										if struct.unpack('<H', _f.read(2))[0] == 0x20b:
+											_f.seek(_peo + 0x30)
+											mzrebase = struct.unpack('<Q', _f.read(8))[0]
+										else:
+											_f.seek(_peo + 0x34)
+											mzrebase = struct.unpack('<L', _f.read(4))[0]
+								except Exception:
+									if is_pe64:
+										mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + 0x30, 8))[0]
+									else:
+										mzrebase = struct.unpack('<L', dbg.readMemory(pebase + 0x34, 4))[0]
+							else:
+								if is_pe64:
+									mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + 0x30, 8))[0]
+								else:
+									mzrebase = struct.unpack('<L', dbg.readMemory(pebase + 0x34, 4))[0]
 
 						# AddressOfEntryPoint RVA — same offset in PE32 and PE32+
 						aoe_rva = struct.unpack('<L', dbg.readMemory(pebase + 0x28, 4))[0]
