@@ -6580,7 +6580,7 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 		populateModuleInfo()
 	
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
-	thistable += " Total nr of modules loaded: %d | Details below :\n" % len(g_modules)
+	thistable += " Total nr of modules loaded: %d \n" % len(g_modules)
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
 	if arch == 32:
 		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
@@ -7448,6 +7448,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				vplogtxt = createRopChains(suggestions,interestinggadgets,ropgadgets,modulecriteria,criteria,objprogressfile,progressfile,technique)
 				dbg.logLines(vplogtxt.replace("\t","    "))
 				dbg.log("    ROP generator finished")
+		else:
+			updatetext = "[+] Oops, no gadgets found, aborting.."
+			dbg.log(updatetext)
+			objprogressfile.write(updatetext.strip(),progressfile)		
+
 		if arch == 64:
 			dbg.log("")
 			dbg.log("[+] There is no automated ROP generator for 64bit in mona (yet)")
@@ -7463,10 +7468,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					dbg.log(updatetext)
 					objprogressfile.write(updatetext.strip(),progressfile)
 
-		else:
-			updatetext = "[+] Oops, no gadgets found, aborting.."
-			dbg.log(updatetext)
-			objprogressfile.write(updatetext.strip(),progressfile)
+		
 
 	#done, write to log files
 	dbg.setStatusBar("Writing to logfiles...")
