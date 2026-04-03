@@ -1075,7 +1075,8 @@ def getModulesFromPEB(peb_order="load"):
 						except:
 							print("")
 							print("   *** Error parsing module '%s' ('%s') at 0x%08x ***" % (imagename,modulename,baseaddy))
-							print("   *** Please open a github issue ticket at https://github.com/corelan/windbglib ***")
+							print("   *** If this is a problem, ")
+							print("   *** please open a github issue ticket at https://github.com/corelan/windbglib ***")
 							print("   *** and provide the output of the following 2 windbg commands in the ticket: ***")
 							print("         lm")
 							print("         !peb")

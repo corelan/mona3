@@ -7336,6 +7336,20 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				vplogtxt = createRopChains(suggestions,interestinggadgets,ropgadgets,modulecriteria,criteria,objprogressfile,progressfile,technique)
 				dbg.logLines(vplogtxt.replace("\t","    "))
 				dbg.log("    ROP generator finished")
+			if arch == 64:
+				dbg.log("[+] There is no automated ROP generator for 64bit in mona (yet)")
+				dbg.log("    But I will get you some IAT locations where you can find interesting functions")
+				updatetext = "[+] Getting ropfunc information"
+				objprogressfile.write(updatetext.strip(),progressfile)
+				routines = "virtualalloc", "virtualprotect"
+				for routine in routines:
+					dbg.log("    - Looking for IAT entries to %s" % routine)
+					funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"iat", objprogressfile, progressfile)
+					if funcptr > 0:
+						updatetext = "   0x%x : 0x%s" % (funcptr, functext)
+						dbg.log(updatetext)
+						objprogressfile.write(updatetext.strip(),progressfile)
+
 		else:
 			updatetext = "[+] Oops, no gadgets found, aborting.."
 			dbg.log(updatetext)
@@ -11594,6 +11608,7 @@ def getRopSuggestion(ropchains,allchains):
 			pop_notallowed = ["MOV "+reg+",","XCHG "+reg+",","XOR "+reg,"LEA "+reg+",","DS:","SS:", "DEC ESP", "DEC "+reg, "INC " + reg,"PUSH ","XOR "+reg]
 			if arch == 64:
 				moveptr_notallowed.append("DEC RSP")
+				moveptr_notallowed.append("SUB RSP")
 			for rchain in ropchains:
 				rparts = ropchains[rchain].strip().split("#")
 				chainok = False
