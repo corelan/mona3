@@ -1026,7 +1026,7 @@ def getModulesFromPEB(peb_order="load"):
 			modulename = os.path.basename(fullpath)
 			exename = modulename
 
-			addtolist = True
+			addtolist = False
 
 			imagename, fileext = os.path.splitext(modulename)
 
@@ -1042,53 +1042,112 @@ def getModulesFromPEB(peb_order="load"):
 				imagename = imagename+"_%08x" % baseaddy
 
 			# check if module can be loaded
-			try:
-				modcheck = pykd.module(imagename)
-			except:
-				# change to image+baseaddress
-				# mod.getAddress() + offset = _LDR_DATA_TABLE_ENTRY.SizeOfImage
-				baseaddy = int(pykd.ptrPtr(mod.getAddress() + offset))
-				imagename = "image%08x" % baseaddy
+
+			imagename_with_ext = modulename.replace(".","_").replace("-","_").replace("+","_")
+			modulevariations = [imagename, imagename_with_ext]
+
+			foundimagename = ""
+
+			modulefound = False
+
+			for mod2test in modulevariations:
+
+				if DEBUG_MODE:
+					dbgp("Checking if we can run pykd.module('%s')" % mod2test)
 				try:
-					modcheck = pykd.module(imagename)
+					modcheck = pykd.module(mod2test)
+					if DEBUG_MODE:
+						if not modcheck == None:
+							dbgp("Success: imagename: %s, modcheck.name: %s, modcheck.image: %s" % (mod2test, modcheck.name(), modcheck.image()))
+					# check it it's the same file!
+							if modcheck.image().lower() == fullpath.lower():
+								foundimagename = mod2test
+								modulefound = True
+								addtolist = True
+								break
+							else:
+								if DEBUG_MODE:
+									dbgp("ERROR - Possible module name collision. Let's try to find the right imagename")
+						else:
+							if DEBUG_MODE:
+								dbgp("Error, unable to convert '%s' to pykd.module()" % mod2test)
 				except:
-					# try with base addy
-					try:
-						modcheck = pykd.module(baseaddy)
-						imagename = modcheck.name()
-						#print "Name: %s" % modcheck.name()
-						#print "Imagename: %s" % modcheck.image()
-					except:
-						# try finding it with windbg 'ln'
-						cmd2run = "ln 0x%08x" % baseaddy
-						output = pykd.dbgCommand(cmd2run)
-						if "!__ImageBase" in output:
-							outputlines = output.split("\n")
-							for l in outputlines:
-								if "!__ImageBase" in l:
-									lparts = l.split("!__ImageBase")
-									leftpart = lparts[0]
-									leftparts = leftpart.split(" ")
-									imagename = leftparts[len(leftparts)-1]
-						try:
-							modcheck = pykd.module(imagename)
-						except:
-							print("")
-							print("   *** Error parsing module '%s' ('%s') at 0x%08x ***" % (imagename,modulename,baseaddy))
-							print("   *** If this is a problem, ")
-							print("   *** please open a github issue ticket at https://github.com/corelan/windbglib ***")
-							print("   *** and provide the output of the following 2 windbg commands in the ticket: ***")
-							print("         lm")
-							print("         !peb")
-							print("   *** Thanks")
-							print("")
-							addtolist = False
+					if DEBUG_MODE:
+						dbgp("Error running pykd.module('%s')" % mod2test)
+
+
+			if not modulefound:
+				# fall back to finding the name via windbg native command
+				cmd2run = "?%s" % thismod
+				output = pykd.dbgCommand(cmd2run)
+				parts = output.split("=", 1)
+				if len(parts) > 1:
+					modaddress = parts[1].strip().replace("`","").lower()
+					# now look for it in the output of lm
+					cmd2run = "lm"
+					lm_output = pykd.dbgCommand(cmd2run)
+					lines = lm_output.splitlines()
+
+					for line in lines:
+						line = line.strip().replace("`","")
+						if not line:
+							continue
+
+						# skip header line
+						if line.lower().startswith("start"):
+							continue
+
+						parts = line.split()
+						if len(parts) < 3:
+							continue
+
+						start_addr = parts[0].lower()
+
+						if start_addr == modaddress:
+							imagename = parts[2]
+							# we may have found the imagename now
+
+							try:
+								modcheck = pykd.module(imagename)
+								addToList = True
+							except:
+								# try with base addy
+								try:
+									modcheck = pykd.module(baseaddy)
+									imagename = modcheck.name()
+									#print "Name: %s" % modcheck.name()
+									#print "Imagename: %s" % modcheck.image()
+								except:
+									# try finding it with windbg 'ln'
+									cmd2run = "ln 0x%08x" % baseaddy
+									output = pykd.dbgCommand(cmd2run)
+									if "!__ImageBase" in output:
+										outputlines = output.split("\n")
+										for l in outputlines:
+											if "!__ImageBase" in l:
+												lparts = l.split("!__ImageBase")
+												leftpart = lparts[0]
+												leftparts = leftpart.split(" ")
+												imagename = leftparts[len(leftparts)-1]
+									try:
+										modcheck = pykd.module(imagename)
+									except:
+										print("")
+										print("   *** Error parsing module '%s' ('%s') at 0x%08x ***" % (imagename,modulename,baseaddy))
+										print("   *** If this is a problem, ")
+										print("   *** please open a github issue ticket at https://github.com/corelan/windbglib ***")
+										print("   *** and provide the output of the following 2 windbg commands in the ticket: ***")
+										print("         lm")
+										print("         !peb")
+										print("   *** Thanks")
+										print("")
+										addtolist = False
 
 			if addtolist:
-				imagenames.append(imagename)
-				PEBModList[imagename] = [exename, fullpath]
+				imagenames.append(foundimagename)
+				PEBModList[foundimagename] = [exename, fullpath]
 				if DEBUG_MODE:
-					dbgp("    Added %s to PEBModList" % imagename)
+					dbgp("    Added %s to PEBModList" % foundimagename)
 					dbgp("    With full path %s" % fullpath)
 	_PEBModListOrder = peb_order
 

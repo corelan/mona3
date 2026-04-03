@@ -3262,8 +3262,10 @@ class MnModule:
 	def getIAT(self):
 		IAT = {}
 		global IATCache
-		dbg.log("")
-		dbg.logLines("    Getting IAT for %s." % (self.moduleKey))
+		#dbg.log("")
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+			dbgp("    Getting IAT for %s." % (self.moduleKey))
 		try:
 			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
 				
@@ -6604,9 +6606,9 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	thistable += " Total nr of modules loaded: %d | Details below :\n" % len(g_modules)
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
 	if arch == 32:
-		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, Modulename & Path, DLLCharacteristics\n"
+		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
 	elif arch == 64:
-		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, Modulename & Path, DLLCharacteristics\n"
+		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
 	thistable += "----------------------------------------------------------------------------------------------------------------------------------------------\n"
 
 	_POST_SORT_KEYS = {
@@ -6933,14 +6935,15 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	keycnt = 1
 	for key in modulestosearch:
 		curmod = dbg.getModule(key)
-		dbg.log("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
+		if DEBUG_MODE:
+			dbgp("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
 		keycnt += 1
 		#is this module going to get rebase ?
 		themodule = MnModule(key)
 		isrebased = themodule.isRebase
 		if not silent:
 			dbg.log("    Querying %s" % (key))
-		dbg.log("    - Enumerating IAT")   
+		dbg.log("    - Enumerating IAT (%s)" % key)   
 		allfuncs = themodule.getIAT()
 		dbg.log("    - Done enumerating IAT for %s. Got %d entries" % (key, len(allfuncs)))
 		dbg.updateLog()
@@ -7461,6 +7464,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						break
 					gcnt += 1
 			if arch == 32:
+				dbg.log("")
 				dbg.log("[+] Launching ROP generator")
 				updatetext = "Attempting to create rop chain proposals"
 				objprogressfile.write(updatetext.strip(),progressfile)
@@ -7468,6 +7472,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				dbg.logLines(vplogtxt.replace("\t","    "))
 				dbg.log("    ROP generator finished")
 		if arch == 64:
+			dbg.log("")
 			dbg.log("[+] There is no automated ROP generator for 64bit in mona (yet)")
 			dbg.log("    But I will get you some IAT locations where you can find interesting functions")
 			updatetext = "[+] Getting ropfunc information"
@@ -10621,6 +10626,7 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 	a pointer (integer value, 0 if no pointer was found)
 	text (with optional info)
 	"""
+	dbg.log("")
 	dbg.log("[+] Querying IATs for %s" % apiname)
 
 	if DEBUG_MODE:
@@ -20630,6 +20636,7 @@ def main(args):
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
 		objlogopenfile = MnLog("%s-windbg_debug.log" % get_current_datetime_flat())
 		logopenfile = objlogopenfile.reset()
+		dbg.nativeCommand(".logclose")
 		dbg.nativeCommand(".logopen \"%s\"" % logopenfile)
 	else:
 		DEBUG_MODE = False
