@@ -5919,11 +5919,11 @@ class MnPointer:
 		if self.ownerName == "":
 			# not stack or heap
 			for thismodule,modproperties in g_modules.items():
-					thisbase = getModuleProperty(thismodule,"base")
-					thistop = getModuleProperty(thismodule,"top")
-					if (self.address >= thisbase) and (self.address <= thistop):
-						#self.ownerName = thismodule
-						return thismodule
+				thisbase = getModuleProperty(thismodule,"base")
+				thistop = getModuleProperty(thismodule,"top")
+				if (self.address >= thisbase) and (self.address <= thistop):
+					#self.ownerName = thismodule
+					return thismodule
 			# if it's not a module, maybe it's stack or heap
 			# just call the functions, to populate owner
 			if not self.isOnStack():
@@ -17716,6 +17716,13 @@ def procGetxAT(args,mode=""):
 
 	thisxat = {}
 
+	# for cosmetics
+	# IAT: key = pointer
+	# extra fields: module, base+offset, functionpointer, functionname, module it belongs to, moduleproperties
+	iat_table = {}
+
+	eat_table = {}
+
 	entriesfound = 0
 	
 	if "s" in args:
@@ -17736,7 +17743,9 @@ def procGetxAT(args,mode=""):
 		xatfile = objxatfilename.reset()
 	
 		for thismodule in modulestosearch:
-			thismod = MnModule(thismodule) 
+			thismod = MnModule(thismodule)
+			thismod_info = "%s" % thismod.__str__()
+			
 			if mode == "iat":
 				thisxat = thismod.getIAT()
 			else:
@@ -17744,6 +17753,8 @@ def procGetxAT(args,mode=""):
 
 			thismodule = thismod.getShortName()
 			thismodule_fullname = thismod.moduleFilename
+			if not silent:
+				dbg.log("    Querying module '%s'" % thismodule_fullname)
 
 			for thisfunc in thisxat:
 				thisfuncname = thisxat[thisfunc].lower()
@@ -17768,21 +17779,21 @@ def procGetxAT(args,mode=""):
 						if not "!" in origfuncname and iatptr_modname != "":
 							origfuncname = iatptr_modname.lower() + "!" + origfuncname
 							thisfuncname = origfuncname
-						#dbg.log("%s" % thisfuncname)
-						#if "!" in origfuncname:
-						#	oparts = origfuncname.split("!")
-						#	origfuncname = iatptr_modname + "." + oparts[1]
-						#	thisfuncname = origfuncname
-
+						if "!" in origfuncname:
+							oparts = origfuncname.split("!")
+							origfuncname = iatptr_modname.lower() + "!" + oparts[1]
 						try:
 							ModObj = MnModule(iatptr_modname)
-							modinfohr = " - %s" % (ModObj.__str__())
+							modinfohr = "%s" % (ModObj.__str__())
 						except:
 							modinfohr = ""
 							pass
 					except Exception as e:
 						dbg.log("Error in procGetxAT: %s" % str(e))
 						continue
+
+				if mode == "eat":
+					modinfohr = thismod_info
 
 				if len(keywords) > 0:
 					for keyword in keywords:
@@ -17804,18 +17815,36 @@ def procGetxAT(args,mode=""):
 								break
 				else:
 					addtolist = True
+
 				if addtolist:
 					entriesfound += 1
 					# add info about the module
-
 					if mode == "iat":
 						thedelta = thisfunc - thismod.moduleBase
+						iat_table[thisfunc] = [thismodule_fullname.lower(), thedelta, theptr, origfuncname, modinfohr]
 						logentry = "At 0x%s in %s (base + 0x%s) : 0x%s (ptr to %s) %s" % (toHex(thisfunc),thismodule_fullname.lower(),toHex(thedelta),toHex(theptr),origfuncname,modinfohr)
-					else:
+					if mode == "eat":
 						thedelta = thisfunc - thismod.moduleBase
 						logentry = "0x%08x : %s!%s (0x%08x+0x%08x)" % (thisfunc,thismodule_fullname.lower(),origfuncname,thismod.moduleBase,thedelta)
-					dbg.log(logentry,address = thisfunc)
+						eat_table[thisfunc] = ["%s!%s" % (thismodule_fullname.lower(), origfuncname), "(0x%08x+0x%08x)" % (thismod.moduleBase, thedelta), modinfohr ]
+						#dbg.log(logentry,address = thisfunc)
 					objxatfilename.write(logentry,xatfile)
+	
+		if mode == "iat":
+			dbg.log("")
+			dbg.log("Results of the IAT search: %d entries found" % entriesfound )			
+			headers = ["At IAT Loc", "In Module", "( = RVA)", "Contains","Which is address of function"," Info about module the function belongs to" ]
+			types   = ["pointer", "string", "pointer", "pointer", "string", "string"]
+			dbg.log("")
+			print_dict_table(iat_table, headers, types, padding = "   ")
+		if mode == "eat":
+			dbg.log("")
+			dbg.log("Results of the EAT search: %d entries found" % entriesfound )
+			headers = ["EAT Loc", "Module!Exported Function Name", "Module Base + Offset", "Info about this module" ]
+			types   = ["pointer", "string", "string", "string"]
+			dbg.log("")
+			print_dict_table(eat_table, headers, types, padding = "   ")			
+
 		if not silent:
 			dbg.log("")
 			dbg.log("%d entries found" % entriesfound)
