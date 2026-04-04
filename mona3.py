@@ -15685,8 +15685,9 @@ def procUpdate(args):
 		else:
 			dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
 			return
-	except:
+	except Exception as e:
 		dbg.log("[-] Unable to check latest version (download error). Try again later",highlight=1)
+		dbg.log("    Error: %s" % str(e))
 		return
 	#check versions
 	doupdate = False
@@ -15708,8 +15709,9 @@ def procUpdate(args):
 		try:
 			shutil.copyfile(u[0],inspect.stack()[0][1])
 			dbg.log("    Done")					
-		except:
+		except Exception as e:
 			dbg.log("    ** Unable to update mona3.py",highlight=1)
+			dbg.log("    ** %s" % str(e))
 		currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
 		dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
 	else:
@@ -15744,9 +15746,9 @@ def procUpdate(args):
 				else:
 					dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
 					return
-			except:
+			except Exception as e:
 				dbg.log("[-] Unable to check latest version (download error). Try again later",highlight=1)
-				dbg.log("    Meanwhile, please check/confirm that you're running a recent version of python 2.7 (2.7.14 or higher)", highlight=1)
+				dbg.log("    %s" % str(e))
 				return
 
 			#check versions
@@ -15769,8 +15771,9 @@ def procUpdate(args):
 				try:
 					shutil.copyfile(u[0],libfile)
 					dbg.log("    Done")					
-				except:
+				except Exception as e:
 					dbg.log("    ** Unable to update windbglib3.py",highlight=1)
+					dbg.log("    ** %s" % str(e))
 				currentversion,currentrevision = getVersionInfo(libfile)
 				dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
 			else:
