@@ -13677,6 +13677,41 @@ def procModuleInfo(args):
 			else:
 				dbg.log("   %-8s  VA: 0x%08x  VSize: 0x%08x  RawSize: 0x%08x  Chars: 0x%08x  [%s]"
 					% (sname, base + vaddr, vsz, rawsz, chars, "|".join(cflag_names)))
+
+	# VS_VERSION_INFO
+	vi = None
+	try:
+		vi = MnModule.VSVersionInfo.from_memory(base)
+	except Exception:
+		try:
+			vi = MnModule.VSVersionInfo.from_file(p["path"])
+		except Exception:
+			vi = None
+	if vi is not None:
+		dbg.log(sep)
+		dbg.log(" VS_VERSION_INFO:")
+		try:
+			fv = vi.fixed.file_version
+			dbg.log("   FileVersion    : %d.%d.%d.%d" % fv)
+		except Exception:
+			pass
+		for st in vi.string_tables:
+			dbg.log("   [Language: %s]" % st.lang_id)
+			STRING_KEY_ORDER = [
+				"FileDescription", "ProductName", "CompanyName",
+				"FileVersion", "ProductVersion",
+				"OriginalFilename", "InternalName",
+				"LegalCopyright", "LegalTrademarks",
+				"Comments", "PrivateBuild", "SpecialBuild",
+			]
+			printed = set()
+			for k in STRING_KEY_ORDER:
+				if k in st.strings:
+					dbg.log("     %-22s : %s" % (k, st.strings[k]))
+					printed.add(k)
+			for k, v in st.strings.items():
+				if k not in printed:
+					dbg.log("     %-22s : %s" % (k, v))
 	dbg.log(sep)
 
 
