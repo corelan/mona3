@@ -13454,10 +13454,9 @@ def _parse_sort_spec(spec):
 	Parse a compound sort specifier like 'base+safeseh-' into a list of
 	(key, reverse) tuples. A trailing '+' means ascending, '-' means descending.
 	No suffix uses the per-column default_reverse from MODULE_COLUMNS.
-	Keys may be separated by commas or joined directly with a +/- suffix as delimiter.
+	Keys may be separated by commas, or joined directly with a +/- suffix as delimiter.
 	Returns (sort_keys, error_string). error_string is None on success.
 	"""
-	import re
 	# Split on commas to allow 'base,safeseh' style; within each comma-part,
 	# use findall to handle the concatenated 'safeseh-base+' style.
 	parts = re.split(r'\s*,\s*', spec.lower().strip())
