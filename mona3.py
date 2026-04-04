@@ -7488,75 +7488,38 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
 
-	for thismodule,modproperties in g_modules.items():
+	for thismodule, modproperties in g_modules.items():
 		if DEBUG_MODE:
 			dbgp("Check if module %s should be filtered" % thismodule)
 			dbgp("  Properties: %s" % modproperties)
-		#is this module excluded ?
-		thismod = MnModule(thismodule)	
+
+		thismod = MnModule(thismodule)
 		included = True
+
 		if not thismod.isExcluded:
-			#check other criteria
+			filter_map = {
+				"safeseh": ("isSafeSEH", "SAFESEH"),
+				"aslr":    ("isAslr",    "ASLR"),
+				"rebase":  ("isRebase",  "REBASE"),
+				"os":      ("isOS",      "OS"),
+				"nx":      ("isNX",      "NX"),
+				"cfg":     ("isCFG",     "CFG"),
+			}
 
-			if ("safeseh" in criteria) and included:
-				keep_criteria = str_to_bool(criteria["safeseh"])
-				if DEBUG_MODE:
-					dbgp("   SAFESEH needs to be %s (=%s)" % (criteria["safeseh"], keep_criteria))
-					dbgp("   Module state: %s" % thismod.isSafeSEH)
-				if not thismod.isSafeSEH == keep_criteria:
-					included = False
-					if DEBUG_MODE:
-						dbgp("   -> mismatch! removing from list because of SAFESEH")
+			for critkey, (attrname, dbgname) in filter_map.items():
+				if critkey in criteria:
+					keep_criteria = str_to_bool(criteria[critkey])
+					module_state = getattr(thismod, attrname)
 
-			if ("aslr" in criteria) and included:
-				keep_criteria = str_to_bool(criteria["aslr"])
-				if DEBUG_MODE:
-					dbgp("   ASLR needs to be %s (=%s)" % (criteria["aslr"], keep_criteria))
-					dbgp("   Module state: %s" % thismod.isAslr)
-				if not thismod.isAslr == keep_criteria:
-					included = False
 					if DEBUG_MODE:
-						dbgp("   -> mismatch! removing from list because of ASLR")
+						dbgp("   %s needs to be %s (=%s)" % (dbgname, criteria[critkey], keep_criteria))
+						dbgp("   Module state: %s" % module_state)
 
-			if ("rebase" in criteria) and included:
-				keep_criteria = str_to_bool(criteria["rebase"])
-				if DEBUG_MODE:
-					dbgp("   REBASED needs to be %s (=%s)" % (criteria["rebase"], keep_criteria))
-					dbgp("   Module state: %s" % thismod.isRebase)
-				if not thismod.isRebase == keep_criteria:
-					included = False
-					if DEBUG_MODE:
-						dbgp("   -> mismatch! removing from list because of REBASE")
-
-			if ("os" in criteria) and included:
-				keep_criteria = str_to_bool(criteria["os"])
-				if DEBUG_MODE:
-					dbgp("   OS needs to be %s (=%s)" % (criteria["os"], keep_criteria))
-					dbgp("   Module state: %s" % thismod.isOS)
-				if not thismod.isOS == keep_criteria:
-					included = False
-					if DEBUG_MODE:
-						dbgp("   -> mismatch! removing from list because of OS")
-
-			if ("nx" in criteria) and included:
-				keep_criteria = str_to_bool(criteria["nx"])
-				if DEBUG_MODE:
-					dbgp("   NX needs to be %s (=%s)" % (criteria["nx"], keep_criteria))
-					dbgp("   Module state: %s" % thismod.isNX)
-				if not thismod.isNX == keep_criteria:
-					included = False
-					if DEBUG_MODE:
-						dbgp("   -> mismatch! removing from list because of NX")
-
-			if ("cfg" in criteria) and included:
-				keep_criteria = str_to_bool(criteria["cfg"])
-				if DEBUG_MODE:
-					dbgp("   CFG needs to be %s (=%s)" % (criteria["cfg"], keep_criteria))
-					dbgp("   Module state: %s" % thismod.isCFG)
-				if not thismod.isCFG == keep_criteria:
-					included = False
-					if DEBUG_MODE:
-						dbgp("   -> mismatch! removing from list because of CFG")
+					if module_state != keep_criteria:
+						included = False
+						if DEBUG_MODE:
+							dbgp("   -> mismatch! removing from list because of %s" % dbgname)
+						break
 
 		else:
 			included = False
@@ -7744,7 +7707,7 @@ def ModInfoCached(modulename):
 	else:
 		return True
 
-def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
+def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sort_order=None):
 	"""
 	Shows table with all loaded modules and their properties.
 
@@ -7760,16 +7723,13 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	thistable = ""
 	if len(g_modules) == 0:
 		populateModuleInfo()
-	
-	linelength = 175
-	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filter: %d\n" % (len(g_modules), len(modules))
-	thistable += ("-" * linelength) + "\n"
-	if arch == 32:
-		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
-	elif arch == 64:
-		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
-	thistable += ("-" * linelength) + "\n"
+
+	filtertext = ""
+	filterelems = []
+	for crit in modulecriteria:
+		if not "=" in crit:
+			filterelems.append("%s = %s" % (crit.upper(), modulecriteria[crit]))
+	filtertext = " | ".join(filterelems)
 
 	_POST_SORT_KEYS = {
 		"base":    lambda x: x[1]["base"],
@@ -7792,6 +7752,22 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 		else:
 			reverse = default_reverse
 		items = sorted(items, key=_POST_SORT_KEYS[sort_by], reverse=reverse)
+
+
+	linelength = 175
+	thistable += ("-" * linelength) + "\n"
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d\n" % (len(g_modules), len(modules))
+	if filtertext != "":
+		thistable += ("-" * linelength) + "\n"
+		thistable += " Module filter applied: %s\n" % (filtertext)
+	thistable += ("-" * linelength) + "\n"
+	if arch == 32:
+		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
+	elif arch == 64:
+		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
+	thistable += ("-" * linelength) + "\n"
+
+
 	for thismodule,modproperties in items:
 		if (len(modules) > 0 and modproperties["name"] in modules or len(logfile)>0):
 			rebase	= toSize(str(modproperties["rebase"]),7)
@@ -14222,7 +14198,7 @@ def procShowMODULES(args):
 		sort_order = order_val
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True, peb_order=peb_order)
-	showModuleTable("", modulestosearch, sort_by=sort_by, sort_order=sort_order)
+	showModuleTable("", modulestosearch, modulecriteria, sort_by=sort_by, sort_order=sort_order)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
 
@@ -15360,7 +15336,7 @@ def procModInfoS(args):
 	modulecriteria["safeseh"] = False
 	dbg.log("Safeseh unprotected modules :")
 	modulestosearch = getModulesToQuery(modulecriteria)
-	showModuleTable("",modulestosearch)
+	showModuleTable("",modulestosearch, modulecriteria)
 	return
 	
 def procModInfoSA(args):
@@ -15371,7 +15347,7 @@ def procModInfoSA(args):
 	modulecriteria["rebase"] = False	
 	dbg.log("Safeseh unprotected, no aslr & no rebase modules :")
 	modulestosearch = getModulesToQuery(modulecriteria)
-	showModuleTable("",modulestosearch)			
+	showModuleTable("",modulestosearch, modulecriteria)			
 	return
 
 def procModInfoA(args):
@@ -15381,7 +15357,7 @@ def procModInfoA(args):
 	modulecriteria["rebase"] = False	
 	dbg.log("No aslr & no rebase modules :")			
 	modulestosearch = getModulesToQuery(modulecriteria)
-	showModuleTable("",modulestosearch)			
+	showModuleTable("",modulestosearch, modulecriteria)			
 	return
 	
 # ----- Print byte array ----- #
