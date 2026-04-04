@@ -3525,8 +3525,11 @@ class MnModule:
 											modissafeseh = True
 											msehtable = sehtable
 											msehcount = sehcount
-						if mzrebase != mzbase:
-							modrebased = True
+									except:
+										modissafeseh = False
+
+					if mzrebase != mzbase:
+						modrebased = True
 
 				mztop    = mzbase + mzsize
 				mcodetop = mcodebase + mcodesize
