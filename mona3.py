@@ -151,6 +151,9 @@ STACK_POINTER = "ESP" if arch == 32 else "RSP"
 PTR_SIZE_DIRECTIVE = "DWORD PTR" if arch == 32 else "QWORD PTR"
 g_modules={}
 g_modulesOrder=None
+_peb_addr_cache = None
+_teb_addr_cache = None
+_peb_list_cache = None
 MemoryPageACL={}
 global CritCache
 global vtableCache
@@ -1806,6 +1809,89 @@ def getNrOfDictElements(thisdict):
 			total += 1
 	return total
 	
+def get_teb_addr():
+	"""
+	Return the TEB address for the current thread.
+	Result is cached after the first successful call.
+	"""
+	global _teb_addr_cache
+	if _teb_addr_cache is not None:
+		return _teb_addr_cache
+	try:
+		_teb_addr_cache = dbg.get_teb_addr()
+	except Exception:
+		_teb_addr_cache = 0
+	return _teb_addr_cache
+
+
+def get_peb_addr():
+	"""
+	Return the PEB address by reading FS:[0x30] (x86) or GS:[0x60] (x64).
+	Result is cached after the first successful call.
+	"""
+	global _peb_addr_cache
+	if _peb_addr_cache is not None:
+		return _peb_addr_cache
+	try:
+		teb  = get_teb_addr()
+		off  = 0x60 if arch == 64 else 0x30
+		fmt  = '<Q' if arch == 64 else '<L'
+		size = 8    if arch == 64 else 4
+		_peb_addr_cache = struct.unpack(fmt, bytes(bytearray(dbg.readMemory(teb + off, size))))[0]
+	except Exception:
+		_peb_addr_cache = 0
+	return _peb_addr_cache
+
+
+def peb_walk():
+	"""
+	Yield (dll_base, base_name, full_path) for every entry in
+	PEB.InLoadOrderModuleList using only dbg.readMemory.
+	Results are cached in _peb_list_cache after the first walk.
+	"""
+	global _peb_list_cache
+	if _peb_list_cache is not None:
+		for entry in _peb_list_cache:
+			yield entry
+		return
+
+	ptr_size = 8 if arch == 64 else 4
+	fmt_ptr  = '<Q' if arch == 64 else '<L'
+
+	def _ptr(addr):
+		return struct.unpack(fmt_ptr, bytes(bytearray(dbg.readMemory(addr, ptr_size))))[0]
+
+	def _wstr(entry, off):
+		length  = struct.unpack('<H', bytes(bytearray(dbg.readMemory(entry + off, 2))))[0]
+		buf_ptr = _ptr(entry + off + (8 if arch == 64 else 4))
+		if length == 0 or buf_ptr == 0:
+			return ""
+		raw = bytes(bytearray(dbg.readMemory(buf_ptr, length)))
+		return raw.decode('utf-16-le', errors='replace')
+
+	peb_addr = get_peb_addr()
+	if peb_addr == 0:
+		return
+	ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
+	list_head = ldr_addr + (0x10 if arch == 64 else 0x0C)
+
+	dll_base_off  = 0x30 if arch == 64 else 0x18
+	full_name_off = 0x48 if arch == 64 else 0x24
+	base_name_off = 0x58 if arch == 64 else 0x2C
+
+	flink   = _ptr(list_head)
+	results = []
+	while flink != list_head and flink != 0:
+		dll_base  = _ptr(flink + dll_base_off)
+		full_path = _wstr(flink, full_name_off)
+		base_name = _wstr(flink, base_name_off)
+		results.append((dll_base, base_name, full_path))
+		flink = _ptr(flink)
+	_peb_list_cache = results
+	for entry in _peb_list_cache:
+		yield entry
+
+
 def getModuleObj(modname):
 	"""
 	Will return a module object if the provided module name exists
@@ -3254,12 +3340,8 @@ class MnModule:
 	# ------------------------------------------------------------------
 
 	@staticmethod
-	def _get_peb_addr():
-		return dbg._get_peb_addr()
-
-	@staticmethod
 	def _peb_walk():
-		return dbg._peb_walk()
+		return peb_walk()
 
 	@staticmethod
 	def _base_from_peb(modulename):

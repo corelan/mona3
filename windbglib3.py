@@ -2364,15 +2364,16 @@ class Debugger:
 	"""
 	Modules
 	"""
-	def _get_peb_addr(self):
+	def get_teb_addr(self):
+		"""
+		Return the TEB address for the current thread.
+		On x86 this is the FS segment base; on x64 the GS segment base.
+		pykd.getCurrentThread() returns that base directly.
+		"""
 		try:
-			out = self.nativeCommand("r $peb")
-			m = re.search(r'\$peb=([0-9A-Fa-f`]+)', out)
-			if m:
-				return int(m.group(1).replace('`', ''), 16)
+			return int(pykd.getCurrentThread())
 		except Exception:
-			pass
-		return 0
+			return 0
 
 	def _peb_walk(self):
 		"""
@@ -2404,7 +2405,10 @@ class Debugger:
 			raw = bytes(bytearray(self.readMemory(buf_ptr, length)))
 			return raw.decode('utf-16-le', errors='replace')
 
-		peb_addr = self._get_peb_addr()
+		teb      = self.get_teb_addr()
+		off      = 0x60 if arch == 64 else 0x30
+		fmt      = '<Q' if arch == 64 else '<L'
+		peb_addr = struct.unpack(fmt, bytes(bytearray(self.readMemory(teb + off, ptr_size))))[0]
 		if peb_addr == 0:
 			return
 		ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
