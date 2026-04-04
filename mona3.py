@@ -13454,10 +13454,20 @@ def _parse_sort_spec(spec):
 	Parse a compound sort specifier like 'base+safeseh-' into a list of
 	(key, reverse) tuples. A trailing '+' means ascending, '-' means descending.
 	No suffix uses the per-column default_reverse from MODULE_COLUMNS.
+	Keys may be separated by commas or joined directly with a +/- suffix as delimiter.
 	Returns (sort_keys, error_string). error_string is None on success.
 	"""
 	import re
-	tokens = re.findall(r'([a-z]+)([+-]?)', spec.lower())
+	# Split on commas first to allow 'base,safeseh' style, then parse each token
+	parts = re.split(r'\s*,\s*', spec.lower().strip())
+	tokens = []
+	for part in parts:
+		if not part:
+			continue
+		m = re.fullmatch(r'([a-z]+)([+-]?)', part)
+		if not m:
+			return None, "cannot parse sort token '%s'" % part
+		tokens.append((m.group(1), m.group(2)))
 	if not tokens:
 		return None, "empty sort spec"
 	sort_keys = []
@@ -20555,11 +20565,12 @@ Optional parameters :
 -sort <spec>       : sort the output using a compound sort specifier.
                      Each key is optionally followed by '+' (ascending) or '-' (descending).
                      No suffix uses the column default (all columns default to ascending / False-first).
-                     Multiple keys are concatenated to define a stable multi-key sort.
+                     Multiple keys are separated by commas, or joined directly when a +/- suffix acts as delimiter.
                      Valid keys: %s
                      Examples:
                        -sort aslr-          : modules without ASLR first
-                       -sort aslr-safeseh-  : no-ASLR first, then no-SafeSEH first
+                       -sort aslr,safeseh   : no-ASLR first, then no-SafeSEH first (both default direction)
+                       -sort aslr-safeseh-  : no-ASLR first, then no-SafeSEH first (both explicit descending)
                        -sort base+          : ascending base address""" % ", ".join(MODULE_COLUMNS)
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
