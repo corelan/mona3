@@ -13786,6 +13786,16 @@ def procModuleInfo(args):
 		except Exception:
 			vi = None
 	if vi is not None:
+		# On Python 2 (Immunity), VS_VERSION_INFO strings are unicode objects.
+		# Immunity's dbg.log() only accepts str (bytes). Encode to ASCII with
+		# replacement so non-ASCII chars (©, ™, …) don't crash the call.
+		def _vstr(v):
+			if isinstance(v, str):
+				return v
+			try:
+				return v.encode('ascii', 'replace').decode('ascii')
+			except Exception:
+				return repr(v)
 		dbg.log(sep)
 		dbg.log(" VS_VERSION_INFO:")
 		try:
@@ -13805,11 +13815,11 @@ def procModuleInfo(args):
 			printed = set()
 			for k in STRING_KEY_ORDER:
 				if k in st.strings:
-					dbg.log("     %-22s : %s" % (k, st.strings[k]))
+					dbg.log("     %-22s : %s" % (k, _vstr(st.strings[k])))
 					printed.add(k)
 			for k, v in st.strings.items():
 				if k not in printed:
-					dbg.log("     %-22s : %s" % (k, v))
+					dbg.log("     %-22s : %s" % (k, _vstr(v)))
 
 	# ----------------------------------------------------------------
 	# Dependency tree (DFS, horizontal like Linux `tree`)
@@ -13875,9 +13885,16 @@ def procModuleInfo(args):
 		def label(name, ver, path):
 			stem = os.path.splitext(name.lower())[0]
 			if re.match(r'^(api-ms-win|ext-ms-win)-', stem):
-				return "(API Set) %s" % name
-			ver_s  = ver  if ver  else "?"
-			path_s = path if path else "not loaded"
+				return str("(API Set) %s" % name)
+			ver_s  = str(ver)  if ver  else "?"
+			path_s = str(path) if path else "not loaded"
+			# Encode to plain str so Immunity (Python 2) dbg.log() doesn't
+			# receive a unicode object from PEB path/version strings.
+			try:
+				ver_s  = ver_s.encode('ascii',  'replace').decode('ascii')
+				path_s = path_s.encode('ascii', 'replace').decode('ascii')
+			except Exception:
+				pass
 			return "(%s | %s) %s" % (ver_s, path_s, name)
 
 		# Stack entries: (display_name, base, ver, path, prefix, is_last)
@@ -13925,6 +13942,10 @@ def procModuleInfo(args):
 	dbg.log(sep)
 	dbg.log(" Dependency tree:")
 	for dl in dep_lines:
+		try:
+			dl = dl.encode('ascii', 'replace').decode('ascii')
+		except Exception:
+			pass
 		dbg.log("   " + dl)
 
 	dbg.log(sep)
@@ -21005,7 +21026,7 @@ Optional parameters :
 	moduleInfoUsage = """Show detailed information about a specific loaded module.
 Mandatory argument (one of):
     -m <name>    : image name as shown in the modules table (e.g. kernel32.dll or kernel32)
-    -a <address> : base address of the module (hex, e.g. 0x77e40000)"""
+    -a <address> : address within the module (hex, e.g. 0x77e40000)"""
 
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
