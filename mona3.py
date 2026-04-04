@@ -13441,32 +13441,28 @@ PEB_ORDER_VALID = ("load", "memory", "init")
 MODULE_COLUMNS = {
 	"base":    {"key": lambda x: x[1]["base"],    "type": "hex",  "default_reverse": False},
 	"size":    {"key": lambda x: x[1]["size"],    "type": "hex",  "default_reverse": False},
-	"rebase":  {"key": lambda x: x[1]["rebase"],  "type": "bool", "default_reverse": True},
-	"safeseh": {"key": lambda x: x[1]["safeseh"], "type": "bool", "default_reverse": True},
-	"aslr":    {"key": lambda x: x[1]["aslr"],    "type": "bool", "default_reverse": True},
-	"cfg":     {"key": lambda x: x[1]["cfg"],     "type": "bool", "default_reverse": True},
-	"nx":      {"key": lambda x: x[1]["nx"],      "type": "bool", "default_reverse": True},
-	"os":      {"key": lambda x: x[1]["os"],      "type": "bool", "default_reverse": True},
+	"rebase":  {"key": lambda x: x[1]["rebase"],  "type": "bool", "default_reverse": False},
+	"safeseh": {"key": lambda x: x[1]["safeseh"], "type": "bool", "default_reverse": False},
+	"aslr":    {"key": lambda x: x[1]["aslr"],    "type": "bool", "default_reverse": False},
+	"cfg":     {"key": lambda x: x[1]["cfg"],     "type": "bool", "default_reverse": False},
+	"nx":      {"key": lambda x: x[1]["nx"],      "type": "bool", "default_reverse": False},
+	"os":      {"key": lambda x: x[1]["os"],      "type": "bool", "default_reverse": False},
 }
 
 def _parse_sort_spec(spec):
 	"""
 	Parse a compound sort specifier into a list of (key, reverse) tuples.
 
-	For hex/numeric columns: '+' = ascending (low first), '-' = descending (high first).
-	For bool columns:        '+' = True first,            '-' = False first.
+	For hex/numeric columns: '+' = ascending (low first),  '-' = descending (high first).
+	For bool columns:        '+' = has the flag (True first), '-' = does not have the flag (False first).
 	No suffix uses the per-column default_reverse from MODULE_COLUMNS
-	  (bool columns default to True first; hex columns default to low first).
+	  (bool columns default to False first / does not have the flag; hex columns default to low first).
 
 	Supported separator styles:
 	  - Commas:       -sort base,aslr
 	  - Concatenated: -sort base+aslr-   (the +/- suffix acts as delimiter)
 	  - Quoted spaces: -sort "base aslr"  (whitespace splitting ONLY when the spec is
-	                                       surrounded by quote characters, i.e. pykd
-	                                       preserved the quotes from the WinDBG command
-	                                       line.  Without quotes, spaces are NOT treated
-	                                       as separators to avoid ambiguity with argparse
-	                                       joining multiple flag tokens with spaces.)
+	                                       surrounded by quote characters)
 
 	Returns (sort_keys, error_string). error_string is None on success.
 	"""
@@ -13502,10 +13498,10 @@ def _parse_sort_spec(spec):
 			return None, "unknown sort key '%s', valid options: %s" % (key, ", ".join(MODULE_COLUMNS))
 		is_bool = MODULE_COLUMNS[key]["type"] == "bool"
 		if direction == "+":
-			# bool: True first (descending); numeric: low first (ascending)
+			# bool: has the flag (True) first; numeric: low first (ascending)
 			reverse = True if is_bool else False
 		elif direction == "-":
-			# bool: False first (ascending); numeric: high first (descending)
+			# bool: does not have the flag (False) first; numeric: high first (descending)
 			reverse = False if is_bool else True
 		else:
 			reverse = MODULE_COLUMNS[key]["default_reverse"]
@@ -20593,19 +20589,25 @@ Optional parameters :
                        init   - InInitializationOrderModuleList (DllMain call order)
 -sort <spec>       : sort the output using a compound sort specifier.
                      Each key is optionally followed by a suffix:
-                       Bool columns  (rebase,safeseh,aslr,cfg,nx,os): '+' = True first, '-' = False first.
-                       Numeric columns (base,size):                   '+' = low first,  '-' = high first.
-                     No suffix uses the column default (bool: True first; numeric: low first).
+                       Bool columns  (rebase,safeseh,aslr,cfg,nx,os):
+                         '+' = has the flag (True first)
+                         '-' = does not have the flag (False first)  [default]
+                       Numeric columns (base,size):
+                         '+' = low first (ascending)  [default]
+                         '-' = high first (descending)
+                     No suffix uses the column default (bool: does not have the flag first; numeric: low first).
                      Separator styles (combinable):
                        Commas:        -sort aslr-,safeseh-
-                       Concatenated:  -sort aslr-safeseh-   (+/- suffix acts as delimiter)
+                       Concatenated:  -sort aslr-safeseh-   (+/- suffix acts as delimiter;
+                                      every key MUST have a suffix — no suffix means no
+                                      delimiter, so parsing is ambiguous and will fail)
                        Quoted spaces: -sort "aslr safeseh"  (whitespace separator; quotes required)
                      Valid keys: %s
                      Examples:
-                       -sort aslr-          : modules without ASLR first
+                       -sort aslr-          : modules without ASLR first (default)
                        -sort aslr+          : modules with ASLR first
                        -sort aslr-,safeseh- : no-ASLR first, then no-SafeSEH first
-                       -sort "aslr safeseh" : same as above using quoted spaces
+                       -sort "aslr safeseh" : same, using default direction (no flag first) for each key
                        -sort base+          : ascending base address (low first)""" % ", ".join(MODULE_COLUMNS)
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
