@@ -13569,6 +13569,7 @@ def procModuleInfo(args):
 		if not addyok:
 			dbg.log("%s is an invalid address" % args["a"], highlight=1)
 			return
+		dbg.log("[+] Checking if address 0x%x is part of a module" % lookup_base)
 		for key, props in g_modules.items():
 			if props["base"] <= lookup_base < props["base"] + props["size"]:
 				target_key = key
@@ -13591,7 +13592,7 @@ def procModuleInfo(args):
 			return
 
 	else:
-		dbg.log("[!] Provide -m <imagename> or -a <base address>", highlight=1)
+		dbg.log("[!] Provide -m <imagename> or -a <address/register>", highlight=1)
 		return
 
 	p = g_modules[target_key]
@@ -21038,7 +21039,8 @@ Optional arguments :
 Mandatory argument (one of):
 
     -m <name>    : image name as shown in the modules table (e.g. kernel32.dll or kernel32)
-    -a <address> : address within the module (hex, e.g. 0x77e40000)"""
+    -a <address> : address within the module (hex, e.g. 0x77e40000)
+	               You can use a register name as well"""
 
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
