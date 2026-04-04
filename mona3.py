@@ -151,8 +151,8 @@ STACK_POINTER = "ESP" if arch == 32 else "RSP"
 PTR_SIZE_DIRECTIVE = "DWORD PTR" if arch == 32 else "QWORD PTR"
 g_modules={}
 g_modulesOrder=None
-_peb_addr_cache = None
 _teb_addr_cache = None
+_peb_addr_cache = None
 _peb_list_cache = None
 MemoryPageACL={}
 global CritCache
@@ -1812,7 +1812,8 @@ def getNrOfDictElements(thisdict):
 def get_teb_addr():
 	"""
 	Return the TEB address for the current thread.
-	Result is cached after the first successful call.
+	Cached at mona level (_teb_addr_cache) and at the windbglib Debugger
+	instance level (self._teb_addr).
 	"""
 	global _teb_addr_cache
 	if _teb_addr_cache is not None:
@@ -1826,18 +1827,15 @@ def get_teb_addr():
 
 def get_peb_addr():
 	"""
-	Return the PEB address by reading FS:[0x30] (x86) or GS:[0x60] (x64).
-	Result is cached after the first successful call.
+	Return the PEB address.
+	Cached at mona level (_peb_addr_cache) and at the windbglib Debugger
+	instance level (self._peb_addr).
 	"""
 	global _peb_addr_cache
 	if _peb_addr_cache is not None:
 		return _peb_addr_cache
 	try:
-		teb  = get_teb_addr()
-		off  = 0x60 if arch == 64 else 0x30
-		fmt  = '<Q' if arch == 64 else '<L'
-		size = 8    if arch == 64 else 4
-		_peb_addr_cache = struct.unpack(fmt, bytes(bytearray(dbg.readMemory(teb + off, size))))[0]
+		_peb_addr_cache = dbg.get_peb_addr()
 	except Exception:
 		_peb_addr_cache = 0
 	return _peb_addr_cache
@@ -17729,7 +17727,7 @@ def procTEB(args):
 	"""
 	Show the address of the TEB for the current thread
 	"""
-	tebaddy = dbg.getCurrentTEBAddress()
+	tebaddy = get_teb_addr()
 	dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
 	return
 

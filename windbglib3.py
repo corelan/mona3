@@ -65,17 +65,13 @@ global OpcodeCache
 global InstructionCache
 global PageSections
 global ModuleCache
-global cpebaddress
 global FuncCache
 
 global currentPID
-global currentTEBAddress
 
 arch = 32
-cpebaddress = 0
 
 currentPID = 0
-currentTEBAddress = 0
 
 PageSections = {}
 ModuleCache = {}
@@ -215,7 +211,6 @@ def clearvars():
 	global InstructionCache
 	global PageSections
 	global ModuleCache
-	global cpebaddress	
 	MemoryPages = None
 	AsmCache = None
 	disAsmCache = None
@@ -224,16 +219,17 @@ def clearvars():
 	InstructionCache = None
 	PageSections = None
 	ModuleCache = None
-	cpebaddress = None
 	return
 
 
-def getPEBInfo():
+def getPEBInfo(peb_addr=None):
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
 		dbgp("Current process: %s" % pykd.getCurrentProcess())
+	if peb_addr is None:
+		peb_addr = pykd.getCurrentProcess()
 	try:
-		return pykd.typedVar("ntdll!_PEB", pykd.getCurrentProcess())
+		return pykd.typedVar("ntdll!_PEB", peb_addr)
 	except:
 		currversion = getPyKDVersion()
 		print("")
@@ -267,39 +263,6 @@ def getPEBInfo():
 		print("")
 		print(" Restart windbg and try again")
 		exit(1)
-
-def getPEBAddress():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-
-	global cpebaddress
-	peb = getPEBInfo()
-	cpebaddress = peb.getAddress()
-	return cpebaddress
-
-def getTEBInfo():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-	return pykd.typedVar("_TEB", pykd.getImplicitThread())
-
-
-def getTEBAddress():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-
-	global currentTEBAddress
-	if currentTEBAddress == 0:
-		tebinfo = pykd.dbgCommand("!teb")
-		if len(tebinfo) > 0:
-			teblines = tebinfo.split("\n")
-			tebline = teblines[0]
-			tebparts = tebline.split(" ")
-			if len(tebparts) > 2:
-				return hexStrToInt(tebparts[-1])
-		# slow
-		teb = getTEBInfo()
-		currentTEBAddress = int(teb.Self)
-	return currentTEBAddress
 
 def bin2hex(binbytes):
 	if DEBUG_MODE:
@@ -533,6 +496,9 @@ class Debugger:
 		self.OpcodeCache = {}
 		self.ModCache = {}
 		self._peb_list = None
+		self._teb_addr = None
+		self._peb_addr = None
+		self._peb_info = None
 		self.fillAsmCache()
 		self.knowledgedb = "windbglib.db"
 
@@ -638,12 +604,6 @@ class Debugger:
 				return 0
 		else:
 			return 0
-
-	def getCurrentTEBAddress(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-
-		return getTEBAddress()	
 
 	"""
 	AsmCache
@@ -2053,7 +2013,7 @@ class Debugger:
 
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/RTL_USER_PROCESS_PARAMETERS.html
-		peb = getPEBInfo()
+		peb = self.get_peb_info()
 		ProcessParameters = peb.ProcessParameters
 		offset = 0x38
 		if arch == 64:
@@ -2073,7 +2033,7 @@ class Debugger:
 		if currentPID == 0:
 			# http://www.nirsoft.net/kernel_struct/vista/TEB.html
 			# http://www.nirsoft.net/kernel_struct/vista/CLIENT_ID.html
-			teb = getTEBAddress()
+			teb = self.get_teb_addr()
 			offset = 0x20
 			if arch == 64:
 				offset = 0x40
@@ -2090,7 +2050,7 @@ class Debugger:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
-		peb = getPEBInfo()
+		peb = self.get_peb_info()
 		majorversion = int(peb.OSMajorVersion)
 		minorversion = int(peb.OSMinorVersion)
 		buildversion = int(peb.OSBuildNumber)
@@ -2164,7 +2124,7 @@ class Debugger:
 			return []
 		sehchain = []
 		# get top of chain
-		teb = getTEBAddress()
+		teb = self.get_teb_addr()
 		# _TEB.NtTib(NT_TIB).ExceptionList(PEXCEPTION_REGISTRATION_RECORD)
 		nextrecord = pykd.ptrPtr(teb)
 		validrecord = True
@@ -2315,7 +2275,7 @@ class Debugger:
 
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		allheaps = []
-		peb = getPEBInfo()
+		peb = self.get_peb_info()
 		offset = 0x88
 		if arch == 64:
 			offset = 0xe8
@@ -2346,12 +2306,6 @@ class Debugger:
 
 		return wheap(address)
 
-	def getPEBAddress(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-
-		return getPEBAddress()
-
 	def getAllThreads(self):
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
@@ -2370,10 +2324,39 @@ class Debugger:
 		On x86 this is the FS segment base; on x64 the GS segment base.
 		pykd.getCurrentThread() returns that base directly.
 		"""
+		if self._teb_addr is not None:
+			return self._teb_addr
 		try:
-			return int(pykd.getCurrentThread())
+			self._teb_addr = int(pykd.getCurrentThread())
 		except Exception:
-			return 0
+			self._teb_addr = 0
+		return self._teb_addr
+
+	def get_peb_addr(self):
+		"""
+		Return the PEB address by reading TEB+0x30 (x86) / TEB+0x60 (x64).
+		Result is cached in self._peb_addr.
+		"""
+		if self._peb_addr is not None:
+			return self._peb_addr
+		try:
+			teb      = self.get_teb_addr()
+			ptr_size = 8 if arch == 64 else 4
+			off      = 0x60 if arch == 64 else 0x30
+			fmt      = '<Q' if arch == 64 else '<L'
+			self._peb_addr = struct.unpack(fmt, bytes(bytearray(self.readMemory(teb + off, ptr_size))))[0]
+		except Exception:
+			self._peb_addr = 0
+		return self._peb_addr
+
+	def get_peb_info(self):
+		"""
+		Return a pykd.typedVar("ntdll!_PEB") using the cached PEB address.
+		Result is cached in self._peb_info.
+		"""
+		if self._peb_info is None:
+			self._peb_info = getPEBInfo(self.get_peb_addr())
+		return self._peb_info
 
 	def _peb_walk(self):
 		"""
@@ -2405,10 +2388,7 @@ class Debugger:
 			raw = bytes(bytearray(self.readMemory(buf_ptr, length)))
 			return raw.decode('utf-16-le', errors='replace')
 
-		teb      = self.get_teb_addr()
-		off      = 0x60 if arch == 64 else 0x30
-		fmt      = '<Q' if arch == 64 else '<L'
-		peb_addr = struct.unpack(fmt, bytes(bytearray(self.readMemory(teb + off, ptr_size))))[0]
+		peb_addr = self.get_peb_addr()
 		if peb_addr == 0:
 			return
 		ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
