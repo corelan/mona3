@@ -13810,6 +13810,120 @@ def procModuleInfo(args):
 			for k, v in st.strings.items():
 				if k not in printed:
 					dbg.log("     %-22s : %s" % (k, v))
+
+	# ----------------------------------------------------------------
+	# Dependency tree (DFS, horizontal like Linux `tree`)
+	# ----------------------------------------------------------------
+	def _get_imported_names(mod_base):
+		"""Return sorted list of lowercase DLL names imported by the module at mod_base."""
+		names = []
+		try:
+			pe_off   = struct.unpack('<L', dbg.readMemory(mod_base + 0x3c, 4))[0]
+			pe_base  = mod_base + pe_off
+			magic    = struct.unpack('<H', dbg.readMemory(pe_base + 0x18, 2))[0]
+			if magic == 0x20b:
+				dd_off = pe_base + 0x18 + 0x70
+			else:
+				dd_off = pe_base + 0x18 + 0x60
+			imp_rva  = struct.unpack('<L', dbg.readMemory(dd_off + 0x08, 4))[0]
+			imp_size = struct.unpack('<L', dbg.readMemory(dd_off + 0x0c, 4))[0]
+			if not imp_rva or not imp_size:
+				return names
+			desc = mod_base + imp_rva
+			idx  = 0
+			while True:
+				entry = desc + idx * 20
+				oft = struct.unpack('<L', dbg.readMemory(entry + 0x00, 4))[0]
+				tds = struct.unpack('<L', dbg.readMemory(entry + 0x04, 4))[0]
+				fwd = struct.unpack('<L', dbg.readMemory(entry + 0x08, 4))[0]
+				nrv = struct.unpack('<L', dbg.readMemory(entry + 0x0c, 4))[0]
+				ft  = struct.unpack('<L', dbg.readMemory(entry + 0x10, 4))[0]
+				if oft == 0 and tds == 0 and fwd == 0 and nrv == 0 and ft == 0:
+					break
+				if nrv:
+					raw = dbg.readString(mod_base + nrv)
+					if raw:
+						n = ensure_text(raw).lower().strip()
+						if n:
+							names.append(n)
+				idx += 1
+		except Exception:
+			pass
+		return sorted(set(names))
+
+	def _mod_info_by_filename(fname_lower):
+		"""Return (base, version, path) for a loaded module by filename, or (0,'','')."""
+		stem = os.path.splitext(fname_lower)[0]
+		for _key, props in g_modules.items():
+			loaded = os.path.splitext((props.get("filename") or props.get("name", "")).lower())[0]
+			if loaded == stem:
+				return props.get("base", 0), props.get("version", ""), props.get("path", "")
+		return 0, "", ""
+
+	def _build_dep_tree_lines(root_fname, root_base, root_ver, root_path):
+		"""
+		Iterative DFS producing lines in the style of Linux `tree`:
+		  root
+		  ├── child1
+		  │   ├── grandchild
+		  │   └── grandchild2
+		  └── child2
+		Each label includes (version | path) before the module name.
+		"""
+		lines = []
+
+		def label(name, ver, path):
+			ver_s  = ver  if ver  else "?"
+			path_s = path if path else "?"
+			return "(%s | %s) %s" % (ver_s, path_s, name)
+
+		# Stack entries: (display_name, base, ver, path, prefix, is_last)
+		# We use an explicit stack for DFS. Children are pushed in reverse order
+		# so the first child is processed first.
+		visited = set()
+		root_label = label(root_fname, root_ver, root_path)
+		lines.append(root_label)
+		visited.add(os.path.splitext(root_fname.lower())[0])
+
+		root_children = _get_imported_names(root_base)
+
+		# Iterative DFS. Push children in reverse order so the first child
+		# is popped first (maintaining alphabetical top-to-bottom order).
+		# Stack items: (fname, base, ver, path, prefix, is_last)
+		dfs_stack = []
+		for i, child_name in enumerate(reversed(root_children)):
+			is_last_child = (i == 0)  # reversed: index 0 == last original child
+			cb, cv, cp = _mod_info_by_filename(child_name)
+			dfs_stack.append((child_name, cb, cv, cp, "", is_last_child))
+
+		while dfs_stack:
+			fname_n, base_n, ver_n, path_n, prefix, is_last = dfs_stack.pop()
+
+			connector = "└── " if is_last else "├── "
+			lines.append(prefix + connector + label(fname_n, ver_n, path_n))
+
+			stem_n = os.path.splitext(fname_n.lower())[0]
+			if stem_n in visited or base_n == 0:
+				if stem_n in visited and base_n != 0:
+					lines[-1] += "  (*)"
+				continue
+			visited.add(stem_n)
+
+			children = _get_imported_names(base_n)
+			child_prefix = prefix + ("    " if is_last else "│   ")
+			for i, child_name in enumerate(reversed(children)):
+				is_last_child = (i == 0)
+				cb, cv, cp = _mod_info_by_filename(child_name)
+				dfs_stack.append((child_name, cb, cv, cp, child_prefix, is_last_child))
+
+		return lines
+
+	dep_lines = _build_dep_tree_lines(fname, base, p.get("version", ""), p.get("path", ""))
+	dbg.log(sep)
+	dbg.log(" Dependency tree:")
+	for dl in dep_lines:
+		dbg.log("   " + dl)
+
 	dbg.log(sep)
 
 
