@@ -1846,48 +1846,12 @@ def get_peb_addr():
 def peb_walk():
 	"""
 	Yield (dll_base, base_name, full_path) for every entry in
-	PEB.InLoadOrderModuleList using only dbg.readMemory.
+	PEB.InLoadOrderModuleList.
 	Results are cached in _peb_list_cache after the first walk.
 	"""
 	global _peb_list_cache
-	if _peb_list_cache is not None:
-		for entry in _peb_list_cache:
-			yield entry
-		return
-
-	ptr_size = 8 if arch == 64 else 4
-	fmt_ptr  = '<Q' if arch == 64 else '<L'
-
-	def _ptr(addr):
-		return struct.unpack(fmt_ptr, bytes(bytearray(dbg.readMemory(addr, ptr_size))))[0]
-
-	def _wstr(entry, off):
-		length  = struct.unpack('<H', bytes(bytearray(dbg.readMemory(entry + off, 2))))[0]
-		buf_ptr = _ptr(entry + off + (8 if arch == 64 else 4))
-		if length == 0 or buf_ptr == 0:
-			return ""
-		raw = bytes(bytearray(dbg.readMemory(buf_ptr, length)))
-		return raw.decode('utf-16-le', errors='replace')
-
-	peb_addr = get_peb_addr()
-	if peb_addr == 0:
-		return
-	ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
-	list_head = ldr_addr + (0x10 if arch == 64 else 0x0C)
-
-	dll_base_off  = 0x30 if arch == 64 else 0x18
-	full_name_off = 0x48 if arch == 64 else 0x24
-	base_name_off = 0x58 if arch == 64 else 0x2C
-
-	flink   = _ptr(list_head)
-	results = []
-	while flink != list_head and flink != 0:
-		dll_base  = _ptr(flink + dll_base_off)
-		full_path = _wstr(flink, full_name_off)
-		base_name = _wstr(flink, base_name_off)
-		results.append((dll_base, base_name, full_path))
-		flink = _ptr(flink)
-	_peb_list_cache = results
+	if _peb_list_cache is None:
+		_peb_list_cache = list(dbg._peb_walk())
 	for entry in _peb_list_cache:
 		yield entry
 
@@ -4125,7 +4089,7 @@ def getNtGlobalFlag():
 	flagoffset = 0x68
 	if arch == 64:
 		flagoffset = 0xBC
-	pebaddress = dbg.getPEBAddress()
+	pebaddress = get_peb_addr()
 	global NtGlobalFlag
 	if NtGlobalFlag == -1:
 		try:
@@ -6074,7 +6038,7 @@ class MnPointer:
 #  Various functions                    #
 #---------------------------------------#
 def getDefaultProcessHeap():
-	peb = dbg.getPEBAddress()
+	peb = get_peb_addr()
 	defprocheap = struct.unpack('<L',dbg.readMemory(peb+0x18,4))[0]
 	return defprocheap
 
@@ -16137,7 +16101,7 @@ def procHeap(args):
 		allheaps = dbg.getHeapsAddress()
 	except:
 		allheaps = []
-	dbg.log("Peb : 0x%08x, NtGlobalFlag : 0x%08x" % (dbg.getPEBAddress(),getNtGlobalFlag()))
+	dbg.log("Peb : 0x%08x, NtGlobalFlag : 0x%08x" % (get_peb_addr(),getNtGlobalFlag()))
 	dbg.log("Heaps:")
 	dbg.log("------")
 	if len(allheaps) > 0:
@@ -17757,7 +17721,7 @@ def procPEB(args):
 	"""
 	Show the address of the PEB
 	"""
-	pebaddy = dbg.getPEBAddress()
+	pebaddy = get_peb_addr()
 	dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
 	return
 
@@ -20265,7 +20229,7 @@ def procAllocMem(args):
 
 
 def procHideDebug(args):
-	peb = dbg.getPEBAddress()			
+	peb = get_peb_addr()			
 	dbg.log("[+] Patching PEB (0x%08x)" % peb)
 	if peb == 0:
 		dbg.log("** Unable to find PEB **")
