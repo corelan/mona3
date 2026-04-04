@@ -7029,6 +7029,24 @@ def ModInfoCached(modulename):
 	else:
 		return True
 
+
+def criteriaToText(criteria, toupper=False):
+	"""
+	Takes a dict of criteria and produces a string with all criteria=value instances 
+	"""
+	criteriatext = ""
+	criteriaelems = []
+	for crit in criteria:
+		if not "=" in crit:
+			if toupper:
+				criteriaelems.append("%s = %s" % (crit, criteria[crit]))
+			else:
+				criteriaelems.append("%s = %s" % (crit.upper(), criteria[crit]))
+	criteriatext = " | ".join(criteriaelems)
+
+	return criteriatext
+
+
 def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, peb_order="load"):
 	"""
 	Shows table with all loaded modules and their properties.
@@ -7045,12 +7063,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	if len(g_modules) == 0:
 		populateModuleInfo()
 
-	filtertext = ""
-	filterelems = []
-	for crit in modulecriteria:
-		if not "=" in crit:
-			filterelems.append("%s = %s" % (crit.upper(), modulecriteria[crit]))
-	filtertext = " | ".join(filterelems)
+	filtertext = criteriaToText(modulecriteria, True)
 
 	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
 	items = list(g_modules.items())
@@ -7135,12 +7148,13 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 	results_dict_details = {}
 
 	if all_opcodes:
+		dbg.log("")
 		dbg.log("[+] Writing results to %s" % thislog)
 		for hf in all_opcodes:
 			if not silent:
 				try:
 					#dbg.log("    - Number of pointers of type '%s' : %d " % (hf,len(all_opcodes[hf])))
-					results_dict[hf] = [len(all_opcodes[hf])]
+					results_dict[hf.lower()] = [len(all_opcodes[hf])]
 				except:
 					results_dict["unable to display"] = [len(all_opcodes[hf])]
 					#dbg.log("    - Number of pointers of type '<unable to display>' : %d " % (len(all_opcodes[hf])))
@@ -7187,20 +7201,21 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 						if not silent:
 							if DEBUG_MODE:
 								dbgp("  %s" % ptrinfo,address=ptr)
-						results_dict_details[ptr] = [optext, ptrx.__str__() , extrainfo]
+						results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip() , extrainfo]
 						cnt += 1
 					ptrcnt += 1
 					if (ptr_to_get == -1 or ptr_to_get > 20) and cnt == 20 and not silent and not messageshown:
-						dbg.log("... Please wait while I'm processing all remaining results and writing everything to file...")
+						dbg.log("    Please wait while I'm processing all remaining results and writing everything to file...")
+						dbg.log("")
 						messageshown = True
 
 			headers = ["Address", "Type", "Address info", "Other info"]
 			types   = ["pointer", "string", "string", "string"]
 			print_dict_table(results_dict_details, headers, types, padding = "      ")
 
-
 			if cnt < ptrcnt:
 				if not silent:
+					dbg.log("")
 					dbg.log("[+] Done. Only the first %d pointers are shown here. For more pointers, open %s..." % (cnt,thislog)) 
 		else:
 			allptr = []
@@ -7217,6 +7232,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 			logfile.write(ptrinfo,thislog)
 			if not silent:
 				dbg.log("[+] Done")
+	dbg.log("")
 	dbg.log("    Found a total of %d pointers" % ptrcnt, highlight=1)
 	dbg.setStatusBar("Done. Found %d pointers" % ptrcnt)
 	
@@ -7265,6 +7281,7 @@ def findSEH(modulecriteria={},criteria={}):
 		
 	modulestosearch = getModulesToQuery(modulecriteria)
 	if not silent:
+		dbg.log("[+] Criteria: %s" % criteriaToText(modulecriteria))
 		dbg.log("[+] Querying %d modules" % len(modulestosearch))
 	
 	starttime = datetime.datetime.now()
@@ -7320,6 +7337,7 @@ def findJMP(modulecriteria={},criteria={},register="esp"):
 		
 	modulestosearch = getModulesToQuery(modulecriteria)
 	if not silent:
+		dbg.log("[+] Criteria: %s" % criteriaToText(modulecriteria))
 		dbg.log("[+] Querying %d modules" % len(modulestosearch))
 	
 	starttime = datetime.datetime.now()
@@ -17597,6 +17615,7 @@ def procGetxAT(args,mode=""):
 	
 	modulestosearch = getModulesToQuery(modulecriteria)
 	if not silent:
+		dbg.log("[+] Criteria: %s" % criteriaToText(modulecriteria))
 		dbg.log("[+] Querying %d modules" % len(modulestosearch))
 	
 	if len(modulestosearch) > 0:
