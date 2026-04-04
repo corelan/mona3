@@ -6998,7 +6998,7 @@ def ModInfoCached(modulename):
 	else:
 		return True
 
-def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sort_order=None):
+def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sort_order=None, peb_order="load"):
 	"""
 	Shows table with all loaded modules and their properties.
 
@@ -7047,7 +7047,12 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d\n" % (len(g_modules), len(modules))
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(g_modules), len(modules))
+	thistable += " | PEB order: %s" % peb_order
+	if sort_by is not None:
+		actual_order = sort_order if sort_order else ("desc" if _POST_SORT_DEFAULT_REVERSE.get(sort_by, False) else "asc")
+		thistable += " | Sorted by: %s %s" % (sort_by, actual_order)
+	thistable += "\n"
 	if filtertext != "":
 		thistable += ("-" * linelength) + "\n"
 		thistable += " Module filter applied: %s\n" % (filtertext)
@@ -13489,7 +13494,7 @@ def procShowMODULES(args):
 		sort_order = order_val
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True, peb_order=peb_order)
-	showModuleTable("", modulestosearch, modulecriteria, sort_by=sort_by, sort_order=sort_order)
+	showModuleTable("", modulestosearch, modulecriteria, sort_by=sort_by, sort_order=sort_order, peb_order=peb_order)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
 
