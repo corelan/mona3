@@ -13460,26 +13460,16 @@ def _parse_sort_spec(spec):
 
 	Supported separator styles:
 	  - Commas:       -sort base,aslr
+	  - Spaces:       -sort base aslr   (WinDbg passes quoted strings as a single token,
+	                                     so spaces always work as delimiters)
 	  - Concatenated: -sort base+aslr-   (the +/- suffix acts as delimiter)
-	  - Quoted spaces: -sort "base aslr"  (whitespace splitting ONLY when the spec is
-	                                       surrounded by quote characters)
 
 	Returns (sort_keys, error_string). error_string is None on success.
 	"""
 	spec = spec.strip()
-	# Detect whether the user explicitly quoted the spec (quotes survive through pykd
-	# since it does not shell-strip them).  Only in that case do we treat whitespace
-	# as a separator; otherwise we only split on commas.
-	quoted = (len(spec) >= 2 and
-	          ((spec[0] == '"'  and spec[-1] == '"') or
-	           (spec[0] == "'"  and spec[-1] == "'")))
-	if quoted:
-		spec = spec[1:-1]
-		split_pattern = r'[\s,]+'
-	else:
-		split_pattern = r'\s*,\s*'
-
-	parts = re.split(split_pattern, spec.lower().strip())
+	# WinDbg strips quotes before passing args to Python, so any internal spaces
+	# are legitimate delimiters.  Always split on whitespace or commas.
+	parts = re.split(r'[\s,]+', spec.lower().strip())
 	tokens = []
 	for part in parts:
 		if not part:
@@ -20597,11 +20587,9 @@ Optional parameters :
                          '-' = high first (descending)
                      No suffix uses the column default (bool: does not have the flag first; numeric: low first).
                      Separator styles (combinable):
-                       Commas:        -sort aslr-,safeseh-
-                       Concatenated:  -sort aslr-safeseh-   (+/- suffix acts as delimiter;
-                                      every key MUST have a suffix — no suffix means no
-                                      delimiter, so parsing is ambiguous and will fail)
-                       Quoted spaces: -sort "aslr safeseh"  (whitespace separator; quotes required)
+                       Commas:        -sort aslr-,safeseh- (comma acts as delimiter, MUST have no spaces, no suffix sets default direction for each key)
+                       Concatenated:  -sort aslr-safeseh-   (+/- suffix acts as delimiter; every key MUST have a suffix)
+                       Spaces:        -sort "aslr safeseh" (no suffix, default direction for each key)
                      Valid keys: %s
                      Examples:
                        -sort aslr-          : modules without ASLR first (default)
