@@ -13441,25 +13441,49 @@ PEB_ORDER_VALID = ("load", "memory", "init")
 MODULE_COLUMNS = {
 	"base":    {"key": lambda x: x[1]["base"],    "type": "hex",  "default_reverse": False},
 	"size":    {"key": lambda x: x[1]["size"],    "type": "hex",  "default_reverse": False},
-	"rebase":  {"key": lambda x: x[1]["rebase"],  "type": "bool", "default_reverse": False},
-	"safeseh": {"key": lambda x: x[1]["safeseh"], "type": "bool", "default_reverse": False},
-	"aslr":    {"key": lambda x: x[1]["aslr"],    "type": "bool", "default_reverse": False},
-	"cfg":     {"key": lambda x: x[1]["cfg"],     "type": "bool", "default_reverse": False},
-	"nx":      {"key": lambda x: x[1]["nx"],      "type": "bool", "default_reverse": False},
-	"os":      {"key": lambda x: x[1]["os"],      "type": "bool", "default_reverse": False},
+	"rebase":  {"key": lambda x: x[1]["rebase"],  "type": "bool", "default_reverse": True},
+	"safeseh": {"key": lambda x: x[1]["safeseh"], "type": "bool", "default_reverse": True},
+	"aslr":    {"key": lambda x: x[1]["aslr"],    "type": "bool", "default_reverse": True},
+	"cfg":     {"key": lambda x: x[1]["cfg"],     "type": "bool", "default_reverse": True},
+	"nx":      {"key": lambda x: x[1]["nx"],      "type": "bool", "default_reverse": True},
+	"os":      {"key": lambda x: x[1]["os"],      "type": "bool", "default_reverse": True},
 }
 
 def _parse_sort_spec(spec):
 	"""
-	Parse a compound sort specifier like 'base+safeseh-' into a list of
-	(key, reverse) tuples. A trailing '+' means ascending, '-' means descending.
-	No suffix uses the per-column default_reverse from MODULE_COLUMNS.
-	Keys may be separated by commas, or joined directly with a +/- suffix as delimiter.
+	Parse a compound sort specifier into a list of (key, reverse) tuples.
+
+	For hex/numeric columns: '+' = ascending (low first), '-' = descending (high first).
+	For bool columns:        '+' = True first,            '-' = False first.
+	No suffix uses the per-column default_reverse from MODULE_COLUMNS
+	  (bool columns default to True first; hex columns default to low first).
+
+	Supported separator styles:
+	  - Commas:       -sort base,aslr
+	  - Concatenated: -sort base+aslr-   (the +/- suffix acts as delimiter)
+	  - Quoted spaces: -sort "base aslr"  (whitespace splitting ONLY when the spec is
+	                                       surrounded by quote characters, i.e. pykd
+	                                       preserved the quotes from the WinDBG command
+	                                       line.  Without quotes, spaces are NOT treated
+	                                       as separators to avoid ambiguity with argparse
+	                                       joining multiple flag tokens with spaces.)
+
 	Returns (sort_keys, error_string). error_string is None on success.
 	"""
-	# Split on commas to allow 'base,safeseh' style; within each comma-part,
-	# use findall to handle the concatenated 'safeseh-base+' style.
-	parts = re.split(r'\s*,\s*', spec.lower().strip())
+	spec = spec.strip()
+	# Detect whether the user explicitly quoted the spec (quotes survive through pykd
+	# since it does not shell-strip them).  Only in that case do we treat whitespace
+	# as a separator; otherwise we only split on commas.
+	quoted = (len(spec) >= 2 and
+	          ((spec[0] == '"'  and spec[-1] == '"') or
+	           (spec[0] == "'"  and spec[-1] == "'")))
+	if quoted:
+		spec = spec[1:-1]
+		split_pattern = r'[\s,]+'
+	else:
+		split_pattern = r'\s*,\s*'
+
+	parts = re.split(split_pattern, spec.lower().strip())
 	tokens = []
 	for part in parts:
 		if not part:
@@ -13476,10 +13500,13 @@ def _parse_sort_spec(spec):
 	for key, direction in tokens:
 		if key not in MODULE_COLUMNS:
 			return None, "unknown sort key '%s', valid options: %s" % (key, ", ".join(MODULE_COLUMNS))
+		is_bool = MODULE_COLUMNS[key]["type"] == "bool"
 		if direction == "+":
-			reverse = False
+			# bool: True first (descending); numeric: low first (ascending)
+			reverse = True if is_bool else False
 		elif direction == "-":
-			reverse = True
+			# bool: False first (ascending); numeric: high first (descending)
+			reverse = False if is_bool else True
 		else:
 			reverse = MODULE_COLUMNS[key]["default_reverse"]
 		sort_keys.append((key, reverse))
@@ -20565,15 +20592,21 @@ Optional parameters :
                        memory - InMemoryOrderModuleList
                        init   - InInitializationOrderModuleList (DllMain call order)
 -sort <spec>       : sort the output using a compound sort specifier.
-                     Each key is optionally followed by '+' (ascending) or '-' (descending).
-                     No suffix uses the column default (all columns default to ascending / False-first).
-                     Multiple keys are separated by commas, or joined directly when a +/- suffix acts as delimiter.
+                     Each key is optionally followed by a suffix:
+                       Bool columns  (rebase,safeseh,aslr,cfg,nx,os): '+' = True first, '-' = False first.
+                       Numeric columns (base,size):                   '+' = low first,  '-' = high first.
+                     No suffix uses the column default (bool: True first; numeric: low first).
+                     Separator styles (combinable):
+                       Commas:        -sort aslr-,safeseh-
+                       Concatenated:  -sort aslr-safeseh-   (+/- suffix acts as delimiter)
+                       Quoted spaces: -sort "aslr safeseh"  (whitespace separator; quotes required)
                      Valid keys: %s
                      Examples:
                        -sort aslr-          : modules without ASLR first
-                       -sort aslr,safeseh   : no-ASLR first, then no-SafeSEH first (both default direction)
-                       -sort aslr-safeseh-  : no-ASLR first, then no-SafeSEH first (both explicit descending)
-                       -sort base+          : ascending base address""" % ", ".join(MODULE_COLUMNS)
+                       -sort aslr+          : modules with ASLR first
+                       -sort aslr-,safeseh- : no-ASLR first, then no-SafeSEH first
+                       -sort "aslr safeseh" : same as above using quoted spaces
+                       -sort base+          : ascending base address (low first)""" % ", ".join(MODULE_COLUMNS)
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
