@@ -38,7 +38,6 @@ __VERSION__ = '3.0'
 __REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
 
 DEBUG_MODE = False
-USE_OLD_MODULE = False
 
 
 ## Some Python2/Python3 compatibility stuff
@@ -152,6 +151,9 @@ STACK_POINTER = "ESP" if arch == 32 else "RSP"
 PTR_SIZE_DIRECTIVE = "DWORD PTR" if arch == 32 else "QWORD PTR"
 g_modules={}
 g_modulesOrder=None
+_teb_addr_cache = None
+_peb_addr_cache = None
+_peb_list_cache = None
 MemoryPageACL={}
 global CritCache
 global vtableCache
@@ -1807,6 +1809,51 @@ def getNrOfDictElements(thisdict):
 			total += 1
 	return total
 	
+def get_teb_addr():
+	"""
+	Return the TEB address for the current thread.
+	Cached at mona level (_teb_addr_cache) and at the windbglib Debugger
+	instance level (self._teb_addr).
+	"""
+	global _teb_addr_cache
+	if _teb_addr_cache is not None:
+		return _teb_addr_cache
+	try:
+		_teb_addr_cache = dbg.get_teb_addr()
+	except Exception:
+		_teb_addr_cache = 0
+	return _teb_addr_cache
+
+
+def get_peb_addr():
+	"""
+	Return the PEB address.
+	Cached at mona level (_peb_addr_cache) and at the windbglib Debugger
+	instance level (self._peb_addr).
+	"""
+	global _peb_addr_cache
+	if _peb_addr_cache is not None:
+		return _peb_addr_cache
+	try:
+		_peb_addr_cache = dbg.get_peb_addr()
+	except Exception:
+		_peb_addr_cache = 0
+	return _peb_addr_cache
+
+
+def peb_walk():
+	"""
+	Yield (dll_base, base_name, full_path) for every entry in
+	PEB.InLoadOrderModuleList.
+	Results are cached in _peb_list_cache after the first walk.
+	"""
+	global _peb_list_cache
+	if _peb_list_cache is None:
+		_peb_list_cache = list(dbg._peb_walk())
+	for entry in _peb_list_cache:
+		yield entry
+
+
 def getModuleObj(modname):
 	"""
 	Will return a module object if the provided module name exists
@@ -3255,61 +3302,8 @@ class MnModule:
 	# ------------------------------------------------------------------
 
 	@staticmethod
-	def _get_peb_addr():
-		"""
-		Return the PEB address by reading the $peb WinDBG pseudo-register via a
-		native command — no pykd typed variables or symbol resolution required.
-		"""
-		try:
-			out = dbg.nativeCommand("r $peb")
-			m = re.search(r'\$peb=([0-9A-Fa-f`]+)', out)
-			if m:
-				return int(m.group(1).replace('`', ''), 16)
-		except Exception:
-			pass
-		return 0
-
-	@staticmethod
 	def _peb_walk():
-		"""
-		Yield (dll_base, base_name, full_path) for every entry in
-		PEB.InLoadOrderModuleList using only dbg.readMemory.
-		The single pykd call is getCurrentProcess() for the PEB address.
-
-		LDR_DATA_TABLE_ENTRY offsets:
-		  x86: DllBase +0x18, FullDllName +0x24, BaseDllName +0x2C
-		  x64: DllBase +0x30, FullDllName +0x48, BaseDllName +0x58
-		"""
-		ptr_size = 8 if arch == 64 else 4
-		fmt_ptr  = '<Q' if arch == 64 else '<L'
-
-		def _ptr(addr):
-			return struct.unpack(fmt_ptr, bytes(bytearray(dbg.readMemory(addr, ptr_size))))[0]
-
-		def _wstr(entry, off):
-			"""Read a UNICODE_STRING at *off* inside *entry* and return the decoded string."""
-			length  = struct.unpack('<H', bytes(bytearray(dbg.readMemory(entry + off, 2))))[0]
-			buf_ptr = _ptr(entry + off + (8 if arch == 64 else 4))  # Buffer: +4 x86, +8 x64 (alignment padding)
-			if length == 0 or buf_ptr == 0:
-				return ""
-			raw = bytes(bytearray(dbg.readMemory(buf_ptr, length)))
-			return raw.decode('utf-16-le', errors='replace')
-
-		peb_addr  = MnModule._get_peb_addr()
-		ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
-		list_head = ldr_addr + (0x10 if arch == 64 else 0x0C)
-
-		dll_base_off      = 0x30 if arch == 64 else 0x18
-		full_name_off     = 0x48 if arch == 64 else 0x24
-		base_name_off     = 0x58 if arch == 64 else 0x2C
-
-		flink = _ptr(list_head)
-		while flink != list_head and flink != 0:
-			dll_base  = _ptr(flink + dll_base_off)
-			full_path = _wstr(flink, full_name_off)
-			base_name = _wstr(flink, base_name_off)
-			yield dll_base, base_name, full_path
-			flink = _ptr(flink)  # LIST_ENTRY.Flink at offset 0
+		return peb_walk()
 
 	@staticmethod
 	def _base_from_peb(modulename):
@@ -4089,705 +4083,11 @@ class MnModule:
 	def getShortName(self):
 		return stripExtension(self.moduleKey)
 
-class MnModuleOld:
-	"""
-	Class to access module properties
-	"""
-	def __init__(self, modulename):
-		#if DEBUG_MODE:
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-		modisaslr = True
-		modissafeseh = True
-		modrebased = True
-		modisnx = True
-		modisos = True
-		modiscfg = True		
-		self.IAT = {}
-		self.EAT = {}
-		path = ""
-		filename = ""
-		mzbase = 0
-		mzsize = 0
-		mztop = 0
-		mcodebase = 0
-		mcodesize = 0
-		mcodetop = 0
-		mentry = 0
-		mdllcharacteristics = 0
-		mversion = ""
-		self.internalname = modulename
-		if modulename != "":
-			# if info is cached, retrieve from cache
-			if ModInfoCached(modulename):
-				if DEBUG_MODE:
-					dbgp("Module %s retrieved from cache" % modulename)
-				modisaslr = getModuleProperty(modulename,"aslr")
-				modissafeseh = getModuleProperty(modulename,"safeseh")
-				modrebased = getModuleProperty(modulename,"rebase")
-				modisnx = getModuleProperty(modulename,"nx")
-				modisos = getModuleProperty(modulename,"os")
-				modiscfg = getModuleProperty(modulename,"cfg")
-				path = getModuleProperty(modulename,"path")
-				filename = getModuleProperty(modulename,"filename")
-				mzbase = getModuleProperty(modulename,"base")
-				mzsize = getModuleProperty(modulename,"size")
-				mztop = getModuleProperty(modulename,"top")
-				mversion = getModuleProperty(modulename,"version")
-				mentry = getModuleProperty(modulename,"entry")
-				mcodebase = getModuleProperty(modulename,"codebase")
-				mcodesize = getModuleProperty(modulename,"codesize")
-				mcodetop = getModuleProperty(modulename,"codetop")
-				mdllcharacteristics = getModuleProperty(modulename, "dllcharacteristics")
-			else:
-				#gather info manually - this code should only get called from populateModuleInfo()
-				self.moduleobj = dbg.getModule(modulename)
-				modissafeseh = True
-				modisaslr = True
-				modisnx = True
-				modrebased = False
-				modisos = False
-				modiscfg = False
-				#if self.moduleobj == None:
-				#	dbg.log("*** Error - self.moduleobj is None, key %s" % modulename, highlight=1)
-				mod       = self.moduleobj
-				mzbase    = mod.getBaseAddress()
-				mzrebase  = mod.getFixupbase()
-				mzsize    = mod.getSize()
-				mversion  = mod.getVersion()
-				mentry    = mod.getEntry() 
-				mcodebase = mod.getCodebase()
-				mcodesize = mod.getCodesize()
-				mcodetop  = mcodebase + mcodesize
-				mdllcharacteristics = 0
-				mversion=mversion.replace(", ",".")
-				mversionfields=mversion.split('(')
-				mversion=mversionfields[0].replace(" ","")
-								
-				if mversion=="":
-					mversion="-1.0-"
-				path     = mod.getPath()
-				filename = os.path.basename(path)
-
-				_OS_PRODUCT_NAME = "Microsoft\u00ae Windows\u00ae Operating System"
-				if __DEBUGGERAPP__ == "WinDBG":
-					modisos = False
-					try:
-						vi = dbglib.VSVersionInfo.from_memory(mzbase, read_memory=dbg)
-						if vi is None or not vi.fixed.file_version_str:
-							vi = dbglib.VSVersionInfo.from_file(path)
-					except Exception:
-						try:
-							vi = dbglib.VSVersionInfo.from_file(path)
-						except Exception:
-							vi = None
-					if vi is not None:
-						for st in vi.string_tables:
-							if st.get("ProductName", "").strip() == _OS_PRODUCT_NAME:
-								modisos = True
-								break
-				else:
-					if mod.getIssystemdll() == 0:
-						modisos = "WINDOWS" in path.upper()
-					else:
-						modisos = True
-
-				mztop = mzbase + mzsize
-				if mzbase > 0:
-					peoffset = struct.unpack('<L', dbg.readMemory(mzbase + 0x3c, 4))[0]
-					pebase = mzbase + peoffset
-
-					pesig = struct.unpack('<I', dbg.readMemory(pebase, 4))[0]
-					if pesig == 0x4550:
-						pemagic = struct.unpack('<H', dbg.readMemory(pebase + 0x18, 2))[0]
-						is_pe64 = (pemagic == 0x20b)
-
-						dll_characteristics_flags = struct.unpack('<H', dbg.readMemory(pebase + 0x5e, 2))[0]
-						mdllcharacteristics = dll_characteristics_flags
-
-						modisaslr = ((dll_characteristics_flags & 0x0040) != 0)
-						modisnx   = ((dll_characteristics_flags & 0x0100) != 0)
-						modiscfg  = ((dll_characteristics_flags & 0x4000) != 0)
-						modissafeseh = False
-
-						if not is_pe64:
-							# PE32 only
-							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + 0x74, 4))[0]
-
-							# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
-							if numberofentries > 10:
-								loadcfg_rva, loadcfg_size = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + (8 * 10), 8))[0:2]
-
-								if loadcfg_rva != 0 and loadcfg_size != 0:
-									loadcfg = mzbase + loadcfg_rva
-
-									try:
-										# IMAGE_LOAD_CONFIG_DIRECTORY32
-										# SafeSEH fields:
-										#   SEHandlerTable @ +0x40
-										#   SEHandlerCount @ +0x44
-										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
-
-										if sehtable != 0 and sehcount != 0:
-											modissafeseh = True
-									except:
-										modissafeseh = False
-
-						if mzrebase != mzbase:
-							modrebased = True
-	
-
-		else:
-			# should never be hit
-			#print "No module specified !!!"
-			#print "stacktrace : "
-			#print traceback.format_exc()
-			return None
-
-		#check if module is excluded
-		thisconfig = MnConfig()
-		allexcluded = []
-		excludedlist = thisconfig.get("excluded_modules")
-		modfound = False
-		if excludedlist:
-			allexcluded = excludedlist.split(',')
-			for exclentry in allexcluded:
-				if exclentry.lower().strip() == modulename.lower().strip():
-					modfound = True
-		self.isExcluded = modfound
-		
-		#done - populate variables
-		self.isAslr = modisaslr
-		
-		self.isSafeSEH = modissafeseh
-		
-		self.isRebase = modrebased
-		
-		self.isNX = modisnx
-		
-		self.isOS = modisos
-
-		self.isCFG = modiscfg
-		
-		self.moduleKey = modulename
-	
-		self.modulePath = path
-
-		self.moduleFilename = filename
-		
-		self.moduleBase = mzbase
-		
-		self.moduleSize = mzsize
-		
-		self.moduleTop = mztop
-		
-		self.moduleVersion = mversion
-		
-		self.moduleEntry = mentry
-		
-		self.moduleCodesize = mcodesize
-		
-		self.moduleCodetop = mcodetop
-		
-		self.moduleCodebase = mcodebase
-
-		self.moduleDllCharacteristics = mdllcharacteristics
-		
-			
-	
-	def __str__(self):
-		#return general info about the module
-		#modulename + info
-		"""
-		Get information about a module (human readable format)
-
-		Arguments:
-		None
-
-		Return:
-		String with various properties about a module
-		"""			
-		outstring = ""
-		if self.moduleKey != "":
-			if arch == 32:
-				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
-			else:
-								outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
-		else:
-			outstring = "[None]"
-		return outstring
-		
-	def isAslr(self):
-		return self.isAslr
-		
-	def isSafeSEH(self):
-		return self.isSafeSEH
-		
-	def isRebase(self):
-		return self.isRebase
-		
-	def isOS(self):
-		return self.isOS
-
-	def isCFG(self):
-		return self.isCFG
-	
-	def isNX(self):
-		return self.isNX
-		
-	def moduleKey(self):
-		return self.moduleKey
-		
-	def modulePath(self):
-		return self.modulePath
-
-	def moduleFilename(self):
-		return self.moduleFilename
-
-	def moduleBase(self):
-		return self.moduleBase
-	
-	def moduleSize(self):
-		return self.moduleSize
-	
-	def moduleTop(self):
-		return self.moduleTop
-	
-	def moduleEntry(self):
-		return self.moduleEntry
-		
-	def moduleCodebase(self):
-		return self.moduleCodebase
-	
-	def moduleCodesize(self):
-		return self.moduleCodesize
-		
-	def moduleCodetop(self):
-		return self.moduleCodetop
-		
-	def moduleVersion(self):
-		return self.moduleVersion
-
-	def moduleDllCharacteristics(self):
-		return self.moduleDllCharacteristics
-		
-	def isExcluded(self):
-		return self.isExcluded
-	
-	def getFunctionCalls(self,criteria={}):
-		funccalls = {}
-		sequences = []
-		sequences.append(["call","\xff\x15"])
-		funccalls = searchInRange(sequences, self.moduleBase, self.moduleTop,criteria)
-		return funccalls
-
-		
-	def getIAT(self):
-		IAT = {}
-		global IATCache
-		#dbg.log("")
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-			dbgp("    Getting IAT for %s." % (self.moduleKey))
-		try:
-			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
-				
-				# METHOD 1 - Parse the strings from the IAT.  Fastest way 
-
-				# find optional header
-				PEHeader_ref = self.moduleBase + 0x3c
-				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
-
-				# do we have an optional header ?
-				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location + 0x14, 2)
-				sizeOfOptionalHeader = struct.unpack('<L', bsizeOfOptionalHeader + b"\x00\x00")[0]
-				OptionalHeader_location = PEHeader_location + 0x18
-
-				if sizeOfOptionalHeader > 0:
-
-					# PE32 vs PE32+
-					optional_magic = struct.unpack('<H', dbg.readMemory(OptionalHeader_location, 2))[0]
-
-					if optional_magic == 0x10b:
-						# PE32
-						DataDirectory_location = OptionalHeader_location + 0x60
-						thunk_size = 4
-						thunk_fmt = '<L'
-						ordinal_flag = 0x80000000
-					elif optional_magic == 0x20b:
-						# PE32+
-						DataDirectory_location = OptionalHeader_location + 0x70
-						thunk_size = 8
-						thunk_fmt = '<Q'
-						ordinal_flag = 0x8000000000000000
-					else:
-						DataDirectory_location = 0
-						thunk_size = 0
-
-					if DataDirectory_location > 0:
-
-						# Import Directory = DataDirectory[1]
-						importtable_rva  = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x08, 4))[0]
-						importtable_size = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x0c, 4))[0]
-
-						if importtable_rva > 0 and importtable_size > 0:
-							importDescAddr = self.moduleBase + importtable_rva
-							if DEBUG_MODE:
-								dbgp("    Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
-
-							desc_index = 0
-							while True:
-								thisdesc = importDescAddr + (desc_index * 20)
-
-								orig_first_thunk = struct.unpack('<L', dbg.readMemory(thisdesc + 0x00, 4))[0]
-								time_date_stamp  = struct.unpack('<L', dbg.readMemory(thisdesc + 0x04, 4))[0]
-								forwarder_chain  = struct.unpack('<L', dbg.readMemory(thisdesc + 0x08, 4))[0]
-								name_rva         = struct.unpack('<L', dbg.readMemory(thisdesc + 0x0c, 4))[0]
-								first_thunk      = struct.unpack('<L', dbg.readMemory(thisdesc + 0x10, 4))[0]
-
-								# null descriptor = end
-								if orig_first_thunk == 0 and time_date_stamp == 0 and forwarder_chain == 0 and name_rva == 0 and first_thunk == 0:
-									break
-
-								if name_rva == 0 or first_thunk == 0:
-									desc_index += 1
-									continue
-
-								dllname = dbg.readString(self.moduleBase + name_rva)
-								if dllname is None:
-									dllname = ""
-								dllname = ensure_text(dllname).lower()
-
-								lookup_rva = orig_first_thunk
-								if lookup_rva == 0:
-									lookup_rva = first_thunk
-
-								lookup_va = self.moduleBase + lookup_rva
-								iat_va = self.moduleBase + first_thunk
-
-								if DEBUG_MODE:
-									dbgp("Import descriptor for %s" % dllname)
-									dbgp("  lookup_va : 0x%x" % lookup_va)
-									dbgp("  iat_va    : 0x%x" % iat_va)
-
-								thunk_index = 0
-								while True:
-									thunk_entry_va = lookup_va + (thunk_index * thunk_size)
-									iat_entry_va = iat_va + (thunk_index * thunk_size)
-
-									thunk_data = dbg.readMemory(thunk_entry_va, thunk_size)
-									if len(thunk_data) != thunk_size:
-										break
-
-									thunk_value = struct.unpack(thunk_fmt, thunk_data)[0]
-									if thunk_value == 0:
-										break
-
-									funcname = ""
-
-									# import by ordinal
-									if (thunk_value & ordinal_flag) != 0:
-										ordinal = thunk_value & 0xffff
-										funcname = "%s!#%d" % (stripExtension(dllname), ordinal)
-									else:
-										# IMAGE_IMPORT_BY_NAME = WORD Hint + ASCII name
-										import_by_name_va = self.moduleBase + thunk_value
-										try:
-											name = dbg.readString(import_by_name_va + 2)
-										except:
-											name = ""
-
-										name = ensure_text(name)
-										if name.strip() != "":
-											funcname = "%s!%s" % (stripExtension(dllname), name)
-
-									# fallback: resolve current IAT contents through symbols/EAT
-									if funcname == "":
-										try:
-											current_iat_target = struct.unpack(thunk_fmt, dbg.readMemory(iat_entry_va, thunk_size))[0]
-										except:
-											current_iat_target = 0
-
-										if current_iat_target > 0:
-											ptrx = MnPointer(current_iat_target)
-											modname = ptrx.belongsTo()
-											tmod = MnModuleOld(modname)
-											thisfunc = dbglib.Function(dbg, current_iat_target)
-											thisfuncfullname = ensure_text(thisfunc.getName()).lower()
-
-											if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % current_iat_target):
-												if not tmod is None:
-													imagename = tmod.getShortName()
-													eatlist = tmod.getEAT()
-													if current_iat_target in eatlist:
-														funcname = imagename + "!" + eatlist[current_iat_target]
-													else:
-														if arch == 32:
-															funcname = imagename + "!0x%08x" % current_iat_target
-														else:
-															funcname = imagename + "!0x%016x" % current_iat_target
-											else:
-												funcname = thisfuncfullname.replace(".", "!")
-
-									if funcname != "":
-										IAT[iat_entry_va] = funcname
-										if DEBUG_MODE:
-											dbgp("Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
-
-									thunk_index += 1
-
-								desc_index += 1
-
-				dbg.log("      -> We have extracted %d names from the IAT" % len(IAT))
-
-				# METHOD 2 - Fallback in case we did not get a lot of strings.
-				# Let's say less than 10
-
-				if len(IAT) < 10:
-					before_method2_cnt = len(IAT)
-					dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)") 
-					# this may not work well on Immunity.  Module.getSymbols() may not return anything         
-					try:
-						themod = dbg.getModule(self.moduleKey)
-						syms = themod.getSymbols()
-						thename = ""
-						dbg.log("         %d symbols found" % len(syms))
-						if DEBUG_MODE:
-							dbgp("%d symbols found for %s" % (len(syms), self.moduleKey))
-						for sym in syms:
-							#dbg.log("   - symbol: %s" % sym)
-							if syms[sym].getType().startswith("Import"):
-								thename = syms[sym].getName()
-								theaddress = syms[sym].getAddress()
-								#if not theaddress in IAT:
-								#just overwrite it if it exists
-								IAT[theaddress] = thename
-					except Exception as e:
-						dbg.log(str(e))
-						import traceback
-						dbg.logLines(traceback.format_exc())
-						pass
-					# merge
-					dbg.log("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
-
-
-				if len(IAT) == 0:
-					# another search method, not accurate, but might find *something*
-					dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
-					funccalls = self.getFunctionCalls()
-
-					for functype in funccalls:
-						for fptr in funccalls[functype]:
-
-							ptr = 0
-
-							try:
-								# x86: FF 15 <addr32>  => absolute memory operand
-								if arch == 32:
-									rawptr = dbg.readMemory(fptr + 2, 4)
-									if len(rawptr) != 4:
-										continue
-									ptr = struct.unpack('<L', rawptr)[0]
-
-								# x64: FF 15 <disp32> => CALL QWORD PTR [RIP+disp32]
-								elif arch == 64:
-									rawdisp = dbg.readMemory(fptr + 2, 4)
-									if len(rawdisp) != 4:
-										continue
-									disp = struct.unpack('<l', rawdisp)[0]
-									ptr = fptr + 6 + disp
-
-							except:
-								continue
-
-							if ptr <= 0:
-								continue
-
-							# keep old behavior: only consider references that point inside this module
-							if ptr >= self.moduleBase and ptr <= self.moduleTop:
-								if not ptr in IAT:
-									thisfuncfullname = ""
-									thisfuncname = []
-
-									try:
-										thisfunc = dbglib.Function(dbg, ptr)
-										thisfuncfullname = ensure_text(thisfunc.getName()).lower()
-									except:
-										thisfuncfullname = ""
-
-									unknownmatch = False
-									if arch == 32:
-										unknownmatch = thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % ptr)
-									else:
-										unknownmatch = thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%016x" % ptr)
-
-									if unknownmatch or thisfuncfullname == "":
-										try:
-											if arch == 32:
-												raw_iat_target = dbg.readMemory(ptr, 4)
-												if len(raw_iat_target) != 4:
-													iatptr = 0
-												else:
-													iatptr = struct.unpack('<L', raw_iat_target)[0]
-											else:
-												raw_iat_target = dbg.readMemory(ptr, 8)
-												if len(raw_iat_target) != 8:
-													iatptr = 0
-												else:
-													iatptr = struct.unpack('<Q', raw_iat_target)[0]
-										except:
-											iatptr = 0
-
-										# see if we can find the original function name using the EAT
-										tptr = MnPointer(ptr)
-										modname = tptr.belongsTo()
-										tmod = _MnMod(modname)
-										ofullname = thisfuncfullname
-
-										if not tmod is None:
-											imagename = tmod.getShortName()
-											eatlist = tmod.getEAT()
-											if iatptr in eatlist:
-												thisfuncfullname = "." + imagename + "!" + eatlist[iatptr]
-
-										if thisfuncfullname == ofullname or thisfuncfullname == "":
-											tparts = thisfuncfullname.split('!')
-											if len(tparts) > 0 and tparts[0] != "":
-												if arch == 32:
-													thisfuncfullname = tparts[0] + ("!%08x" % iatptr)
-												else:
-													thisfuncfullname = tparts[0] + ("!%016x" % iatptr)
-											else:
-												if arch == 32:
-													thisfuncfullname = "unknown!%08x" % iatptr
-												else:
-													thisfuncfullname = "unknown!%016x" % iatptr
-
-									thisfuncname = thisfuncfullname.split('!')
-									if len(thisfuncname) > 1:
-										IAT[ptr] = thisfuncname[1].strip(">")
-										if DEBUG_MODE:
-											dbgp("Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
-									else:
-										if DEBUG_MODE:
-											dbgp("Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
-											dbgp("thisfuncfullname: %s" % thisfuncfullname)
-
-				if len(IAT) == 0:
-					if DEBUG_MODE:
-						dbgp("No IAT found for module %s" % self.moduleKey)
-						dbgp("Adding fake IAT entry in cache, to avoid trying again")
-					# if we get here, it means we couldn't find anything
-					# avoid doing all of this again
-					# so we'll add an empty entry in the cache
-					# for this module
-					IAT[0] = "no_iat_found"
-
-				self.IAT = IAT
-				IATCache[self.moduleKey] = IAT
-			else:
-				dbg.log("    Retrieving IAT from cache")             
-				IAT = IATCache[self.moduleKey] #IAT = self.IAT
-		except:
-			import traceback
-			dbg.logLines(traceback.format_exc())
-			return IAT
-		return IAT
-		
-	
-	def getEAT(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-		eatlist = {}
-		if len(self.EAT) == 0:
-			try:
-				# avoid major suckage, let's do it ourselves
-				# find optional header
-				PEHeader_ref = self.moduleBase + 0x3c
-				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
-
-				# do we have an optional header ?
-				bsizeOfOptionalHeader = dbg.readMemory(PEHeader_location + 0x14, 2)
-				sizeOfOptionalHeader = struct.unpack('<L', bsizeOfOptionalHeader + b"\x00\x00")[0]
-				OptionalHeader_location = PEHeader_location + 0x18
-
-				if sizeOfOptionalHeader > 0:
-
-					# PE32 vs PE32+
-					optional_magic = struct.unpack('<H', dbg.readMemory(OptionalHeader_location, 2))[0]
-
-					if optional_magic == 0x10b:
-						# PE32
-						DataDirectory_location = OptionalHeader_location + 0x60
-					elif optional_magic == 0x20b:
-						# PE32+
-						DataDirectory_location = OptionalHeader_location + 0x70
-					else:
-						DataDirectory_location = 0
-
-					if DataDirectory_location > 0:
-						# Export Directory = DataDirectory[0]
-						exporttable_rva = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x00, 4))[0]
-						exporttable_size = struct.unpack('<L', dbg.readMemory(DataDirectory_location + 0x04, 4))[0]
-
-						if exporttable_rva > 0 and exporttable_size > 0:
-							eatAddr = self.moduleBase + exporttable_rva
-
-							# IMAGE_EXPORT_DIRECTORY
-							# 0x14 NumberOfFunctions
-							# 0x18 NumberOfNames
-							# 0x1c AddressOfFunctions
-							# 0x20 AddressOfNames
-							# 0x24 AddressOfNameOrdinals
-							nr_of_functions = struct.unpack('<L', dbg.readMemory(eatAddr + 0x14, 4))[0]
-							nr_of_names = struct.unpack('<L', dbg.readMemory(eatAddr + 0x18, 4))[0]
-							address_of_functions = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x1c, 4))[0]
-							rva_of_names = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x20, 4))[0]
-							address_of_name_ordinals = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x24, 4))[0]
-
-							if DEBUG_MODE:
-								dbgp("Export table at 0x%x, size 0x%x" % (eatAddr, exporttable_size))
-								dbgp("NumberOfFunctions: %d" % nr_of_functions)
-								dbgp("NumberOfNames: %d" % nr_of_names)
-								dbgp("AddressOfFunctions: 0x%x" % address_of_functions)
-								dbgp("AddressOfNames: 0x%x" % rva_of_names)
-								dbgp("AddressOfNameOrdinals: 0x%x" % address_of_name_ordinals)
-
-							for i in range(0, nr_of_names):
-								name_rva = struct.unpack('<L', dbg.readMemory(rva_of_names + (4 * i), 4))[0]
-								eatName = dbg.readString(self.moduleBase + name_rva)
-								eatName = ensure_text(eatName)
-
-								ordinal_index = struct.unpack('<H', dbg.readMemory(address_of_name_ordinals + (2 * i), 2))[0]
-
-								if ordinal_index < nr_of_functions:
-									func_rva = struct.unpack('<L', dbg.readMemory(address_of_functions + (4 * ordinal_index), 4))[0]
-									eatAddress = self.moduleBase + func_rva
-									eatlist[eatAddress] = eatName
-
-									if DEBUG_MODE:
-										dbgp("EAT[0x%x] = %s (ordinal index %d)" % (eatAddress, eatName, ordinal_index))
-
-				self.EAT = eatlist
-			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)))
-					dbgp("%s" % traceback.format_exc())
-					dbgp("eatlist: %s" % eatlist)
-				return eatlist
-		else:
-			eatlist = self.EAT
-		return eatlist
-
-	
-	def getShortName(self):
-		return stripExtension(self.moduleKey)
-
 def getNtGlobalFlag():
 	flagoffset = 0x68
 	if arch == 64:
 		flagoffset = 0xBC
-	pebaddress = dbg.getPEBAddress()
+	pebaddress = get_peb_addr()
 	global NtGlobalFlag
 	if NtGlobalFlag == -1:
 		try:
@@ -4903,15 +4203,6 @@ def getNtGlobalFlagValueName(flagvalue):
 	toreturn += " - "
 	toreturn += data[1]
 	return toreturn
-
-
-def _MnMod(modulename):
-	"""
-	Factory that returns either MnModule or MnModuleOld depending on the -modold flag.
-	"""
-	if USE_OLD_MODULE:
-		return MnModuleOld(modulename)
-	return MnModule(modulename)
 
 
 #---------------------------------------#
@@ -6745,7 +6036,7 @@ class MnPointer:
 #  Various functions                    #
 #---------------------------------------#
 def getDefaultProcessHeap():
-	peb = dbg.getPEBAddress()
+	peb = get_peb_addr()
 	defprocheap = struct.unpack('<L',dbg.readMemory(peb+0x18,4))[0]
 	return defprocheap
 
@@ -7654,7 +6945,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 			modinfo={}
 			if DEBUG_MODE:
 				dbgp("Transforming %s into a MnModule object" % key)
-			thismod = _MnMod(key)
+			thismod = MnModule(key)
 			if DEBUG_MODE:
 				dbgp("Result: %s" % thismod)
 			if not thismod is None:
@@ -7707,7 +6998,7 @@ def ModInfoCached(modulename):
 	else:
 		return True
 
-def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sort_order=None):
+def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, peb_order="load"):
 	"""
 	Shows table with all loaded modules and their properties.
 
@@ -7717,8 +7008,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 	filename - output will be written to the filename
 	
 	modules    - dictionary with modules to query - result of a populateModuleInfo() call
-	sort_by    - optional post-traversal sort key (see POST_SORT_VALID)
-	sort_order - 'asc' or 'desc'; overrides the default direction for the chosen key
+	sort_keys  - list of (key, reverse) tuples from _parse_sort_spec(), or empty list
 	"""	
 	thistable = ""
 	if len(g_modules) == 0:
@@ -7731,32 +7021,24 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 			filterelems.append("%s = %s" % (crit.upper(), modulecriteria[crit]))
 	filtertext = " | ".join(filterelems)
 
-	_POST_SORT_KEYS = {
-		"base":    lambda x: x[1]["base"],
-		"size":    lambda x: x[1]["size"],
-		# boolean keys: False=0 sorts before True=1 in ascending order (False-first default)
-		"rebase":  lambda x: x[1]["rebase"],
-		"safeseh": lambda x: x[1]["safeseh"],
-		"aslr":    lambda x: x[1]["aslr"],
-		"cfg":     lambda x: x[1]["cfg"],
-		"nx":      lambda x: x[1]["nx"],
-		"os":      lambda x: x[1]["os"],
-	}
+	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
 	items = list(g_modules.items())
-	if sort_by in _POST_SORT_KEYS:
-		default_reverse = _POST_SORT_DEFAULT_REVERSE.get(sort_by, False)
-		if sort_order == "asc":
-			reverse = False
-		elif sort_order == "desc":
-			reverse = True
-		else:
-			reverse = default_reverse
-		items = sorted(items, key=_POST_SORT_KEYS[sort_by], reverse=reverse)
+	if sort_keys:
+		# Apply compound sort in reverse key order so first key wins (stable sort)
+		for key, reverse in reversed(sort_keys):
+			if key in _POST_SORT_FIELDS:
+				items = sorted(items, key=_POST_SORT_FIELDS[key], reverse=reverse)
 
 
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d\n" % (len(g_modules), len(modules))
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(g_modules), len(modules))
+	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
+	thistable += " | PEB order: %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
+	if sort_keys:
+		sort_desc = " -> ".join("%s (%s)" % (k, "descending" if r else "ascending") for k, r in sort_keys)
+		thistable += ("-" * linelength) + "\n"
+		thistable += " Sort applied: %s\n" % sort_desc
 	if filtertext != "":
 		thistable += ("-" * linelength) + "\n"
 		thistable += " Module filter applied: %s\n" % (filtertext)
@@ -7781,7 +7063,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 			isos 	= toSize(str(modproperties["os"]),7)
 			version = str(modproperties["version"])
 			path 	= str(modproperties["path"])
-			name	= str(modproperties["name"])
+			name	= str(modproperties["filename"] or modproperties["name"])
 			dllflag = "0x%x" % modproperties["dllcharacteristics"]
 			if arch == 32:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
@@ -14153,20 +13435,56 @@ def procFindSEH(args, procUsage=""):
 	
 # ----- MODULES ------ #
 PEB_ORDER_VALID = ("load", "memory", "init")
-POST_SORT_VALID = ("base", "size", "rebase", "safeseh", "aslr", "cfg", "nx", "os")
-# For boolean sorts: False=0 sorts before True=1, so ascending (reverse=False) puts False first.
-# -order asc = False-first (default), -order desc = True-first.
-# For numeric sorts: ascending (reverse=False) is the default.
-_POST_SORT_DEFAULT_REVERSE = {
-	"base":    False,
-	"size":    False,
-	"rebase":  False,
-	"safeseh": False,
-	"aslr":    False,
-	"cfg":     False,
-	"nx":      False,
-	"os":      False,
+# Single source of truth for every sortable module column.
+# type "hex"  -> numeric, default ascending (low values first)
+# type "bool" -> boolean, default ascending (False-first = unprotected modules first)
+MODULE_COLUMNS = {
+	"base":    {"key": lambda x: x[1]["base"],    "type": "hex",  "default_reverse": False},
+	"size":    {"key": lambda x: x[1]["size"],    "type": "hex",  "default_reverse": False},
+	"rebase":  {"key": lambda x: x[1]["rebase"],  "type": "bool", "default_reverse": False},
+	"safeseh": {"key": lambda x: x[1]["safeseh"], "type": "bool", "default_reverse": False},
+	"aslr":    {"key": lambda x: x[1]["aslr"],    "type": "bool", "default_reverse": False},
+	"cfg":     {"key": lambda x: x[1]["cfg"],     "type": "bool", "default_reverse": False},
+	"nx":      {"key": lambda x: x[1]["nx"],      "type": "bool", "default_reverse": False},
+	"os":      {"key": lambda x: x[1]["os"],      "type": "bool", "default_reverse": False},
 }
+
+def _parse_sort_spec(spec):
+	"""
+	Parse a compound sort specifier like 'base+safeseh-' into a list of
+	(key, reverse) tuples. A trailing '+' means ascending, '-' means descending.
+	No suffix uses the per-column default_reverse from MODULE_COLUMNS.
+	Keys may be separated by commas, or joined directly with a +/- suffix as delimiter.
+	Returns (sort_keys, error_string). error_string is None on success.
+	"""
+	# Split on commas to allow 'base,safeseh' style; within each comma-part,
+	# use findall to handle the concatenated 'safeseh-base+' style.
+	parts = re.split(r'\s*,\s*', spec.lower().strip())
+	tokens = []
+	for part in parts:
+		if not part:
+			continue
+		found = re.findall(r'([a-z]+)([+-]?)', part)
+		# Verify the whole part was consumed (no leftover non-alpha chars besides +/-)
+		reconstructed = "".join(k + d for k, d in found)
+		if reconstructed != part:
+			return None, "cannot parse sort token '%s'" % part
+		tokens.extend(found)
+	if not tokens:
+		return None, "empty sort spec"
+	sort_keys = []
+	for key, direction in tokens:
+		if key not in MODULE_COLUMNS:
+			return None, "unknown sort key '%s', valid options: %s" % (key, ", ".join(MODULE_COLUMNS))
+		if direction == "+":
+			reverse = False
+		elif direction == "-":
+			reverse = True
+		else:
+			reverse = MODULE_COLUMNS[key]["default_reverse"]
+		sort_keys.append((key, reverse))
+	return sort_keys, None
+
 
 def procShowMODULES(args):
 	modulecriteria={}
@@ -14182,23 +13500,15 @@ def procShowMODULES(args):
 			return
 		peb_order = peb_val
 
-	sort_by = None
-	sort_order = None
+	sort_keys = []
 	if "sort" in args and args["sort"]:
-		sort_val = str(args["sort"]).lower().strip()
-		if sort_val not in POST_SORT_VALID:
-			dbg.log("[!] Unknown sort value '%s', valid options: %s" % (sort_val, ", ".join(POST_SORT_VALID)))
+		sort_keys, err = _parse_sort_spec(str(args["sort"]).strip())
+		if err:
+			dbg.log("[!] Invalid -sort value: %s" % err)
 			return
-		sort_by = sort_val
-	if sort_by is not None and "order" in args and args["order"]:
-		order_val = str(args["order"]).lower().strip()
-		if order_val not in ("asc", "desc"):
-			dbg.log("[!] Unknown order value '%s', valid options: asc, desc" % order_val)
-			return
-		sort_order = order_val
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True, peb_order=peb_order)
-	showModuleTable("", modulestosearch, modulecriteria, sort_by=sort_by, sort_order=sort_order)
+	showModuleTable("", modulestosearch, modulecriteria, sort_keys=sort_keys, peb_order=peb_order)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
 
@@ -16808,7 +16118,7 @@ def procHeap(args):
 		allheaps = dbg.getHeapsAddress()
 	except:
 		allheaps = []
-	dbg.log("Peb : 0x%08x, NtGlobalFlag : 0x%08x" % (dbg.getPEBAddress(),getNtGlobalFlag()))
+	dbg.log("Peb : 0x%08x, NtGlobalFlag : 0x%08x" % (get_peb_addr(),getNtGlobalFlag()))
 	dbg.log("Heaps:")
 	dbg.log("------")
 	if len(allheaps) > 0:
@@ -18428,7 +17738,7 @@ def procPEB(args):
 	"""
 	Show the address of the PEB
 	"""
-	pebaddy = dbg.getPEBAddress()
+	pebaddy = get_peb_addr()
 	dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
 	return
 
@@ -18436,7 +17746,7 @@ def procTEB(args):
 	"""
 	Show the address of the TEB for the current thread
 	"""
-	tebaddy = dbg.getCurrentTEBAddress()
+	tebaddy = get_teb_addr()
 	dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
 	return
 
@@ -20936,7 +20246,7 @@ def procAllocMem(args):
 
 
 def procHideDebug(args):
-	peb = dbg.getPEBAddress()			
+	peb = get_peb_addr()			
 	dbg.log("[+] Patching PEB (0x%08x)" % peb)
 	if peb == 0:
 		dbg.log("** Unable to find PEB **")
@@ -21254,13 +20564,16 @@ Optional parameters :
                        load   - InLoadOrderModuleList (DLL load order)
                        memory - InMemoryOrderModuleList
                        init   - InInitializationOrderModuleList (DllMain call order)
--sort <key>        : sort the output after the PEB walk
-                       base    - ascending base address
-                       size    - ascending module size
-                       rebase / safeseh / aslr / cfg / nx / os - True-first
--order <dir>       : override sort direction (only valid with -sort)
-                       asc   - ascending for numeric keys; False-first for boolean keys (default)
-                       desc  - descending for numeric keys; True-first for boolean keys"""
+-sort <spec>       : sort the output using a compound sort specifier.
+                     Each key is optionally followed by '+' (ascending) or '-' (descending).
+                     No suffix uses the column default (all columns default to ascending / False-first).
+                     Multiple keys are separated by commas, or joined directly when a +/- suffix acts as delimiter.
+                     Valid keys: %s
+                     Examples:
+                       -sort aslr-          : modules without ASLR first
+                       -sort aslr,safeseh   : no-ASLR first, then no-SafeSEH first (both default direction)
+                       -sort aslr-safeseh-  : no-ASLR first, then no-SafeSEH first (both explicit descending)
+                       -sort base+          : ascending base address""" % ", ".join(MODULE_COLUMNS)
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
@@ -21981,11 +21294,9 @@ def main(args):
 	global scriptname
 	global commands
 	global DEBUG_MODE
-	global USE_OLD_MODULE
 	commands = {}
 
 	currentArgs = copy.copy(args)
-	USE_OLD_MODULE = "-modold" in args
 	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
 		DEBUG_MODE = True
 		dbglib.set_debug_mode(True)
