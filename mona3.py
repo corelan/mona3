@@ -565,14 +565,14 @@ def print_dict_table(data, headers, types, ptr_size=None, padding=""):
 	fmt = "   ".join(["%%-%ds" % w for w in col_widths])
 
 	# Helper to print with padding
-	def _p(line,setbold=False):
-		dbg.log("%s%s" % (padding, line), highlight=setbold)
+	def _p(line):
+		dbg.log("%s%s" % (padding, line))
 
 	# Header
-	_p(fmt % tuple([_ensure_text(h) for h in headers]), True)
+	_p(fmt % tuple([_ensure_text(h) for h in headers]))
 
 	# Separator
-	_p(fmt % tuple([("-" * w) for w in col_widths]), True)
+	_p(fmt % tuple([("-" * w) for w in col_widths]))
 
 	# Rows
 	for row in formatted_rows:
@@ -7131,18 +7131,32 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 	
 	global silent
 	
+	results_dict = {}
+	results_dict_details = {}
+
 	if all_opcodes:
 		dbg.log("[+] Writing results to %s" % thislog)
 		for hf in all_opcodes:
 			if not silent:
 				try:
-					dbg.log("    - Number of pointers of type '%s' : %d " % (hf,len(all_opcodes[hf])))
+					#dbg.log("    - Number of pointers of type '%s' : %d " % (hf,len(all_opcodes[hf])))
+					results_dict[hf] = [len(all_opcodes[hf])]
 				except:
-					dbg.log("    - Number of pointers of type '<unable to display>' : %d " % (len(all_opcodes[hf])))
+					results_dict["unable to display"] = [len(all_opcodes[hf])]
+					#dbg.log("    - Number of pointers of type '<unable to display>' : %d " % (len(all_opcodes[hf])))
+
+		dbg.log("")
+		headers = ["Type", "Number"]
+		types   = ["string", "int"]
+		print_dict_table(results_dict, headers, types, padding = "      ")
+
+
 		if not ptronly:
 
 			if not silent:
+				dbg.log("")
 				dbg.log("[+] Results : ")
+				dbg.log("")
 			messageshown = False
 			for optext,pointers in all_opcodes.items():
 				for ptr in pointers:
@@ -7150,6 +7164,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 					modinfo = ""
 					ptrx = MnPointer(ptr)
 					modname = ptrx.belongsTo()
+					extrainfo = ""
 					if not modname == "":
 						modobj = MnModule(modname)
 						ptrextra = ""
@@ -7158,21 +7173,32 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 							rva = ptr - modobj.moduleBase
 							ptrextra = " (b+0x" + toHex(rva)+") "
 						ptrinfo = "0x" + toHex(ptr) + ptrextra + " : " + optext + " | " + ptrx.__str__()  + " " + modobj.__str__()
+						extrainfo = modobj.__str__()
 					else:
 						ptrinfo = "0x" + toHex(ptr) + " : " + optext + " | " + ptrx.__str__() 
 						if ptrx.isOnStack():
-							ptrinfo += " [Stack] "
+							extrainfo = " [Stack] "
+							ptrinfo += extrainfo
 						elif ptrx.isInHeap():
-							ptrinfo += " [Heap] "
+							extrainfo = " [Heap "
+							ptrinfo += extrainfo
 					logfile.write(ptrinfo,thislog)
 					if (ptr_to_get > -1) or (cnt < 20):
 						if not silent:
-							dbg.log("  %s" % ptrinfo,address=ptr)
+							if DEBUG_MODE:
+								dbgp("  %s" % ptrinfo,address=ptr)
+						results_dict_details[ptr] = [optext, ptrx.__str__() , extrainfo]
 						cnt += 1
 					ptrcnt += 1
 					if (ptr_to_get == -1 or ptr_to_get > 20) and cnt == 20 and not silent and not messageshown:
 						dbg.log("... Please wait while I'm processing all remaining results and writing everything to file...")
 						messageshown = True
+
+			headers = ["Address", "Type", "Address info", "Other info"]
+			types   = ["pointer", "string", "string", "string"]
+			print_dict_table(results_dict_details, headers, types, padding = "      ")
+
+
 			if cnt < ptrcnt:
 				if not silent:
 					dbg.log("[+] Done. Only the first %d pointers are shown here. For more pointers, open %s..." % (cnt,thislog)) 
