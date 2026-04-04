@@ -3323,10 +3323,14 @@ class MnModule:
 				if os.path.splitext(base_name.lower())[0] == name_lower:
 					return dll_base
 			# No direct match — check for deduplicated key: <stem>_<hexaddr>
+			# Real load addresses are always >= 0x10000 (64 KB allocation minimum).
+			# Version suffixes like _2, _26, _14 parse to tiny values and are ignored.
 			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
 			if m:
 				try:
-					return int(m.group(2), 16)
+					candidate = int(m.group(2), 16)
+					if candidate >= 0x10000:
+						return candidate
 				except ValueError:
 					pass
 			return 0
@@ -13713,36 +13717,49 @@ def procModuleInfo(args):
 		lc_size2 = struct.unpack('<L', dbg.readMemory(dd_off2 + 8 * 10 + 4, 4))[0]
 		if lc_rva2 and lc_size2:
 			lc = base + lc_rva2
+			# Read the struct's own Size DWORD (first field) — more reliable than DataDirectory size
+			lc_struct_size = struct.unpack('<L', dbg.readMemory(lc, 4))[0]
 			if is_pe64_2:
 				# IMAGE_LOAD_CONFIG_DIRECTORY64 offsets
-				cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x60, 8))[0]
-				cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x68, 8))[0]
-				cfg_table_rva  = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
-				cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
-				guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x80, 4))[0]
+				# GuardFlags at lc+0x80, last CFG field ends at lc+0x84
+				min_cfg_size = 0x84
+				if lc_struct_size >= min_cfg_size:
+					cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x60, 8))[0]
+					cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x68, 8))[0]
+					cfg_table_rva  = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
+					cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
+					guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x80, 4))[0]
+				else:
+					cfg_check_fp = cfg_dispatch_fp = cfg_table_rva = cfg_count = guard_flags = None
 			else:
 				# IMAGE_LOAD_CONFIG_DIRECTORY32 offsets
-				cfg_check_fp   = struct.unpack('<L', dbg.readMemory(lc + 0x48, 4))[0]
-				cfg_dispatch_fp= struct.unpack('<L', dbg.readMemory(lc + 0x4c, 4))[0]
-				cfg_table_rva  = struct.unpack('<L', dbg.readMemory(lc + 0x50, 4))[0]
-				cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x54, 8))[0]
-				guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x5c, 4))[0]
-			set_gflags = [(bit, name, desc) for bit, name, desc in GUARD_FLAGS if guard_flags & bit]
-			if arch == 64:
-				dbg.log("   GuardFlags       : 0x%08x" % guard_flags)
-			else:
-				dbg.log("   GuardFlags       : 0x%08x" % guard_flags)
-			for bit, name, desc in set_gflags:
-				dbg.log("     [+] %-40s %s" % (name, desc))
-			if cfg_count:
-				if arch == 64:
-					dbg.log("   CFG table        : 0x%016x  (%d entries)" % (cfg_table_rva, cfg_count))
-					dbg.log("   CF check fptr    : 0x%016x" % cfg_check_fp)
-					dbg.log("   CF dispatch fptr : 0x%016x" % cfg_dispatch_fp)
+				# GuardCFFunctionCount is DWORD (not ULONGLONG) in 32-bit struct
+				# GuardFlags at lc+0x58, last CFG field ends at lc+0x5c
+				min_cfg_size = 0x5c
+				if lc_struct_size >= min_cfg_size:
+					cfg_check_fp   = struct.unpack('<L', dbg.readMemory(lc + 0x48, 4))[0]
+					cfg_dispatch_fp= struct.unpack('<L', dbg.readMemory(lc + 0x4c, 4))[0]
+					cfg_table_rva  = struct.unpack('<L', dbg.readMemory(lc + 0x50, 4))[0]
+					cfg_count      = struct.unpack('<L', dbg.readMemory(lc + 0x54, 4))[0]
+					guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x58, 4))[0]
 				else:
-					dbg.log("   CFG table        : 0x%08x  (%d entries)" % (cfg_table_rva, cfg_count))
-					dbg.log("   CF check fptr    : 0x%08x" % cfg_check_fp)
-					dbg.log("   CF dispatch fptr : 0x%08x" % cfg_dispatch_fp)
+					cfg_check_fp = cfg_dispatch_fp = cfg_table_rva = cfg_count = guard_flags = None
+			if guard_flags is None:
+				dbg.log("   GuardFlags       : (Load Config struct too small, size=0x%x, need>=0x%x)" % (lc_struct_size, min_cfg_size))
+			else:
+				set_gflags = [(bit, name, desc) for bit, name, desc in GUARD_FLAGS if guard_flags & bit]
+				dbg.log("   GuardFlags       : 0x%08x" % guard_flags)
+				for bit, name, desc in set_gflags:
+					dbg.log("     [+] %-40s %s" % (name, desc))
+				if cfg_count:
+					if arch == 64:
+						dbg.log("   CFG table        : 0x%016x  (%d entries)" % (cfg_table_rva, cfg_count))
+						dbg.log("   CF check fptr    : 0x%016x" % cfg_check_fp)
+						dbg.log("   CF dispatch fptr : 0x%016x" % cfg_dispatch_fp)
+					else:
+						dbg.log("   CFG table        : 0x%08x  (%d entries)" % (cfg_table_rva, cfg_count))
+						dbg.log("   CF check fptr    : 0x%08x" % cfg_check_fp)
+						dbg.log("   CF dispatch fptr : 0x%08x" % cfg_dispatch_fp)
 	except Exception:
 		pass
 
