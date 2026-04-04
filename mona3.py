@@ -13678,6 +13678,74 @@ def procModuleInfo(args):
 	dbg.log(" NX Compat     : %s" % p["nx"])
 	dbg.log(" Rebased       : %s" % p["rebase"])
 	dbg.log(" CFG           : %s" % p["cfg"])
+
+	# CFG detail — parse IMAGE_LOAD_CONFIG_DIRECTORY from memory
+	GUARD_FLAGS = [
+		(0x00000100, "CF_INSTRUMENTED",              "module performs CF checks"),
+		(0x00000200, "CFW_INSTRUMENTED",             "module performs CF + write checks"),
+		(0x00000400, "CF_FUNCTION_TABLE_PRESENT",    "guard function table present"),
+		(0x00000800, "SECURITY_COOKIE_UNUSED",       "security cookie not used by CF"),
+		(0x00001000, "PROTECT_DELAYLOAD_IAT",        "delay-load IAT protected"),
+		(0x00002000, "DELAYLOAD_IAT_IN_OWN_SECTION", "delay-load IAT in its own section"),
+		(0x00004000, "CF_EXPORT_SUPPRESSION_PRESENT","export suppression info present"),
+		(0x00008000, "CF_ENABLE_EXPORT_SUPPRESSION", "export suppression enabled"),
+		(0x00010000, "CF_LONGJUMP_TABLE_PRESENT",    "longjmp targets table present"),
+		(0x00020000, "RF_INSTRUMENTED",              "retpoline instrumented"),
+		(0x00040000, "RF_ENABLE",                    "retpoline enabled"),
+		(0x00080000, "RF_STRICT",                    "retpoline strict mode"),
+		(0x00100000, "RETPOLINE_PRESENT",            "retpoline present"),
+		(0x00200000, "EH_CONTINUATION_TABLE_PRESENT","EH continuation table present"),
+		(0x00800000, "XFG_ENABLED",                  "eXtended Flow Guard (XFG) enabled"),
+		(0x01000000, "CASTGUARD_PRESENT",            "CastGuard present"),
+		(0x02000000, "MEMKM_PRESENT",                "MemKM present"),
+	]
+	try:
+		pe_off2   = struct.unpack('<L', dbg.readMemory(base + 0x3c, 4))[0]
+		pe_base2  = base + pe_off2
+		magic2    = struct.unpack('<H', dbg.readMemory(pe_base2 + 0x18, 2))[0]
+		is_pe64_2 = (magic2 == 0x20b)
+		# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
+		if is_pe64_2:
+			dd_off2 = pe_base2 + 0x18 + 0x70   # PE32+ optional header DataDirectory
+		else:
+			dd_off2 = pe_base2 + 0x18 + 0x60   # PE32 optional header DataDirectory
+		lc_rva2  = struct.unpack('<L', dbg.readMemory(dd_off2 + 8 * 10,     4))[0]
+		lc_size2 = struct.unpack('<L', dbg.readMemory(dd_off2 + 8 * 10 + 4, 4))[0]
+		if lc_rva2 and lc_size2:
+			lc = base + lc_rva2
+			if is_pe64_2:
+				# IMAGE_LOAD_CONFIG_DIRECTORY64 offsets
+				cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x60, 8))[0]
+				cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x68, 8))[0]
+				cfg_table_rva  = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
+				cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
+				guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x80, 4))[0]
+			else:
+				# IMAGE_LOAD_CONFIG_DIRECTORY32 offsets
+				cfg_check_fp   = struct.unpack('<L', dbg.readMemory(lc + 0x48, 4))[0]
+				cfg_dispatch_fp= struct.unpack('<L', dbg.readMemory(lc + 0x4c, 4))[0]
+				cfg_table_rva  = struct.unpack('<L', dbg.readMemory(lc + 0x50, 4))[0]
+				cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x54, 8))[0]
+				guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x5c, 4))[0]
+			set_gflags = [(bit, name, desc) for bit, name, desc in GUARD_FLAGS if guard_flags & bit]
+			if arch == 64:
+				dbg.log("   GuardFlags       : 0x%08x" % guard_flags)
+			else:
+				dbg.log("   GuardFlags       : 0x%08x" % guard_flags)
+			for bit, name, desc in set_gflags:
+				dbg.log("     [+] %-40s %s" % (name, desc))
+			if cfg_count:
+				if arch == 64:
+					dbg.log("   CFG table        : 0x%016x  (%d entries)" % (cfg_table_rva, cfg_count))
+					dbg.log("   CF check fptr    : 0x%016x" % cfg_check_fp)
+					dbg.log("   CF dispatch fptr : 0x%016x" % cfg_dispatch_fp)
+				else:
+					dbg.log("   CFG table        : 0x%08x  (%d entries)" % (cfg_table_rva, cfg_count))
+					dbg.log("   CF check fptr    : 0x%08x" % cfg_check_fp)
+					dbg.log("   CF dispatch fptr : 0x%08x" % cfg_dispatch_fp)
+	except Exception:
+		pass
+
 	dbg.log(" OS DLL        : %s" % p["os"])
 	dbg.log(" DllChars      : 0x%04x  %s" % (dllchars, "  ".join(set_flags) if set_flags else "(none)"))
 	if sections:
