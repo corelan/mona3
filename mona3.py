@@ -7034,11 +7034,11 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	thistable += ("-" * linelength) + "\n"
 	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(g_modules), len(modules))
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
-	thistable += " | PEB order: %s" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
+	thistable += " | PEB order: %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
 	if sort_keys:
 		sort_desc = " -> ".join("%s (%s)" % (k, "descending" if r else "ascending") for k, r in sort_keys)
-		thistable += " | Sorted by: %s" % sort_desc
-	thistable += "\n"
+		thistable += ("-" * linelength) + "\n"
+		thistable += " Sort applied: %s\n" % sort_desc
 	if filtertext != "":
 		thistable += ("-" * linelength) + "\n"
 		thistable += " Module filter applied: %s\n" % (filtertext)
