@@ -3719,8 +3719,8 @@ class MnModule:
 		try:
 			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
 				
-				# METHOD 1 - Parse the strings from the IAT.  Fastest way 
-
+				# METHOD 1 - Parse the strings from the IAT.  Fastest way
+				dbg.log("      Enumerating IAT, method 1 (Read IAT from memory)") 
 				# find optional header
 				PEHeader_ref = self.moduleBase + 0x3c
 				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
@@ -3760,7 +3760,7 @@ class MnModule:
 						if importtable_rva > 0 and importtable_size > 0:
 							importDescAddr = self.moduleBase + importtable_rva
 							if DEBUG_MODE:
-								dbgp("    Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
+								dbgp("      Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
 
 							desc_index = 0
 							while True:
@@ -3793,9 +3793,9 @@ class MnModule:
 								iat_va = self.moduleBase + first_thunk
 
 								if DEBUG_MODE:
-									dbgp("Import descriptor for %s" % dllname)
-									dbgp("  lookup_va : 0x%x" % lookup_va)
-									dbgp("  iat_va    : 0x%x" % iat_va)
+									dbgp("      Import descriptor for %s" % dllname)
+									dbgp("        lookup_va : 0x%x" % lookup_va)
+									dbgp("        iat_va    : 0x%x" % iat_va)
 
 								thunk_index = 0
 								while True:
@@ -3859,11 +3859,12 @@ class MnModule:
 									if funcname != "":
 										IAT[iat_entry_va] = funcname
 										if DEBUG_MODE:
-											dbgp("Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
+											dbgp("      Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
 
 									thunk_index += 1
 
 								desc_index += 1
+				dbg.log("      Extracted %d entries from IAT" % len(IAT))
 				if DEBUG_MODE:
 					dbgp("      -> We have extracted %d names from the IAT of %s" % (len(IAT), self.moduleKey))
 
@@ -3878,9 +3879,9 @@ class MnModule:
 						themod = dbg.getModule(self.moduleKey)
 						syms = themod.getSymbols()
 						thename = ""
-						dbg.log("         %d symbols found" % len(syms))
+						dbg.log("      %d symbols found, now filtering relevant entries" % len(syms))
 						if DEBUG_MODE:
-							dbgp("%d symbols found for %s" % (len(syms), self.moduleKey))
+							dbgp("      %d symbols found for %s" % (len(syms), self.moduleKey))
 						for sym in syms:
 							#dbg.log("   - symbol: %s" % sym)
 							if syms[sym].getType().startswith("Import"):
@@ -3995,16 +3996,16 @@ class MnModule:
 									if len(thisfuncname) > 1:
 										IAT[ptr] = thisfuncname[1].strip(">")
 										if DEBUG_MODE:
-											dbgp("Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
+											dbgp("      Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
 									else:
 										if DEBUG_MODE:
-											dbgp("Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
-											dbgp("thisfuncfullname: %s" % thisfuncfullname)
+											dbgp("      Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
+											dbgp("      thisfuncfullname: %s" % thisfuncfullname)
 
 				if len(IAT) == 0:
 					if DEBUG_MODE:
-						dbgp("No IAT found for module %s" % self.moduleKey)
-						dbgp("Adding fake IAT entry in cache, to avoid trying again")
+						dbgp("      No IAT found for module %s" % self.moduleKey)
+						dbgp("      Adding fake IAT entry in cache, to avoid trying again")
 					# if we get here, it means we couldn't find anything
 					# avoid doing all of this again
 					# so we'll add an empty entry in the cache
@@ -4014,7 +4015,7 @@ class MnModule:
 				self.IAT = IAT
 				IATCache[self.moduleKey] = IAT
 			else:
-				dbg.log("    Retrieving IAT from cache")             
+				dbg.log("      Retrieving IAT from cache")             
 				IAT = IATCache[self.moduleKey] #IAT = self.IAT
 		except:
 			import traceback
@@ -17580,16 +17581,18 @@ def procGetxAT(args,mode=""):
 		for thismodule in modulestosearch:
 			thismod = MnModule(thismodule)
 			thismod_info = "%s" % thismod.__str__()
-			
+			thismodule = thismod.getShortName()
+			thismodule_fullname = thismod.moduleFilename
+
+			if not silent:
+				dbg.log("")
+				dbg.log("    Querying %s of module '%s'" % (mode, thismodule_fullname))
+
 			if mode == "iat":
 				thisxat = thismod.getIAT()
 			else:
 				thisxat = thismod.getEAT()
 
-			thismodule = thismod.getShortName()
-			thismodule_fullname = thismod.moduleFilename
-			if not silent:
-				dbg.log("    Querying module '%s'" % thismodule_fullname)
 
 			for thisfunc in thisxat:
 				thisfuncname = thisxat[thisfunc].lower()
@@ -17668,7 +17671,7 @@ def procGetxAT(args,mode=""):
 		if mode == "iat":
 			dbg.log("")
 			dbg.log("Results of the IAT search: %d entries found" % entriesfound )			
-			headers = ["At IAT Loc", "In Module", "( = RVA)", "Contains","Which is address of function"," Info about module the function belongs to" ]
+			headers = ["IAT Location", "In Module", "( = RVA)", "Contains","Which is address of function","Info about module the function belongs to" ]
 			types   = ["pointer", "string", "pointer", "pointer", "string", "string"]
 			dbg.log("")
 			print_dict_table(iat_table, headers, types, padding = "   ")
@@ -21040,7 +21043,7 @@ Mandatory argument (one of):
 
     -m <name>    : image name as shown in the modules table (e.g. kernel32.dll or kernel32)
     -a <address> : address within the module (hex, e.g. 0x77e40000)
-	               You can use a register name as well"""
+                   You can use a register name as well"""
 
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
