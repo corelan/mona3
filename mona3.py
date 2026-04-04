@@ -7048,7 +7048,8 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
 	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(g_modules), len(modules))
-	thistable += " | PEB order: %s" % peb_order
+	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
+	thistable += " | PEB order: %s" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
 	if sort_by is not None:
 		actual_order = sort_order if sort_order else ("desc" if _POST_SORT_DEFAULT_REVERSE.get(sort_by, False) else "asc")
 		thistable += " | Sorted by: %s %s" % (sort_by, actual_order)
