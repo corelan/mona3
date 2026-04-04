@@ -13564,12 +13564,10 @@ def procModuleInfo(args):
 	target_key = None
 
 	if "a" in args and args["a"]:
-		# Look up by base address
-		raw = str(args["a"]).strip().lower().replace("0x", "")
-		try:
-			lookup_base = int(raw, 16)
-		except ValueError:
-			dbg.log("[!] Invalid address: %s" % args["a"], highlight=1)
+		
+		lookup_base,addyok = getAddyArg(args["a"])
+		if not addyok:
+			dbg.log("%s is an invalid address" % args["a"], highlight=1)
 			return
 		for key, props in g_modules.items():
 			if props["base"] <= lookup_base < props["base"] + props["size"]:
@@ -20894,39 +20892,44 @@ def procHelp(args, helpForCommand=None):
 	dbg.log("     Project page : https://github.com/corelan/mona")
 	dbg.logLines(getBanner(),highlight=1)
 
-	dbg.log("Global options :")
-	dbg.log("----------------")
+	dbg.log("Global options :", highlight=1)
+	dbg.log("----------------", highlight=1)
 	dbg.log("You can use one or more of the following global options on any command that will perform")
 	dbg.log("a search in one or more modules, returning a list of pointers :")
-	dbg.log(" -n                     : Skip modules that start with a null byte. If this is too broad, use")
-	dbg.log("                          option -cp nonull instead")
-	dbg.log(" -o                     : Ignore OS modules")
-	dbg.log(" -cmp <regex>           : Only include modules whose full path matches the given regex (case-insensitive)")
-	dbg.log("                          Example : -cmp kernel32  -cmp \"C:\\\\Windows\"  -cmp \"\\.dll$\"")
-	dbg.log(" -p <nr>                : Stop search after <nr> pointers.")
-	dbg.log(" -m <module,module,...> : only query the given modules. Be sure what you are doing !")
-	dbg.log("                          You can specify multiple modules (comma separated)")
-	dbg.log("                          Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
-	dbg.log("                          Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
-	dbg.log("                          blah or *blah* = contains blah")
-	dbg.log(" -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
-	dbg.log("                          You can use one or more of the following criteria :")
-	dbg.log("                          aslr,safeseh,rebase,nx,cfg,os")
-	dbg.log("                          You can enable or disable a certain criterium by setting it to true or false")
-	dbg.log("                          Example :  -cm aslr=true,safeseh=false")
-	dbg.log("                          Suppose you want to search for p/p/r in aslr enabled modules, you could call")
-	dbg.log("                          !mona seh -cm aslr")
-	dbg.log(" -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
-	dbg.log("                          Available options are :")
-	dbg.log("                          unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
-	dbg.log("                          Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
-	dbg.log(" -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
-	dbg.log("                          You can use .. to indicate a range of bytes (in between 2 bad chars)")
-	dbg.log(" -x <access>            : Specify desired access level of the returning pointers. If not specified,")
-	dbg.log("                          only executable pointers will be returned.")
-	dbg.log("                          Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
-	dbg.log(" -debug                 : Enable debug routines in mona/windbglib")
-	dbg.log(" -h                     : Show help / usage for the selected command ")
+	dbg.logLines("\n  Global options affecting selection of modules:\n", highlight=1)
+	dbg.log("  -n                     : Skip modules that start with a null byte. If this is too broad, use")
+	dbg.log("                           option -cp nonull instead")
+	dbg.log("  -o                     : Ignore OS modules")
+	dbg.log("  -m <module,module,...> : only query the given modules. Be sure what you are doing !")
+	dbg.log("                           You can specify multiple modules (comma separated)")
+	dbg.log("                           Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
+	dbg.log("                           Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
+	dbg.log("                           blah or *blah* = contains blah")
+	dbg.log("  -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
+	dbg.log("                           You can use one or more of the following criteria :")
+	dbg.log("                           aslr,safeseh,rebase,nx,cfg,os")
+	dbg.log("                           You can enable or disable a certain criterium by setting it to true or false")
+	dbg.log("                           Example :  -cm aslr=true,safeseh=false")
+	dbg.log("                           Suppose you want to search for p/p/r in aslr enabled modules, you could call")
+	dbg.log("                           !mona seh -cm aslr")
+	dbg.log("  -cmp <regex>           : Only include modules whose full path matches the given regex (case-insensitive)")
+	dbg.log("                           Example : -cmp kernel32  -cmp \"C:\\\\Windows\"  -cmp \"\\.dll$\"")
+	dbg.logLines("\n  Global options affecting addresses:\n", highlight=1)
+	dbg.log("  -p <nr>                : Stop search after <nr> pointers.")
+	dbg.log("  -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
+	dbg.log("                           Available options are :")
+	dbg.log("                           unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
+	dbg.log("                           Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
+	dbg.log("  -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
+	dbg.log("                           You can use .. to indicate a range of bytes (in between 2 bad chars)")
+	dbg.log("  -x <access>            : Specify desired access level of the returning pointers. If not specified,")
+	dbg.log("                           only executable pointers will be returned.")
+	dbg.log("                           Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
+	dbg.log("")
+	dbg.logLines("\n  Other global options:\n", highlight=1)
+	dbg.log("  -h                     : Show help / usage for the selected command ")
+	dbg.log("  -debug                 : Enable debug routines in mona/windbglib. Don't use this option unless you've been asked to do so")
+	dbg.log("")
 	dbg.log("-" * 120)
 	scriptname = get_script_name()
 	launchcmd = "!" + scriptname		
@@ -20985,8 +20988,8 @@ def populateCommands(args):
 	sehUsage = """Default module criteria : non safeseh, non aslr, non rebase
 This function will retrieve all stackpivot pointers that will bring you back to nseh in a seh overwrite exploit
 
-
 Optional argument: 
+
     -all : also search outside of loaded modules"""
 	
 	configUsage = """Change config of mona.py
@@ -21002,34 +21005,38 @@ Output will be written to ropfunc.txt"""
 	
 	modulesUsage = """Shows information about the loaded modules.
 Check the global options above to filter modules as needed.
-Optional parameters :
--peborder <list>   : select which PEB LDR_DATA list to walk (default: load)
-                       load   - InLoadOrderModuleList (DLL load order)
-                       memory - InMemoryOrderModuleList
-                       init   - InInitializationOrderModuleList (DllMain call order)
--sort <spec>       : sort the output using a compound sort specifier.
-                     Each key is optionally followed by a suffix:
-                       Bool columns  (rebase,safeseh,aslr,cfg,nx,os):
-                         '+' = has the flag (True first)
-                         '-' = does not have the flag (False first)  [default]
-                       Numeric columns (base,size):
-                         '+' = low first (ascending)  [default]
-                         '-' = high first (descending)
-                     No suffix uses the column default (bool: does not have the flag first; numeric: low first).
-                     Separator styles (combinable):
-                       Commas:        -sort aslr-,safeseh- (comma acts as delimiter, MUST have no spaces, no suffix sets default direction for each key)
-                       Concatenated:  -sort aslr-safeseh-   (+/- suffix acts as delimiter; every key MUST have a suffix)
-                       Spaces:        -sort "aslr safeseh" (no suffix, default direction for each key)
-                     Valid keys: %s
-                     Examples:
-                       -sort aslr-          : modules without ASLR first (default)
-                       -sort aslr+          : modules with ASLR first
-                       -sort aslr-,safeseh- : no-ASLR first, then no-SafeSEH first
-                       -sort "aslr safeseh" : same, using default direction (no flag first) for each key
-                       -sort base+          : ascending base address (low first)""" % ", ".join(MODULE_COLUMNS)
+
+Optional arguments :
+
+    -peborder <list>   : select which PEB LDR_DATA list to walk (default: load)
+                           load   - InLoadOrderModuleList (DLL load order)
+                           memory - InMemoryOrderModuleList
+                           init   - InInitializationOrderModuleList (DllMain call order)
+    -sort <spec>       : sort the output using a compound sort specifier.
+                         Each key is optionally followed by a suffix:
+                           Bool columns  (rebase,safeseh,aslr,cfg,nx,os):
+                             '+' = has the flag (True first)
+                             '-' = does not have the flag (False first)  [default]
+                           Numeric columns (base,size):
+                             '+' = low first (ascending)  [default]
+                             '-' = high first (descending)
+                         No suffix uses the column default (bool: does not have the flag first; numeric: low first).
+                         Separator styles (combinable):
+                           Commas:        -sort aslr-,safeseh- (comma acts as delimiter, MUST have no spaces, no suffix sets default direction for each key)
+                           Concatenated:  -sort aslr-safeseh-   (+/- suffix acts as delimiter; every key MUST have a suffix)
+                           Spaces:        -sort "aslr safeseh" (no suffix, default direction for each key)
+                         Valid keys: %s
+                         Examples:
+                           -sort aslr-          : modules without ASLR first (default)
+                           -sort aslr+          : modules with ASLR first
+                           -sort aslr-,safeseh- : no-ASLR first, then no-SafeSEH first
+                           -sort "aslr safeseh" : same, using default direction (no flag first) for each key
+                           -sort base+          : ascending base address (low first)""" % ", ".join(MODULE_COLUMNS)
 	
 	moduleInfoUsage = """Show detailed information about a specific loaded module.
+
 Mandatory argument (one of):
+
     -m <name>    : image name as shown in the modules table (e.g. kernel32.dll or kernel32)
     -a <address> : address within the module (hex, e.g. 0x77e40000)"""
 

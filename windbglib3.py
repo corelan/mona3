@@ -1999,7 +1999,7 @@ class Debugger:
 
 		return
 	
-	def log(self, message, highlight=0, address=None, focus=0):
+	def log(self, message="", highlight=0, address=None, focus=0):
 		if not address == None:
 			message = intToHex(address) + " | " + message
 		showdml = False
@@ -2012,7 +2012,7 @@ class Debugger:
 		pykd.dprintln(self.toAsciiOnly(message), showdml)
 
 
-	def logLines(self, message, highlight=0,address=None, focus=0):
+	def logLines(self, message="", highlight=0,address=None, focus=0):
 		allLines = message.split('\n')
 		linecnt = 0
 		messageprefix = ""
