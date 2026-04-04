@@ -15215,7 +15215,7 @@ def procByteArray(args):
 	cnt = 0
 	strb = b""
 	while cnt < len(badchars):
-		strb=strb+ensure_text(binascii.a2b_hex(badchars[cnt]+badchars[cnt+1]))
+		strb += binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
 		cnt=cnt+2
 
 	dbg.log("Generating table, excluding %d bad chars..." % len(strb))
