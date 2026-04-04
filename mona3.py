@@ -3323,10 +3323,14 @@ class MnModule:
 				if os.path.splitext(base_name.lower())[0] == name_lower:
 					return dll_base
 			# No direct match — check for deduplicated key: <stem>_<hexaddr>
+			# Real load addresses are always >= 0x10000 (64 KB allocation minimum).
+			# Version suffixes like _2, _26, _14 parse to tiny values and are ignored.
 			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
 			if m:
 				try:
-					return int(m.group(2), 16)
+					candidate = int(m.group(2), 16)
+					if candidate >= 0x10000:
+						return candidate
 				except ValueError:
 					pass
 			return 0
@@ -3370,6 +3374,8 @@ class MnModule:
 		mentry = 0
 		mdllcharacteristics = 0
 		mversion = ""
+		msehtable = 0
+		msehcount = 0
 		self.internalname = modulename
 		if modulename != "":
 			# if info is cached, retrieve from cache
@@ -3393,6 +3399,8 @@ class MnModule:
 				mcodesize = getModuleProperty(modulename,"codesize")
 				mcodetop = getModuleProperty(modulename,"codetop")
 				mdllcharacteristics = getModuleProperty(modulename, "dllcharacteristics")
+				msehtable = getModuleProperty(modulename, "sehtable") or 0
+				msehcount = getModuleProperty(modulename, "sehcount") or 0
 			else:
 				#gather info manually - this code should only get called from populateModuleInfo()
 				modissafeseh = True
@@ -3519,18 +3527,22 @@ class MnModule:
 										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
 										if sehtable != 0 and sehcount != 0:
 											modissafeseh = True
+											msehtable = sehtable
+											msehcount = sehcount
 									except:
 										modissafeseh = False
 
-						if mzrebase != mzbase:
-							modrebased = True
+					if mzrebase != mzbase:
+						modrebased = True
 
 				mztop    = mzbase + mzsize
 				mcodetop = mcodebase + mcodesize
 
-				_OS_PRODUCT_NAME = "Microsoft\u00ae Windows\u00ae Operating System"
-				if __DEBUGGERAPP__ == "WinDBG":
-					modisos = False
+				modisos = False
+				try:
+					_path_norm = path.replace("\\", "/").lower()
+					_in_sys32  = "/windows/system32/" in _path_norm or "/windows/syswow64/" in _path_norm
+					vi = None
 					try:
 						vi = MnModule.VSVersionInfo.from_memory(mzbase)
 						if vi is None or not vi.fixed.file_version_str:
@@ -3540,13 +3552,16 @@ class MnModule:
 							vi = MnModule.VSVersionInfo.from_file(path)
 						except Exception:
 							vi = None
-					if vi is not None:
+					if vi is not None and _in_sys32:
 						for st in vi.string_tables:
-							if st.get("ProductName", "").strip() == _OS_PRODUCT_NAME:
+							company = st.get("CompanyName", "")
+							if isinstance(company, bytes):
+								company = company.decode("latin-1")
+							if "microsoft" in company.lower():
 								modisos = True
 								break
-				else:
-					modisos = "WINDOWS" in path.upper()
+				except Exception:
+					modisos = False
 	
 
 		else:
@@ -3604,9 +3619,9 @@ class MnModule:
 		self.moduleCodebase = mcodebase
 
 		self.moduleDllCharacteristics = mdllcharacteristics
-		
-			
-	
+		self.moduleSEHTable = msehtable
+		self.moduleSEHCount = msehcount
+
 	def __str__(self):
 		#return general info about the module
 		#modulename + info
@@ -6980,6 +6995,8 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 				modinfo["codesize"]	= thismod.moduleCodesize
 				modinfo["codetop"]	= thismod.moduleCodetop
 				modinfo["dllcharacteristics"]  = thismod.moduleDllCharacteristics
+				modinfo["sehtable"]            = thismod.moduleSEHTable
+				modinfo["sehcount"]            = thismod.moduleSEHCount
 				g_modules[thismod.moduleKey] = modinfo
 			else:
 				if not silent:
@@ -13537,6 +13554,406 @@ def procShowMODULES(args):
 	showModuleTable("", modulestosearch, modulecriteria, sort_keys=sort_keys, peb_order=peb_order)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
+
+
+def procModuleInfo(args):
+	"""Show detailed information about a single module, looked up by name or base address."""
+	if len(g_modules) == 0:
+		populateModuleInfo()
+
+	target_key = None
+
+	if "a" in args and args["a"]:
+		# Look up by base address
+		raw = str(args["a"]).strip().lower().replace("0x", "")
+		try:
+			lookup_base = int(raw, 16)
+		except ValueError:
+			dbg.log("[!] Invalid address: %s" % args["a"], highlight=1)
+			return
+		for key, props in g_modules.items():
+			if props["base"] <= lookup_base < props["base"] + props["size"]:
+				target_key = key
+				break
+		if target_key is None:
+			dbg.log("[!] No module found containing address 0x%x" % lookup_base, highlight=1)
+			return
+
+	elif "m" in args and args["m"]:
+		# Look up by image name — match against filename or key, case-insensitive,
+		# with and without extension so 'kernel32' matches 'kernel32.dll'
+		needle = os.path.splitext(str(args["m"]).strip().lower())[0]
+		for key, props in g_modules.items():
+			fname = os.path.splitext((props["filename"] or props["name"]).lower())[0]
+			if fname == needle or os.path.splitext(props["name"].lower())[0] == needle:
+				target_key = key
+				break
+		if target_key is None:
+			dbg.log("[!] No loaded module named '%s'" % args["m"], highlight=1)
+			return
+
+	else:
+		dbg.log("[!] Provide -m <imagename> or -a <base address>", highlight=1)
+		return
+
+	p = g_modules[target_key]
+	base     = p["base"]
+	top      = p["top"]
+	size     = p["size"]
+	entry    = p["entry"]
+	cbbase   = p["codebase"]
+	cbsize   = p["codesize"]
+	cbtop    = p["codetop"]
+	dllchars = p["dllcharacteristics"]
+	fname    = p["filename"] or p["name"]
+
+	# Decode DllCharacteristics flags
+	DLLCHAR_FLAGS = [
+		(0x0020, "HIGH_ENTROPY_VA"),
+		(0x0040, "DYNAMIC_BASE (ASLR)"),
+		(0x0080, "FORCE_INTEGRITY"),
+		(0x0100, "NX_COMPAT"),
+		(0x0200, "NO_ISOLATION"),
+		(0x0400, "NO_SEH"),
+		(0x0800, "NO_BIND"),
+		(0x1000, "APPCONTAINER"),
+		(0x2000, "WDM_DRIVER"),
+		(0x4000, "GUARD_CF (CFG)"),
+		(0x8000, "TERMINAL_SERVER_AWARE"),
+	]
+	set_flags = [name for bit, name in DLLCHAR_FLAGS if dllchars & bit]
+
+	# Read section headers from the PE in memory
+	sections = []
+	SCN_CHARS = [
+		(0x00000020, "CODE"),
+		(0x00000040, "IDATA"),
+		(0x00000080, "UDATA"),
+		(0x20000000, "EXEC"),
+		(0x40000000, "READ"),
+		(0x80000000, "WRITE"),
+	]
+	try:
+		pe_off     = struct.unpack('<L', dbg.readMemory(base + 0x3c, 4))[0]
+		pe_base    = base + pe_off
+		num_secs   = struct.unpack('<H', dbg.readMemory(pe_base + 0x06, 2))[0]
+		opt_sz     = struct.unpack('<H', dbg.readMemory(pe_base + 0x14, 2))[0]
+		secs_start = pe_base + 0x18 + opt_sz
+		for i in range(num_secs):
+			sec   = secs_start + i * 40
+			sname = dbg.readMemory(sec, 8).rstrip(b'\x00').decode('ascii', errors='replace')
+			vsz   = struct.unpack('<L', dbg.readMemory(sec + 0x08, 4))[0]
+			vaddr = struct.unpack('<L', dbg.readMemory(sec + 0x0c, 4))[0]
+			rawsz = struct.unpack('<L', dbg.readMemory(sec + 0x10, 4))[0]
+			chars = struct.unpack('<L', dbg.readMemory(sec + 0x24, 4))[0]
+			cflag_names = [n for bit, n in SCN_CHARS if chars & bit]
+			sections.append((sname, vaddr, vsz, rawsz, chars, cflag_names))
+	except Exception:
+		sections = []
+
+	L = 70
+	sep = "-" * L
+	dbg.log(sep)
+	dbg.log(" Module : %s" % fname)
+	dbg.log(sep)
+	dbg.log(" Full path     : %s" % p["path"])
+	dbg.log(" Version       : %s" % p["version"])
+	dbg.log(sep)
+	if arch == 64:
+		dbg.log(" Base          : 0x%016x" % base)
+		dbg.log(" Top           : 0x%016x" % top)
+		dbg.log(" Size          : 0x%016x (%d bytes)" % (size, size))
+		dbg.log(" Entry point   : 0x%016x" % entry if entry else " Entry point   : (none)")
+	else:
+		dbg.log(" Base          : 0x%08x" % base)
+		dbg.log(" Top           : 0x%08x" % top)
+		dbg.log(" Size          : 0x%08x (%d bytes)" % (size, size))
+		dbg.log(" Entry point   : 0x%08x" % entry if entry else " Entry point   : (none)")
+	dbg.log(sep)
+	if cbsize:
+		if arch == 64:
+			dbg.log(" Code section  : 0x%016x - 0x%016x (0x%x bytes)" % (cbbase, cbtop, cbsize))
+		else:
+			dbg.log(" Code section  : 0x%08x - 0x%08x (0x%x bytes)" % (cbbase, cbtop, cbsize))
+	dbg.log(sep)
+	dbg.log(" ASLR          : %s" % p["aslr"])
+	if arch == 32:
+		sehtable_val = p.get("sehtable", 0) or 0
+		sehcount_val = p.get("sehcount", 0) or 0
+		if sehtable_val and sehcount_val:
+			dbg.log(" SafeSEH       : %s  (SEHandlerTable: 0x%08x, SEHandlerCount: %d)" % (p["safeseh"], sehtable_val, sehcount_val))
+		else:
+			dbg.log(" SafeSEH       : %s" % p["safeseh"])
+	dbg.log(" NX Compat     : %s" % p["nx"])
+	dbg.log(" Rebased       : %s" % p["rebase"])
+	dbg.log(" CFG           : %s" % p["cfg"])
+
+	# CFG detail — parse IMAGE_LOAD_CONFIG_DIRECTORY from memory
+	GUARD_FLAGS = [
+		(0x00000100, "CF_INSTRUMENTED",              "module performs CF checks"),
+		(0x00000200, "CFW_INSTRUMENTED",             "module performs CF + write checks"),
+		(0x00000400, "CF_FUNCTION_TABLE_PRESENT",    "guard function table present"),
+		(0x00000800, "SECURITY_COOKIE_UNUSED",       "security cookie not used by CF"),
+		(0x00001000, "PROTECT_DELAYLOAD_IAT",        "delay-load IAT protected"),
+		(0x00002000, "DELAYLOAD_IAT_IN_OWN_SECTION", "delay-load IAT in its own section"),
+		(0x00004000, "CF_EXPORT_SUPPRESSION_PRESENT","export suppression info present"),
+		(0x00008000, "CF_ENABLE_EXPORT_SUPPRESSION", "export suppression enabled"),
+		(0x00010000, "CF_LONGJUMP_TABLE_PRESENT",    "longjmp targets table present"),
+		(0x00020000, "RF_INSTRUMENTED",              "retpoline instrumented"),
+		(0x00040000, "RF_ENABLE",                    "retpoline enabled"),
+		(0x00080000, "RF_STRICT",                    "retpoline strict mode"),
+		(0x00100000, "RETPOLINE_PRESENT",            "retpoline present"),
+		(0x00200000, "EH_CONTINUATION_TABLE_PRESENT","EH continuation table present"),
+		(0x00800000, "XFG_ENABLED",                  "eXtended Flow Guard (XFG) enabled"),
+		(0x01000000, "CASTGUARD_PRESENT",            "CastGuard present"),
+		(0x02000000, "MEMKM_PRESENT",                "MemKM present"),
+	]
+	try:
+		pe_off2   = struct.unpack('<L', dbg.readMemory(base + 0x3c, 4))[0]
+		pe_base2  = base + pe_off2
+		magic2    = struct.unpack('<H', dbg.readMemory(pe_base2 + 0x18, 2))[0]
+		is_pe64_2 = (magic2 == 0x20b)
+		# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
+		if is_pe64_2:
+			dd_off2 = pe_base2 + 0x18 + 0x70   # PE32+ optional header DataDirectory
+		else:
+			dd_off2 = pe_base2 + 0x18 + 0x60   # PE32 optional header DataDirectory
+		lc_rva2  = struct.unpack('<L', dbg.readMemory(dd_off2 + 8 * 10,     4))[0]
+		lc_size2 = struct.unpack('<L', dbg.readMemory(dd_off2 + 8 * 10 + 4, 4))[0]
+		if lc_rva2 and lc_size2:
+			lc = base + lc_rva2
+			# Read the struct's own Size DWORD (first field) — more reliable than DataDirectory size
+			lc_struct_size = struct.unpack('<L', dbg.readMemory(lc, 4))[0]
+			if is_pe64_2:
+				# IMAGE_LOAD_CONFIG_DIRECTORY64 offsets
+				# GuardFlags at lc+0x80, last CFG field ends at lc+0x84
+				min_cfg_size = 0x84
+				if lc_struct_size >= min_cfg_size:
+					cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x60, 8))[0]
+					cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x68, 8))[0]
+					cfg_table_rva  = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
+					cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
+					guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x80, 4))[0]
+				else:
+					cfg_check_fp = cfg_dispatch_fp = cfg_table_rva = cfg_count = guard_flags = None
+			else:
+				# IMAGE_LOAD_CONFIG_DIRECTORY32 offsets
+				# GuardCFFunctionCount is DWORD (not ULONGLONG) in 32-bit struct
+				# GuardFlags at lc+0x58, last CFG field ends at lc+0x5c
+				min_cfg_size = 0x5c
+				if lc_struct_size >= min_cfg_size:
+					cfg_check_fp   = struct.unpack('<L', dbg.readMemory(lc + 0x48, 4))[0]
+					cfg_dispatch_fp= struct.unpack('<L', dbg.readMemory(lc + 0x4c, 4))[0]
+					cfg_table_rva  = struct.unpack('<L', dbg.readMemory(lc + 0x50, 4))[0]
+					cfg_count      = struct.unpack('<L', dbg.readMemory(lc + 0x54, 4))[0]
+					guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x58, 4))[0]
+				else:
+					cfg_check_fp = cfg_dispatch_fp = cfg_table_rva = cfg_count = guard_flags = None
+			if guard_flags is None:
+				dbg.log("   GuardFlags       : (Load Config struct too small, size=0x%x, need>=0x%x)" % (lc_struct_size, min_cfg_size))
+			else:
+				set_gflags = [(bit, name, desc) for bit, name, desc in GUARD_FLAGS if guard_flags & bit]
+				dbg.log("   GuardFlags       : 0x%08x" % guard_flags)
+				for bit, name, desc in set_gflags:
+					dbg.log("     [+] %-40s %s" % (name, desc))
+				if cfg_count:
+					if arch == 64:
+						dbg.log("   CFG table        : 0x%016x  (%d entries)" % (cfg_table_rva, cfg_count))
+						dbg.log("   CF check fptr    : 0x%016x" % cfg_check_fp)
+						dbg.log("   CF dispatch fptr : 0x%016x" % cfg_dispatch_fp)
+					else:
+						dbg.log("   CFG table        : 0x%08x  (%d entries)" % (cfg_table_rva, cfg_count))
+						dbg.log("   CF check fptr    : 0x%08x" % cfg_check_fp)
+						dbg.log("   CF dispatch fptr : 0x%08x" % cfg_dispatch_fp)
+	except Exception:
+		pass
+
+	dbg.log(" OS DLL        : %s" % p["os"])
+	dbg.log(" DllChars      : 0x%04x  %s" % (dllchars, "  ".join(set_flags) if set_flags else "(none)"))
+	if sections:
+		dbg.log(sep)
+		dbg.log(" Sections (%d):" % len(sections))
+		for sname, vaddr, vsz, rawsz, chars, cflag_names in sections:
+			if arch == 64:
+				dbg.log("   %-8s  VA: 0x%016x  VSize: 0x%08x  RawSize: 0x%08x  Chars: 0x%08x  [%s]"
+					% (sname, base + vaddr, vsz, rawsz, chars, "|".join(cflag_names)))
+			else:
+				dbg.log("   %-8s  VA: 0x%08x  VSize: 0x%08x  RawSize: 0x%08x  Chars: 0x%08x  [%s]"
+					% (sname, base + vaddr, vsz, rawsz, chars, "|".join(cflag_names)))
+
+	# VS_VERSION_INFO
+	vi = None
+	try:
+		vi = MnModule.VSVersionInfo.from_memory(base)
+	except Exception:
+		try:
+			vi = MnModule.VSVersionInfo.from_file(p["path"])
+		except Exception:
+			vi = None
+	if vi is not None:
+		# On Python 2 (Immunity), VS_VERSION_INFO strings are unicode objects.
+		# Immunity's dbg.log() only accepts str (bytes). Encode to ASCII with
+		# replacement so non-ASCII chars (©, ™, …) don't crash the call.
+		def _vstr(v):
+			if isinstance(v, str):
+				return v
+			try:
+				return v.encode('ascii', 'replace').decode('ascii')
+			except Exception:
+				return repr(v)
+		dbg.log(sep)
+		dbg.log(" VS_VERSION_INFO:")
+		try:
+			fv = vi.fixed.file_version
+			dbg.log("   FileVersion    : %d.%d.%d.%d" % fv)
+		except Exception:
+			pass
+		for st in vi.string_tables:
+			dbg.log("   [Language: %s]" % st.lang_id)
+			STRING_KEY_ORDER = [
+				"FileDescription", "ProductName", "CompanyName",
+				"FileVersion", "ProductVersion",
+				"OriginalFilename", "InternalName",
+				"LegalCopyright", "LegalTrademarks",
+				"Comments", "PrivateBuild", "SpecialBuild",
+			]
+			printed = set()
+			for k in STRING_KEY_ORDER:
+				if k in st.strings:
+					dbg.log("     %-22s : %s" % (k, _vstr(st.strings[k])))
+					printed.add(k)
+			for k, v in st.strings.items():
+				if k not in printed:
+					dbg.log("     %-22s : %s" % (k, _vstr(v)))
+
+	# ----------------------------------------------------------------
+	# Dependency tree (DFS, horizontal like Linux `tree`)
+	# ----------------------------------------------------------------
+	def _get_imported_names(mod_base):
+		"""Return sorted list of lowercase DLL names imported by the module at mod_base."""
+		names = []
+		try:
+			pe_off   = struct.unpack('<L', dbg.readMemory(mod_base + 0x3c, 4))[0]
+			pe_base  = mod_base + pe_off
+			magic    = struct.unpack('<H', dbg.readMemory(pe_base + 0x18, 2))[0]
+			if magic == 0x20b:
+				dd_off = pe_base + 0x18 + 0x70
+			else:
+				dd_off = pe_base + 0x18 + 0x60
+			imp_rva  = struct.unpack('<L', dbg.readMemory(dd_off + 0x08, 4))[0]
+			imp_size = struct.unpack('<L', dbg.readMemory(dd_off + 0x0c, 4))[0]
+			if not imp_rva or not imp_size:
+				return names
+			desc = mod_base + imp_rva
+			idx  = 0
+			while True:
+				entry = desc + idx * 20
+				oft = struct.unpack('<L', dbg.readMemory(entry + 0x00, 4))[0]
+				tds = struct.unpack('<L', dbg.readMemory(entry + 0x04, 4))[0]
+				fwd = struct.unpack('<L', dbg.readMemory(entry + 0x08, 4))[0]
+				nrv = struct.unpack('<L', dbg.readMemory(entry + 0x0c, 4))[0]
+				ft  = struct.unpack('<L', dbg.readMemory(entry + 0x10, 4))[0]
+				if oft == 0 and tds == 0 and fwd == 0 and nrv == 0 and ft == 0:
+					break
+				if nrv:
+					raw = dbg.readString(mod_base + nrv)
+					if raw:
+						n = ensure_text(raw).lower().strip()
+						if n:
+							names.append(n)
+				idx += 1
+		except Exception:
+			pass
+		return sorted(set(names))
+
+	def _mod_info_by_filename(fname_lower):
+		"""Return (base, version, path) for a loaded module by filename, or (0,'','')."""
+		stem = os.path.splitext(fname_lower)[0]
+		for _key, props in g_modules.items():
+			loaded = os.path.splitext((props.get("filename") or props.get("name", "")).lower())[0]
+			if loaded == stem:
+				return props.get("base", 0), props.get("version", ""), props.get("path", "")
+		return 0, "", ""
+
+	def _build_dep_tree_lines(root_fname, root_base, root_ver, root_path):
+		"""
+		Iterative DFS producing lines in the style of Linux `tree`:
+		  root
+		  ├── child1
+		  │   ├── grandchild
+		  │   └── grandchild2
+		  └── child2
+		Each label includes (version | path) before the module name.
+		"""
+		lines = []
+
+		def label(name, ver, path):
+			stem = os.path.splitext(name.lower())[0]
+			if re.match(r'^(api-ms-win|ext-ms-win)-', stem):
+				return str("(API Set) %s" % name)
+			ver_s  = str(ver)  if ver  else "?"
+			path_s = str(path) if path else "not loaded"
+			# Encode to plain str so Immunity (Python 2) dbg.log() doesn't
+			# receive a unicode object from PEB path/version strings.
+			try:
+				ver_s  = ver_s.encode('ascii',  'replace').decode('ascii')
+				path_s = path_s.encode('ascii', 'replace').decode('ascii')
+			except Exception:
+				pass
+			return "(%s | %s) %s" % (ver_s, path_s, name)
+
+		# Stack entries: (display_name, base, ver, path, prefix, is_last)
+		# We use an explicit stack for DFS. Children are pushed in reverse order
+		# so the first child is processed first.
+		visited = set()
+		root_label = label(root_fname, root_ver, root_path)
+		lines.append(root_label)
+		visited.add(os.path.splitext(root_fname.lower())[0])
+
+		root_children = _get_imported_names(root_base)
+
+		# Iterative DFS. Push children in reverse order so the first child
+		# is popped first (maintaining alphabetical top-to-bottom order).
+		# Stack items: (fname, base, ver, path, prefix, is_last)
+		dfs_stack = []
+		for i, child_name in enumerate(reversed(root_children)):
+			is_last_child = (i == 0)  # reversed: index 0 == last original child
+			cb, cv, cp = _mod_info_by_filename(child_name)
+			dfs_stack.append((child_name, cb, cv, cp, "", is_last_child))
+
+		while dfs_stack:
+			fname_n, base_n, ver_n, path_n, prefix, is_last = dfs_stack.pop()
+
+			connector = "\\-- " if is_last else "|-- "
+			lines.append(prefix + connector + label(fname_n, ver_n, path_n))
+
+			stem_n = os.path.splitext(fname_n.lower())[0]
+			if stem_n in visited or base_n == 0:
+				if stem_n in visited and base_n != 0:
+					lines[-1] += "  (*)"
+				continue
+			visited.add(stem_n)
+
+			children = _get_imported_names(base_n)
+			child_prefix = prefix + ("    " if is_last else "|   ")
+			for i, child_name in enumerate(reversed(children)):
+				is_last_child = (i == 0)
+				cb, cv, cp = _mod_info_by_filename(child_name)
+				dfs_stack.append((child_name, cb, cv, cp, child_prefix, is_last_child))
+
+		return lines
+
+	dep_lines = _build_dep_tree_lines(fname, base, p.get("version", ""), p.get("path", ""))
+	dbg.log(sep)
+	dbg.log(" Dependency tree:")
+	for dl in dep_lines:
+		try:
+			dl = dl.encode('ascii', 'replace').decode('ascii')
+		except Exception:
+			pass
+		dbg.log("   " + dl)
+
+	dbg.log(sep)
 
 
 # ----- ROP ----- #
@@ -20611,6 +21028,11 @@ Optional parameters :
                        -sort "aslr safeseh" : same, using default direction (no flag first) for each key
                        -sort base+          : ascending base address (low first)""" % ", ".join(MODULE_COLUMNS)
 	
+	moduleInfoUsage = """Show detailed information about a specific loaded module.
+Mandatory argument (one of):
+    -m <name>    : image name as shown in the modules table (e.g. kernel32.dll or kernel32)
+    -a <address> : address within the module (hex, e.g. 0x77e40000)"""
+
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
     -offset <value> : define the maximum offset for RET instructions (integer, default : 40)
@@ -21128,6 +21550,7 @@ Arguments:
 	commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
 	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
 	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod", [32,64])
+	commands["moduleinfo"]		= MnCommand("moduleinfo","Show detailed info about a specific module",moduleInfoUsage,procModuleInfo,"modinfo", [32,64])
 	commands["filecompare"]		= MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc")
 	commands["pattern_create"]	= MnCommand("pattern_create","Create a cyclic pattern of a given size",patcreateUsage,procCreatePATTERN,"pc",[32,64])
 	commands["pattern_offset"]	= MnCommand("pattern_offset","Find location of 4 bytes in a cyclic pattern",patoffsetUsage,procOffsetPATTERN,"po",[32,64])
