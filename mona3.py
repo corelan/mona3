@@ -13539,6 +13539,147 @@ def procShowMODULES(args):
 	thislog = logfile.reset()
 
 
+def procModuleInfo(args):
+	"""Show detailed information about a single module, looked up by name or base address."""
+	if len(g_modules) == 0:
+		populateModuleInfo()
+
+	target_key = None
+
+	if "a" in args and args["a"]:
+		# Look up by base address
+		raw = str(args["a"]).strip().lower().replace("0x", "")
+		try:
+			lookup_base = int(raw, 16)
+		except ValueError:
+			dbg.log("[!] Invalid address: %s" % args["a"], highlight=1)
+			return
+		for key, props in g_modules.items():
+			if props["base"] <= lookup_base < props["base"] + props["size"]:
+				target_key = key
+				break
+		if target_key is None:
+			dbg.log("[!] No module found containing address 0x%x" % lookup_base, highlight=1)
+			return
+
+	elif "m" in args and args["m"]:
+		# Look up by image name — match against filename or key, case-insensitive,
+		# with and without extension so 'kernel32' matches 'kernel32.dll'
+		needle = os.path.splitext(str(args["m"]).strip().lower())[0]
+		for key, props in g_modules.items():
+			fname = os.path.splitext((props["filename"] or props["name"]).lower())[0]
+			if fname == needle or os.path.splitext(props["name"].lower())[0] == needle:
+				target_key = key
+				break
+		if target_key is None:
+			dbg.log("[!] No loaded module named '%s'" % args["m"], highlight=1)
+			return
+
+	else:
+		dbg.log("[!] Provide -m <imagename> or -a <base address>", highlight=1)
+		return
+
+	p = g_modules[target_key]
+	base     = p["base"]
+	top      = p["top"]
+	size     = p["size"]
+	entry    = p["entry"]
+	cbbase   = p["codebase"]
+	cbsize   = p["codesize"]
+	cbtop    = p["codetop"]
+	dllchars = p["dllcharacteristics"]
+	fname    = p["filename"] or p["name"]
+
+	# Decode DllCharacteristics flags
+	DLLCHAR_FLAGS = [
+		(0x0020, "HIGH_ENTROPY_VA"),
+		(0x0040, "DYNAMIC_BASE (ASLR)"),
+		(0x0080, "FORCE_INTEGRITY"),
+		(0x0100, "NX_COMPAT"),
+		(0x0200, "NO_ISOLATION"),
+		(0x0400, "NO_SEH"),
+		(0x0800, "NO_BIND"),
+		(0x1000, "APPCONTAINER"),
+		(0x2000, "WDM_DRIVER"),
+		(0x4000, "GUARD_CF (CFG)"),
+		(0x8000, "TERMINAL_SERVER_AWARE"),
+	]
+	set_flags = [name for bit, name in DLLCHAR_FLAGS if dllchars & bit]
+
+	# Read section headers from the PE in memory
+	sections = []
+	SCN_CHARS = [
+		(0x00000020, "CODE"),
+		(0x00000040, "IDATA"),
+		(0x00000080, "UDATA"),
+		(0x20000000, "EXEC"),
+		(0x40000000, "READ"),
+		(0x80000000, "WRITE"),
+	]
+	try:
+		pe_off     = struct.unpack('<L', dbg.readMemory(base + 0x3c, 4))[0]
+		pe_base    = base + pe_off
+		num_secs   = struct.unpack('<H', dbg.readMemory(pe_base + 0x06, 2))[0]
+		opt_sz     = struct.unpack('<H', dbg.readMemory(pe_base + 0x14, 2))[0]
+		secs_start = pe_base + 0x18 + opt_sz
+		for i in range(num_secs):
+			sec   = secs_start + i * 40
+			sname = dbg.readMemory(sec, 8).rstrip(b'\x00').decode('ascii', errors='replace')
+			vsz   = struct.unpack('<L', dbg.readMemory(sec + 0x08, 4))[0]
+			vaddr = struct.unpack('<L', dbg.readMemory(sec + 0x0c, 4))[0]
+			rawsz = struct.unpack('<L', dbg.readMemory(sec + 0x10, 4))[0]
+			chars = struct.unpack('<L', dbg.readMemory(sec + 0x24, 4))[0]
+			cflag_names = [n for bit, n in SCN_CHARS if chars & bit]
+			sections.append((sname, vaddr, vsz, rawsz, chars, cflag_names))
+	except Exception:
+		sections = []
+
+	L = 70
+	sep = "-" * L
+	dbg.log(sep)
+	dbg.log(" Module : %s" % fname)
+	dbg.log(sep)
+	dbg.log(" Full path     : %s" % p["path"])
+	dbg.log(" Version       : %s" % p["version"])
+	dbg.log(sep)
+	if arch == 64:
+		dbg.log(" Base          : 0x%016x" % base)
+		dbg.log(" Top           : 0x%016x" % top)
+		dbg.log(" Size          : 0x%016x (%d bytes)" % (size, size))
+		dbg.log(" Entry point   : 0x%016x" % entry if entry else " Entry point   : (none)")
+	else:
+		dbg.log(" Base          : 0x%08x" % base)
+		dbg.log(" Top           : 0x%08x" % top)
+		dbg.log(" Size          : 0x%08x (%d bytes)" % (size, size))
+		dbg.log(" Entry point   : 0x%08x" % entry if entry else " Entry point   : (none)")
+	dbg.log(sep)
+	if cbsize:
+		if arch == 64:
+			dbg.log(" Code section  : 0x%016x - 0x%016x (0x%x bytes)" % (cbbase, cbtop, cbsize))
+		else:
+			dbg.log(" Code section  : 0x%08x - 0x%08x (0x%x bytes)" % (cbbase, cbtop, cbsize))
+	dbg.log(sep)
+	dbg.log(" ASLR          : %s" % p["aslr"])
+	if arch == 32:
+		dbg.log(" SafeSEH       : %s" % p["safeseh"])
+	dbg.log(" NX Compat     : %s" % p["nx"])
+	dbg.log(" Rebased       : %s" % p["rebase"])
+	dbg.log(" CFG           : %s" % p["cfg"])
+	dbg.log(" OS DLL        : %s" % p["os"])
+	dbg.log(" DllChars      : 0x%04x  %s" % (dllchars, "  ".join(set_flags) if set_flags else "(none)"))
+	if sections:
+		dbg.log(sep)
+		dbg.log(" Sections (%d):" % len(sections))
+		for sname, vaddr, vsz, rawsz, chars, cflag_names in sections:
+			if arch == 64:
+				dbg.log("   %-8s  VA: 0x%016x  VSize: 0x%08x  RawSize: 0x%08x  Chars: 0x%08x  [%s]"
+					% (sname, base + vaddr, vsz, rawsz, chars, "|".join(cflag_names)))
+			else:
+				dbg.log("   %-8s  VA: 0x%08x  VSize: 0x%08x  RawSize: 0x%08x  Chars: 0x%08x  [%s]"
+					% (sname, base + vaddr, vsz, rawsz, chars, "|".join(cflag_names)))
+	dbg.log(sep)
+
+
 # ----- ROP ----- #
 def procFindROPFUNC(args):
 	#default criteria
@@ -20611,6 +20752,11 @@ Optional parameters :
                        -sort "aslr safeseh" : same, using default direction (no flag first) for each key
                        -sort base+          : ascending base address (low first)""" % ", ".join(MODULE_COLUMNS)
 	
+	moduleInfoUsage = """Show detailed information about a specific loaded module.
+Mandatory argument (one of):
+    -m <name>    : image name as shown in the modules table (e.g. kernel32.dll or kernel32)
+    -a <address> : base address of the module (hex, e.g. 0x77e40000)"""
+
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
     -offset <value> : define the maximum offset for RET instructions (integer, default : 40)
@@ -21128,6 +21274,7 @@ Arguments:
 	commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
 	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
 	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod", [32,64])
+	commands["moduleinfo"]		= MnCommand("moduleinfo","Show detailed info about a specific module",moduleInfoUsage,procModuleInfo,"modinfo", [32,64])
 	commands["filecompare"]		= MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc")
 	commands["pattern_create"]	= MnCommand("pattern_create","Create a cyclic pattern of a given size",patcreateUsage,procCreatePATTERN,"pc",[32,64])
 	commands["pattern_offset"]	= MnCommand("pattern_offset","Find location of 4 bytes in a cyclic pattern",patoffsetUsage,procOffsetPATTERN,"po",[32,64])
