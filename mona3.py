@@ -13899,7 +13899,7 @@ def procModuleInfo(args):
 		while dfs_stack:
 			fname_n, base_n, ver_n, path_n, prefix, is_last = dfs_stack.pop()
 
-			connector = "└── " if is_last else "├── "
+			connector = "\\-- " if is_last else "|-- "
 			lines.append(prefix + connector + label(fname_n, ver_n, path_n))
 
 			stem_n = os.path.splitext(fname_n.lower())[0]
@@ -13910,7 +13910,7 @@ def procModuleInfo(args):
 			visited.add(stem_n)
 
 			children = _get_imported_names(base_n)
-			child_prefix = prefix + ("    " if is_last else "│   ")
+			child_prefix = prefix + ("    " if is_last else "|   ")
 			for i, child_name in enumerate(reversed(children)):
 				is_last_child = (i == 0)
 				cb, cv, cp = _mod_info_by_filename(child_name)
