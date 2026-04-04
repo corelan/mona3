@@ -2321,13 +2321,13 @@ class Debugger:
 	def get_teb_addr(self):
 		"""
 		Return the TEB address for the current thread.
-		On x86 this is the FS segment base; on x64 the GS segment base.
-		pykd.getCurrentThread() returns that base directly.
+		pykd.getImplicitThread() returns the implicit thread TEB address directly,
+		matching the behaviour of the former getTEBInfo() / pykd.typedVar("_TEB", ...).
 		"""
 		if self._teb_addr is not None:
 			return self._teb_addr
 		try:
-			self._teb_addr = int(pykd.getCurrentThread())
+			self._teb_addr = int(pykd.getImplicitThread())
 		except Exception:
 			self._teb_addr = 0
 		return self._teb_addr
