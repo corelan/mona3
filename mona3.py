@@ -13873,8 +13873,11 @@ def procModuleInfo(args):
 		lines = []
 
 		def label(name, ver, path):
+			stem = os.path.splitext(name.lower())[0]
+			if re.match(r'^(api-ms-win|ext-ms-win)-', stem):
+				return "(API Set) %s" % name
 			ver_s  = ver  if ver  else "?"
-			path_s = path if path else "?"
+			path_s = path if path else "not loaded"
 			return "(%s | %s) %s" % (ver_s, path_s, name)
 
 		# Stack entries: (display_name, base, ver, path, prefix, is_last)
