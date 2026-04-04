@@ -68,10 +68,14 @@ global ModuleCache
 global FuncCache
 
 global currentPID
+global currentTEBAddress
+global cpebaddress
 
 arch = 32
 
 currentPID = 0
+currentTEBAddress = 0
+cpebaddress = 0
 
 PageSections = {}
 ModuleCache = {}
@@ -211,6 +215,7 @@ def clearvars():
 	global InstructionCache
 	global PageSections
 	global ModuleCache
+	global cpebaddress
 	MemoryPages = None
 	AsmCache = None
 	disAsmCache = None
@@ -219,6 +224,7 @@ def clearvars():
 	InstructionCache = None
 	PageSections = None
 	ModuleCache = None
+	cpebaddress = 0
 	return
 
 
@@ -263,6 +269,33 @@ def getPEBInfo(peb_addr=None):
 		print("")
 		print(" Restart windbg and try again")
 		exit(1)
+
+def getTEBInfo():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+	return pykd.typedVar("_TEB", pykd.getImplicitThread())
+
+
+def getTEBAddress():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
+	global currentTEBAddress
+	if currentTEBAddress == 0:
+		currentTEBAddress = int(pykd.getImplicitThread())
+	return currentTEBAddress
+
+
+def getPEBAddress():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
+	global cpebaddress
+	if cpebaddress == 0:
+		peb = getPEBInfo()
+		cpebaddress = peb.getAddress()
+	return cpebaddress
+
 
 def bin2hex(binbytes):
 	if DEBUG_MODE:
@@ -2321,32 +2354,23 @@ class Debugger:
 	def get_teb_addr(self):
 		"""
 		Return the TEB address for the current thread.
-		pykd.getImplicitThread() returns the implicit thread TEB address directly,
-		matching the behaviour of the former getTEBInfo() / pykd.typedVar("_TEB", ...).
+		Delegates to getTEBAddress() which caches in the module-level
+		currentTEBAddress global. Also cached on self._teb_addr.
 		"""
 		if self._teb_addr is not None:
 			return self._teb_addr
-		try:
-			self._teb_addr = int(pykd.getImplicitThread())
-		except Exception:
-			self._teb_addr = 0
+		self._teb_addr = getTEBAddress()
 		return self._teb_addr
 
 	def get_peb_addr(self):
 		"""
-		Return the PEB address by reading TEB+0x30 (x86) / TEB+0x60 (x64).
-		Result is cached in self._peb_addr.
+		Return the PEB address.
+		Delegates to getPEBAddress() which caches in the module-level
+		cpebaddress global. Also cached on self._peb_addr.
 		"""
 		if self._peb_addr is not None:
 			return self._peb_addr
-		try:
-			teb      = self.get_teb_addr()
-			ptr_size = 8 if arch == 64 else 4
-			off      = 0x60 if arch == 64 else 0x30
-			fmt      = '<Q' if arch == 64 else '<L'
-			self._peb_addr = struct.unpack(fmt, bytes(bytearray(self.readMemory(teb + off, ptr_size))))[0]
-		except Exception:
-			self._peb_addr = 0
+		self._peb_addr = getPEBAddress()
 		return self._peb_addr
 
 	def get_peb_info(self):
