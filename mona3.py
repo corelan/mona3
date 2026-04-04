@@ -70,32 +70,6 @@ else:
 	bytes_type = str
 
 
-def _ord(x):
-    if isinstance(x, int):
-        return x
-
-    if isinstance(x, bytes):
-        # Python3: b"A"[0] -> 65
-        # Python2: b"A"[0] -> "A"
-        return x[0] if PY3 else ord(x[0])
-
-    return ord(x)
-
-def _to_text(value):
-	if isinstance(value, text_type):
-		return value
-	if isinstance(value, bytes_type):
-		return value.decode('latin1')
-	return text_type(value)
-
-
-def _to_bytes(value):
-	if isinstance(value, bytes_type):
-		return value
-	if isinstance(value, text_type):
-		return value.encode('latin1')
-	return text_type(value).encode('latin1')
-
 __IMM__ = '1.8'
 __DEBUGGERAPP__ = ''
 arch = 32
@@ -324,6 +298,77 @@ def resetGlobals():
 	currentArgs = None
 	disasmUpperChecked = False
 	return
+
+
+def _ord(x):
+    if isinstance(x, int):
+        return x
+
+    if isinstance(x, bytes):
+        # Python3: b"A"[0] -> 65
+        # Python2: b"A"[0] -> "A"
+        return x[0] if PY3 else ord(x[0])
+
+    return ord(x)
+
+def _to_text(value):
+	if isinstance(value, text_type):
+		return value
+	if isinstance(value, bytes_type):
+		return value.decode('latin1')
+	return text_type(value)
+
+
+def _to_bytes(value):
+	if isinstance(value, bytes_type):
+		return value
+	if isinstance(value, text_type):
+		return value.encode('latin1')
+	return text_type(value).encode('latin1')
+
+
+
+def str_to_bool(value):
+    """
+    Convert a string (or other value) to boolean.
+
+    True values:
+        t, true, yes, y, 1, +, on
+    False values:
+        f, false, no, n, 0, -, off
+
+    Case-insensitive, ignores leading/trailing spaces.
+    """
+
+    if value is None:
+        return False
+
+    # Already boolean
+    if isinstance(value, bool):
+        return value
+
+    # Convert to string safely (py2/py3)
+    try:
+        value = str(value)
+    except:
+        return False
+
+    val = value.strip().lower()
+
+    true_values = set(["t", "true", "yes", "y", "1", "+", "on"])
+    false_values = set(["f", "false", "no", "n", "0", "-", "off"])
+
+    if val in true_values:
+        return True
+    if val in false_values:
+        return False
+
+    # fallback: try numeric interpretation
+    try:
+        return float(val) != 0
+    except:
+        return False
+	
 
 def get_script_name():
     if '__file__' in globals():
@@ -7442,26 +7487,85 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 	if len(g_modules) == 0 or g_modulesOrder != peb_order:
 		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
+
 	for thismodule,modproperties in g_modules.items():
+		if DEBUG_MODE:
+			dbgp("Check if module %s should be filtered" % thismodule)
+			dbgp("  Properties: %s" % modproperties)
 		#is this module excluded ?
 		thismod = MnModule(thismodule)	
 		included = True
 		if not thismod.isExcluded:
 			#check other criteria
-			if ("safeseh" in criteria) and ((not criteria["safeseh"]) and thismod.isSafeSEH):
-				included = False
-			if ("aslr" in criteria) and ((not criteria["aslr"]) and thismod.isAslr):
-				included = False
-			if ("rebase" in criteria) and ((not criteria["rebase"]) and thismod.isRebase):
-				included = False
-			if ("os" in criteria) and ((not criteria["os"]) and thismod.isOS):
-				included = False
-			if ("nx" in criteria) and ((not criteria["nx"]) and thismod.isNX):
-				included = False
-			if ("cfg" in criteria) and ((not criteria["cfg"]) and thismod.isCFG):
-				included = False				
+
+			if ("safeseh" in criteria) and included:
+				keep_criteria = str_to_bool(criteria["safeseh"])
+				if DEBUG_MODE:
+					dbgp("   SAFESEH needs to be %s (=%s)" % (criteria["safeseh"], keep_criteria))
+					dbgp("   Module state: %s" % thismod.isSafeSEH)
+				if not thismod.isSafeSEH == keep_criteria:
+					included = False
+					if DEBUG_MODE:
+						dbgp("   -> mismatch! removing from list because of SAFESEH")
+
+			if ("aslr" in criteria) and included:
+				keep_criteria = str_to_bool(criteria["aslr"])
+				if DEBUG_MODE:
+					dbgp("   ASLR needs to be %s (=%s)" % (criteria["aslr"], keep_criteria))
+					dbgp("   Module state: %s" % thismod.isAslr)
+				if not thismod.isAslr == keep_criteria:
+					included = False
+					if DEBUG_MODE:
+						dbgp("   -> mismatch! removing from list because of ASLR")
+
+			if ("rebase" in criteria) and included:
+				keep_criteria = str_to_bool(criteria["rebase"])
+				if DEBUG_MODE:
+					dbgp("   REBASED needs to be %s (=%s)" % (criteria["rebase"], keep_criteria))
+					dbgp("   Module state: %s" % thismod.isRebase)
+				if not thismod.isRebase == keep_criteria:
+					included = False
+					if DEBUG_MODE:
+						dbgp("   -> mismatch! removing from list because of REBASE")
+
+			if ("os" in criteria) and included:
+				keep_criteria = str_to_bool(criteria["os"])
+				if DEBUG_MODE:
+					dbgp("   OS needs to be %s (=%s)" % (criteria["os"], keep_criteria))
+					dbgp("   Module state: %s" % thismod.isOS)
+				if not thismod.isOS == keep_criteria:
+					included = False
+					if DEBUG_MODE:
+						dbgp("   -> mismatch! removing from list because of OS")
+
+			if ("nx" in criteria) and included:
+				keep_criteria = str_to_bool(criteria["nx"])
+				if DEBUG_MODE:
+					dbgp("   NX needs to be %s (=%s)" % (criteria["nx"], keep_criteria))
+					dbgp("   Module state: %s" % thismod.isNX)
+				if not thismod.isNX == keep_criteria:
+					included = False
+					if DEBUG_MODE:
+						dbgp("   -> mismatch! removing from list because of NX")
+
+			if ("cfg" in criteria) and included:
+				keep_criteria = str_to_bool(criteria["cfg"])
+				if DEBUG_MODE:
+					dbgp("   CFG needs to be %s (=%s)" % (criteria["cfg"], keep_criteria))
+					dbgp("   Module state: %s" % thismod.isCFG)
+				if not thismod.isCFG == keep_criteria:
+					included = False
+					if DEBUG_MODE:
+						dbgp("   -> mismatch! removing from list because of CFG")
+
 		else:
 			included = False
+			if DEBUG_MODE:
+				dbgp("   Removing from list because it's an excluded module (mona.ini)")
+
+
+		if DEBUG_MODE:
+			dbgp("   After criteria check: included = %s" % included)
 		# filter by path regex ?
 		if included and ("cmp" in criteria) and criteria["cmp"]:
 			try:
