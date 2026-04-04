@@ -3538,9 +3538,11 @@ class MnModule:
 				mztop    = mzbase + mzsize
 				mcodetop = mcodebase + mcodesize
 
-				_OS_PRODUCT_NAME = "Microsoft\u00ae Windows\u00ae Operating System"
-				if __DEBUGGERAPP__ == "WinDBG":
-					modisos = False
+				modisos = False
+				try:
+					_path_norm = path.replace("\\", "/").lower()
+					_in_sys32  = "/windows/system32/" in _path_norm or "/windows/syswow64/" in _path_norm
+					vi = None
 					try:
 						vi = MnModule.VSVersionInfo.from_memory(mzbase)
 						if vi is None or not vi.fixed.file_version_str:
@@ -3550,13 +3552,16 @@ class MnModule:
 							vi = MnModule.VSVersionInfo.from_file(path)
 						except Exception:
 							vi = None
-					if vi is not None:
+					if vi is not None and _in_sys32:
 						for st in vi.string_tables:
-							if st.get("ProductName", "").strip() == _OS_PRODUCT_NAME:
+							company = st.get("CompanyName", "")
+							if isinstance(company, bytes):
+								company = company.decode("latin-1")
+							if "microsoft" in company.lower():
 								modisos = True
 								break
-				else:
-					modisos = "WINDOWS" in path.upper()
+				except Exception:
+					modisos = False
 	
 
 		else:
