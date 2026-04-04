@@ -6998,7 +6998,7 @@ def ModInfoCached(modulename):
 	else:
 		return True
 
-def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sort_order=None, peb_order="load"):
+def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, peb_order="load"):
 	"""
 	Shows table with all loaded modules and their properties.
 
@@ -7008,8 +7008,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 	filename - output will be written to the filename
 	
 	modules    - dictionary with modules to query - result of a populateModuleInfo() call
-	sort_by    - optional post-traversal sort key (see POST_SORT_VALID)
-	sort_order - 'asc' or 'desc'; overrides the default direction for the chosen key
+	sort_keys  - list of (key, reverse) tuples from _parse_sort_spec(), or empty list
 	"""	
 	thistable = ""
 	if len(g_modules) == 0:
@@ -7022,27 +7021,13 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 			filterelems.append("%s = %s" % (crit.upper(), modulecriteria[crit]))
 	filtertext = " | ".join(filterelems)
 
-	_POST_SORT_KEYS = {
-		"base":    lambda x: x[1]["base"],
-		"size":    lambda x: x[1]["size"],
-		# boolean keys: False=0 sorts before True=1 in ascending order (False-first default)
-		"rebase":  lambda x: x[1]["rebase"],
-		"safeseh": lambda x: x[1]["safeseh"],
-		"aslr":    lambda x: x[1]["aslr"],
-		"cfg":     lambda x: x[1]["cfg"],
-		"nx":      lambda x: x[1]["nx"],
-		"os":      lambda x: x[1]["os"],
-	}
+	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
 	items = list(g_modules.items())
-	if sort_by in _POST_SORT_KEYS:
-		default_reverse = _POST_SORT_DEFAULT_REVERSE.get(sort_by, False)
-		if sort_order == "asc":
-			reverse = False
-		elif sort_order == "desc":
-			reverse = True
-		else:
-			reverse = default_reverse
-		items = sorted(items, key=_POST_SORT_KEYS[sort_by], reverse=reverse)
+	if sort_keys:
+		# Apply compound sort in reverse key order so first key wins (stable sort)
+		for key, reverse in reversed(sort_keys):
+			if key in _POST_SORT_FIELDS:
+				items = sorted(items, key=_POST_SORT_FIELDS[key], reverse=reverse)
 
 
 	linelength = 175
@@ -7050,9 +7035,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_by=None, sor
 	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(g_modules), len(modules))
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
 	thistable += " | PEB order: %s" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
-	if sort_by is not None:
-		actual_order = sort_order if sort_order else ("desc" if _POST_SORT_DEFAULT_REVERSE.get(sort_by, False) else "asc")
-		thistable += " | Sorted by: %s %s" % (sort_by, actual_order)
+	if sort_keys:
+		sort_desc = " -> ".join("%s (%s)" % (k, "descending" if r else "ascending") for k, r in sort_keys)
+		thistable += " | Sorted by: %s" % sort_desc
 	thistable += "\n"
 	if filtertext != "":
 		thistable += ("-" * linelength) + "\n"
@@ -13450,20 +13435,44 @@ def procFindSEH(args, procUsage=""):
 	
 # ----- MODULES ------ #
 PEB_ORDER_VALID = ("load", "memory", "init")
-POST_SORT_VALID = ("base", "size", "rebase", "safeseh", "aslr", "cfg", "nx", "os")
-# For boolean sorts: False=0 sorts before True=1, so ascending (reverse=False) puts False first.
-# -order asc = False-first (default), -order desc = True-first.
-# For numeric sorts: ascending (reverse=False) is the default.
-_POST_SORT_DEFAULT_REVERSE = {
-	"base":    False,
-	"size":    False,
-	"rebase":  False,
-	"safeseh": False,
-	"aslr":    False,
-	"cfg":     False,
-	"nx":      False,
-	"os":      False,
+# Single source of truth for every sortable module column.
+# type "hex"  -> numeric, default ascending (low values first)
+# type "bool" -> boolean, default ascending (False-first = unprotected modules first)
+MODULE_COLUMNS = {
+	"base":    {"key": lambda x: x[1]["base"],    "type": "hex",  "default_reverse": False},
+	"size":    {"key": lambda x: x[1]["size"],    "type": "hex",  "default_reverse": False},
+	"rebase":  {"key": lambda x: x[1]["rebase"],  "type": "bool", "default_reverse": False},
+	"safeseh": {"key": lambda x: x[1]["safeseh"], "type": "bool", "default_reverse": False},
+	"aslr":    {"key": lambda x: x[1]["aslr"],    "type": "bool", "default_reverse": False},
+	"cfg":     {"key": lambda x: x[1]["cfg"],     "type": "bool", "default_reverse": False},
+	"nx":      {"key": lambda x: x[1]["nx"],      "type": "bool", "default_reverse": False},
+	"os":      {"key": lambda x: x[1]["os"],      "type": "bool", "default_reverse": False},
 }
+
+def _parse_sort_spec(spec):
+	"""
+	Parse a compound sort specifier like 'base+safeseh-' into a list of
+	(key, reverse) tuples. A trailing '+' means ascending, '-' means descending.
+	No suffix uses the per-column default_reverse from MODULE_COLUMNS.
+	Returns (sort_keys, error_string). error_string is None on success.
+	"""
+	import re
+	tokens = re.findall(r'([a-z]+)([+-]?)', spec.lower())
+	if not tokens:
+		return None, "empty sort spec"
+	sort_keys = []
+	for key, direction in tokens:
+		if key not in MODULE_COLUMNS:
+			return None, "unknown sort key '%s', valid options: %s" % (key, ", ".join(MODULE_COLUMNS))
+		if direction == "+":
+			reverse = False
+		elif direction == "-":
+			reverse = True
+		else:
+			reverse = MODULE_COLUMNS[key]["default_reverse"]
+		sort_keys.append((key, reverse))
+	return sort_keys, None
+
 
 def procShowMODULES(args):
 	modulecriteria={}
@@ -13479,23 +13488,15 @@ def procShowMODULES(args):
 			return
 		peb_order = peb_val
 
-	sort_by = None
-	sort_order = None
+	sort_keys = []
 	if "sort" in args and args["sort"]:
-		sort_val = str(args["sort"]).lower().strip()
-		if sort_val not in POST_SORT_VALID:
-			dbg.log("[!] Unknown sort value '%s', valid options: %s" % (sort_val, ", ".join(POST_SORT_VALID)))
+		sort_keys, err = _parse_sort_spec(str(args["sort"]).strip())
+		if err:
+			dbg.log("[!] Invalid -sort value: %s" % err)
 			return
-		sort_by = sort_val
-	if sort_by is not None and "order" in args and args["order"]:
-		order_val = str(args["order"]).lower().strip()
-		if order_val not in ("asc", "desc"):
-			dbg.log("[!] Unknown order value '%s', valid options: asc, desc" % order_val)
-			return
-		sort_order = order_val
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True, peb_order=peb_order)
-	showModuleTable("", modulestosearch, modulecriteria, sort_by=sort_by, sort_order=sort_order, peb_order=peb_order)
+	showModuleTable("", modulestosearch, modulecriteria, sort_keys=sort_keys, peb_order=peb_order)
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
 
@@ -20551,13 +20552,15 @@ Optional parameters :
                        load   - InLoadOrderModuleList (DLL load order)
                        memory - InMemoryOrderModuleList
                        init   - InInitializationOrderModuleList (DllMain call order)
--sort <key>        : sort the output after the PEB walk
-                       base    - ascending base address
-                       size    - ascending module size
-                       rebase / safeseh / aslr / cfg / nx / os - True-first
--order <dir>       : override sort direction (only valid with -sort)
-                       asc   - ascending for numeric keys; False-first for boolean keys (default)
-                       desc  - descending for numeric keys; True-first for boolean keys"""
+-sort <spec>       : sort the output using a compound sort specifier.
+                     Each key is optionally followed by '+' (ascending) or '-' (descending).
+                     No suffix uses the column default (all columns default to ascending / False-first).
+                     Multiple keys are concatenated to define a stable multi-key sort.
+                     Valid keys: %s
+                     Examples:
+                       -sort aslr-          : modules without ASLR first
+                       -sort aslr-safeseh-  : no-ASLR first, then no-SafeSEH first
+                       -sort base+          : ascending base address""" % ", ".join(MODULE_COLUMNS)
 	
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
