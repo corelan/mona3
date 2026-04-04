@@ -565,14 +565,14 @@ def print_dict_table(data, headers, types, ptr_size=None, padding=""):
 	fmt = "   ".join(["%%-%ds" % w for w in col_widths])
 
 	# Helper to print with padding
-	def _p(line):
-		dbg.log("%s%s" % (padding, line))
+	def _p(line,setbold=False):
+		dbg.log("%s%s" % (padding, line), highlight=setbold)
 
 	# Header
-	_p(fmt % tuple([_ensure_text(h) for h in headers]))
+	_p(fmt % tuple([_ensure_text(h) for h in headers]), True)
 
 	# Separator
-	_p(fmt % tuple([("-" * w) for w in col_widths]))
+	_p(fmt % tuple([("-" * w) for w in col_widths]), True)
 
 	# Rows
 	for row in formatted_rows:
@@ -7651,7 +7651,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			found_opcodes = searchInModule(search,thismodule,criteria)
 			#merge results
 			all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
-		dbg.log("    - Search for gadget endings complete.")
+		dbg.log("")
+		dbg.log("    Search for gadget endings complete.")
 		dbg.log("      Results:")
 		dbg.log("")
 	else:
