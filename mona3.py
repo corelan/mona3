@@ -3370,6 +3370,8 @@ class MnModule:
 		mentry = 0
 		mdllcharacteristics = 0
 		mversion = ""
+		msehtable = 0
+		msehcount = 0
 		self.internalname = modulename
 		if modulename != "":
 			# if info is cached, retrieve from cache
@@ -3393,6 +3395,8 @@ class MnModule:
 				mcodesize = getModuleProperty(modulename,"codesize")
 				mcodetop = getModuleProperty(modulename,"codetop")
 				mdllcharacteristics = getModuleProperty(modulename, "dllcharacteristics")
+				msehtable = getModuleProperty(modulename, "sehtable") or 0
+				msehcount = getModuleProperty(modulename, "sehcount") or 0
 			else:
 				#gather info manually - this code should only get called from populateModuleInfo()
 				modissafeseh = True
@@ -3519,9 +3523,8 @@ class MnModule:
 										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
 										if sehtable != 0 and sehcount != 0:
 											modissafeseh = True
-									except:
-										modissafeseh = False
-
+											msehtable = sehtable
+											msehcount = sehcount
 						if mzrebase != mzbase:
 							modrebased = True
 
@@ -3604,9 +3607,9 @@ class MnModule:
 		self.moduleCodebase = mcodebase
 
 		self.moduleDllCharacteristics = mdllcharacteristics
-		
-			
-	
+		self.moduleSEHTable = msehtable
+		self.moduleSEHCount = msehcount
+
 	def __str__(self):
 		#return general info about the module
 		#modulename + info
@@ -6980,6 +6983,8 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 				modinfo["codesize"]	= thismod.moduleCodesize
 				modinfo["codetop"]	= thismod.moduleCodetop
 				modinfo["dllcharacteristics"]  = thismod.moduleDllCharacteristics
+				modinfo["sehtable"]            = thismod.moduleSEHTable
+				modinfo["sehcount"]            = thismod.moduleSEHCount
 				g_modules[thismod.moduleKey] = modinfo
 			else:
 				if not silent:
@@ -13661,7 +13666,12 @@ def procModuleInfo(args):
 	dbg.log(sep)
 	dbg.log(" ASLR          : %s" % p["aslr"])
 	if arch == 32:
-		dbg.log(" SafeSEH       : %s" % p["safeseh"])
+		sehtable_val = p.get("sehtable", 0) or 0
+		sehcount_val = p.get("sehcount", 0) or 0
+		if sehtable_val and sehcount_val:
+			dbg.log(" SafeSEH       : %s  (SEHandlerTable: 0x%08x, SEHandlerCount: %d)" % (p["safeseh"], sehtable_val, sehcount_val))
+		else:
+			dbg.log(" SafeSEH       : %s" % p["safeseh"])
 	dbg.log(" NX Compat     : %s" % p["nx"])
 	dbg.log(" Rebased       : %s" % p["rebase"])
 	dbg.log(" CFG           : %s" % p["cfg"])
