@@ -7763,7 +7763,7 @@ def showModuleTable(logfile="", modules=[], sort_by=None, sort_order=None):
 	
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d \n" % len(g_modules)
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filter: %d\n" % (len(g_modules), len(modules))
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
 		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
