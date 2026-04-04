@@ -13458,16 +13458,19 @@ def _parse_sort_spec(spec):
 	Returns (sort_keys, error_string). error_string is None on success.
 	"""
 	import re
-	# Split on commas first to allow 'base,safeseh' style, then parse each token
+	# Split on commas to allow 'base,safeseh' style; within each comma-part,
+	# use findall to handle the concatenated 'safeseh-base+' style.
 	parts = re.split(r'\s*,\s*', spec.lower().strip())
 	tokens = []
 	for part in parts:
 		if not part:
 			continue
-		m = re.fullmatch(r'([a-z]+)([+-]?)', part)
-		if not m:
+		found = re.findall(r'([a-z]+)([+-]?)', part)
+		# Verify the whole part was consumed (no leftover non-alpha chars besides +/-)
+		reconstructed = "".join(k + d for k, d in found)
+		if reconstructed != part:
 			return None, "cannot parse sort token '%s'" % part
-		tokens.append((m.group(1), m.group(2)))
+		tokens.extend(found)
 	if not tokens:
 		return None, "empty sort spec"
 	sort_keys = []
