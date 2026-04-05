@@ -19140,7 +19140,7 @@ def procBPSeh(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
 	dict_sehrecords = {}
-
+	sehseq = []
 	dbg.log("")
 	dbg.log("SEH Chain :")
 	dbg.log("")
@@ -19175,8 +19175,8 @@ def procBPSeh(self):
 			funcinfo = ptr.getPtrFunction()
 			#dbg.log("0x%08x  %s  0x%08x %s <- %s" % (address,nseh,sehandler,funcinfo,bptext))
 			dict_sehrecords[address] = [nsehvalue, sehandler, funcinfo, bptext]
-
-		print_dict_table(dict_sehrecords, headers, types, padding = "      ")
+			sehseq.append(address)
+		print_dict_table(dict_sehrecords, headers, types, padding = "      ", itemsequence=sehseq)
 
 	dbg.log("")
 	return "Done"
