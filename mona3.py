@@ -18472,25 +18472,22 @@ def procPageACL(args):
 	orderedpages.sort()
 	# find indexes to show in case we have specified an address
 	toshow = []
-	previouspage = 0
-	nextpage = 0
-	pagefound = False
 	if findaddy > 0:
-		for thispage in orderedpages:
+		for idx, thispage in enumerate(orderedpages):
 			page = allpages[thispage]
 			pagestart = page.getBaseAddress()
 			pagesize = page.getSize()
 			pageend = pagestart + pagesize
 			if findaddy >= pagestart and findaddy < pageend:
+				# add previous page (if any)
+				if idx - 1 >= 0:
+					toshow.append(orderedpages[idx - 1])
+				# add current page
 				toshow.append(thispage)
-				pagefound = True
-			if pagefound and previouspage > 0:
-				if not previouspage in toshow:
-					toshow.append(previouspage)
-				if not thispage in toshow:
-					toshow.append(thispage) # nextpage
+				# add next page (if any)
+				if idx + 1 < len(orderedpages):
+					toshow.append(orderedpages[idx + 1])
 				break
-			previouspage = thispage
 	if len(toshow) > 0:
 		toshow.sort()
 		orderedpages = toshow
