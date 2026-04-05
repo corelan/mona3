@@ -2744,6 +2744,47 @@ class MnConfig:
 					dbg.log(" ** Warning: using mona.ini file from %s" % self.currpath, highlight=True)
 					configwarningshown = True
 	
+
+	def list(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+		# while listing, populate configFileCache at the same time
+		global configFileCache
+		# clear cache first
+		configFileCache = {}
+		headers = ["Parameter", "Value"]
+		types   = ["string", "string"]
+
+		if os.path.exists(self.configfile):
+			try:
+				configfileobj = open(self.configfile,"rb")
+				content = configfileobj.readlines()
+				configfileobj.close()
+				if DEBUG_MODE:
+					dbgp("    Reading config content line by line")
+				for thisLine in content:
+					thisLine = thisLine.decode("latin-1").strip()
+					if DEBUG_MODE:
+						dbgp("    Line: %s" % thisLine)
+					if not thisLine.startswith("#"):
+
+						thisparam, thisvalue = thisLine.split('=', 1)
+						# strip spaces around both
+						thisparam = thisparam.strip().lower()
+						thisvalue = thisvalue.strip().lower().replace("\n","").replace("\r","")
+						configFileCache[thisparam] = thisvalue
+						
+						if DEBUG_MODE:
+							dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
+
+				print_dict_table(configFileCache, headers, types, padding = "      ")
+	
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
+				toreturn=""
+
+
 	def get(self,parameter):
 		"""
 		Retrieves the contents of a given parameter from the config file
@@ -3628,7 +3669,7 @@ class MnModule:
 		if excludedlist:
 			allexcluded = excludedlist.split(',')
 			for exclentry in allexcluded:
-				if exclentry.lower().strip() == modulename.lower().strip():
+				if modulename.lower().strip().startswith(exclentry.lower().strip()):
 					modfound = True
 		self.isExcluded = modfound
 		
@@ -13379,9 +13420,9 @@ def getAbsolutePath(filename):
 # ----- Config file management ----- #
 
 def procConfig(args):
-	#did we specify -get, -set, -add or -del?
+	#did we specify -get, -set, -add, -list or -del?
 	showerror = False
-	if not "set" in args and not "get" in args and not "add" in args and not "del" in args:
+	if not "set" in args and not "get" in args and not "add" in args and not "del" in args and not "list":
 		showerror = True
 		
 	if "set" in args:
@@ -13423,11 +13464,24 @@ def procConfig(args):
 		#dbg.logLines(configUsage,highlight=1)
 		return
 	else:
-		if "get" in args:
-			dbg.log("Reading value from configuration file")
+
+		if "list" in args:
+			dbg.log("Listing current values from configuration file:")
+			dbg.log("")
 			monaConfig = MnConfig()
-			thevalue = monaConfig.get(args["get"])
-			dbg.log("Parameter %s = %s" % (args["get"],thevalue))
+			monaConfig.list()
+
+		if "get" in args:
+			dbg.log("Reading value from configuration file:")
+			dbg.log("")
+			monaConfig = MnConfig()
+			paramname = args["get"].split(" ")[0]
+			thevalue = monaConfig.get(paramname)
+			configDict = {}
+			headers = ["Parameter", "Value"]
+			types   = ["string", "string"]
+			configDict[paramname] = [thevalue]
+			print_dict_table(configDict, headers, types, padding = "   ")
 		
 		if "set" in args:
 			monaConfig = MnConfig()
@@ -13435,9 +13489,16 @@ def procConfig(args):
 			configparam = value[0].strip()
 			dbg.log("Saving new value for parameter '%s'" % configparam)
 			dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+			dbg.log("New value:")
+			dbg.log("")
 			configvalue = args["set"][0+len(configparam):len(args["set"])]
 			monaConfig.set(configparam,configvalue)
-			dbg.log("New value of parameter %s = %s" % (configparam,configvalue))
+			configDict = {}
+			headers = ["Parameter", "New value"]
+			types   = ["string", "string"]
+			configDict[configparam] = [configvalue]
+			print_dict_table(configDict, headers, types, padding = "   ")
+			
 
 		if "del" in args:
 			monaConfig = MnConfig()
@@ -13456,7 +13517,14 @@ def procConfig(args):
 			dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			configvalue = monaConfig.get(configparam).strip() + "," + args["add"][0+len(configparam):len(args["add"])].strip()
 			monaConfig.set(configparam,configvalue)
-			dbg.log("New value of parameter %s = %s" % (configparam,configvalue))
+			dbg.log("New value:")
+			dbg.log("")
+			configDict = {}
+			headers = ["Parameter", "New value"]
+			types   = ["string", "string"]
+			configDict[configparam] = [configvalue]
+			print_dict_table(configDict, headers, types, padding = "   ")			
+
 		
 # ----- Jump to register ----- #
 
