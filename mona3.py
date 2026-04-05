@@ -7228,7 +7228,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 # This is where the action is
 #-----------------------------------------------------------------------#	
 
-def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False):
+def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False, forcelower=False):
 	"""
 	Write the output of a search operation to log file
 
@@ -7256,7 +7256,10 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 			if not silent:
 				try:
 					#dbg.log("    - Number of pointers of type '%s' : %d " % (hf,len(all_opcodes[hf])))
-					results_dict[hf.lower()] = [len(all_opcodes[hf])]
+					if forcelower:
+						results_dict[hf.lower()] = [len(all_opcodes[hf])]
+					else:
+						results_dict[hf] = [len(all_opcodes[hf])]
 				except:
 					results_dict["unable to display"] = [len(all_opcodes[hf])]
 					#dbg.log("    - Number of pointers of type '<unable to display>' : %d " % (len(all_opcodes[hf])))
@@ -7303,7 +7306,10 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 						if not silent:
 							if DEBUG_MODE:
 								dbgp("  %s" % ptrinfo,address=ptr)
-						results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip() , extrainfo]
+						if forcelower:
+							results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip() , extrainfo]
+						else:
+							results_dict_details[ptr] = [optext, ptrx.__str__().strip() , extrainfo]
 						cnt += 1
 					ptrcnt += 1
 					if (ptr_to_get == -1 or ptr_to_get > 20) and cnt == 20 and not silent and not messageshown:
@@ -13627,7 +13633,7 @@ def procFindJMP(args, procUsage=""):
 	# write to log
 	logfile = MnLog("jmp.txt")
 	thislog = logfile.reset()
-	processResults(all_opcodes,logfile,thislog)
+	processResults(all_opcodes,logfile,thislog, forcelower=True)
 
 # ----- Exception Handler Overwrites ----- #
 
@@ -13665,7 +13671,7 @@ def procFindSEH(args, procUsage=""):
 	#report findings to log
 	logfile = MnLog("seh.txt")
 	thislog = logfile.reset()
-	processResults(all_opcodes,logfile,thislog,specialcases)
+	processResults(all_opcodes,logfile,thislog,specialcases,forcelower=True)
 	
 	
 # ----- MODULES ------ #
@@ -14177,13 +14183,13 @@ def procFindROPFUNC(args):
 	dbg.log("[+] Processing pointers to interesting rop functions")
 	logfile = MnLog("ropfunc.txt")
 	thislog = logfile.reset()
-	processResults(ropfuncs,logfile,thislog)
+	processResults(ropfuncs,logfile,thislog,forcelower=True)
 	global silent
 	silent = True
 	dbg.log("[+] Processing offsets to pointers to interesting rop functions")
 	logfile = MnLog("ropfunc_offset.txt")
 	thislog = logfile.reset()
-	processResults(ropfuncoffsets,logfile,thislog)			
+	processResults(ropfuncoffsets,logfile,thislog,forcelower=True)			
 	
 def procStackPivots(args):
 	procROP(args,"stackpivot", procUsage)
