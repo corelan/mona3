@@ -14203,7 +14203,7 @@ def procFindROPFUNC(args):
 	processResults(ropfuncoffsets,logfile,thislog,forcelower=True)			
 	
 def procStackPivots(args):
-	procROP(args)
+	procROP(args, "stackpivot")
 	
 def procROP(args,mode="all"):
 	#default criteria
