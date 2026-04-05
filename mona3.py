@@ -7154,6 +7154,12 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		populateModuleInfo()
 
 	filtertext = criteriaToText(modulecriteria, True)
+	excluded_by_configtext = ""
+	thisconfig = MnConfig()
+	allexcluded = []
+	excludedlist = thisconfig.get("excluded_modules")
+	if excludedlist:
+		excluded_by_configtext = " Some modules may be excluded because of the 'excluded_modules' config parameter: %s" % excludedlist
 
 	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
 	items = list(g_modules.items())
@@ -7176,6 +7182,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	if filtertext != "":
 		thistable += ("-" * linelength) + "\n"
 		thistable += " Module filter applied: %s\n" % (filtertext)
+	if excluded_by_configtext != "":
+		thistable += ("-" * linelength) + "\n"
+		thistable += ("%s\n" % excluded_by_configtext)
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
 		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
