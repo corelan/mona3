@@ -469,6 +469,8 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 	padding : string to prepend to every printed line
 	"""
 
+	printsequence = itemsequence
+
 	if ptr_size is None:
 		ptr_size = 16 if sys.maxsize > 2**32 else 8
 
@@ -539,24 +541,27 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 	# Build formatted rows
 	formatted_rows = []
 	expected_cols = len(headers)
-	if len(itemsequence) == 0:
-		for key in data.items():
-			itemsequence.append(key)
+	if len(printsequence) == 0:
+		for key in data.keys():
+			printsequence.append(key)
 
-	for key in itemsequence:
-		value = data[key]
-		row = _normalize_row(key, value)
+	for key in printsequence:
+		if key in data:
+			value = data[key]
+			row = _normalize_row(key, value)
 
-		if len(row) != expected_cols:
-			raise ValueError(
-				"Row for key %r has %d columns, expected %d"
-				% (key, len(row), expected_cols)
-			)
+			if len(row) != expected_cols:
+				raise ValueError(
+					"Row for key %r has %d columns, expected %d"
+					% (key, len(row), expected_cols)
+				)
 
-		formatted_rows.append([
-			_format_value(row[i], types[i]) for i in range(expected_cols)
-		])
-
+			formatted_rows.append([
+				_format_value(row[i], types[i]) for i in range(expected_cols)
+			])
+		else:
+			dbg.log("key %s not present" % key)
+			dbg.log("%s" % data)
 	# Determine column widths
 	col_widths = []
 	for i in range(expected_cols):
@@ -581,6 +586,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 	# Rows
 	for row in formatted_rows:
 		_p(fmt % tuple([_ensure_text(c) for c in row]))
+
 
 
 def getDisasmInstruction(disasmentry):
@@ -2781,7 +2787,7 @@ class MnConfig:
 						if DEBUG_MODE:
 							dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
 
-				print_dict_table(configFileCache, headers, types, padding = "      ")
+				print_dict_table(configFileCache, headers, types, padding = "      ", itemsequence = [])
 	
 			except Exception as e:
 				if DEBUG_MODE:
@@ -7271,7 +7277,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 		dbg.log("")
 		headers = ["Type", "Number"]
 		types   = ["string", "int"]
-		print_dict_table(results_dict, headers, types, padding = "      ")
+		print_dict_table(results_dict, headers, types, padding = "      ", itemsequence = [])
 
 
 		if not ptronly:
@@ -7321,9 +7327,9 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 						dbg.log("")
 						messageshown = True
 
-			headers = ["Address", "Type", "Address info", "Other info"]
+			headers = ["Address", "Type", "Address/ACLinfo", "Other info"]
 			types   = ["pointer", "string", "string", "string"]
-			print_dict_table(results_dict_details, headers, types, padding = "      ")
+			print_dict_table(results_dict_details, headers, types, padding = "      ", itemsequence = [])
 
 			if cnt < ptrcnt:
 				if not silent:
@@ -7835,7 +7841,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	headers = ["Ending", "Count"]
 	types   = ["string", "int"]
 
-	print_dict_table(ending_cnt, headers, types, padding = "      ")
+	print_dict_table(ending_cnt, headers, types, padding = "      ", itemsequence = [])
 	dbg.log("")
 
 	global silent
@@ -13396,7 +13402,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 				elif mode == "list":
 					#dbg.log("Match found at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
 					bp_table[funcptr] = ["list", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
-			print_dict_table(bp_table, headers, types, padding = "   ")
+			print_dict_table(bp_table, headers, types, padding = "   ",itemsequence = [])
 
 	return
 
@@ -13503,7 +13509,7 @@ def procConfig(args):
 			headers = ["Parameter", "Value"]
 			types   = ["string", "string"]
 			configDict[paramname] = [thevalue]
-			print_dict_table(configDict, headers, types, padding = "   ")
+			print_dict_table(configDict, headers, types, padding = "   ", itemsequence = [])
 		
 		if "set" in args:
 			monaConfig = MnConfig()
@@ -13519,7 +13525,7 @@ def procConfig(args):
 			headers = ["Parameter", "New value"]
 			types   = ["string", "string"]
 			configDict[configparam] = [configvalue]
-			print_dict_table(configDict, headers, types, padding = "   ")
+			print_dict_table(configDict, headers, types, padding = "   ", itemsequence = [])
 			
 
 		if "del" in args:
@@ -13545,7 +13551,7 @@ def procConfig(args):
 			headers = ["Parameter", "New value"]
 			types   = ["string", "string"]
 			configDict[configparam] = [configvalue]
-			print_dict_table(configDict, headers, types, padding = "   ")			
+			print_dict_table(configDict, headers, types, padding = "   ", itemsequence = [])			
 
 		
 # ----- Jump to register ----- #
@@ -17904,14 +17910,14 @@ def procGetxAT(args,mode=""):
 			headers = ["IAT Location", "In Module", "( = RVA)", "Contains","Which is address of function","Info about module the function belongs to" ]
 			types   = ["pointer", "string", "pointer", "pointer", "string", "string"]
 			dbg.log("")
-			print_dict_table(iat_table, headers, types, padding = "   ")
+			print_dict_table(iat_table, headers, types, padding = "   ", itemsequence = [])
 		if mode == "eat":
 			dbg.log("")
 			dbg.log("Results of the EAT search: %d entries found" % entriesfound )
 			headers = ["FuncPtr", "Module!Exported Function Name", "Module Base + Offset", "Info about this module" ]
 			types   = ["pointer", "string", "string", "string"]
 			dbg.log("")
-			print_dict_table(eat_table, headers, types, padding = "   ")			
+			print_dict_table(eat_table, headers, types, padding = "   ", itemsequence = [])			
 
 		if not silent:
 			dbg.log("")
