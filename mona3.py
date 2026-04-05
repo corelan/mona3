@@ -14832,24 +14832,28 @@ def procDump(args):
 	if "s" not in args:
 		dbg.log("Missing mandatory argument -s address", highlight=1)
 		return
-	startaddress = str(args["s"]).replace("0x","").replace("0X","")
-	if not isAddress(startaddress):
+	startaddress_raw = str(args["s"]).replace("0x","").replace("0X","")
+	startaddress, startaddressok = getAddyArg(startaddress_raw)
+	if not startaddressok:
 		dbg.log("You have specified an invalid start address", highlight=1)
 		return
-	address = addrToInt(startaddress)
+	address = startaddress
 	
 	size = 0
 	if "n" in args:
 		size = int(args["n"])
 	elif "e" in args:
-		endaddress = str(args["e"]).replace("0x","").replace("0X","")
-		if not isAddress(endaddress):
+		endaddress_raw = str(args["e"]).replace("0x","").replace("0X","")
+		endaddress, endaddressok = getAddyArg(endaddress_raw)
+		if not endaddressok:
 			dbg.log("You have specified an invalid end address", highlight=1)
 			return
-		end = addrToInt(endaddress)
+		end = endaddress
 		if end < address:
-			dbg.log("end address %s is before start address %s" % (args["e"],args["s"]), highlight=1)
-			return
+			dbg.log("End address %s is before start address %s, going to flip them around" % (args["e"],args["s"]))
+			taddress = end
+			end = address
+			address = taddress
 		size = end - address
 	else:
 		dbg.log("you need to specify either the size of the copy with -n or the end address with -e ", highlight=1)
