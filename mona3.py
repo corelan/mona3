@@ -7514,6 +7514,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 		offsets["kernelbase.dll"] = searchfuncs
 	if not silent:
 		dbg.log("[+] Looking for pointers to interesting functions...")
+		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
 	curmod = ""
 	#ropfuncfilename="ropfunc.txt"
 	#objropfuncfile = MnLog(ropfuncfilename)
@@ -7754,7 +7755,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	
 	objprogressfile = MnLog(progressfilename)
 	progressfile = objprogressfile.reset()
-
+	dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
 	dbg.log("[+] Progress will be written to %s" % progressfilename)
 	dbg.log("[+] Maximum offset : %d" % maxoffset)
 	dbg.log("[+] (Minimum/optional maximum) stackpivot distance : %s" % str(pivotdistance))
@@ -8905,7 +8906,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	if not silent:
 		dbg.log("[+] Type of search: %s" % patterntype)
 		dbg.log("[+] Searching for matches up to %d instructions deep" % maxdepth)
-
+		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
 	if len(modulecriteria) > 0:
 		modulestosearch = getModulesToQuery(modulecriteria)
 		# convert modules to ranges
@@ -17600,6 +17601,11 @@ def procFwptr(args):
 	modulecriteria = {}
 	criteria = {}			
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
+	if not "aslr" in modulecriteria:
+		modulecriteria["aslr"] = False
+	if not "rebase" in modulecriteria:
+		modulecriteria["rebase"] = False
+
 	modulestosearch = getModulesToQuery(modulecriteria)
 	allpages = dbg.getMemoryPages()
 	orderedpages = []
@@ -17667,6 +17673,7 @@ def procFwptr(args):
 			dbg.log("[+] Will set breakpoints on found CALL/JMP")
 		if dopatch:
 			dbg.log("[+] Will patch target for CALL/JMP with 0x41414141")
+		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
 		dbg.log("[+] Extracting .text/.code sections from %d modules" % len(modulestosearch))
 		dbg.updateLog()
 
