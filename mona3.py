@@ -14203,7 +14203,7 @@ def procFindROPFUNC(args):
 	processResults(ropfuncoffsets,logfile,thislog,forcelower=True)			
 	
 def procStackPivots(args):
-	procROP(args,"stackpivot")
+	procROP(args)
 	
 def procROP(args,mode="all"):
 	#default criteria
@@ -15318,36 +15318,6 @@ def procBf(args):
 	return
 
 
-# ----- Show info about modules -------#
-def procModInfoS(args):
-	modulecriteria = {}
-	criteria = {}
-	modulecriteria["safeseh"] = False
-	dbg.log("Safeseh unprotected modules :")
-	modulestosearch = getModulesToQuery(modulecriteria)
-	showModuleTable("",modulestosearch, modulecriteria)
-	return
-	
-def procModInfoSA(args):
-	modulecriteria = {}
-	criteria = {}
-	modulecriteria["safeseh"] = False
-	modulecriteria["aslr"] = False
-	modulecriteria["rebase"] = False	
-	dbg.log("Safeseh unprotected, no aslr & no rebase modules :")
-	modulestosearch = getModulesToQuery(modulecriteria)
-	showModuleTable("",modulestosearch, modulecriteria)			
-	return
-
-def procModInfoA(args):
-	modulecriteria = {}
-	criteria = {}
-	modulecriteria["aslr"] = False
-	modulecriteria["rebase"] = False	
-	dbg.log("No aslr & no rebase modules :")			
-	modulestosearch = getModulesToQuery(modulecriteria)
-	showModuleTable("",modulestosearch, modulecriteria)			
-	return
 	
 # ----- Print byte array ----- #
 
@@ -21494,9 +21464,6 @@ Optional arguments:
     -s <func,func,func> : specify function names. 
                           If you want a bp on all functions, set -s to *"""	
 	
-	nosafesehUsage = """Show modules that are not safeseh protected"""
-	nosafesehaslrUsage = """Show modules that are not safeseh protected, not subject to ASLR, and won't get rebased either"""
-	noaslrUsage = """Show modules that are not subject to ASLR and won't get rebased"""
 	findmspUsage = """Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern
 or points into a cyclic pattern. findmsp will also look if a SEH record is overwritten and finally, 
 it will look for cyclic patterns on the stack, and pointers to cyclic pattern on the stack.
@@ -21858,9 +21825,6 @@ Arguments:
 	#commands["compare"]			= MnCommand("compare","Compare contents of a binary file with a copy in memory", compareUsage, procCompare,"cmp")
 	commands["compare"]			= MnCommand("compare","Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory", compareUsage, procCompare,"cmp", [32,64])
 	commands["breakpoint"]		= MnCommand("bp","Set a memory breakpoint on read/write or execute of a given address", bpUsage, procBp,"bp", [32,64])
-	commands["nosafeseh"]		= MnCommand("nosafeseh", "Show modules that are not safeseh protected", nosafesehUsage, procModInfoS)
-	commands["nosafesehaslr"]	= MnCommand("nosafesehaslr", "Show modules that are not safeseh protected, not aslr and not rebased", nosafesehaslrUsage, procModInfoSA)		
-	commands["noaslr"]			= MnCommand("noaslr", "Show modules that are not aslr or rebased", noaslrUsage, procModInfoA, "", [32,64])
 	commands["findmsp"]			= MnCommand("findmsp","Find cyclic pattern in memory", findmspUsage,procFindMSP,"findmsf", [32,64])
 	commands["suggest"]			= MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest)
 	commands["bytearray"]		= MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba", [32,64])
