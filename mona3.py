@@ -3043,21 +3043,27 @@ class MnLog:
 		if clear:
 			if not silent:
 				dbg.log("    - (Re)setting output file %s" % logfile)
+			# remove logfile.old2 if it exists
 			try:
-				if os.path.exists(logfile):
-					try:
-						os.delete(logfile+".old")
-					except:
-						pass
-					try:
-						os.rename(logfile,logfile+".old")
-					except:
-						try:
-							os.rename(logfile,logfile+".old2")
-						except:
-							pass
-			except:
+				if os.path.isfile(logfile + ".old2"):
+					os.remove(logfile + ".old2")
+			except Exception:
 				pass
+
+			# rotate logfile.old -> logfile.old2
+			try:
+				if os.path.isfile(logfile + ".old"):
+					os.rename(logfile + ".old", logfile + ".old2")
+			except Exception:
+				pass
+
+			# rotate logfile -> logfile.old
+			try:
+				if os.path.isfile(logfile):
+					os.rename(logfile, logfile + ".old")
+			except Exception:
+				pass
+
 			#write header
 			if not noheader:
 				try:
@@ -3656,9 +3662,6 @@ class MnModule:
 
 		else:
 			# should never be hit
-			#print "No module specified !!!"
-			#print "stacktrace : "
-			#print traceback.format_exc()
 			return None
 
 		#check if module is excluded
