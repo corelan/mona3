@@ -2839,7 +2839,8 @@ class MnConfig:
 			dbgp(get_current_function_name())
 
 		global configFileCache
-		configFileCache[parameter.strip().lower()] = paramvalue
+		if len(configFileCache) > 0:
+			configFileCache[parameter.strip().lower()] = paramvalue
 		if os.path.exists(self.configfile):
 			paramvalue.strip()
 			if DEBUG_MODE:
