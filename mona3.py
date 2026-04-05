@@ -462,7 +462,7 @@ def DwordToBits(srcDword):
 	return bit_array
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding=""):
+def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequence=[]):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
@@ -539,8 +539,12 @@ def print_dict_table(data, headers, types, ptr_size=None, padding=""):
 	# Build formatted rows
 	formatted_rows = []
 	expected_cols = len(headers)
+	if len(itemsequence) == 0:
+		for key in data.items():
+			itemsequence.append(key)
 
-	for key, value in data.items():
+	for key in itemsequence:
+		value = data[key]
 		row = _normalize_row(key, value)
 
 		if len(row) != expected_cols:
@@ -19184,7 +19188,7 @@ def procSehChain(self):
 	dict_sehrecords = {}
 	headers = ["On Stack", "Next SEH", "SE Handler", "Function", "Info"]
 	types   = ["pointer", "pointer", "pointer", "string", "string"]
-
+	sehseq = []
 
 	handlersoverwritten = {}
 	if len(sehchain) > 0:
@@ -19203,13 +19207,13 @@ def procSehChain(self):
 				nseh = 0
 				sehandler = 0
 			overwritedata = checkSEHOverwrite(recaddress,nseh,sehandler)
-			overwritemark = ""
-			funcinfo = ""
+			funcname = ""
+			recinfo = ""
 			if sehandler > 0:
 				ptr = MnPointer(sehandler)
-				funcinfo = ptr.getPtrFunction()
+				funcname = ptr.getPtrFunction()
 			else:
-				funcinfo = " (corrupted record)"
+				recinfo = "corrupted record"
 				if str(nseh).startswith("0x"):
 					nseh = "0x%08x" % int(nseh,16)
 				else:
@@ -19221,15 +19225,16 @@ def procSehChain(self):
 				if overwritedata[0] == "unicode":
 					smashoffset += 2
 					typeinfo = " [unicode]"
-				overwritemark = " (record smashed at offset %d%s)" % (smashoffset,typeinfo)
+				recinfo = "Smashed, offset %d%s" % (smashoffset,typeinfo)
 			
-			if overwritemark == "" and nsehvalue == 0xffffffff:
-				overwritemark = "End of SEH chain"
-			dict_sehrecords[recaddress] = [nsehvalue, sehandler, funcinfo, overwritemark]
+			if nsehvalue == 0xffffffff:
+				recinfo = "End of SEH chain"
+			dict_sehrecords[recaddress] = [nsehvalue, sehandler, funcname, recinfo]
+			sehseq.append(recaddress)
 
 			#dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
 		
-		print_dict_table(dict_sehrecords, headers, types, padding = "      ")
+		print_dict_table(dict_sehrecords, headers, types, padding = "      ", itemsequence = sehseq)
 
 	if len(handlersoverwritten) > 0:
 		dbg.log("")
