@@ -2893,6 +2893,54 @@ class MnConfig:
 				dbg.log(" ** Error writing config file", highlight=1)
 				return ""
 		return ""
+
+	def remove(self,parameter):
+		"""
+		Removes a parameter from the config file
+
+		Arguments:
+		parameter - the name of the parameter to remove
+
+		Return:
+		nothing
+		"""
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
+		global configFileCache
+		paramdel = parameter.lower().strip()
+		if paramdel in configFileCache:
+			del configFileCache[paramdel] 
+
+		if os.path.exists(self.configfile):
+			if DEBUG_MODE:
+				dbgp("Editing existing config file %s" % self.configfile)
+				dbgp("Removing parameter %s " % (parameter))			
+			#modify file
+			try:
+				configfileobj = open(self.configfile,"r")
+				content = configfileobj.readlines()
+				configfileobj.close()
+				newcontent = []
+				paramfound = False
+				for thisLine in content:
+					thisLine = thisLine.replace('\n','').replace('\r','')
+					if not thisLine[0] == "#":
+						currparam = thisLine.split('=')
+						if currparam[0].strip().lower() != parameter.strip().lower():
+							newcontent.append(thisLine+"\n")
+					else:
+						newcontent.append(thisLine+"\n")
+				#save new config file (rewrite)
+				dbg.log("[+] Saving config file, removed parameter %s" % parameter)
+				FILE=open(self.configfile,"w")
+				FILE.writelines(newcontent)
+				FILE.close()
+				dbg.log("     mona.ini saved under %s" % self.currpath)
+			except:
+				dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
+				return ""
+		return ""
 	
 	
 #---------------------------------------#
@@ -13330,9 +13378,9 @@ def getAbsolutePath(filename):
 # ----- Config file management ----- #
 
 def procConfig(args):
-	#did we specify -get, -set or -add?
+	#did we specify -get, -set, -add or -del?
 	showerror = False
-	if not "set" in args and not "get" in args and not "add" in args:
+	if not "set" in args and not "get" in args and not "add" in args and not "del" in args:
 		showerror = True
 		
 	if "set" in args:
@@ -13359,9 +13407,19 @@ def procConfig(args):
 			params = args["get"].split(" ")
 			if len(params) < 1:
 				showerror = True
+	
+	if "del" in args:
+		if type(args["del"]).__name__.lower() == "bool":
+			showerror = True
+		else:
+			#count nr of words
+			params = args["del"].split(" ")
+			if len(params) < 1:
+				showerror = True
+
 	if showerror:
-		dbg.log("Usage :")
-		dbg.logLines(configUsage,highlight=1)
+		dbg.log("Invalid arguments - check the help for this command")
+		#dbg.logLines(configUsage,highlight=1)
 		return
 	else:
 		if "get" in args:
@@ -13371,20 +13429,29 @@ def procConfig(args):
 			dbg.log("Parameter %s = %s" % (args["get"],thevalue))
 		
 		if "set" in args:
-			dbg.log("Writing value to configuration file")
 			monaConfig = MnConfig()
 			value = args["set"].split(" ")
 			configparam = value[0].strip()
+			dbg.log("Saving new value for parameter '%s'" % configparam)
 			dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			configvalue = args["set"][0+len(configparam):len(args["set"])]
 			monaConfig.set(configparam,configvalue)
 			dbg.log("New value of parameter %s = %s" % (configparam,configvalue))
+
+		if "del" in args:
+			monaConfig = MnConfig()
+			value = args["del"].split(" ")
+			configparam = value[0].strip()
+			dbg.log("Attempting to remove config parameter '%s'" % configparam)
+			dbg.log("Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+			monaConfig.remove(configparam)
+			dbg.log("Parameter %s removed" % (configparam))
 		
 		if "add" in args:
-			dbg.log("Writing value to configuration file")
 			monaConfig = MnConfig()
 			value = args["add"].split(" ")
 			configparam = value[0].strip()
+			dbg.log("Adding additional value to parameter '%s'" % configparam)
 			dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			configvalue = monaConfig.get(configparam).strip() + "," + args["add"][0+len(configparam):len(args["add"])].strip()
 			monaConfig.set(configparam,configvalue)
@@ -21088,8 +21155,13 @@ Optional argument:
     -all : also search outside of loaded modules"""
 	
 	configUsage = """Change config of mona.py
-Available options are : -get <parameter>, -set <parameter> <value> or -add <parameter> <value_to_add>
-Valid parameters are : workingfolder, excluded_modules, author"""
+Available options are : 
+    -get <parameter>
+    -set <parameter> <value>
+    -add <parameter> <value_to_add>
+    -del <parameter>
+
+Valid parameter names are : workingfolder, excluded_modules, author"""
 	
 	jmpUsage = """Default module criteria : non aslr, non rebase 
 
