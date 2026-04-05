@@ -17609,6 +17609,8 @@ def procFwptr(args):
 	pagestoquery = {}
 	fwptrs = {}
 
+	dict_fwptr_details = {}
+
 	objwptr = MnLog("wptr.txt")
 	wptrfile = objwptr.reset()
 
@@ -17758,7 +17760,8 @@ def procFwptr(args):
 													tmodcnt += 1
 													ptrx = MnPointer(addyval)
 													mod = ptrx.belongsTo()
-
+													if len(dict_fwptr_details) < 20:
+														dict_fwptr_details[loc] = [addyval, instrtext, mod, ptrx.__str__(), sizeinfo]
 													tofile = "0x%08x : 0x%08x gets called from %s at 0x%08x (%s) - %s%s" % (addyval,addyval,mod,loc,instrtext,sizeinfo,ptrx.__str__())
 													objwptr.write(tofile,wptrfile)
 													if setbps:
@@ -17775,6 +17778,17 @@ def procFwptr(args):
 				dbg.log("      Found %d pointers" % tmodcnt)
 				if chunksize > 0:
 					dbg.log("      %d pointers with size match" % nr_sizematch)								
+
+		if len(dict_fwptr_details) > 0:
+			dbg.log("")
+			dbg.log("[+] Showing up to 20 results. Check logfile for all pointers")
+			dbg.log("")
+			headers = ["Address", "Target", "Instruction", "Module", "ACL/Pointer", "Sizeinfo"]
+			types = ["pointer", "pointer", "string", "string", "string", "string"]
+
+			print_dict_table(dict_fwptr_details, headers, types, padding = "   ", itemsequence = [])	
+
+			dbg.log(" ")
 
 	return
 
