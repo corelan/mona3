@@ -14838,7 +14838,11 @@ def procBp(args):
 			dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
 			return
 	
-	valid_types = ["READ", "WRITE", "SFX", "EXEC"]
+	valid_types = ["READ", "WRITE", "EXE", "R", "W", "X"]
+	bpflags = {}
+	bpflags["EXE"] = ["S"]
+	bpflags["READ"] = ["R"]
+	bpflags["WRITE"] = ["W"]
 
 	if "t" not in args:
 		dbg.log("Missing mandatory argument -t type", highlight=1)
@@ -14847,17 +14851,24 @@ def procBp(args):
 	else:
 		thistype = args["t"].upper()
 		
-	
 	if not thistype in valid_types:
 		dbg.log("Invalid type : %s" % thistype)
 		return
 	
-	if thistype == "EXEC":
-		thistype = "SFX"
+	if thistype == "R":
+		thistype = "READ"
+
+	if thistype == "W":
+		thistype = "WRITE"
+
+	if thistype == "X" or thistype == "EXE":
+		thistype = "EXE"
+
+	bpflag = bpflags[thistype][0]
 	
 	a = hexStrToInt(a)
 	
-	dbg.setMemBreakpoint(a,thistype[0])
+	dbg.setMemBreakpoint(a,bpflag)
 	dbg.log("Breakpoint set on %s of 0x%s" % (thistype,toHex(a)),highlight=1)
 
 
@@ -21279,7 +21290,7 @@ Mandatory arguments :
 Mandatory arguments :
     -a <address> : the address where to set the breakpoint
                    (absolute address / register / modulename!functionname)
-    -t <type> : type of the breakpoint, can be READ, WRITE or SFX"""
+    -t <type> : type of the breakpoint, can be READ, WRITE or EXE"""
 	
 	bfUsage = """Set a breakpoint on exported or imported function(s) of the selected modules. 
 
