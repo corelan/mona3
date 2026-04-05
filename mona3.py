@@ -13258,23 +13258,34 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 		if not silent:
 			dbg.log("")
 			dbg.log("[+] Total nr of breakpoints to process : %d" % len(bpfuncs))
+		bp_table = {}
+		headers = ["Address", "Action", "Bp on Function", "module"]
+		types   = ["pointer", "string", "string", "string"]
+		dbg.log("")
+		
 		if len(bpfuncs) > 0:
 			for funcptr in bpfuncs:
 				if mode == "add":
-					dbg.log("Set bp at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
+					#dbg.log("Set bp at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
 					try:
 						dbg.setBreakpoint(funcptr)
-					except:
-						dbg.log("Failed setting bp at 0x%s" % toHex(funcptr))
+						bp_table[funcptr] = ["add: OK", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
+					except Exception as e:
+						#dbg.log("Failed setting bp at 0x%s" % toHex(funcptr))
+						bp_table[funcptr] = ["add: X", bpfuncs[funcptr],"%s" % str(e)]
 				elif mode == "del":
-					dbg.log("Remove bp at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
+					#dbg.log("Remove bp at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
 					try:
 						dbg.deleteBreakpoint(funcptr)
-					except:
-						dbg.log("Skipped removal of bp at 0x%s" % toHex(funcptr))
+						bp_table[funcptr] = ["del: OK", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
+					except Exception as e:
+						#dbg.log("Skipped removal of bp at 0x%s" % toHex(funcptr))
+						bp_table[funcptr] = ["del: X", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
 				elif mode == "list":
-					dbg.log("Match found at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
-						
+					#dbg.log("Match found at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
+					bp_table[funcptr] = ["list", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
+			print_dict_table(bp_table, headers, types, padding = "   ")
+
 	return
 
 
@@ -18955,19 +18966,24 @@ def procKb(args):
 def procBPSeh(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
+	dict_sehrecords = {}
+
+	dbg.log("")
+	dbg.log("SEH Chain :")
+	dbg.log("")
+	headers = ["On Stack", "Next SEH", "SE Handler", "Function", "Action"]
+	types   = ["pointer", "pointer", "pointer", "string", "string"]
+
 	if len(sehchain) > 0:
-		dbg.log("SEH Chain :")
-		dbg.log("-----------")
-		dbg.log("Address     Next SEH    Handler")
 		for sehrecord in sehchain:
 			address = sehrecord[0]
 			sehandler = sehrecord[1]
 			nseh = ""
+			nsehvalue = 0
 			try:
 				nsehvalue = struct.unpack('<L',dbg.readMemory(address,4))[0]
-				nseh = "0x%08x" % nsehvalue
 			except:
-				nseh = "0x????????"
+				nsehvalue = 0
 			bpsuccess = True
 			try:
 				if __DEBUGGERAPP__ == "WinDBG":
@@ -18984,21 +19000,32 @@ def procBPSeh(self):
 				bptext = "BP set"
 			ptr = MnPointer(sehandler)
 			funcinfo = ptr.getPtrFunction()
-			dbg.log("0x%08x  %s  0x%08x %s <- %s" % (address,nseh,sehandler,funcinfo,bptext))
+			#dbg.log("0x%08x  %s  0x%08x %s <- %s" % (address,nseh,sehandler,funcinfo,bptext))
+			dict_sehrecords[address] = [nsehvalue, sehandler, funcinfo, bptext]
+
+		print_dict_table(dict_sehrecords, headers, types, padding = "      ")
+
 	dbg.log("")
 	return "Done"
 
 def procSehChain(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
+	dbg.log("")
+	dict_sehrecords = {}
+	headers = ["On Stack", "Next SEH", "SE Handler", "Function", "Info"]
+	types   = ["pointer", "pointer", "pointer", "string", "string"]
+
+
 	handlersoverwritten = {}
 	if len(sehchain) > 0:
 		dbg.log("Start of chain (TEB FS:[0]) : 0x%08x" % sehchain[0][0])
-		dbg.log("Address     Next SEH    Handler")
-		dbg.log("-------     --------    -------")
+		dbg.log("")
+
 		for sehrecord in sehchain:
 			recaddress = sehrecord[0]
 			sehandler = sehrecord[1]
+			nsehvalue = 0
 			nseh = ""
 			try:
 				nsehvalue = struct.unpack('<L',dbg.readMemory(recaddress,4))[0]
@@ -19026,8 +19053,15 @@ def procSehChain(self):
 					smashoffset += 2
 					typeinfo = " [unicode]"
 				overwritemark = " (record smashed at offset %d%s)" % (smashoffset,typeinfo)
-				
-			dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
+			
+			if overwritemark == "" and nsehvalue == 0xffffffff:
+				overwritemark = "End of SEH chain"
+			dict_sehrecords[recaddress] = [nsehvalue, sehandler, funcinfo, overwritemark]
+
+			#dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
+		
+		print_dict_table(dict_sehrecords, headers, types, padding = "      ")
+
 	if len(handlersoverwritten) > 0:
 		dbg.log("")
 		dbg.log("Payload structure suggestion(s):")
