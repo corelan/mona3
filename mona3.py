@@ -18427,9 +18427,7 @@ def procInfoDump(args):
 					f.write("    <size>0x%08x</size>\n" % pagesize)
 					f.write("    <acl>%s</acl>\n" % acl)
 					f.write("    <contents>")
-					memcontents = ""
-					for thisbyte in thispage:
-						memcontents += bin2hex(thisbyte)
+					memcontents = bin2hex(thispage)
 					f.write(memcontents)
 					f.write("</contents>\n")
 					f.write("  </page>\n")
