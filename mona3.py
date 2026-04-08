@@ -22022,7 +22022,18 @@ def _parse_mona_args_with_argparse(raw_args):
 			# Positional token after the command; we'll catch it later via parse_known_args
 			i += 1
 
-	parsed, extras = parser.parse_known_args(argv)
+	try:
+		parsed, extras = parser.parse_known_args(argv)
+	except SystemExit:
+		# argparse calls sys.exit() on error. Detect values that look
+		# like negative numbers/hex which argparse mistakes for switches.
+		suspect = [t for t in argv if t.startswith("-") and not _is_switch(t) and t != "-"]
+		if suspect:
+			dbg.log("[!] The following value(s) were interpreted as arguments instead of values: %s" % ", ".join(suspect), highlight=1)
+			dbg.log("[!] Prefix hex values with 0x (e.g. 0x777664e8) or avoid leading dashes in values")
+		else:
+			dbg.log("[!] Failed to parse arguments: %s" % " ".join(argv), highlight=1)
+		return command, {}
 
 	monaArgs = {}
 	for key, value in vars(parsed).items():
