@@ -2337,7 +2337,7 @@ class MnEncoder:
 			dbg.log("[+] Received %d bytes to encode" % len(self.origbytestoencode))
 			dbg.log("[+] Nr of bad chars: %d" % len(badchars))
 		# first, check if there are no bad char conflicts
-		nobadchars = "\x25\x2a\x2d\x31\x32\x35\x4a\x4d\x4e\x50\x55"
+		nobadchars = b"\x25\x2a\x2d\x31\x32\x35\x4a\x4d\x4e\x50\x55"
 		badbadchars = False
 		for b in badchars:
 			if b in nobadchars:
@@ -2353,7 +2353,7 @@ class MnEncoder:
 			if moduloresult == 0:
 				break
 			else:
-				self.bytestoencode += '\x90'
+				self.bytestoencode += b'\x90'
 		if not len(self.bytestoencode) == len(self.origbytestoencode):
 			if not silent:
 				dbg.log("[+] Added %d nops to make length of input a multiple of 4" % (len(self.bytestoencode) - len(self.origbytestoencode)))
@@ -2369,14 +2369,14 @@ class MnEncoder:
 		while blockcnt > 0:
 			if not silent:
 				dbg.log("[+] Processing block %d/%d" % (blockcnt,nrblocks))
-			encodedbytes[encodedline] = ["\x25\x4a\x4d\x4e\x55","AND EAX,0x554E4D4A"]
+			encodedbytes[encodedline] = [b"\x25\x4a\x4d\x4e\x55","AND EAX,0x554E4D4A"]
 			encodedline += 1
-			encodedbytes[encodedline] = ["\x25\x35\x32\x31\x2A","AND EAX,0x2A313235"]
+			encodedbytes[encodedline] = [b"\x25\x35\x32\x31\x2A","AND EAX,0x2A313235"]
 			encodedline += 1
 	
 			opcodes=[]
 			startpos=7
-			source = "".join(bin2hex(a) for a in toencodearray[blockcnt-1])
+			source = bin2hex(toencodearray[blockcnt-1]).replace(" ", "")
 			
 			origbytes=source[startpos-7]+source[startpos-6]+source[startpos-5]+source[startpos-4]+source[startpos-3]+source[startpos-2]+source[startpos-1]+source[startpos]
 			reversebytes=origbytes[6]+origbytes[7]+origbytes[4]+origbytes[5]+origbytes[2]+origbytes[3]+origbytes[0]+origbytes[1]
@@ -2431,7 +2431,7 @@ class MnEncoder:
 				dbg.log("                    %s %s %s %s" % (opcodes[10],opcodes[7],opcodes[4],opcodes[1]))
 				dbg.log("                    %s %s %s %s" % (opcodes[11],opcodes[8],opcodes[5],opcodes[2]))
 				dbg.log("")
-			thisencodedbyte = "\x2D"
+			thisencodedbyte = b"\x2D"
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[0])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[3])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[6])
@@ -2439,7 +2439,7 @@ class MnEncoder:
 			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[9],opcodes[6],opcodes[3],opcodes[0])]
 			encodedline += 1
 
-			thisencodedbyte = "\x2D"
+			thisencodedbyte = b"\x2D"
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[1])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[4])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[7])
@@ -2447,7 +2447,7 @@ class MnEncoder:
 			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[10],opcodes[7],opcodes[4],opcodes[1])]
 			encodedline += 1
 
-			thisencodedbyte = "\x2D"
+			thisencodedbyte = b"\x2D"
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[2])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[5])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[8])
@@ -2455,7 +2455,7 @@ class MnEncoder:
 			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[11],opcodes[8],opcodes[5],opcodes[2])]
 			encodedline += 1
 
-			encodedbytes[encodedline] = ["\x50","PUSH EAX"]
+			encodedbytes[encodedline] = [b"\x50","PUSH EAX"]
 			encodedline += 1
 			
 			blockcnt -= 1
@@ -13617,7 +13617,9 @@ def procFindJMP(args, procUsage=""):
 			if arch == 64:
 				validregs = dbglib.Registers32BitsOrder + dbglib.Registers64BitsOrder
 			if not thisreg in validregs:
-				showerror = True
+				dbg.log("Invalid register '%s'." % args["r"].strip(), highlight=1)
+				dbg.log("Valid registers: %s" % ", ".join(validregs))
+				return
 	else:
 		showerror = True
 	
@@ -15774,6 +15776,16 @@ def procgetPC(args):
 		dbg.log("Missing argument -r <register>",highlight=1)
 		return
 
+	valid_regs_32 = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
+	valid_regs_64 = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+					 "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+
+	if r32 not in valid_regs_32 and r32 not in valid_regs_64:
+		dbg.log("Invalid register '%s'." % r32, highlight=1)
+		dbg.log("Valid 32-bit registers: %s" % ", ".join(valid_regs_32))
+		dbg.log("Valid 64-bit registers: %s" % ", ".join(valid_regs_64))
+		return
+
 	opcodes = {}
 	opcodes["eax"] = "\\x58"
 	opcodes["ecx"] = "\\x59"
@@ -15793,6 +15805,10 @@ def procgetPC(args):
 	calls["ebp"] = "\\xd5"
 	calls["esi"] = "\\xd6"
 	calls["edi"] = "\\xd7"
+
+	if r32 not in opcodes:
+		dbg.log("GetPC routines are currently only supported for 32-bit registers: %s" % ", ".join(valid_regs_32), highlight=1)
+		return
 	
 	output  = "\n" + r32 + "|  jmp short back:\n\"\\xeb\\x03" + opcodes[r32] + "\\xff" + calls[r32] + "\\xe8\\xf8\\xff\\xff\\xff\"\n"
 	output += r32 + "|  call + 4:\n\"\\xe8\\xff\\xff\\xff\\xff\\xc3" + opcodes[r32] + "\"\n"
@@ -18372,7 +18388,7 @@ def procInfoDump(args):
 		# first dump module info to file
 		objfile = MnLog(filename)
 		infofile = objfile.reset(clear=True,showheader=False)
-		f = open(infofile,"wb")
+		f = open(infofile,"w")
 		for line in xmldata.split("\n"):
 			if line != "":
 				f.write(line + "\n")
@@ -18413,9 +18429,7 @@ def procInfoDump(args):
 					f.write("    <size>0x%08x</size>\n" % pagesize)
 					f.write("    <acl>%s</acl>\n" % acl)
 					f.write("    <contents>")
-					memcontents = ""
-					for thisbyte in thispage:
-						memcontents += bin2hex(thisbyte)
+					memcontents = bin2hex(thispage)
 					f.write(memcontents)
 					f.write("</contents>\n")
 					f.write("  </page>\n")
@@ -18896,14 +18910,14 @@ def procEnc(args):
 				logfile.write("--------",thislog)
 				encodedindex = []
 				fulllist_str = ""
-				fulllist_bin = ""
+				fulllist_bin = b""
 				for i in encodedbytes:
 					encodedindex.append(i)
 				for i in encodedindex:
 					thisline = encodedbytes[i]
 					# 0 = bytes
 					# 1 = info
-					thislinebytes = "\\x" +  "\\x".join(bin2hex(a) for a in thisline[0])
+					thislinebytes = "\\x" + "\\x".join(bin2hex(thisline[0]).split(" "))
 					logline = "  %s : %s : %s" % (thisline[0],thislinebytes,thisline[1])
 					if not silent:
 						dbg.log("%s" % logline)
@@ -21960,12 +21974,22 @@ def _parse_mona_args_with_argparse(raw_args):
 	#   parser.add_argument("-s", dest="s", action="store_true")
 	#   parser.add_argument("-cpb", dest="cpb", nargs="+")
 	#
+
+	def _is_switch(t):
+		"""A token is a switch if it starts with '-' followed by a letter.
+		Values like -20000 or -0x1234 are not switches."""
+		if not t.startswith("-") or t == "-":
+			return False
+		stripped = t.lstrip("-")
+		return len(stripped) > 0 and stripped[0].isalpha()
+
 	seen = set()
+	duplicates = []
 	i = 0
 	while i < len(argv):
 		token = argv[i]
 
-		if token.startswith("-") and token != "-":
+		if _is_switch(token):
 			opt = token
 
 			if opt not in seen:
@@ -21976,7 +22000,7 @@ def _parse_mona_args_with_argparse(raw_args):
 				# Collect all consecutive non-switch tokens as this option's value
 				while j < len(argv):
 					next_token = argv[j]
-					if next_token.startswith("-") and next_token != "-":
+					if _is_switch(next_token):
 						break
 					has_value = True
 					j += 1
@@ -21987,19 +22011,37 @@ def _parse_mona_args_with_argparse(raw_args):
 					parser.add_argument(opt, dest=dest, action="store_true")
 
 				seen.add(opt)
+			else:
+				duplicates.append(opt)
 
 			# Skip over this option and any attached value tokens
 			i += 1
 			while i < len(argv):
 				next_token = argv[i]
-				if next_token.startswith("-") and next_token != "-":
+				if _is_switch(next_token):
 					break
 				i += 1
 		else:
 			# Positional token after the command; we'll catch it later via parse_known_args
 			i += 1
 
-	parsed, extras = parser.parse_known_args(argv)
+	if duplicates:
+		dbg.log("[!] Duplicate argument(s) found: %s" % ", ".join(duplicates), highlight=1)
+		dbg.log("[!] Each argument should only be specified once")
+		return command, {}
+
+	try:
+		parsed, extras = parser.parse_known_args(argv)
+	except SystemExit:
+		# argparse calls sys.exit() on error. Detect values that look
+		# like negative numbers/hex which argparse mistakes for switches.
+		suspect = [t for t in argv if t.startswith("-") and not _is_switch(t) and t != "-"]
+		if suspect:
+			dbg.log("[!] The following value(s) were interpreted as arguments instead of values: %s" % ", ".join(suspect), highlight=1)
+			dbg.log("[!] Prefix hex values with 0x (e.g. 0x777664e8) or avoid leading dashes in values")
+		else:
+			dbg.log("[!] Failed to parse arguments: %s" % " ".join(argv), highlight=1)
+		return command, {}
 
 	monaArgs = {}
 	for key, value in vars(parsed).items():
