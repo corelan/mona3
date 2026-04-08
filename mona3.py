@@ -15774,6 +15774,16 @@ def procgetPC(args):
 		dbg.log("Missing argument -r <register>",highlight=1)
 		return
 
+	valid_regs_32 = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
+	valid_regs_64 = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+					 "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+
+	if r32 not in valid_regs_32 and r32 not in valid_regs_64:
+		dbg.log("Invalid register '%s'." % r32, highlight=1)
+		dbg.log("Valid 32-bit registers: %s" % ", ".join(valid_regs_32))
+		dbg.log("Valid 64-bit registers: %s" % ", ".join(valid_regs_64))
+		return
+
 	opcodes = {}
 	opcodes["eax"] = "\\x58"
 	opcodes["ecx"] = "\\x59"
@@ -15793,6 +15803,10 @@ def procgetPC(args):
 	calls["ebp"] = "\\xd5"
 	calls["esi"] = "\\xd6"
 	calls["edi"] = "\\xd7"
+
+	if r32 not in opcodes:
+		dbg.log("GetPC routines are currently only supported for 32-bit registers: %s" % ", ".join(valid_regs_32), highlight=1)
+		return
 	
 	output  = "\n" + r32 + "|  jmp short back:\n\"\\xeb\\x03" + opcodes[r32] + "\\xff" + calls[r32] + "\\xe8\\xf8\\xff\\xff\\xff\"\n"
 	output += r32 + "|  call + 4:\n\"\\xe8\\xff\\xff\\xff\\xff\\xc3" + opcodes[r32] + "\"\n"
