@@ -1827,12 +1827,22 @@ def get_teb_addr():
 	"""
 	global _teb_addr_cache
 	if _teb_addr_cache is not None:
-		return _teb_addr_cache
+		return int(_teb_addr_cache)
 	try:
 		_teb_addr_cache = dbg.get_teb_addr()
 	except Exception:
+		# Fallback for Immunity: use current thread's TEB directly
+		try:
+			tid = dbg.getThreadId()
+			thread = dbg.getAllThreads()[tid]
+			_teb_addr_cache = thread.getTEB()
+			if _teb_addr_cache is None:
+				_teb_addr_cache = 0
+		except Exception:
+			_teb_addr_cache = 0
+	if _teb_addr_cache is None:
 		_teb_addr_cache = 0
-	return _teb_addr_cache
+	return int(_teb_addr_cache)
 
 
 def get_peb_addr():
@@ -1843,12 +1853,23 @@ def get_peb_addr():
 	"""
 	global _peb_addr_cache
 	if _peb_addr_cache is not None:
-		return _peb_addr_cache
+		return int(_peb_addr_cache)
 	try:
 		_peb_addr_cache = dbg.get_peb_addr()
 	except Exception:
+		teb = get_teb_addr()
+		if teb != 0:
+			if arch == 32:
+				_peb_addr_cache = struct.unpack('<L', dbg.readMemory(teb + 0x30, 4))[0]
+			else:
+				_peb_addr_cache = struct.unpack('<Q', dbg.readMemory(teb + 0x60, 8))[0]
+			if _peb_addr_cache is None:
+				_peb_addr_cache = 0
+		else:
+			_peb_addr_cache = 0
+	if _peb_addr_cache is None:
 		_peb_addr_cache = 0
-	return _peb_addr_cache
+	return int(_peb_addr_cache)
 
 
 def peb_walk():
