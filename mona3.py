@@ -18386,7 +18386,7 @@ def procInfoDump(args):
 		# first dump module info to file
 		objfile = MnLog(filename)
 		infofile = objfile.reset(clear=True,showheader=False)
-		f = open(infofile,"wb")
+		f = open(infofile,"w")
 		for line in xmldata.split("\n"):
 			if line != "":
 				f.write(line + "\n")
