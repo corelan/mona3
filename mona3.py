@@ -1828,7 +1828,9 @@ def get_teb_addr():
 				_teb_addr_cache = thread.getTEB()
 			except Exception:
 				_teb_addr_cache = 0
-		return _teb_addr_cache
+		if _teb_addr_cache is None:
+			_teb_addr_cache = 0
+		return int(_teb_addr_cache)
 
 
 def get_peb_addr():
@@ -1851,7 +1853,9 @@ def get_peb_addr():
 					_peb_addr_cache = struct.unpack('<Q', dbg.readMemory(teb + 0x60, 8))[0]
 			else:
 				_peb_addr_cache = 0
-		return _peb_addr_cache
+		if _peb_addr_cache is None:
+			_peb_addr_cache = 0
+		return int(_peb_addr_cache)
 
 
 def peb_walk():
