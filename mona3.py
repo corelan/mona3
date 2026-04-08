@@ -1818,27 +1818,17 @@ def get_teb_addr():
 	global _teb_addr_cache
 	if _teb_addr_cache is not None:
 		return _teb_addr_cache
-	try:
-		_teb_addr_cache = dbg.get_teb_addr()
-	except Exception:
-		# Fallback for Immunity: match current ESP against thread stacks
 		try:
-			regs = dbg.getRegs()
-			esp = regs.get('ESP', 0)
-			for thread in dbg.getAllThreads():
-				teb_addr = thread.getTEB()
-				try:
-					stack_top = struct.unpack('<L', dbg.readMemory(teb_addr + 4, 4))[0]
-					stack_base = struct.unpack('<L', dbg.readMemory(teb_addr + 8, 4))[0]
-					if stack_base <= esp <= stack_top:
-						_teb_addr_cache = teb_addr
-						return _teb_addr_cache
-				except Exception:
-					continue
+			_teb_addr_cache = dbg.get_teb_addr()
 		except Exception:
-			pass
-		_teb_addr_cache = 0
-	return _teb_addr_cache
+			# Fallback for Immunity: use current thread's TEB directly
+			try:
+				tid = dbg.getThreadId()
+				thread = dbg.getAllThreads()[tid]
+				_teb_addr_cache = thread.getTEB()
+			except Exception:
+				_teb_addr_cache = 0
+		return _teb_addr_cache
 
 
 def get_peb_addr():
