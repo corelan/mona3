@@ -1840,11 +1840,9 @@ def get_peb_addr():
 	global _peb_addr_cache
 	if _peb_addr_cache is not None:
 		return _peb_addr_cache
-	try:
-		_peb_addr_cache = dbg.get_peb_addr()
-	except Exception:
-		# Fallback for Immunity: read PEB pointer from TEB
 		try:
+			_peb_addr_cache = dbg.get_peb_addr()
+		except Exception:
 			teb = get_teb_addr()
 			if teb != 0:
 				if arch == 32:
@@ -1853,9 +1851,7 @@ def get_peb_addr():
 					_peb_addr_cache = struct.unpack('<Q', dbg.readMemory(teb + 0x60, 8))[0]
 			else:
 				_peb_addr_cache = 0
-		except Exception:
-			_peb_addr_cache = 0
-	return _peb_addr_cache
+		return _peb_addr_cache
 
 
 def peb_walk():
