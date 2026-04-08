@@ -13617,7 +13617,9 @@ def procFindJMP(args, procUsage=""):
 			if arch == 64:
 				validregs = dbglib.Registers32BitsOrder + dbglib.Registers64BitsOrder
 			if not thisreg in validregs:
-				showerror = True
+				dbg.log("Invalid register '%s'." % args["r"].strip(), highlight=1)
+				dbg.log("Valid registers: %s" % ", ".join(validregs))
+				return
 	else:
 		showerror = True
 	
