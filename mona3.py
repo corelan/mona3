@@ -18910,14 +18910,14 @@ def procEnc(args):
 				logfile.write("--------",thislog)
 				encodedindex = []
 				fulllist_str = ""
-				fulllist_bin = ""
+				fulllist_bin = b""
 				for i in encodedbytes:
 					encodedindex.append(i)
 				for i in encodedindex:
 					thisline = encodedbytes[i]
 					# 0 = bytes
 					# 1 = info
-					thislinebytes = "\\x" +  "\\x".join(bin2hex(a) for a in thisline[0])
+					thislinebytes = "\\x" + "\\x".join(bin2hex(thisline[0]).split(" "))
 					logline = "  %s : %s : %s" % (thisline[0],thislinebytes,thisline[1])
 					if not silent:
 						dbg.log("%s" % logline)
