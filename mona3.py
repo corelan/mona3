@@ -21974,12 +21974,21 @@ def _parse_mona_args_with_argparse(raw_args):
 	#   parser.add_argument("-s", dest="s", action="store_true")
 	#   parser.add_argument("-cpb", dest="cpb", nargs="+")
 	#
+
+	def _is_switch(t):
+		"""A token is a switch if it starts with '-' followed by a letter.
+		Values like -20000 or -0x1234 are not switches."""
+		if not t.startswith("-") or t == "-":
+			return False
+		stripped = t.lstrip("-")
+		return len(stripped) > 0 and stripped[0].isalpha()
+
 	seen = set()
 	i = 0
 	while i < len(argv):
 		token = argv[i]
 
-		if token.startswith("-") and token != "-":
+		if _is_switch(token):
 			opt = token
 
 			if opt not in seen:
@@ -21990,7 +21999,7 @@ def _parse_mona_args_with_argparse(raw_args):
 				# Collect all consecutive non-switch tokens as this option's value
 				while j < len(argv):
 					next_token = argv[j]
-					if next_token.startswith("-") and next_token != "-":
+					if _is_switch(next_token):
 						break
 					has_value = True
 					j += 1
@@ -22006,7 +22015,7 @@ def _parse_mona_args_with_argparse(raw_args):
 			i += 1
 			while i < len(argv):
 				next_token = argv[i]
-				if next_token.startswith("-") and next_token != "-":
+				if _is_switch(next_token):
 					break
 				i += 1
 		else:
