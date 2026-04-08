@@ -2337,7 +2337,7 @@ class MnEncoder:
 			dbg.log("[+] Received %d bytes to encode" % len(self.origbytestoencode))
 			dbg.log("[+] Nr of bad chars: %d" % len(badchars))
 		# first, check if there are no bad char conflicts
-		nobadchars = "\x25\x2a\x2d\x31\x32\x35\x4a\x4d\x4e\x50\x55"
+		nobadchars = b"\x25\x2a\x2d\x31\x32\x35\x4a\x4d\x4e\x50\x55"
 		badbadchars = False
 		for b in badchars:
 			if b in nobadchars:
@@ -2353,7 +2353,7 @@ class MnEncoder:
 			if moduloresult == 0:
 				break
 			else:
-				self.bytestoencode += '\x90'
+				self.bytestoencode += b'\x90'
 		if not len(self.bytestoencode) == len(self.origbytestoencode):
 			if not silent:
 				dbg.log("[+] Added %d nops to make length of input a multiple of 4" % (len(self.bytestoencode) - len(self.origbytestoencode)))
@@ -2369,9 +2369,9 @@ class MnEncoder:
 		while blockcnt > 0:
 			if not silent:
 				dbg.log("[+] Processing block %d/%d" % (blockcnt,nrblocks))
-			encodedbytes[encodedline] = ["\x25\x4a\x4d\x4e\x55","AND EAX,0x554E4D4A"]
+			encodedbytes[encodedline] = [b"\x25\x4a\x4d\x4e\x55","AND EAX,0x554E4D4A"]
 			encodedline += 1
-			encodedbytes[encodedline] = ["\x25\x35\x32\x31\x2A","AND EAX,0x2A313235"]
+			encodedbytes[encodedline] = [b"\x25\x35\x32\x31\x2A","AND EAX,0x2A313235"]
 			encodedline += 1
 	
 			opcodes=[]
@@ -2431,7 +2431,7 @@ class MnEncoder:
 				dbg.log("                    %s %s %s %s" % (opcodes[10],opcodes[7],opcodes[4],opcodes[1]))
 				dbg.log("                    %s %s %s %s" % (opcodes[11],opcodes[8],opcodes[5],opcodes[2]))
 				dbg.log("")
-			thisencodedbyte = "\x2D"
+			thisencodedbyte = b"\x2D"
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[0])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[3])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[6])
@@ -2439,7 +2439,7 @@ class MnEncoder:
 			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[9],opcodes[6],opcodes[3],opcodes[0])]
 			encodedline += 1
 
-			thisencodedbyte = "\x2D"
+			thisencodedbyte = b"\x2D"
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[1])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[4])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[7])
@@ -2447,7 +2447,7 @@ class MnEncoder:
 			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[10],opcodes[7],opcodes[4],opcodes[1])]
 			encodedline += 1
 
-			thisencodedbyte = "\x2D"
+			thisencodedbyte = b"\x2D"
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[2])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[5])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[8])
@@ -2455,7 +2455,7 @@ class MnEncoder:
 			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[11],opcodes[8],opcodes[5],opcodes[2])]
 			encodedline += 1
 
-			encodedbytes[encodedline] = ["\x50","PUSH EAX"]
+			encodedbytes[encodedline] = [b"\x50","PUSH EAX"]
 			encodedline += 1
 			
 			blockcnt -= 1
