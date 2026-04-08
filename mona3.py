@@ -2376,7 +2376,7 @@ class MnEncoder:
 	
 			opcodes=[]
 			startpos=7
-			source = "".join(bin2hex(a) for a in toencodearray[blockcnt-1])
+			source = bin2hex(toencodearray[blockcnt-1]).replace(" ", "")
 			
 			origbytes=source[startpos-7]+source[startpos-6]+source[startpos-5]+source[startpos-4]+source[startpos-3]+source[startpos-2]+source[startpos-1]+source[startpos]
 			reversebytes=origbytes[6]+origbytes[7]+origbytes[4]+origbytes[5]+origbytes[2]+origbytes[3]+origbytes[0]+origbytes[1]
