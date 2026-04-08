@@ -21984,6 +21984,7 @@ def _parse_mona_args_with_argparse(raw_args):
 		return len(stripped) > 0 and stripped[0].isalpha()
 
 	seen = set()
+	duplicates = []
 	i = 0
 	while i < len(argv):
 		token = argv[i]
@@ -22010,6 +22011,8 @@ def _parse_mona_args_with_argparse(raw_args):
 					parser.add_argument(opt, dest=dest, action="store_true")
 
 				seen.add(opt)
+			else:
+				duplicates.append(opt)
 
 			# Skip over this option and any attached value tokens
 			i += 1
@@ -22021,6 +22024,11 @@ def _parse_mona_args_with_argparse(raw_args):
 		else:
 			# Positional token after the command; we'll catch it later via parse_known_args
 			i += 1
+
+	if duplicates:
+		dbg.log("[!] Duplicate argument(s) found: %s" % ", ".join(duplicates), highlight=1)
+		dbg.log("[!] Each argument should only be specified once")
+		return command, {}
 
 	try:
 		parsed, extras = parser.parse_known_args(argv)
