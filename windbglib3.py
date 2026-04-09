@@ -2703,9 +2703,12 @@ class Debugger:
 			pass
 		return count
 
-	def setBreakpoint(self,address):
+	def setBreakpoint(self,address,condition=""):
 		try:
-			cmd2run = "bp 0x%08x" % address
+			if condition:
+				cmd2run = 'bp 0x%x "%s"' % (address, condition)
+			else:
+				cmd2run = "bp 0x%x" % address
 			self.nativeCommand(cmd2run)
 		except:
 			return False
@@ -2736,25 +2739,47 @@ class Debugger:
 					rmbp = "bc %s" % id
 					self.nativeCommand(rmbp)
 
-	def setMemBreakpoint(self,address,memType):
+	def setMemBreakpoint(self,address,memType,condition=""):
 		validtype = False
 		bpcommand = ""
+		addrfmt = "0x%x" % address
 		if memType.upper() == "S":
-			bpcommand = "ba e 1 0x%08x" % address
+			bpcommand = "ba e 1 %s" % addrfmt
 			validtype = True
 		if memType.upper() == "R":
-			bpcommand = "ba r 4 0x%08x" % address
+			# Smart alignment: size based on address alignment (8 on x64)
+			if arch == 64 and address % 8 == 0:
+				size = 8
+			elif address % 4 == 0:
+				size = 4
+			elif address % 2 == 0:
+				size = 2
+			else:
+				size = 1
+			bpcommand = "ba r %d %s" % (size, addrfmt)
 			validtype = True
 		if memType.upper() == "W":
-			bpcommand = "ba w 4 0x%08x" % address
+			if arch == 64 and address % 8 == 0:
+				size = 8
+			elif address % 4 == 0:
+				size = 4
+			elif address % 2 == 0:
+				size = 2
+			else:
+				size = 1
+			bpcommand = "ba w %d %s" % (size, addrfmt)
 			validtype = True
 		if validtype:
+			if condition:
+				bpcommand = '%s "%s"' % (bpcommand, condition)
 			output = ""
 			try:
 				output = pykd.dbgCommand(bpcommand)
 			except:
 				if memType.upper() == "S":
-					bpcommand = "bp 0x%08x" % address
+					bpcommand = "bp %s" % addrfmt
+					if condition:
+						bpcommand = '%s "%s"' % (bpcommand, condition)
 					output = pykd.dbgCommand(bpcommand)
 				else:
 					self.log("** Unable to set memory breakpoint. Check alignment,")
