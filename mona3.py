@@ -2717,6 +2717,26 @@ class MnDeferredHook(LogBpHook):
 		LogBpHook.__init__(self)
 		self.targetptr = targetptr
 		self.loadlibraryptr = loadlibraryptr
+
+#---------------------------------------#
+#   Class for conditional BP Hooks      #
+#---------------------------------------#
+
+class MnConditionalHook(LogBpHook):
+	def __init__(self, condition):
+		LogBpHook.__init__(self)
+		self.condition = condition
+
+	def run(self, regs):
+		try:
+			if eval(self.condition, {"regs": regs, "EAX": regs["EAX"], "ECX": regs["ECX"],
+				"EDX": regs["EDX"], "EBX": regs["EBX"], "ESP": regs["ESP"],
+				"EBP": regs["EBP"], "ESI": regs["ESI"], "EDI": regs["EDI"],
+				"EIP": regs["EIP"]}):
+				dbg.log("[+] Condition met: %s" % self.condition, highlight=1)
+				dbg.pause()
+		except:
+			pass
 		
 	def run(self,regs):
 		#dbg.log("0x%08x - DLL Loaded, checking for %s" % (self.loadlibraryptr,self.targetptr), highlight=1)
@@ -15036,15 +15056,39 @@ def procBp(args):
 	bpflags["READ"] = ["R"]
 	bpflags["WRITE"] = ["W"]
 
+	a = hexStrToInt(a)
+
+	condition = ""
+	if "c" in args:
+		condition = args["c"]
+
 	if "t" not in args:
-		dbg.log("Missing mandatory argument -t type", highlight=1)
-		dbg.log("Valid types are: %s" % ", ".join(valid_types))
+		# No -t: set software breakpoint (INT 3)
+		dbg.log("[*] Setting software breakpoint at 0x%s" % toHex(a))
+		if condition:
+			dbg.log("[*] Condition: %s" % condition)
+		try:
+			if __DEBUGGERAPP__ == "Immunity Debugger":
+				dbg.setBreakpoint(a)
+				if condition:
+					hook = MnConditionalHook(condition)
+					hook.add("mona_cond_%x" % a, a)
+					dbg.setComment(a, "Cond: %s" % condition)
+			else:
+				if condition:
+					dbg.setBreakpoint(a, condition)
+				else:
+					dbg.setBreakpoint(a)
+			dbg.log("[+] Software breakpoint set at 0x%s" % toHex(a))
+		except Exception as e:
+			dbg.log("[!] Failed to set software breakpoint: %s" % str(e), highlight=1)
 		return
-	else:
-		thistype = args["t"].upper()
+
+	thistype = args["t"].upper()
 		
 	if not thistype in valid_types:
 		dbg.log("Invalid type : %s" % thistype)
+		dbg.log("Valid types are: %s" % ", ".join(valid_types))
 		return
 	
 	if thistype == "R":
@@ -15058,10 +15102,44 @@ def procBp(args):
 
 	bpflag = bpflags[thistype][0]
 	
-	a = hexStrToInt(a)
-	
-	dbg.setMemBreakpoint(a,bpflag)
-	dbg.log("Breakpoint set on %s of 0x%s" % (thistype,toHex(a)),highlight=1)
+	if __DEBUGGERAPP__ == "Immunity Debugger":
+		# Immunity setHardwareBreakpoint(address, type, size)
+		# From immlib: HB_CODE=1 (Execute), HB_ACCESS=2 (R/W), HB_WRITE=3 (Write)
+		# Execute must use size 1. Read/Write use size 4 if aligned, else 2 if aligned, else 1.
+		imm_hwtypes = {"S": dbglib.HB_CODE, "R": dbglib.HB_ACCESS, "W": dbglib.HB_WRITE}
+		# setMemBreakpoint(address, size, type) fallback flags: "r" = access (R+W+X), "w" = write
+		imm_membpflags = {"S": "r", "R": "r", "W": "w"}
+		if bpflag == "S":
+			hwsize = 1
+		elif a % 4 == 0:
+			hwsize = 4
+		elif a % 2 == 0:
+			hwsize = 2
+		else:
+			hwsize = 1
+		type_desc = {"S": "Execute (HB_CODE)", "R": "Access (HB_ACCESS, catches R+W+X)", "W": "Write (HB_WRITE)"}
+		dbg.log("[*] Setting hardware breakpoint at 0x%s, type: %s, size: %d" % (toHex(a), type_desc[bpflag], hwsize))
+		if condition:
+			dbg.log("[*] Condition: %s" % condition)
+		try:
+			result = dbg.setHardwareBreakpoint(a, imm_hwtypes[bpflag], hwsize)
+			if result == -1:
+				dbg.log("[!] Hardware breakpoint failed (DR0-DR3 may be full).", highlight=1)
+			elif condition:
+				hook = MnConditionalHook(condition)
+				hook.add("mona_cond_%x" % a, a)
+				dbg.setComment(a, "Cond: %s" % condition)
+		except Exception as e:
+			dbg.log("[!] setHardwareBreakpoint exception: %s" % str(e), highlight=1)
+			return
+	else:
+		# WinDBG: setMemBreakpoint uses 'ba' (break on access) = hardware breakpoints
+		type_desc = {"S": "Execute (ba e)", "R": "Access/Read (ba r)", "W": "Write (ba w)"}
+		dbg.log("[*] Setting hardware breakpoint at 0x%s, type: %s" % (toHex(a), type_desc[bpflag]))
+		if condition:
+			dbg.log("[*] Condition: %s" % condition)
+		dbg.setMemBreakpoint(a, bpflag, condition)
+		dbg.log("[+] Hardware breakpoint set on %s of 0x%s" % (thistype, toHex(a)))
 
 
 # ----- ct: calltrace ---- #
@@ -21482,12 +21560,28 @@ Mandatory arguments :
     -a1 <address> : the first address/register
     -a2 <address> : the second address/register"""
 	
-	bpUsage = """Set a breakpoint when a given address is read from, written to or executed
+	bpUsage = """Set a breakpoint at a given address.
+Without -t, sets a software breakpoint (INT 3).
+With -t, sets a hardware breakpoint (uses debug registers DR0-DR3 on Immunity, 'ba' on WinDBG).
+
+Hardware breakpoints use smart alignment (size 4 if 4-byte aligned, 2 if 2-byte aligned, else 1).
+Execute type always uses size 1. On x64 WinDBG, size 8 is used for 8-byte aligned addresses.
+On Immunity, max 4 hardware breakpoints can be active (DR0-DR3).
 
 Mandatory arguments :
     -a <address> : the address where to set the breakpoint
                    (absolute address / register / modulename!functionname)
-    -t <type> : type of the breakpoint, can be READ, WRITE or EXE"""
+
+Optional arguments :
+    -t <type> : type of hardware breakpoint. Can be READ (R), WRITE (W) or EXE (X).
+                READ/R  : triggers on read, write, and execute (Access).
+                WRITE/W : triggers on write only.
+                EXE/X   : triggers on execute only.
+                If omitted, a software breakpoint is set instead.
+    -c <condition> : condition expression for the breakpoint.
+                     WinDBG example: -c "eax==0"
+                     Immunity example: -c "EAX==0" (evaluated via LogBpHook,
+                     register names: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, EIP)."""
 	
 	bfUsage = """Set a breakpoint on exported or imported function(s) of the selected modules. 
 
@@ -21859,7 +21953,7 @@ Arguments:
 	commands["offset"]          = MnCommand("offset", "Calculate the number of bytes between two addresses", offsetUsage, procOffset, "os", [32,64])		
 	#commands["compare"]			= MnCommand("compare","Compare contents of a binary file with a copy in memory", compareUsage, procCompare,"cmp")
 	commands["compare"]			= MnCommand("compare","Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory", compareUsage, procCompare,"cmp", [32,64])
-	commands["breakpoint"]		= MnCommand("bp","Set a memory breakpoint on read/write or execute of a given address", bpUsage, procBp,"bp", [32,64])
+	commands["breakpoint"]		= MnCommand("bp","Set a breakpoint (software or hardware) at a given address", bpUsage, procBp,"bp", [32,64])
 	commands["findmsp"]			= MnCommand("findmsp","Find cyclic pattern in memory", findmspUsage,procFindMSP,"findmsf", [32,64])
 	commands["suggest"]			= MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest)
 	commands["bytearray"]		= MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba", [32,64])
