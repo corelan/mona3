@@ -15073,6 +15073,7 @@ def procBp(args):
 				if condition:
 					hook = MnConditionalHook(condition)
 					hook.add("mona_cond_%x" % a, a)
+					dbg.setComment(a, "Cond: %s" % condition)
 			else:
 				if condition:
 					dbg.setBreakpoint(a, condition)
@@ -15127,6 +15128,7 @@ def procBp(args):
 			elif condition:
 				hook = MnConditionalHook(condition)
 				hook.add("mona_cond_%x" % a, a)
+				dbg.setComment(a, "Cond: %s" % condition)
 		except Exception as e:
 			dbg.log("[!] setHardwareBreakpoint exception: %s" % str(e), highlight=1)
 			return
