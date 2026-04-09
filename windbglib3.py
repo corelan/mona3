@@ -2690,6 +2690,19 @@ class Debugger:
 	"""
 	Breakpoints
 	"""
+	def getHardwareBreakpointCount(self):
+		"""Count hardware breakpoints in use by checking DR0-DR3 via DR7 enable bits"""
+		count = 0
+		try:
+			dr7 = int(pykd.reg("dr7"))
+			for i in range(4):
+				# DR7 local enable bits: bit 0 (DR0), bit 2 (DR1), bit 4 (DR2), bit 6 (DR3)
+				if dr7 & (1 << (i * 2)):
+					count += 1
+		except:
+			pass
+		return count
+
 	def setBreakpoint(self,address):
 		try:
 			cmd2run = "bp 0x%08x" % address

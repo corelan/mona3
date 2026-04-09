@@ -15060,8 +15060,33 @@ def procBp(args):
 	
 	a = hexStrToInt(a)
 	
-	dbg.setMemBreakpoint(a,bpflag)
-	dbg.log("Breakpoint set on %s of 0x%s" % (thistype,toHex(a)),highlight=1)
+	if __DEBUGGERAPP__ == "Immunity Debugger":
+		# Immunity setHardwareBreakpoint(address, type, size)
+		# From immlib: HB_CODE=1 (Execute), HB_ACCESS=2 (R/W), HB_WRITE=3 (Write)
+		# Execute must use size 1. Read/Write use size 4 if aligned, else 2 if aligned, else 1.
+		imm_hwtypes = {"S": dbglib.HB_CODE, "R": dbglib.HB_ACCESS, "W": dbglib.HB_WRITE}
+		# setMemBreakpoint(address, size, type) fallback flags: "r" = access (R+W+X), "w" = write
+		imm_membpflags = {"S": "r", "R": "r", "W": "w"}
+		if bpflag == "S":
+			hwsize = 1
+		elif a % 4 == 0:
+			hwsize = 4
+		elif a % 2 == 0:
+			hwsize = 2
+		else:
+			hwsize = 1
+		type_desc = {"S": "Execute (HB_CODE)", "R": "Access (HB_ACCESS, catches R+W+X)", "W": "Write (HB_WRITE)"}
+		dbg.log("[*] Setting hardware breakpoint at 0x%s, type: %s, size: %d" % (toHex(a), type_desc[bpflag], hwsize))
+		try:
+			result = dbg.setHardwareBreakpoint(a, imm_hwtypes[bpflag], hwsize)
+			if result == -1:
+				dbg.log("[!] Hardware breakpoint failed (DR0-DR3 may be full).", highlight=1)
+		except Exception as e:
+			dbg.log("[!] setHardwareBreakpoint exception: %s" % str(e), highlight=1)
+			return
+	else:
+		dbg.setMemBreakpoint(a,bpflag)
+		dbg.log("Breakpoint set on %s of 0x%s" % (thistype,toHex(a)),highlight=1)
 
 
 # ----- ct: calltrace ---- #
