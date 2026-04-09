@@ -2717,6 +2717,26 @@ class MnDeferredHook(LogBpHook):
 		LogBpHook.__init__(self)
 		self.targetptr = targetptr
 		self.loadlibraryptr = loadlibraryptr
+
+#---------------------------------------#
+#   Class for conditional BP Hooks      #
+#---------------------------------------#
+
+class MnConditionalHook(LogBpHook):
+	def __init__(self, condition):
+		LogBpHook.__init__(self)
+		self.condition = condition
+
+	def run(self, regs):
+		try:
+			if eval(self.condition, {"regs": regs, "EAX": regs["EAX"], "ECX": regs["ECX"],
+				"EDX": regs["EDX"], "EBX": regs["EBX"], "ESP": regs["ESP"],
+				"EBP": regs["EBP"], "ESI": regs["ESI"], "EDI": regs["EDI"],
+				"EIP": regs["EIP"]}):
+				dbg.log("[+] Condition met: %s" % self.condition, highlight=1)
+				dbg.pause()
+		except:
+			pass
 		
 	def run(self,regs):
 		#dbg.log("0x%08x - DLL Loaded, checking for %s" % (self.loadlibraryptr,self.targetptr), highlight=1)
@@ -15048,10 +15068,16 @@ def procBp(args):
 		if condition:
 			dbg.log("[*] Condition: %s" % condition)
 		try:
-			if condition:
-				dbg.setBreakpoint(a, condition)
-			else:
+			if __DEBUGGERAPP__ == "Immunity Debugger":
 				dbg.setBreakpoint(a)
+				if condition:
+					hook = MnConditionalHook(condition)
+					hook.add("mona_cond_%x" % a, a)
+			else:
+				if condition:
+					dbg.setBreakpoint(a, condition)
+				else:
+					dbg.setBreakpoint(a)
 			dbg.log("[+] Software breakpoint set at 0x%s" % toHex(a))
 		except Exception as e:
 			dbg.log("[!] Failed to set software breakpoint: %s" % str(e), highlight=1)
@@ -15095,12 +15121,12 @@ def procBp(args):
 		if condition:
 			dbg.log("[*] Condition: %s" % condition)
 		try:
-			if condition:
-				result = dbg.setHardwareBreakpoint(a, imm_hwtypes[bpflag], hwsize, condition)
-			else:
-				result = dbg.setHardwareBreakpoint(a, imm_hwtypes[bpflag], hwsize)
+			result = dbg.setHardwareBreakpoint(a, imm_hwtypes[bpflag], hwsize)
 			if result == -1:
 				dbg.log("[!] Hardware breakpoint failed (DR0-DR3 may be full).", highlight=1)
+			elif condition:
+				hook = MnConditionalHook(condition)
+				hook.add("mona_cond_%x" % a, a)
 		except Exception as e:
 			dbg.log("[!] setHardwareBreakpoint exception: %s" % str(e), highlight=1)
 			return
@@ -21536,16 +21562,24 @@ Mandatory arguments :
 Without -t, sets a software breakpoint (INT 3).
 With -t, sets a hardware breakpoint (uses debug registers DR0-DR3 on Immunity, 'ba' on WinDBG).
 
+Hardware breakpoints use smart alignment (size 4 if 4-byte aligned, 2 if 2-byte aligned, else 1).
+Execute type always uses size 1. On x64 WinDBG, size 8 is used for 8-byte aligned addresses.
+On Immunity, max 4 hardware breakpoints can be active (DR0-DR3).
+
 Mandatory arguments :
     -a <address> : the address where to set the breakpoint
                    (absolute address / register / modulename!functionname)
 
 Optional arguments :
     -t <type> : type of hardware breakpoint. Can be READ (R), WRITE (W) or EXE (X).
+                READ/R  : triggers on read, write, and execute (Access).
+                WRITE/W : triggers on write only.
+                EXE/X   : triggers on execute only.
                 If omitted, a software breakpoint is set instead.
     -c <condition> : condition expression for the breakpoint.
                      WinDBG example: -c "eax==0"
-                     Immunity example: -c "eax==0" """
+                     Immunity example: -c "EAX==0" (evaluated via LogBpHook,
+                     register names: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, EIP)."""
 	
 	bfUsage = """Set a breakpoint on exported or imported function(s) of the selected modules. 
 
