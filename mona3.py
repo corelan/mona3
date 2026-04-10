@@ -7669,9 +7669,6 @@ def assemble(instructions,encoder=""):
 	allopcodes=""
 
 	instructions = instructions.replace('"',"").replace("'","").lower()
-
-	#splitter = re.compile(r'[;#]')
-	#instructions = splitter.split(instructions)
 	instructions = [i for i in re.split(r'[;#]', instructions) if i]
 
 	for instruct in instructions:
@@ -7696,6 +7693,8 @@ def assemble(instructions,encoder=""):
 			if not silent:
 				dbg.log("   Could not assemble %s " % instruct)
 				dbg.log("   %s" % str(e))
+				if DEBUG_MODE:
+					dbgp(traceback.format_exc())
 			pass
 	if not silent:
 		dbg.log(" Full opcode : %s " % allopcodes)

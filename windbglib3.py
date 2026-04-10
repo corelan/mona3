@@ -2651,7 +2651,7 @@ class Debugger:
 				opc = opcode(address)	
 				thesebytes = opc.getBytes()
 				if DEBUG_MODE:
-					dbgp("bytes: " % thesebytes)
+					dbgp("bytes: %s " % thesebytes)
 				allbytes += thesebytes
 				self.AsmCache[thisinstruction] = thesebytes
 				cached = False
@@ -2663,7 +2663,8 @@ class Debugger:
 				allbytes += self.AsmCache[thisinstruction]
 		if not cached:
 			putback = "eb 0x%08x " % address
-			restorebytes = ["%02x" % b for b in origbytes]
+			# In Py2, iterating a bytes/str yields 1-char strings; format expects ints.
+			restorebytes = ["%02x" % (b if isinstance(b, int) else ord(b)) for b in origbytes]
 			putback += ' '.join(restorebytes)
 			pykd.dbgCommand(putback)
 			if DEBUG_MODE:
@@ -3435,4 +3436,3 @@ class wheap:
 class LogBpHook:
 	def __init__(self):
 		return
-
