@@ -2095,6 +2095,20 @@ class Debugger:
 
 	def getPyKDVersionNr(self):
 		return getPyKDVersion()
+
+	def getTypeSize(self, typename):
+		"""Get the size of a type from debugger symbols.
+
+		Arguments:
+			typename - str, qualified type name (e.g. 'ntdll!_PEB')
+
+		Return:
+			int - size in bytes, or 0 if type info is unavailable
+		"""
+		try:
+			return pykd.typeInfo(typename).size()
+		except:
+			return 0
 		
 	"""
 	Registers

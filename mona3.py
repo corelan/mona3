@@ -206,47 +206,74 @@ if __DEBUGGERAPP__ == "WinDBG":
 		dbg.log("")
 
 osver = dbg.getOsVersion()
-if osver in ["6", "7", "8", "vista", "win7", "2008server", "win8", "win8.1", "win10", "win11"]:
+if osver in ["6", "7", "8", "10", "11", "vista", "win7", "2008server", "win8", "win8.1", "win10", "win11"]:
 	win7mode = True
+
+# Fallback: parse getOsRelease() for major version >= 6
+if not win7mode:
+	try:
+		_osrel = dbg.getOsRelease()
+		if isinstance(_osrel, tuple):
+			if int(_osrel[0]) >= 6:
+				win7mode = True
+		else:
+			_parts = str(_osrel).split(".")
+			if len(_parts) >= 1 and int(_parts[0]) >= 6:
+				win7mode = True
+	except:
+		pass
+
+# If win7mode still not set, log diagnostics
+if not win7mode:
+	try:
+		dbg.log("[!] win7mode=False. getOsVersion()='%s' (type:%s)" % (str(osver), type(osver).__name__))
+		try:
+			_r = dbg.getOsRelease()
+			dbg.log("[!] getOsRelease()='%s' (type:%s)" % (str(_r), type(_r).__name__))
+		except Exception as e:
+			dbg.log("[!] getOsRelease() failed: %s" % str(e))
+	except:
+		pass
 
 heapgranularity = 8
 if arch == 64:
 	heapgranularity = 16
 
-offset_categories = ["xp", "vista", "win7", "win8", "win10", "win11"]
+offset_categories = ["xp", "vista", "win7", "win8", "win10"]
 
 # offset = [x86,x64]
 offsets = {
+	"Signature" : {
+		"xp" : [0x008,0x008],
+		"vista" : [0x064,0x0a0],
+		"win8" : [0x060,0x098],
+	},
 	"FrontEndHeap" : {
 		"xp" : [0x580,0xad8],
 		"vista" : [0x0d4,0x178],
 		"win8" : [0x0d0,0x170],
 		"win10" : {
-			14393 : [0x0d4,0x178]
-		},
-		"win11" : {
-			14393 : [0x0d4,0x178]
-		}		
+			14393 : [0x0d4,0x178],
+			17763 : [0x0e4,0x198]
+		}
 	},
 	"FrontEndHeapType" : {
 		"xp" : [0x586,0xae2],
 		"vista" : [0x0da,0x182],
 		"win8" : [0x0d6,0x17a],
 		"win10" : {
-			14393 : [0x0da,0x182]
-		},
-		"win11" : {
-			14393 : [0x0da,0x182]
-		}		
+			14393 : [0x0da,0x182],
+			17763 : [0x0ea,0x1a2]
+		}
 	},
 	"VirtualAllocdBlocks" : {
 		"xp" : [0x050,0x090],
 		"vista" : [0x0a0,0x118],
-		"win8" : [0x09c,0x110]
+		"win8" : [0x09c,0x110],
 	},
 	"SegmentList" : {
 		"vista" : [0x0a8,0x128],
-		"win8" : [0x0a4,0x120]
+		"win8" : [0x0a4,0x120],
 	}
 }
 
@@ -859,7 +886,9 @@ def getAllStringOffsets(data,minlen,offsetstart = 0):
 
 def getAllUnicodeStringOffsets(data,minlen,offsetstart = 0):
 	unicodestrings = {}
-	for match in re.finditer("((\x00[\x20-\x7e]){%d,})" % (minlen*2),data):
+	if not isinstance(data, bytes):
+		data = data.encode('latin-1')
+	for match in re.finditer(b"((\x00[\x20-\x7e]){%d,})" % (minlen*2),data):
 		unicodestrings[offsetstart + match.start()] = (offsetstart + match.end())
 	return unicodestrings
 
@@ -2264,10 +2293,34 @@ def readPtrSizeBytes(ptr):
 
 def getOsOffset(name):
 	osrelease = dbg.getOsRelease()
-	osreleaseparts = osrelease.split(".")
-	major = int(osreleaseparts[0])
-	minor = int(osreleaseparts[1])
-	build = int(osreleaseparts[2])
+	if DEBUG_MODE:
+		dbgp("getOsOffset('%s'): osrelease='%s' (type: %s)" % (name, str(osrelease), type(osrelease).__name__))
+
+	major = 0
+	minor = 0
+	build = 0
+
+	if isinstance(osrelease, tuple):
+		# Immunity format: (Major, Minor, Build, Platform, CSD)
+		try:
+			major = int(osrelease[0])
+			minor = int(osrelease[1])
+			build = int(osrelease[2])
+		except:
+			pass
+	else:
+		# WinDBG format: "major.minor.build"
+		osreleaseparts = str(osrelease).split(".")
+		if len(osreleaseparts) >= 3:
+			try:
+				major = int(osreleaseparts[0])
+				minor = int(osreleaseparts[1])
+				build = int(osreleaseparts[2])
+			except:
+				pass
+
+	if DEBUG_MODE:
+		dbgp("getOsOffset('%s'): major=%d, minor=%d, build=%d" % (name, major, minor, build))
 
 	offset_category = "xp"
 	if major == 6 and minor == 0:
@@ -2280,6 +2333,8 @@ def getOsOffset(name):
 		offset_category = "win10"
 
 	offset_category_index = offset_categories.index(offset_category)
+	if DEBUG_MODE:
+		dbgp("getOsOffset('%s'): category='%s' (index=%d)" % (name, offset_category, offset_category_index))
 
 	offset = 0
 	curr_category = "xp"
@@ -2299,7 +2354,10 @@ def getOsOffset(name):
 				curr_build = o
 				offset = win10offsets[o]
 
-	return archValue(offset[0], offset[1])
+	result = archValue(offset[0], offset[1])
+	if DEBUG_MODE:
+		dbgp("getOsOffset('%s'): matched category='%s', offset=0x%x" % (name, curr_category, result))
+	return result
 
 #---------------------------------------#
 #   Class to call commands & parse args #
@@ -4378,17 +4436,424 @@ def getNtGlobalFlagValueName(flagvalue):
 	return toreturn
 
 
+def getProcessHeapsInfo():
+	"""
+	Enumerates all process heaps by walking PEB->ProcessHeaps via
+	direct memory reads. Uses MnHeap for type detection and encoding.
+
+	Return:
+		Dict keyed by heap type ("NT", "Segment", "Unknown").
+		Each value is a dict keyed by heap base address, containing:
+		  NT entries:
+		    - "index"           : int, heap index in PEB.ProcessHeaps
+		    - "encode_enabled"  : bool, True if EncodeFlagMask != 0
+		    - "encode_flag_mask": int, EncodeFlagMask value
+		    - "encoding_raw"    : bytes or None, raw Encoding bytes
+		  Segment entries:
+		    - "index"           : int, heap index in PEB.ProcessHeaps
+		  Unknown entries:
+		    - "index"           : int, heap index in PEB.ProcessHeaps
+		    - "nt_signature"    : int or None, _HEAP.Signature value read
+		    - "seg_signature"   : int or None, _SEGMENT_HEAP.Signature value read
+	"""
+	results = {"NT": {}, "Segment": {}, "Unknown": {}}
+
+	# Read PEB address
+	try:
+		peb = get_peb_addr()
+	except:
+		return results
+
+	# PEB.NumberOfHeaps (ULONG) and PEB.ProcessHeaps (PVOID*)
+	nrofheaps_off = archValue(0x88, 0xe8)
+	processheaps_off = archValue(0x90, 0xf0)
+	ptrsize = archValue(4, 8)
+
+	try:
+		nrofheaps = struct.unpack('<L', dbg.readMemory(peb + nrofheaps_off, 4))[0]
+		processheaps_ptr = readPtrSizeBytes(peb + processheaps_off)
+	except:
+		return results
+
+	for idx in range(nrofheaps):
+		try:
+			heapaddr = readPtrSizeBytes(processheaps_ptr + (idx * ptrsize))
+		except:
+			continue
+		if heapaddr == 0:
+			break
+
+		mheap = MnHeap(heapaddr)
+		htype = mheap.getHeapType()
+
+		if htype == "NT":
+			encinfo = mheap.getEncodingInfo()
+			encinfo["index"] = idx
+			results["NT"][heapaddr] = encinfo
+		elif htype == "Segment":
+			results["Segment"][heapaddr] = {"index": idx}
+		else:
+			nt_sig = None
+			seg_sig = None
+			try:
+				nt_sig = mheap.getSignature()
+			except:
+				pass
+			try:
+				seg_sig = mheap.getSegmentHeapSignature()
+			except:
+				pass
+			results["Unknown"][heapaddr] = {"index": idx, "nt_signature": nt_sig, "seg_signature": seg_sig}
+
+	return results
+
+
+def getNTSegmentInfo(heapbase, segaddr, segstart, segend, firstentry, lastentry):
+	"""
+	Enumerates all chunks in a heap segment using MnSegment, grouping
+	them by heap flag state with size information for statistics.
+
+	Arguments:
+		heapbase   - int, base address of the owning _HEAP
+		segaddr    - int, address of the _HEAP_SEGMENT structure
+		segstart   - int, segment BaseAddress
+		segend     - int, end of segment (base + pages * 0x1000)
+		firstentry - int, FirstEntry pointer
+		lastentry  - int, LastValidEntry pointer
+
+	Return:
+		Dict with keys:
+		  - "base"       : int, segment BaseAddress
+		  - "end"        : int, end of committed region
+		  - "pages"      : int, (end - base) / 0x1000
+		  - "firstentry" : int, FirstEntry pointer
+		  - "lastentry"  : int, LastValidEntry pointer
+		  - "chunks"     : dict keyed by flag state string, e.g.:
+		      "Busy"     : [{"address": int, "size": int, "flag": int}, ...]
+		      "Free"     : [{"address": int, "size": int, "flag": int}, ...]
+		      "Last"     : [...]
+		      etc. (keys match getHeapFlag() output)
+		  - "total_chunks" : int, total number of chunks enumerated
+	"""
+	mseg = MnSegment(heapbase, segstart, segend, firstentry, lastentry)
+	try:
+		allchunks = mseg.getChunks()
+	except:
+		allchunks = {}
+
+	# Group chunks by flag state
+	chunks_by_state = {}
+	busy = 0
+	free_count = 0
+	max_free = 0
+	for chunkaddr, chunk in allchunks.items():
+		state = getHeapFlag(chunk.flag)
+		csize = chunk.size * heapgranularity
+		chunkinfo = {
+			"address": chunkaddr,
+			"size": csize,
+			"flag": chunk.flag,
+		}
+		if chunk.flag & 0x01:
+			busy += 1
+		else:
+			free_count += 1
+			if csize > max_free:
+				max_free = csize
+		if state not in chunks_by_state:
+			chunks_by_state[state] = []
+		chunks_by_state[state].append(chunkinfo)
+
+	return {
+		"base": segstart,
+		"end": segend,
+		"pages": (segend - segstart) // 0x1000,
+		"firstentry": firstentry,
+		"lastentry": lastentry,
+		"chunks": chunks_by_state,
+		"total_chunks": len(allchunks),
+		"busy_chunks": busy,
+		"free_chunks": free_count,
+		"max_free": max_free,
+	}
+
+
+def getNTHeapInfo(heapaddr):
+	"""
+	Enumerates Segments and VirtualAllocd Blocks for a single NT heap
+	using direct memory reads.
+
+	Arguments:
+		heapaddr - int, base address of an NT heap
+
+	Return:
+		Dict with keys:
+		  - "segments"  : dict keyed by segment address, each value is a dict:
+		      - "base"       : int, BaseAddress
+		      - "end"        : int, base + pages * 0x1000
+		      - "pages"      : int, NumberOfPages
+		      - "firstentry" : int, FirstEntry
+		      - "lastentry"  : int, LastValidEntry
+		      - "chunks"     : dict keyed by flag state (from getNTSegmentInfo)
+		      - "total_chunks": int
+		  - "va_blocks" : dict keyed by VA block address, each value is a dict:
+		      - "commit_size"  : int
+		      - "reserve_size" : int
+	"""
+	mheap = MnHeap(heapaddr)
+	result = {"segments": {}, "va_blocks": {}}
+
+	# --- Segments ---
+	try:
+		seglist = mheap.getHeapSegmentList()
+		for segaddr, seg in seglist.items():
+			result["segments"][segaddr] = getNTSegmentInfo(
+				heapaddr, segaddr,
+				seg["base"], seg["end"],
+				seg["firstentry"], seg["lastentry"]
+			)
+	except:
+		pass
+
+	# --- VirtualAllocd Blocks ---
+	try:
+		vablocks = mheap.getVirtualAllocdBlocks()
+		for vaaddr, vainfo in vablocks.items():
+			result["va_blocks"][vaaddr] = vainfo
+	except:
+		pass
+
+	return result
+
+
 #---------------------------------------#
 #  Class for heap structures            #
 #---------------------------------------#		
-class MnHeap:
+class MnHeap(object):
 	"""
-	Class for heap structures
+	Base class for heap structures. Use MnHeap(address) to create the
+	appropriate subclass (MnNTHeap or MnSegmentHeap) automatically.
 	"""
 	heapbase = 0
 	EncodeFlagMask = 0
 	Encoding = 0
+	
+	def __new__(cls, address):
+		if cls is MnHeap:
+			htype = MnHeap._detectHeapType(address)
+			if htype == "NT":
+				return MnNTHeap.__new__(MnNTHeap, address)
+			elif htype == "Segment":
+				return object.__new__(MnSegmentHeap)
+		return object.__new__(cls)
 
+	@staticmethod
+	def _detectHeapType(address):
+		"""Detect heap type by reading signature fields from memory.
+
+		Arguments:
+			address - int, base address of the heap
+
+		Return: str - "NT", "Segment", or "Unknown"
+		"""
+		if DEBUG_MODE:
+			dbgp("_detectHeapType(0x%x)" % address)
+		try:
+			sig_offset = getOsOffset("Signature")
+		except Exception as e:
+			if DEBUG_MODE:
+				dbgp("_detectHeapType: getOsOffset('Signature') failed: %s" % str(e))
+			sig_offset = archValue(0x008, 0x008)
+		if DEBUG_MODE:
+			dbgp("_detectHeapType: sig_offset=0x%x" % sig_offset)
+		try:
+			sig_val = struct.unpack('<L', dbg.readMemory(address + sig_offset, 4))[0]
+			if DEBUG_MODE:
+				dbgp("_detectHeapType: NT sig at 0x%x = 0x%08x" % (address + sig_offset, sig_val))
+			if sig_val == 0xeeffeeff:
+				return "NT"
+		except Exception as e:
+			if DEBUG_MODE:
+				dbgp("_detectHeapType: NT sig read failed: %s" % str(e))
+		try:
+			seg_val = struct.unpack('<L', dbg.readMemory(address + 0x010, 4))[0]
+			if DEBUG_MODE:
+				dbgp("_detectHeapType: Segment sig at 0x%x = 0x%08x" % (address + 0x010, seg_val))
+			if seg_val == 0xddeeddee:
+				return "Segment"
+		except Exception as e:
+			if DEBUG_MODE:
+				dbgp("_detectHeapType: Segment sig read failed: %s" % str(e))
+		if DEBUG_MODE:
+			dbgp("_detectHeapType: returning Unknown")
+		return "Unknown"
+
+	def __init__(self, address):
+		self.heapbase = address
+		self.VirtualAllocdBlocks = {}
+		self.LookAsideList = {}
+		self.SegmentList = {}
+		self.lalheads = {}
+		self.Encoding = 0
+		self.EncodeFlagMask = 0
+		self.FrontEndHeap = 0
+		return None
+
+	def getSignature(self):
+		"""
+		Read the _HEAP.Signature (DWORD) from the heap base.
+
+		Return: int (e.g. 0xeeffeeff for NT heap)
+		"""
+		sig_offset = getOsOffset("Signature")
+		return struct.unpack('<L', dbg.readMemory(self.heapbase + sig_offset, 4))[0]
+
+	def getSegmentHeapSignature(self):
+		"""
+		Read the _SEGMENT_HEAP.Signature (DWORD) at offset +0x010.
+
+		Return: int (e.g. 0xddeeddee for Segment heap)
+		"""
+		return struct.unpack('<L', dbg.readMemory(self.heapbase + 0x010, 4))[0]
+
+	def getHeapType(self):
+		"""
+		Returns the heap type string.
+		Subclasses override to return "NT" or "Segment".
+
+		Return: str - "NT", "Segment", or "Unknown"
+		"""
+		return "Unknown"
+
+	def getEncodingInfo(self):
+		"""
+		Read EncodeFlagMask and raw Encoding bytes from the heap.
+		Also populates self.EncodeFlagMask and self.Encoding.
+
+		Return: dict with keys:
+		  - "encode_enabled"  : bool
+		  - "encode_flag_mask": int
+		  - "encoding_raw"    : bytes or None
+		"""
+		return {"encode_enabled": False, "encode_flag_mask": 0, "encoding_raw": None}
+
+	def getEncodingKey(self):
+		"""
+		Retrieves the Encoding key from the current heap
+
+		Return: Int, containing the Encoding key (on Windows 7 and up)
+		or zero on older Operating Systems
+		"""
+		return 0
+
+
+	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
+		"""
+		Will convert the bytes placed at a certain address into an MnChunk object
+		"""
+		return None
+
+
+	def getFrontEndHeap(self):
+		"""
+		Returns the value of the FrontEndHeap field in the heapbase
+		"""
+		return 0
+
+
+	def getFrontEndHeapType(self):
+		"""
+		Returns the value of the FrontEndHeapType field in the heapbase
+		"""
+		return 0
+
+	def getLookAsideHead(self):
+		"""
+		Returns the LookAside List Head as a dictionary of dictionaries
+		"""
+		return self.lalheads
+
+	def showLookAsideHead(self,lalindex):
+		return
+
+	def getLookAsideList(self):
+		"""
+		Retrieves the LookAsideList (if enabled) for the current heap
+		Returns : a dictionary, key = LAL index
+		Each element in the dictionary contains a dictionary, using a sequence nr as key,
+		    and each element in this dictionary contains an MnChunk object
+		"""
+		return {}
+
+	def getFreeListInUseBitmap(self):
+		return []
+
+
+	def getFreeList(self):
+		"""
+		Retrieves the FreeLists (XP/2003) for the current heap
+		Returns : a dictionary, key = FreeList table index
+		Each element in the dictionary contains a dictionary, using the FreeList position as key
+			and each element in this dictionary contains an MnChunk object		
+		"""
+		return {}
+
+
+	def getVirtualAllocdBlocks(self):
+		"""
+		Retrieves the VirtualAllocdBlocks list from the selected heap
+
+		Return: A dictionary, using the start of a virtualallocdblock as key
+		Each entry in the dictionary contains a MnChunk object, with chunktype set to "virtualalloc"
+		"""
+		return self.VirtualAllocdBlocks
+
+	def getHeapSegmentList(self):
+		"""
+		Will collect all segments for the current heap object
+
+		Return: A dictionary, using the start of a segment as key
+		Each entry in the dictionary has 4 fields :
+		start of segment, end of segment, FirstEntry and LastValidEntry
+		"""
+		return self.SegmentList
+
+	def usesLFH(self):
+		"""
+		Checks if the current heap has LFH enabled
+
+		Return: Boolean
+		"""
+		return False
+			
+	def getLFHAddress(self):
+		"""
+		Retrieves the address of the Low Fragmentation Heap for the current heap
+
+		Return: Int
+		"""
+		return 0
+
+	def getState(self):
+		"""
+		Enumerates all segments, chunks and VirtualAllocdBlocks in the current heap
+
+		Return: array of dicts 
+			0 : segments  (with segment addy as key), contains list of chunks 
+			1 : vablocks 
+		Key: Heap
+		Contents:
+			Segment -> Chunks
+			VA Blocks
+		"""
+		return {}
+
+
+class MnNTHeap(MnHeap):
+	"""
+	NT Heap implementation (_HEAP)
+	"""
+ 
 	# _HEAP
 	# Windows XP
 	# ----------
@@ -4484,136 +4949,42 @@ class MnHeap:
 	# +0x0da FrontEndHeapType : UChar
 	# +0x0dc Counters         : _HEAP_COUNTERS
 	# +0x130 TuningParameters : _HEAP_TUNING_PARAMETERS	
-	
-	def __init__(self,address):
-		self.heapbase = address
-		self.VirtualAllocdBlocks = {}
-		self.LookAsideList = {}
-		self.SegmentList = {}
-		self.lalheads = {}
-		self.Encoding = 0
-		self.FrontEndHeap = 0
-		return None
 
-
-	def getEncodingKey(self):
-		"""
-		Retrieves the Encoding key from the current heap
-
-		Return: Int, containing the Encoding key (on Windows 7 and up)
-		or zero on older Operating Systems
-		"""
-		self.Encoding = 0
-		if win7mode:
-			offset = archValue(0x4c,0x7c)
-			self.EncodeFlagMask = struct.unpack('<L',dbg.readMemory(self.heapbase+offset,4))[0]
-			if self.EncodeFlagMask == 0x100000:
-				if arch == 32:
-					self.Encoding = struct.unpack('<L',dbg.readMemory(self.heapbase+0x50,4))[0]
-				elif arch == 64:
-					self.Encoding = struct.unpack('<L',dbg.readMemory(self.heapbase+0x80+0x8,4))[0]
-		return self.Encoding
-
-
-	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
-		"""
-		Will convert the bytes placed at a certain address into an MnChunk object
-		"""
-
-		key = self.getEncodingKey()
-		fullheaderbin = ""
-		if type == "chunk" or type == "lal" or type == "freelist":
-			chunktype = "chunk"
-			if key == 0 and not win7mode:
-				fullheaderbin = dbg.readMemory(thischunk,headersize)
+	def __new__(cls, address):
+		if cls is MnNTHeap:
+			if win7mode:
+				return object.__new__(MnNT7Heap)
 			else:
-				fullheaderbin = decodeHeapHeader(thischunk,headersize,key)
-			# if we have heap corruption, thischunk may not be a readable address
-			# so fullheaderbin would be empty
-			if len(fullheaderbin) == headersize:
-				sizebytes = fullheaderbin[0:2]
-				thissize = struct.unpack('<H',sizebytes)[0]
-				prevsize = 0
-				segmentid = 0
-				flag = 0
-				unused = 0
-				tag = 0
+				return object.__new__(MnNTXPHeap)
+		return object.__new__(cls)
 
-				if key == 0 and not win7mode:
-					prevsize = struct.unpack('<H',fullheaderbin[2:4])[0]
-					segmentid = struct.unpack('<B',fullheaderbin[4:5])[0]
-					flag = struct.unpack('<B',fullheaderbin[5:6])[0]
-					unused = struct.unpack('<B',fullheaderbin[6:7])[0]
-					tag = struct.unpack('<B',fullheaderbin[7:8])[0]		
-				else:
-					flag = struct.unpack('<B',fullheaderbin[2:3])[0]
-					tag = struct.unpack('<B',fullheaderbin[3:4])[0]
-					prevsize = struct.unpack('<H',fullheaderbin[4:6])[0]
-					segmentid = struct.unpack('<B',fullheaderbin[6:7])[0]
-					unused = struct.unpack('<B',fullheaderbin[7:8])[0]
+	def getHeapType(self):
+		"""Return the heap type identifier.
 
-				flink = 0
-				blink = 0
-				if type == "lal" or type == "freelist":
-					flink = struct.unpack('<L',dbg.readMemory(thischunk+headersize,4))[0]
-				if type == "freelist":
-					blink = struct.unpack('<L',dbg.readMemory(thischunk+headersize+4,4))[0]
-				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,thissize,prevsize,segmentid,flag,unused,tag,flink,blink)
-			else:
-				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,0,0,0,0,0,0,0,0)
-
-		return None
-
+		Return: str - "NT"
+		"""
+		return "NT"
 
 	def getFrontEndHeap(self):
-		"""
-		Returns the value of the FrontEndHeap field in the heapbase
+		"""Return the FrontEndHeap pointer from the NT heap header.
+
+		Return: int, address of the front-end heap structure
 		"""
 		return readPtrSizeBytes(self.heapbase+getOsOffset("FrontEndHeap"))
 
-
 	def getFrontEndHeapType(self):
-		"""
-		Returns the value of the FrontEndHeapType field in the heapbase
+		"""Return the FrontEndHeapType byte from the NT heap header.
+
+		Return: int, 0x0 = None, 0x1 = Lookaside, 0x2 = LFH
 		"""
 		return struct.unpack('B',dbg.readMemory(self.heapbase+getOsOffset("FrontEndHeapType"),1))[0]
 
-	def getLookAsideHead(self):
-		"""
-		Returns the LookAside List Head as a dictionary of dictionaries
-		"""
-		if not win7mode:
-			self.FrontEndHeap = self.getFrontEndHeap()
-			self.FrontEndHeapType = self.getFrontEndHeapType()
-			if self.FrontEndHeap > 0 and self.FrontEndHeapType == 0x1 and len(self.lalheads) == 0:
-				lalindex = 0
-				startloc = self.FrontEndHeap
-				while lalindex < 128:
-					thisptr = self.FrontEndHeap + (0x30 * lalindex)
-					lalheadfields = {}
-					# read the next 0x30 bytes and break down into lal head elements
-					lalheadbin = dbg.readMemory(thisptr,0x30)
-					lalheadfields["Next"] = struct.unpack('<L',lalheadbin[0:4])[0]
-					lalheadfields["Depth"] = struct.unpack('<H',lalheadbin[4:6])[0]
-					lalheadfields["Sequence"] = struct.unpack('<H',lalheadbin[6:8])[0]
-					lalheadfields["Depth2"] = struct.unpack('<H',lalheadbin[8:0xa])[0]
-					lalheadfields["MaximumDepth"] = struct.unpack('<H',lalheadbin[0xa:0xc])[0]
-					lalheadfields["TotalAllocates"] = struct.unpack('<L',lalheadbin[0xc:0x10])[0]
-					lalheadfields["AllocateMisses"] = struct.unpack('<L',lalheadbin[0x10:0x14])[0]
-					lalheadfields["AllocateHits"] = struct.unpack('<L',lalheadbin[0x10:0x14])[0] 
-					lalheadfields["TotalFrees"] = struct.unpack('<L',lalheadbin[0x14:0x18])[0]
-					lalheadfields["FreeMisses"] = struct.unpack('<L',lalheadbin[0x18:0x1c])[0]
-					lalheadfields["FreeHits"] = struct.unpack('<L',lalheadbin[0x18:0x1c])[0]
-					lalheadfields["Type"] = struct.unpack('<L',lalheadbin[0x1c:0x20])[0]
-					lalheadfields["Tag"] = struct.unpack('<L',lalheadbin[0x20:0x24])[0]
-					lalheadfields["Size"] = struct.unpack('<L',lalheadbin[0x24:0x28])[0]
-					lalheadfields["Allocate"] = struct.unpack('<L',lalheadbin[0x28:0x2c])[0]
-					lalheadfields["Free"] = struct.unpack('<L',lalheadbin[0x2c:0x30])[0]
-					self.lalheads[lalindex] = lalheadfields
-					lalindex += 1
-		return self.lalheads
-
 	def showLookAsideHead(self,lalindex):
+		"""Log the fields of a single LookAside List head entry.
+
+		Arguments:
+			lalindex - int, LAL index (0-127) to display
+		"""
 		if len(self.lalheads) == 0:
 			self.getLookAsideHead()
 		if lalindex in self.lalheads:
@@ -4634,38 +5005,159 @@ class MnHeap:
 			dbg.log("  Free: 0x%08x" % thislalhead["AllocateMisses"])
 		return 
 
+	def getVirtualAllocdBlocks(self):
+		"""Walk the VirtualAllocdBlocks doubly-linked list from the NT heap.
+		The LIST_ENTRY is at offset 0 of each VA block entry.
+		CommitSize and ReserveSize are read at raw offsets:
+		  x86: CommitSize=+0x10, ReserveSize=+0x14
+		  x64: CommitSize=+0x20, ReserveSize=+0x28
+
+		Return: dict keyed by VA block address, each value is a dict:
+		  - "commit_size"  : int
+		  - "reserve_size" : int
+		"""
+		if len(self.VirtualAllocdBlocks) > 0:
+			return self.VirtualAllocdBlocks
+
+		va_offset = getOsOffset("VirtualAllocdBlocks")
+		listhead = self.heapbase + va_offset
+		commit_off = archValue(0x10, 0x20)
+		reserve_off = archValue(0x14, 0x28)
+
+		try:
+			entry = readPtrSizeBytes(listhead)
+			while entry != listhead:
+				commitsize = readPtrSizeBytes(entry + commit_off)
+				reservesize = readPtrSizeBytes(entry + reserve_off)
+				self.VirtualAllocdBlocks[entry] = {
+					"commit_size": commitsize,
+					"reserve_size": reservesize,
+				}
+				entry = readPtrSizeBytes(entry)
+		except:
+			pass
+
+		return self.VirtualAllocdBlocks
+
+	def getLFHAddress(self):
+		"""Retrieve the address of the Low Fragmentation Heap structure.
+
+		Return: int, address of the LFH
+		"""
+		return readPtrSizeBytes(self.heapbase+getOsOffset("FrontEndHeap"))
+
+	def getState(self):
+		"""Enumerate all segments and chunks in this NT heap.
+
+		Return: dict keyed by segment address, each value is a list
+		        of data blocks returned by walkSegment()
+		"""
+		statedata = {}
+		segments = self.getHeapSegmentList()
+		for seg in segments:
+			FirstEntry = segments[seg]["firstentry"]
+			LastValidEntry = segments[seg]["lastentry"]
+			datablocks = walkSegment(FirstEntry,LastValidEntry,self.heapbase)
+			statedata[seg] = datablocks
+		return statedata
+
+
+class MnNTXPHeap(MnNTHeap):
+	"""
+	NT Heap implementation for Windows XP/2003.
+	"""
+
+	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
+		"""Decode a heap chunk header (XP format, no encoding).
+
+		Arguments:
+			thischunk  - int, address of the chunk header
+			headersize - int, size of the header in bytes (default 8)
+			type       - str, one of "chunk", "lal", or "freelist"
+
+		Return: MnChunk object, or None if type is not recognized
+		"""
+		fullheaderbin = ""
+		if type == "chunk" or type == "lal" or type == "freelist":
+			chunktype = "chunk"
+			fullheaderbin = dbg.readMemory(thischunk,headersize)
+			if len(fullheaderbin) == headersize:
+				thissize = struct.unpack('<H',fullheaderbin[0:2])[0]
+				prevsize = struct.unpack('<H',fullheaderbin[2:4])[0]
+				segmentid = struct.unpack('<B',fullheaderbin[4:5])[0]
+				flag = struct.unpack('<B',fullheaderbin[5:6])[0]
+				unused = struct.unpack('<B',fullheaderbin[6:7])[0]
+				tag = struct.unpack('<B',fullheaderbin[7:8])[0]
+				flink = 0
+				blink = 0
+				if type == "lal" or type == "freelist":
+					flink = struct.unpack('<L',dbg.readMemory(thischunk+headersize,4))[0]
+				if type == "freelist":
+					blink = struct.unpack('<L',dbg.readMemory(thischunk+headersize+4,4))[0]
+				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,thissize,prevsize,segmentid,flag,unused,tag,flink,blink)
+			else:
+				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,0,0,0,0,0,0,0,0)
+		return None
+
+	def getLookAsideHead(self):
+		"""Read all 128 LookAside List head entries."""
+		self.FrontEndHeap = self.getFrontEndHeap()
+		self.FrontEndHeapType = self.getFrontEndHeapType()
+		if self.FrontEndHeap > 0 and self.FrontEndHeapType == 0x1 and len(self.lalheads) == 0:
+			lalindex = 0
+			startloc = self.FrontEndHeap
+			while lalindex < 128:
+				thisptr = self.FrontEndHeap + (0x30 * lalindex)
+				lalheadfields = {}
+				# read the next 0x30 bytes and break down into lal head elements
+				lalheadbin = dbg.readMemory(thisptr,0x30)
+				lalheadfields["Next"] = struct.unpack('<L',lalheadbin[0:4])[0]
+				lalheadfields["Depth"] = struct.unpack('<H',lalheadbin[4:6])[0]
+				lalheadfields["Sequence"] = struct.unpack('<H',lalheadbin[6:8])[0]
+				lalheadfields["Depth2"] = struct.unpack('<H',lalheadbin[8:0xa])[0]
+				lalheadfields["MaximumDepth"] = struct.unpack('<H',lalheadbin[0xa:0xc])[0]
+				lalheadfields["TotalAllocates"] = struct.unpack('<L',lalheadbin[0xc:0x10])[0]
+				lalheadfields["AllocateMisses"] = struct.unpack('<L',lalheadbin[0x10:0x14])[0]
+				lalheadfields["AllocateHits"] = struct.unpack('<L',lalheadbin[0x10:0x14])[0] 
+				lalheadfields["TotalFrees"] = struct.unpack('<L',lalheadbin[0x14:0x18])[0]
+				lalheadfields["FreeMisses"] = struct.unpack('<L',lalheadbin[0x18:0x1c])[0]
+				lalheadfields["FreeHits"] = struct.unpack('<L',lalheadbin[0x18:0x1c])[0]
+				lalheadfields["Type"] = struct.unpack('<L',lalheadbin[0x1c:0x20])[0]
+				lalheadfields["Tag"] = struct.unpack('<L',lalheadbin[0x20:0x24])[0]
+				lalheadfields["Size"] = struct.unpack('<L',lalheadbin[0x24:0x28])[0]
+				lalheadfields["Allocate"] = struct.unpack('<L',lalheadbin[0x28:0x2c])[0]
+				lalheadfields["Free"] = struct.unpack('<L',lalheadbin[0x2c:0x30])[0]
+				self.lalheads[lalindex] = lalheadfields
+				lalindex += 1
+		return self.lalheads
+
 	def getLookAsideList(self):
-		"""
-		Retrieves the LookAsideList (if enabled) for the current heap
-		Returns : a dictionary, key = LAL index
-		Each element in the dictionary contains a dictionary, using a sequence nr as key,
-		    and each element in this dictionary contains an MnChunk object
-		"""
+		"""Walk the LookAside Lists and collect all cached chunks."""
 		lal = {}
-		if not win7mode:
-			self.FrontEndHeap = self.getFrontEndHeap()
-			self.FrontEndHeapType = self.getFrontEndHeapType()
-			if self.FrontEndHeap > 0 and self.FrontEndHeapType == 0x1:
-				lalindex = 0
-				startloc = self.FrontEndHeap
-				while lalindex < 128:
-					thisptr = self.FrontEndHeap + (0x30 * lalindex)
-					lalhead_flink = struct.unpack('<L',dbg.readMemory(thisptr,4))[0]
-					if lalhead_flink != 0:
-						thissize = (lalindex * 8)
-						next_flink = lalhead_flink
-						seqnr = 0
-						thislal = {} 
-						while next_flink != 0 and next_flink != startloc:
-							chunk = self.getHeapChunkHeaderAtAddress(next_flink-8,8,"lal")
-							next_flink = chunk.flink
-							thislal[seqnr] = chunk
-							seqnr += 1
-						lal[lalindex] = thislal
-					lalindex += 1
+		self.FrontEndHeap = self.getFrontEndHeap()
+		self.FrontEndHeapType = self.getFrontEndHeapType()
+		if self.FrontEndHeap > 0 and self.FrontEndHeapType == 0x1:
+			lalindex = 0
+			startloc = self.FrontEndHeap
+			while lalindex < 128:
+				thisptr = self.FrontEndHeap + (0x30 * lalindex)
+				lalhead_flink = struct.unpack('<L',dbg.readMemory(thisptr,4))[0]
+				if lalhead_flink != 0:
+					thissize = (lalindex * 8)
+					next_flink = lalhead_flink
+					seqnr = 0
+					thislal = {} 
+					while next_flink != 0 and next_flink != startloc:
+						chunk = self.getHeapChunkHeaderAtAddress(next_flink-8,8,"lal")
+						next_flink = chunk.flink
+						thislal[seqnr] = chunk
+						seqnr += 1
+					lal[lalindex] = thislal
+				lalindex += 1
 		return lal
 
 	def getFreeListInUseBitmap(self):
+		"""Read the FreeListInUse bitmap from the NT heap."""
 		global FreeListBitmap
 		if not self.heapbase in FreeListBitmap:
 			FreeListBitmapHeap = []
@@ -4680,188 +5172,226 @@ class MnHeap:
 			FreeListBitmap[self.heapbase] = FreeListBitmapHeap
 		return FreeListBitmap[self.heapbase]
 
-
 	def getFreeList(self):
-		"""
-		Retrieves the FreeLists (XP/2003) for the current heap
-		Returns : a dictionary, key = FreeList table index
-		Each element in the dictionary contains a dictionary, using the FreeList position as key
-			and each element in this dictionary contains an MnChunk object		
-		"""
+		"""Walk the 128 FreeLists of the NT heap."""
 		freelists = {}
-		if not win7mode:
-			flindex = 0
-			while flindex < 128:
-				freelistflink = self.heapbase + 0x178 + (8 * flindex) + 4
-				freelistblink = self.heapbase + 0x178 + (8 * flindex)
-				endchain = False
-				try:
-					tblink = struct.unpack('<L',dbg.readMemory(freelistflink,4))[0]
-					tflink = struct.unpack('<L',dbg.readMemory(freelistblink,4))[0]
-					origblink = freelistblink
-					if freelistblink != tblink:
-						thisfreelist = {}
-						endchain = False
-						thisfreelistindex = 0
-						pflink = 0
-						while not endchain:
-							try:
-								freelistentry = self.getHeapChunkHeaderAtAddress(tflink-8,8,"freelist")
-								thisfreelist[thisfreelistindex] = freelistentry
-								thisfreelistindex += 1
-								thisblink = struct.unpack('<L',dbg.readMemory(tflink+4,4))[0]
-								thisflink = struct.unpack('<L',dbg.readMemory(tflink,4))[0]
-								tflink=thisflink
-								if (tflink == origblink) or (tflink == pflink):
-									endchain = True
-								pflink = tflink 
-							except:
-								endchain = True
-						freelists[flindex] = thisfreelist
-				except:
-					continue
-				flindex += 1
-		return freelists	
-
-
-	def getVirtualAllocdBlocks(self):
-		"""
-		Retrieves the VirtualAllocdBlocks list from the selected heap
-
-		Return: A dictionary, using the start of a virtualallocdblock as key
-		Each entry in the dictionary contains a MnChunk object, with chunktype set to "virtualalloc"
-		"""
-		global VACache
-		offset = getOsOffset("VirtualAllocdBlocks")
-		encodingkey = 0
-		if win7mode:
-			encodingkey = self.getEncodingKey()
-		if not self.heapbase in VACache:
+		flindex = 0
+		while flindex < 128:
+			freelistflink = self.heapbase + 0x178 + (8 * flindex) + 4
+			freelistblink = self.heapbase + 0x178 + (8 * flindex)
+			endchain = False
 			try:
-				# get virtualallocdBlocks for this heap
-				vaptr = self.heapbase + offset
-				valistentry = struct.unpack('<L',dbg.readMemory(vaptr,4))[0]
-				while valistentry != vaptr:
-					# get VA Header info
-					# header:
-					#            	size    size
-					#               (x86)   (x64)
-					#               =====   =====
-					# FLINK         4       8
-					# BLINK      	4       8
-					# Normal header 8       16    encoded on Win7+
-					# CommitSize    4       8
-					# ReserveSize   4       8     = requested size
-					# BusyBlock     8       16
-
-					headersize = 0
-					heoffset = 0 # HEAP_ENTRY offset (@ BusyBlock)
-					vaheader = None
-					flink = 0
-					blink = 0
-					commitsize = 0
-					reservesize = 0
-					size = 0
-
-					if arch == 32:
-						headersize = 32
-						heoffset = 24
-						vaheader = dbg.readMemory(valistentry,headersize)
-						flink = struct.unpack('<L',vaheader[0:4])[0]
-						blink = struct.unpack('<L',vaheader[4:8])[0]
-						commitsize = struct.unpack('<L',vaheader[16:20])[0]
-						reservesize = struct.unpack('<L',vaheader[20:24])[0]
-					elif arch == 64:
-						headersize = 64
-						heoffset = 48
-						vaheader = dbg.readMemory(valistentry,headersize)
-						flink = struct.unpack('<Q',vaheader[0:8])[0]
-						blink = struct.unpack('<Q',vaheader[8:16])[0]
-						commitsize = struct.unpack('<Q',vaheader[32:40])[0]
-						reservesize = struct.unpack('<Q',vaheader[40:48])[0]
-
-					size_e = struct.unpack('<H',vaheader[heoffset:heoffset+2])[0]
-					if win7mode:
-						size = (size_e ^ (encodingkey & 0xFFFF))
-					else:
-						size = size_e
-
-					#prevsize = struct.unpack('<H',vaheader[26:28])[0]
-					prevsize = 0
-					segmentid = struct.unpack('<B',vaheader[heoffset+4:heoffset+5])[0]
-					flag = struct.unpack('<B',vaheader[heoffset+5:heoffset+6])[0]
-					if win7mode:
-						flag = struct.unpack('<B',vaheader[heoffset+2:heoffset+3])[0]
-					unused = struct.unpack('<B',vaheader[heoffset+6:heoffset+7])[0]
-					tag = struct.unpack('<B',vaheader[heoffset+7:])[0]
-
-					chunkobj = MnChunk(valistentry,"virtualalloc",headersize,self.heapbase,0,size,prevsize,segmentid,flag,unused,tag,flink,blink,commitsize,reservesize)
-					self.VirtualAllocdBlocks[valistentry] = chunkobj
-					valistentry = struct.unpack('<L',dbg.readMemory(valistentry,4))[0]
-				VACache[self.heapbase] = self.VirtualAllocdBlocks
+				tblink = struct.unpack('<L',dbg.readMemory(freelistflink,4))[0]
+				tflink = struct.unpack('<L',dbg.readMemory(freelistblink,4))[0]
+				origblink = freelistblink
+				if freelistblink != tblink:
+					thisfreelist = {}
+					endchain = False
+					thisfreelistindex = 0
+					pflink = 0
+					while not endchain:
+						try:
+							freelistentry = self.getHeapChunkHeaderAtAddress(tflink-8,8,"freelist")
+							thisfreelist[thisfreelistindex] = freelistentry
+							thisfreelistindex += 1
+							thisblink = struct.unpack('<L',dbg.readMemory(tflink+4,4))[0]
+							thisflink = struct.unpack('<L',dbg.readMemory(tflink,4))[0]
+							tflink=thisflink
+							if (tflink == origblink) or (tflink == pflink):
+								endchain = True
+							pflink = tflink 
+						except:
+							endchain = True
+					freelists[flindex] = thisfreelist
 			except:
-				pass
-		else:
-			self.VirtualAllocdBlocks = VACache[self.heapbase]		
-		return self.VirtualAllocdBlocks	
+				continue
+			flindex += 1
+		return freelists
 
 	def getHeapSegmentList(self):
-		"""
-		Will collect all segments for the current heap object
+		"""Walk the XP _HEAP.Segments[64] pointer array.
 
-		Return: A dictionary, using the start of a segment as key
-		Each entry in the dictionary has 4 fields :
-		start of segment, end of segment, FirstEntry and LastValidEntry
+		Return: dict keyed by segment address, each value is a dict:
+		  - "base"       : int, BaseAddress
+		  - "end"        : int, BaseAddress + NumberOfPages * 0x1000
+		  - "pages"      : int, NumberOfPages
+		  - "firstentry" : int, FirstEntry
+		  - "lastentry"  : int, LastValidEntry
 		"""
-		self.SegmentList = getSegmentsForHeap(self.heapbase)
-		# segstart,segend,firstentry,lastentry
+		if len(self.SegmentList) > 0:
+			return self.SegmentList
+
+		try:
+			segarr_off = archValue(0x058, 0x0a0)
+			ptrsize = archValue(4, 8)
+			# XP _HEAP_SEGMENT field offsets
+			base_off = archValue(0x018, 0x028)   # BaseAddress
+			pages_off = archValue(0x01c, 0x030)   # NumberOfPages
+			first_off = archValue(0x020, 0x038)   # FirstEntry
+			last_off = archValue(0x024, 0x040)    # LastValidEntry
+
+			for i in range(64):
+				segaddr = readPtrSizeBytes(self.heapbase + segarr_off + (i * ptrsize))
+				if segaddr == 0:
+					break
+				baseaddr = readPtrSizeBytes(segaddr + base_off)
+				numpages = struct.unpack('<L', dbg.readMemory(segaddr + pages_off, 4))[0]
+				segend = baseaddr + (numpages * 0x1000)
+				firstentry = readPtrSizeBytes(segaddr + first_off)
+				lastentry = readPtrSizeBytes(segaddr + last_off)
+
+				self.SegmentList[segaddr] = {
+					"base": baseaddr,
+					"end": segend,
+					"pages": numpages,
+					"firstentry": firstentry,
+					"lastentry": lastentry,
+				}
+		except:
+			pass
+
+		return self.SegmentList
+
+
+class MnNT7Heap(MnNTHeap):
+	"""
+	NT Heap implementation for Windows 7 and later.
+	"""
+
+	def getEncodingInfo(self):
+		"""Read EncodeFlagMask and raw Encoding bytes from the NT heap.
+
+		Return: dict with keys:
+		  - "encode_enabled"  : bool, True if EncodeFlagMask != 0
+		  - "encode_flag_mask": int, raw EncodeFlagMask value
+		  - "encoding_raw"    : bytes or None, raw Encoding field
+		"""
+		self.getEncodingKey()
+		encoding_offset = archValue(0x050, 0x080)
+		encoding_size = archValue(8, 16)
+		encoding_raw = None
+		try:
+			encoding_raw = dbg.readMemory(self.heapbase + encoding_offset, encoding_size)
+		except:
+			pass
+		return {
+			"encode_enabled": (self.EncodeFlagMask != 0),
+			"encode_flag_mask": self.EncodeFlagMask,
+			"encoding_raw": encoding_raw,
+		}
+
+	def getEncodingKey(self):
+		"""Retrieve the Encoding key from the NT heap header.
+
+		Return: int, the Encoding key
+		"""
+		self.Encoding = 0
+		offset = archValue(0x4c,0x7c)
+		self.EncodeFlagMask = struct.unpack('<L',dbg.readMemory(self.heapbase+offset,4))[0]
+		if self.EncodeFlagMask == 0x100000:
+			if arch == 32:
+				self.Encoding = struct.unpack('<L',dbg.readMemory(self.heapbase+0x50,4))[0]
+			elif arch == 64:
+				self.Encoding = struct.unpack('<L',dbg.readMemory(self.heapbase+0x80+0x8,4))[0]
+		return self.Encoding
+
+	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
+		"""Decode a heap chunk header (Win7+ format, with encoding).
+
+		Arguments:
+			thischunk  - int, address of the chunk header
+			headersize - int, size of the header in bytes (default 8)
+			type       - str, one of "chunk", "lal", or "freelist"
+
+		Return: MnChunk object, or None if type is not recognized
+		"""
+		key = self.getEncodingKey()
+		fullheaderbin = ""
+		if type == "chunk" or type == "lal" or type == "freelist":
+			chunktype = "chunk"
+			fullheaderbin = decodeHeapHeader(thischunk,headersize,key)
+			if len(fullheaderbin) == headersize:
+				thissize = struct.unpack('<H',fullheaderbin[0:2])[0]
+				flag = struct.unpack('<B',fullheaderbin[2:3])[0]
+				tag = struct.unpack('<B',fullheaderbin[3:4])[0]
+				prevsize = struct.unpack('<H',fullheaderbin[4:6])[0]
+				segmentid = struct.unpack('<B',fullheaderbin[6:7])[0]
+				unused = struct.unpack('<B',fullheaderbin[7:8])[0]
+				flink = 0
+				blink = 0
+				if type == "lal" or type == "freelist":
+					flink = struct.unpack('<L',dbg.readMemory(thischunk+headersize,4))[0]
+				if type == "freelist":
+					blink = struct.unpack('<L',dbg.readMemory(thischunk+headersize+4,4))[0]
+				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,thissize,prevsize,segmentid,flag,unused,tag,flink,blink)
+			else:
+				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,0,0,0,0,0,0,0,0)
+		return None
+
+	def getHeapSegmentList(self):
+		"""Walk the Win7+ _HEAP.SegmentList doubly-linked list.
+
+		Return: dict keyed by segment address, each value is a dict:
+		  - "base"       : int, BaseAddress
+		  - "end"        : int, BaseAddress + NumberOfPages * 0x1000
+		  - "pages"      : int, NumberOfPages
+		  - "firstentry" : int, FirstEntry
+		  - "lastentry"  : int, LastValidEntry
+		"""
+		if len(self.SegmentList) > 0:
+			return self.SegmentList
+
+		try:
+			# _HEAP_SEGMENT.SegmentListEntry offset
+			sle_offset = archValue(0x010, 0x018)
+			# _HEAP_SEGMENT field offsets (Win7+)
+			base_off = archValue(0x01c, 0x030)
+			pages_off = archValue(0x020, 0x038)
+			first_off = archValue(0x024, 0x040)
+			last_off = archValue(0x028, 0x048)
+
+			# _HEAP.SegmentList head
+			listhead = self.heapbase + getOsOffset("SegmentList")
+			entry = readPtrSizeBytes(listhead)
+
+			while entry != listhead:
+				segaddr = entry - sle_offset
+				baseaddr = readPtrSizeBytes(segaddr + base_off)
+				numpages = struct.unpack('<L', dbg.readMemory(segaddr + pages_off, 4))[0]
+				segend = baseaddr + (numpages * 0x1000)
+				firstentry = readPtrSizeBytes(segaddr + first_off)
+				lastentry = readPtrSizeBytes(segaddr + last_off)
+
+				self.SegmentList[segaddr] = {
+					"base": baseaddr,
+					"end": segend,
+					"pages": numpages,
+					"firstentry": firstentry,
+					"lastentry": lastentry,
+				}
+				entry = readPtrSizeBytes(entry)
+		except:
+			pass
+
 		return self.SegmentList
 
 	def usesLFH(self):
-		"""
-		Checks if the current heap has LFH enabled
+		"""Check if this NT heap has LFH enabled.
 
-		Return: Boolean
+		Return: bool, True if FrontEndHeapType == 0x2
 		"""
-		if win7mode:
-			frontendheaptype = self.getFrontEndHeapType()
-			if frontendheaptype == 0x2:
-				return True
-			else:
-				return False
-		else:
-			return False
-			
-	def getLFHAddress(self):
-		"""
-		Retrieves the address of the Low Fragmentation Heap for the current heap
+		frontendheaptype = self.getFrontEndHeapType()
+		return frontendheaptype == 0x2
 
-		Return: Int
-		"""
-		return readPtrSizeBytes(self.heapbase+getOsOffset("FrontEndHeap"))
 
-	def getState(self):
-		"""
-		Enumerates all segments, chunks and VirtualAllocdBlocks in the current heap
+class MnSegmentHeap(MnHeap):
+	"""
+	Segment Heap implementation (_SEGMENT_HEAP)
+	"""
 
-		Return: array of dicts 
-			0 : segments  (with segment addy as key), contains list of chunks 
-			1 : vablocks 
-		Key: Heap
-		Contents:
-			Segment -> Chunks
-			VA Blocks
-		"""
-		statedata = {}
-		segments = getSegmentsForHeap(self.heapbase)
-		for seg in segments:
-			segstart = segments[seg][0]
-			segend = segments[seg][1]
-			FirstEntry = segments[seg][2]
-			LastValidEntry = segments[seg][3]
-			datablocks = walkSegment(FirstEntry,LastValidEntry,self.heapbase)
-			statedata[seg] = datablocks
-		return statedata
+	def getHeapType(self):
+		return "Segment"
+
 
 """
 Low Fragmentation Heap
@@ -5210,6 +5740,268 @@ class MnChunk:
 
 
 #---------------------------------------#
+#  Class to represent process layout    #
+#---------------------------------------#
+class MnProc:
+	"""
+	Aggregates all major process structures: PEB/TEB, modules,
+	stacks, heaps (with type detection, segments, VA blocks,
+	chunk statistics), and memory pages.
+	"""
+
+	def __init__(self):
+		self.peb = None
+		self.teb = None
+		self.modules = {}      # {name: {"base","top","size",...}} from g_modules
+		self.stacks = {}       # {tid: [base, top]}
+		self.heapinfo = {}     # from getProcessHeapsInfo(): {"NT":{}, "Segment":{}, "Unknown":{}}
+		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
+		self.pages = {}        # {pagekey: page object} from dbg.getMemoryPages()
+		self.defaultheap = 0   # default process heap address
+
+	def populate(self, include_chunks=False):
+		"""
+		Populate all fields by querying the debugger.
+
+		Arguments:
+			include_chunks - bool. If True, getNTHeapInfo() is called for
+			                 each NT heap (walks segments and enumerates
+			                 chunks). This can be slow on large heaps.
+		"""
+		# PEB / TEB
+		try:
+			self.peb = get_peb_addr()
+		except:
+			pass
+		try:
+			self.teb = get_teb_addr()
+		except:
+			pass
+
+		# Modules
+		if len(g_modules) == 0:
+			populateModuleInfo()
+		self.modules = dict(g_modules)
+
+		# Stacks
+		self.stacks = getStacks()
+
+		# Heaps (type detection + encoding info)
+		self.heapinfo = getProcessHeapsInfo()
+
+		# Default process heap
+		try:
+			self.defaultheap = getDefaultProcessHeap()
+		except:
+			pass
+
+		# NT heap detail (segments, VA blocks, optionally chunks)
+		for heapaddr in self.heapinfo.get("NT", {}):
+			try:
+				if include_chunks:
+					detail = getNTHeapInfo(heapaddr)
+					try:
+						mheap = MnHeap(heapaddr)
+						detail["frontend_type"] = mheap.getFrontEndHeapType()
+					except:
+						if "frontend_type" not in detail:
+							detail["frontend_type"] = 0
+					self.ntheapdetail[heapaddr] = detail
+				else:
+					mheap = MnHeap(heapaddr)
+					detail = {"segments": {}, "va_blocks": {}, "frontend_type": 0}
+					try:
+						detail["frontend_type"] = mheap.getFrontEndHeapType()
+					except:
+						pass
+					try:
+						seglist = mheap.getHeapSegmentList()
+						for segaddr, seg in seglist.items():
+							segdetail = {
+								"base": seg["base"],
+								"end": seg["end"],
+								"firstentry": seg["firstentry"],
+								"lastentry": seg["lastentry"],
+							}
+							# Walk chunks for stats
+							try:
+								chunks = walkSegment(seg["firstentry"], seg["lastentry"], heapaddr)
+								total = len(chunks)
+								busy = 0
+								free_count = 0
+								max_free = 0
+								for caddr in chunks:
+									c = chunks[caddr]
+									csize = c.size * heapgranularity
+									if c.flag & 0x01:
+										busy += 1
+									else:
+										free_count += 1
+										if csize > max_free:
+											max_free = csize
+								segdetail["total_chunks"] = total
+								segdetail["busy_chunks"] = busy
+								segdetail["free_chunks"] = free_count
+								segdetail["max_free"] = max_free
+							except:
+								pass
+							detail["segments"][segaddr] = segdetail
+					except:
+						pass
+					try:
+						detail["va_blocks"] = mheap.getVirtualAllocdBlocks()
+					except:
+						pass
+					self.ntheapdetail[heapaddr] = detail
+			except:
+				pass
+
+		# Memory pages
+		self.pages = dbg.getMemoryPages()
+
+	def getModulesSorted(self):
+		"""Return modules sorted by base address: [(name, properties), ...]"""
+		return sorted(self.modules.items(), key=lambda x: x[1]["base"])
+
+	def getStacksSorted(self):
+		"""Return stacks sorted by base address: [(tid, [base, top]), ...]"""
+		return sorted(self.stacks.items(), key=lambda x: x[1][0])
+
+	def getAllHeapsSorted(self):
+		"""
+		Return all heaps across all types, sorted by address.
+		Each item: (address, type_str, info_dict)
+		"""
+		result = []
+		for htype in ("NT", "Segment", "Unknown"):
+			for addr, info in self.heapinfo.get(htype, {}).items():
+				result.append((addr, htype, info))
+		result.sort(key=lambda x: x[0])
+		return result
+
+	def getPagesSorted(self):
+		"""Return memory pages sorted by base address: [page, ...]"""
+		return [self.pages[k] for k in sorted(self.pages.keys())]
+
+	def getNTHeapAddresses(self):
+		"""Return sorted list of NT heap base addresses."""
+		return sorted(self.heapinfo.get("NT", {}).keys())
+
+	def getSegmentHeapAddresses(self):
+		"""Return sorted list of Segment heap base addresses."""
+		return sorted(self.heapinfo.get("Segment", {}).keys())
+
+	def _getImmunityStructSizes(self):
+		"""Return (peb_size, teb_size) based on OS major version for Immunity Debugger."""
+		try:
+			os_info = dbg.getOsRelease()
+			major = os_info[0]
+		except:
+			major = 0
+		if major >= 10:
+			return (0x488, 0x1038)
+		elif major == 6:
+			return (0x380, 0xF28)
+		else:
+			return (0x210, 0x1000)
+
+	def getAllSorted(self):
+		"""
+		Return a unified view of all process structures sorted by start address.
+		Each item: (start, end, category, description)
+
+		Categories: "PEB", "TEB", "Module", "Stack", "Heap", "Heap Segment",
+		            "Heap VA Block", "Page"
+		"""
+		regions = []
+
+		# PEB / TEB
+		static = __DEBUGGERAPP__ == "Immunity Debugger"
+		if self.peb is not None:
+			peb_size = 0
+			if __DEBUGGERAPP__ == "WinDBG":
+				peb_size = dbg.getTypeSize("ntdll!_PEB")
+			elif static:
+				peb_size = self._getImmunityStructSizes()[0]
+			if peb_size == 0:
+				peb_size = archValue(0x480, 0x7C8)
+			regions.append((self.peb, self.peb + peb_size, "PEB", "PEB", static))
+		if self.teb is not None:
+			teb_size = 0
+			if __DEBUGGERAPP__ == "WinDBG":
+				teb_size = dbg.getTypeSize("ntdll!_TEB")
+			elif static:
+				teb_size = self._getImmunityStructSizes()[1]
+			if teb_size == 0:
+				teb_size = archValue(0x1000, 0x1838)
+			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB (current thread)", static))
+
+		# Modules
+		for name, props in self.modules.items():
+			dispname = props.get("filename") or name
+			flags = []
+			if props.get("aslr"):
+				flags.append("ASLR")
+			if props.get("rebase"):
+				flags.append("Rebase")
+			if props.get("safeseh"):
+				flags.append("SafeSEH")
+			if props.get("nx"):
+				flags.append("NX")
+			if props.get("cfg"):
+				flags.append("CFG")
+			if props.get("os"):
+				flags.append("OS")
+			flagstr = ", ".join(flags) if flags else "None"
+			modpath = props.get("path", "")
+			dispname = "%s (%s | %s)" % (dispname, flagstr, modpath)
+			regions.append((props["base"], props["top"], "Module", dispname))
+
+		# Stacks
+		for tid, (sbase, stop) in self.stacks.items():
+			regions.append((sbase, stop, "Stack", "Thread %s" % str(tid)))
+
+		# Heaps (base entries) + segments + VA blocks
+		fe_names = {0: "None", 1: "LAL", 2: "LFH"}
+		for heapaddr, htype, info in self.getAllHeapsSorted():
+			idx = info.get("index", "?")
+			heapname = "Heap %s" % idx
+			if heapaddr == self.defaultheap:
+				heapname += " [Default]"
+			fe_label = ""
+			if heapaddr in self.ntheapdetail:
+				fe_type = self.ntheapdetail[heapaddr].get("frontend_type", 0)
+				fe_label = " | FrontEnd: %s" % fe_names.get(fe_type, "0x%x" % fe_type)
+			regions.append((heapaddr, heapaddr, "Heap", "%s (%s%s)" % (heapname, htype, fe_label)))
+
+			if heapaddr in self.ntheapdetail:
+				detail = self.ntheapdetail[heapaddr]
+				segaddrs = sorted(detail["segments"].keys())
+				for i, segaddr in enumerate(segaddrs):
+					seg = detail["segments"][segaddr]
+					flink = "0x%s (Segment%02d)" % (toHex(segaddrs[i + 1]), i + 1) if i < len(segaddrs) - 1 else "None"
+					blink = "0x%s (Segment%02d)" % (toHex(segaddrs[i - 1]), i - 1) if i > 0 else "None"
+					chunk_info = ""
+					if "total_chunks" in seg:
+						chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
+							seg["total_chunks"], seg["busy_chunks"], seg["free_chunks"], seg["max_free"])
+					desc = "Segment%02d ( Heap: %s | FLink: %s | BLink: %s%s )" % (i, heapname, flink, blink, chunk_info)
+					regions.append((seg["base"], seg["end"], "Heap Segment", desc))
+
+				vaaddrs = sorted(detail["va_blocks"].keys())
+				for i, vaaddr in enumerate(vaaddrs):
+					va = detail["va_blocks"][vaaddr]
+					vaend = vaaddr + va["commit_size"]
+					flink = "0x%s (VirtualAllocdBlock%02d)" % (toHex(vaaddrs[i + 1]), i + 1) if i < len(vaaddrs) - 1 else "None"
+					blink = "0x%s (VirtualAllocdBlock%02d)" % (toHex(vaaddrs[i - 1]), i - 1) if i > 0 else "None"
+					desc = "VirtualAllocdBlock%02d ( Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x )" % (i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
+					regions.append((vaaddr, vaend, "Heap VA Block", desc))
+
+		regions.sort(key=lambda x: x[0])
+		return regions
+
+
+#---------------------------------------#
 #  Class to access pointer properties   #
 #---------------------------------------#
 class MnPointer:
@@ -5491,9 +6283,8 @@ class MnPointer:
 			valist = mHeap.getVirtualAllocdBlocks()
 			if len(valist) > 0:
 				for vachunk in valist:
-					thischunk = valist[vachunk]
-					#dbg.log("self: 0x%08x, vachunk: 0x%08x, commitsize: 0x%08x, vachunk+(thischunk.commitsize)*8: 0x%08x" % (self.address,vachunk,thischunk.commitsize,vachunk+(thischunk.commitsize*8)))
-					if self.address >= vachunk and self.address <= (vachunk+(thischunk.commitsize*heapgranularity)):
+					vainfo = valist[vachunk]
+					if self.address >= vachunk and self.address <= (vachunk + vainfo["commit_size"]):
 						self.ownerName = "VirtualAllocdBlock"
 						return True
 		return False
@@ -5706,10 +6497,10 @@ class MnPointer:
 
 			#segments
 			for seg in segments:
-				segstart = segments[seg][0]
-				segend = segments[seg][1]
-				FirstEntry = segments[seg][2]
-				LastValidEntry = segments[seg][3]								
+				segstart = segments[seg]["base"]
+				segend = segments[seg]["end"]
+				FirstEntry = segments[seg]["firstentry"]
+				LastValidEntry = segments[seg]["lastentry"]								
 				allchunks = walkSegment(FirstEntry,LastValidEntry,heapbase)
 				for chunkptr in allchunks:
 					thischunk = allchunks[chunkptr]
@@ -5737,18 +6528,16 @@ class MnPointer:
 				# maybe it's in VirtualAllocdBlocks
 				vachunks = mHeap.getVirtualAllocdBlocks()
 				for vaptr in vachunks:
-					thischunk = vachunks[vaptr]
-					if self.address >= vaptr and self.address <= vaptr + (thischunk.commitsize*8):
+					vainfo = vachunks[vaptr]
+					if self.address >= vaptr and self.address <= vaptr + vainfo["commit_size"]:
 						if not silent:
 							dbg.log("")
 							dbg.log("Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
-							thischunk.showChunk(showdata = True)
+							dbg.log("  VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
 							self.showObjectInfo()
-							self.showHeapStackTrace(thischunk)
-							thissize = thischunk.usersize
-							dumpsize = thissize
-							dodump = True					
-						foundinchunk = thischunk
+							dumpsize = vainfo["commit_size"]
+							dodump = True
+						foundinchunk = vainfo
 						foundinva = vaptr
 						foundinheap = heapbase
 						break
@@ -6236,16 +7025,23 @@ def getSegmentsForHeap(heapbase):
 		return segmentlistCache[heapbase]
 	else:
 		try:
+			if DEBUG_MODE:
+				dbgp("getSegmentsForHeap(0x%x): win7mode=%s" % (heapbase, str(win7mode)))
 			if win7mode:
 				# first one  = heap itself
 				offset = getOsOffset("SegmentList")
+				if DEBUG_MODE:
+					dbgp("getSegmentsForHeap: SegmentList offset=0x%x" % offset)
 				segmentcnt = 0
 				subtract = archValue(0x10,0x18)
 				firstoffset = 0
-				firstsegbase = readPtrSizeBytes(heapbase + archValue(0x24,0x40))
-				firstsegend = readPtrSizeBytes(heapbase + archValue(0x28,0x48))
-				if not firstsegbase in segmentinfo:
-					segmentinfo[heapbase] = [firstsegbase,firstsegend,firstsegbase,firstsegend]
+				firstbase = readPtrSizeBytes(heapbase + archValue(0x1c,0x30))
+				firstentry = readPtrSizeBytes(heapbase + archValue(0x24,0x40))
+				firstlast = readPtrSizeBytes(heapbase + archValue(0x28,0x48))
+				if DEBUG_MODE:
+					dbgp("getSegmentsForHeap: first seg base=0x%x entry=0x%x last=0x%x" % (firstbase, firstentry, firstlast))
+				if not heapbase in segmentinfo:
+					segmentinfo[heapbase] = [firstbase,firstlast,firstentry,firstlast]
 				# optional list with additional segments
 				# nested list
 				segbase = heapbase
@@ -6259,10 +7055,11 @@ def getSegmentsForHeap(heapbase):
 					nextbase = readPtrSizeBytes(segbase + archValue(0x10,0x18)) - subtract
 					segbase = nextbase
 					if nextbase > 0 and (nextbase+subtract != lastindex):
-						segstart = readPtrSizeBytes(segbase + archValue(0x24,0x40))
-						segend = readPtrSizeBytes(segbase + archValue(0x28,0x48))
+						segbaseaddr = readPtrSizeBytes(segbase + archValue(0x1c,0x30))
+						segfirst = readPtrSizeBytes(segbase + archValue(0x24,0x40))
+						seglast = readPtrSizeBytes(segbase + archValue(0x28,0x48))
 						if not segbase in segmentinfo:
-							segmentinfo[segbase] = [segbase,segend,segstart,segend]
+							segmentinfo[segbase] = [segbaseaddr,seglast,segfirst,seglast]
 					else:
 						allsegmentsfound = True
 					segmentcnt += 1
@@ -6285,8 +7082,13 @@ def getSegmentsForHeap(heapbase):
 					# avoid infinite loop
 					if i > 100:
 						allsegmentsfound = True
-		except:
-			pass
+		except Exception as e:
+			if DEBUG_MODE:
+				dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)))
+				import traceback
+				dbgp(traceback.format_exc())
+		if DEBUG_MODE:
+			dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
 		segmentlistCache[heapbase] = segmentinfo
 		return segmentinfo
 
@@ -16867,6 +17669,74 @@ def procStacks(args):
 		dbg.log("No threads/stacks found !",highlight=1)
 	return
 
+
+#-----proclayout-----#
+
+def procLayout(args):
+	global silent
+	global ignoremodules
+	silent = True
+	ignoremodules = True
+	proc = MnProc()
+	include_chunks = "chunks" in args
+	dbg.log("Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
+	proc.populate(include_chunks=include_chunks)
+	regions = proc.getAllSorted()
+	if len(regions) == 0:
+		dbg.log("No regions found!", highlight=1)
+		silent = False
+		ignoremodules = False
+		return
+
+	filename = "proclayout.txt"
+	objfile = MnLog(filename)
+	logfile = objfile.reset()
+
+	has_static = any(len(r) > 4 and r[4] for r in regions)
+
+	if arch == 64:
+		addr_width = 18
+	else:
+		addr_width = 10
+	size_width = addr_width - 2
+	if has_static:
+		size_width += 9  # room for "(static) " prefix
+	type_width = 15
+	fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s" % (addr_width, addr_width, size_width, type_width)
+
+	header = fmt % ("Start", "End", "Size", "Type", "Description")
+	sep = "-" * len(header)
+	dbg.log(header)
+	dbg.log(sep)
+	objfile.write(header, logfile)
+	objfile.write(sep, logfile)
+
+	for region in regions:
+		start, end, category, description = region[0], region[1], region[2], region[3]
+		static_size = region[4] if len(region) > 4 else False
+		if end > start:
+			size = end - start
+		else:
+			size = 0
+		if arch == 64:
+			pstart = "0x%016x" % start
+			pend = "0x%016x" % end
+		else:
+			pstart = "0x%08x" % start
+			pend = "0x%08x" % end
+		psize = "(static) 0x%x" % size if static_size else "0x%x" % size
+		tolog = fmt % (pstart, pend, psize, category, description)
+		dbg.log(tolog)
+		objfile.write(tolog, logfile)
+
+	dbg.log(sep)
+	dbg.log("Total: %d regions" % len(regions))
+	objfile.write("Total: %d regions" % len(regions), logfile)
+	silent = False
+	ignoremodules = False
+	return
+
+
 #------heapstuff-----#
 	
 def procHeap(args):
@@ -17013,6 +17883,8 @@ def procHeap(args):
 	if error:
 		return
 	else:
+		global ignoremodules
+		ignoremodules = True
 		statinfo = {}
 		logfile_b = ""
 		thislog_b = ""
@@ -17187,21 +18059,28 @@ def procHeap(args):
 						for block in sortedblocks:
 							showinlog = False
 							thischunk = datablocks[block]
-							unused = thischunk.unused
-							headersize = thischunk.headersize
-							flags = getHeapFlag(thischunk.flag)
-							userptr = block + headersize
-							psize = thischunk.prevsize * 8
-							blocksize = thischunk.size * 8
-							selfsize = blocksize
-							usersize = selfsize - unused				
-							usersize = blocksize - unused
-							extratxt = ""	
 							if infotype == "virtualallocdblocks":
-								selfsize = thischunk.commitsize * 8
+								vainfo = thischunk
+								unused = 0
+								headersize = 0
+								flags = ""
+								userptr = block
+								psize = 0
+								selfsize = vainfo["commit_size"]
 								blocksize = selfsize
-								usersize = selfsize - unused
-								nextblock = thischunk.flink
+								usersize = selfsize
+								extratxt = ""
+								nextblock = 0
+							else:
+								unused = thischunk.unused
+								headersize = thischunk.headersize
+								flags = getHeapFlag(thischunk.flag)
+								userptr = block + headersize
+								psize = thischunk.prevsize * 8
+								blocksize = thischunk.size * 8
+								selfsize = blocksize
+								usersize = blocksize - unused
+								extratxt = ""
 							# read block into memory
 							blockmem = dbg.readMemory(block,blocksize)
 
@@ -17404,7 +18283,7 @@ def procHeap(args):
 									ptrchars = ptrbytes
 									datasize = ptrbytes
 									if ptrchars > 100:
-										data = data[0:100]+"..."
+										data = data[0:100]+b"..."
 									blockinfo = "%s (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
 									infoptr = block + ptr
 									endptr = infoptr + ptrchars -  1  # need -1
@@ -17418,7 +18297,7 @@ def procHeap(args):
 									datasize = ptrbytes+6
 									infoptr = block + ptr - 3
 									if ptrchars > 100:
-										data = data[0:100]+"..."
+										data = data[0:100]+b"..."
 									blockinfo = "%s 0x%x/%d bytes (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes+6,ptrbytes+6,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
 									endptr = infoptr + ptrbytes + 6
 								elif ptr in unicodestrings:
@@ -17430,7 +18309,7 @@ def procHeap(args):
 									ptrbytes = ptrchars * 2
 									datasize = ptrbytes
 									if ptrchars > 100:
-										data = data[0:100]+"..."
+										data = data[0:100]+b"..."
 									blockinfo = "%s (0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
 									endptr = infoptr + ptrbytes + 2
 								elif ptr in objects:
@@ -17558,23 +18437,31 @@ def procHeap(args):
 								for block in sortedblocks:
 									showinlog = False
 									thischunk = datablocks[block]
-									unused = thischunk.unused
-									headersize = thischunk.headersize
-									flagtxt = getHeapFlag(thischunk.flag)
-									if not infotype == "virtualallocdblocks" and "virtallocd" in flagtxt.lower():
-										flagtxt += " (LFH)"
-										flagtxt = flagtxt.replace("Virtallocd","Internal")
-									userptr = block + headersize
-									psize = thischunk.prevsize * 8
-									blocksize = thischunk.size * 8
-									selfsize = blocksize
-									usersize = selfsize - unused				
-									usersize = blocksize - unused
-									extratxt = ""	
 									if infotype == "virtualallocdblocks":
-										nextblock = thischunk.flink
-										extratxt = " (0x%x bytes committed)" % (thischunk.commitsize * 8)
+										vainfo = thischunk
+										unused = 0
+										headersize = 0
+										flagtxt = "VirtualAllocd"
+										userptr = block
+										psize = 0
+										selfsize = vainfo["commit_size"]
+										blocksize = selfsize
+										usersize = selfsize
+										extratxt = " (0x%x bytes committed, 0x%x reserved)" % (vainfo["commit_size"], vainfo["reserve_size"])
+										nextblock = 0
 									else:
+										unused = thischunk.unused
+										headersize = thischunk.headersize
+										flagtxt = getHeapFlag(thischunk.flag)
+										if "virtallocd" in flagtxt.lower():
+											flagtxt += " (LFH)"
+											flagtxt = flagtxt.replace("Virtallocd","Internal")
+										userptr = block + headersize
+										psize = thischunk.prevsize * 8
+										blocksize = thischunk.size * 8
+										selfsize = blocksize
+										usersize = blocksize - unused
+										extratxt = ""
 										nextblock = block + blocksize
 
 									if not "stat" in args:
@@ -17671,7 +18558,7 @@ def procHeap(args):
 			except:
 				pass
 	#dbg.log("%s" % "*" * 90)					
-			
+		ignoremodules = False
 	return
 
 def procGetIAT(args):
@@ -21661,6 +22548,11 @@ DEP Bypass options :
                      If you leave this empty, the code will contain a GetPC routine."""
 	
 	stacksUsage = """Shows all stacks for each thread in the running application"""
+
+	proclayoutUsage = """Show a unified process memory layout map (PEB, TEB, modules, stacks, heaps, pages)
+
+Optional arguments:
+    -chunks : Include NT heap chunk detail (slower)"""
 	
 	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
 
@@ -21963,6 +22855,7 @@ Arguments:
 	commands["getpc"]			= MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC)	
 	commands["egghunter"]		= MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
 	commands["stacks"]			= MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks,"",[32,64])
+	commands["proclayout"]		= MnCommand("proclayout","Show unified process memory layout map",proclayoutUsage,procLayout,"pl",[32,64])
 	commands["skeleton"]		= MnCommand("skeleton","Create a Metasploit module skeleton with a cyclic pattern for a given type of exploit",skeletonUsage,procSkeleton)
 	commands["breakfunc"]		= MnCommand("breakfunc","Set a breakpoint on an exported function in on or more dll's",bfUsage,procBf,"bf", [32,64])
 	commands["heap"]			= MnCommand("heap","Show heap related information",heapUsage,procHeap)
@@ -22173,14 +23066,16 @@ def main(args):
 	commands = {}
 
 	currentArgs = copy.copy(args)
-	if ("-debug" in args) and (__DEBUGGERAPP__ == "WinDBG"):
+	if ("-debug" in args):
 		DEBUG_MODE = True
-		dbglib.set_debug_mode(True)
+		if __DEBUGGERAPP__ == "WinDBG":
+			dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
-		objlogopenfile = MnLog("%s-windbg_debug.log" % get_current_datetime_flat())
-		logopenfile = objlogopenfile.reset()
-		dbg.nativeCommand(".logclose")
-		dbg.nativeCommand(".logopen \"%s\"" % logopenfile)
+		if __DEBUGGERAPP__ == "WinDBG":
+			objlogopenfile = MnLog("%s-windbg_debug.log" % get_current_datetime_flat())
+			logopenfile = objlogopenfile.reset()
+			dbg.nativeCommand(".logclose")
+			dbg.nativeCommand(".logopen \"%s\"" % logopenfile)
 	else:
 		DEBUG_MODE = False
 		if (__DEBUGGERAPP__ == "WinDBG"):
@@ -22309,7 +23204,7 @@ def main(args):
 		dbg.log("[+] This mona.py action took %s" % str(delta))	
 		dbg.log("    Current date/time: %s" % get_current_datetime())
 		dbg.setStatusBar("Done")
-		if DEBUG_MODE:
+		if DEBUG_MODE and __DEBUGGERAPP__ == "WinDBG":
 			dbg.nativeCommand(".logclose")
 				
 	except:
