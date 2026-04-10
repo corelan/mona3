@@ -20792,6 +20792,8 @@ def procChangeACL(args):
 			addy,addyok = getAddyArg(args["a"])
 			if not addyok:
 				addyerror = True
+	else:
+		addyerror = True
 	if "acl" in args:
 		if type(args["acl"]).__name__.lower() != "bool":
 			if args["acl"].upper() in memProtConstants:
@@ -20813,6 +20815,7 @@ def procChangeACL(args):
 	if not addyerror and not aclerror:
 		pageacl = memProtConstants[acl][1]
 		pageaclname = memProtConstants[acl][0]
+		dbg.log("[+] ACL Changes for address 0x%08x" % addy)
 		dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
 		dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
 		retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
