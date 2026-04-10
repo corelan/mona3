@@ -14983,17 +14983,17 @@ def procOffset(args):
 
 	diff = a2 - a1
 	result=toHex(diff)
-	negjmpbytes = ""
+	negjmpbytes = b""
 	if a1 > a2:
 		ndiff = a1 - a2
-		result=toHex(4294967296-ndiff) 
+		result=toHex(4294967296-ndiff)
 		negjmpbytes="\\x"+ result[6]+result[7]+"\\x"+result[4]+result[5]+"\\x"+result[2]+result[3]+"\\x"+result[0]+result[1]
 		regaction="sub"
 	dbg.log("Offset from 0x%08x to 0x%08x : %d (0x%s) bytes" % (a1,a2,diff,result))	
 	if a1 > a2:
 		dbg.log("Negative jmp offset : %s" % negjmpbytes)
-	else:
-		dbg.log("Jmp offset : %s" % negjmpbytes)		
+	#else:
+	#	dbg.log("Jmp offset : %s" % negjmpbytes)		
 	return		
 		
 # ----- bp: Set a breakpoint on read/write/exe access ----- #
@@ -15853,9 +15853,8 @@ def procgetPC(args):
 		dbg.log("Missing argument -r <register>",highlight=1)
 		return
 
-	valid_regs_32 = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
-	valid_regs_64 = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
-					 "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+	valid_regs_32 = Registers32BitsOrder 
+	valid_regs_64 = Registers64BitsOrder
 
 	if r32 not in valid_regs_32 and r32 not in valid_regs_64:
 		dbg.log("Invalid register '%s'." % r32, highlight=1)
