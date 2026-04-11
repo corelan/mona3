@@ -10517,7 +10517,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			nrfound = 0
 			for ptrkeys in pointers:
 				nrfound += len(pointers[ptrkeys])
-			dbg.log("     Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
+			if nrfound > 0:
+				dbg.log("     Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
 			# flatten first_pattern
 			
 			for instrkey in pointers:
@@ -23109,7 +23110,7 @@ Optional arguments:
   Examples:
         pop r32#*#xor eax,eax#*#pop esi#ret
         push rbp#*#jmp rax
-        mov eax, [ebp+n10:20]#inc r32
+        mov eax, [eax+n4:20]#*#inc r32
         add esp,imm0x100:0x200#pop r32#retn
         """
 
