@@ -9733,83 +9733,15 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
     Supported special tokens
     ------------------------
     *    = wildcard instruction placeholder
-           Meaning: during later forward disassembly, one or more instructions may appear here.
-           Wildcards are kept in the parsed structure, but trailing wildcards are removed
-           because they serve no purpose.
-
     R32  = placeholder for any 32-bit register
     R64  = placeholder for any 64-bit register
     -N   = placeholder for any negative offset in the range mindistance..maxdistance
 
-           Example:
-               "MOV EAX,[EBP-N]"
-
-           with:
-               mindistance = 4
-               maxdistance = 8
-
-           becomes:
-               MOV EAX,[EBP-4]
-               MOV EAX,[EBP-5]
-               MOV EAX,[EBP-6]
-               MOV EAX,[EBP-7]
-               MOV EAX,[EBP-8]
-
-    The function uses the global arrays:
-        Registers32BitsOrder
-        Registers64BitsOrder
-
-    Return value
-    ------------
-    Returns a dict with:
-
-        original:
-            Original user input
-
-        normalized:
-            Cleaned instruction string
-            - empty fragments removed
-            - duplicate separators collapsed
-            - trailing #* removed
-
-        parts:
-            Parsed sequence as a list of dicts:
-                {"type": "instruction", "text": "..."}
-                {"type": "wildcard",    "text": "*"}
-
-        first_patterns:
-            List of concrete first search patterns.
-            Each entry is an array of instructions.
-
-            Example:
-                "PUSH EBX#POP EAX"
-                    -> [["PUSH EBX", "POP EAX"]]
-
-                "MOV EAX,R32#JMP ESP"
-                    -> [
-                         ["MOV EAX,EAX", "JMP ESP"],
-                         ["MOV EAX,ECX", "JMP ESP"],
-                         ...
-                       ]
-
-                "MOV EAX,[EBP-N]#JMP ESP"
-                    -> [
-                         ["MOV EAX,[EBP-4]", "JMP ESP"],
-                         ["MOV EAX,[EBP-5]", "JMP ESP"],
-                         ...
-                       ]
-
-        has_wildcards:
-            True if one or more wildcard entries remain after normalization
-
-        first_has_r32:
-            True if the first search block contains R32
-
-        first_has_r64:
-            True if the first search block contains R64
-
-        first_has_offset:
-            True if the first search block contains -N
+    Notes
+    -----
+    - All stored instructions are normalized to lowercase
+    - Expanded register replacements are also forced to lowercase
+    - Expanded offsets are emitted as lowercase hex with 0x prefix
     """
 
     result = {
@@ -9837,17 +9769,20 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
     if not searchtxt:
         return result
 
+    # normalize input
     searchtxt = searchtxt.replace("\r", "").replace("\n", "")
     while "##" in searchtxt:
         searchtxt = searchtxt.replace("##", "#")
 
+    # split into fragments and remove empty ones
     rawparts = searchtxt.split("#")
     cleaned = []
     for p in rawparts:
         p = p.strip()
         if p != "":
-            cleaned.append(p)
+            cleaned.append(p.lower())
 
+    # remove trailing wildcards
     while len(cleaned) > 0 and cleaned[-1] == "*":
         cleaned.pop()
 
@@ -9856,6 +9791,7 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
 
     result["normalized"] = "#".join(cleaned)
 
+    # build parsed parts
     for p in cleaned:
         if p == "*":
             result["has_wildcards"] = True
@@ -9882,87 +9818,87 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
     def expand_instruction(instr):
         """
         Expand one instruction for:
-            - R32
-            - R64
-            - -N
-        Generates all combinations if multiple placeholders are present.
-        """
-        patterns = [instr]
+            - r32
+            - r64
+            - -n
 
-        # expand all R32 occurrences
-        if "R32" in instr.upper():
+        Generates all combinations if multiple placeholders are present.
+        Everything returned is lowercase.
+        """
+        patterns = [instr.lower()]
+
+        # expand all r32 occurrences
+        if "r32" in instr.lower():
             tmp = []
             for pat in patterns:
-                count = pat.upper().count("R32")
+                count = pat.count("r32")
                 expanded = [pat]
                 for _ in range(count):
                     newexpanded = []
                     for e in expanded:
-                        pos = e.upper().find("R32")
+                        pos = e.find("r32")
                         if pos >= 0:
                             for reg in Registers32BitsOrder:
-                                newexpanded.append(e[:pos] + reg + e[pos+3:])
+                                reg_l = str(reg).strip().lower()
+                                newexpanded.append(e[:pos] + reg_l + e[pos+3:])
                         else:
                             newexpanded.append(e)
                     expanded = newexpanded
                 tmp.extend(expanded)
             patterns = tmp
 
-        # expand all R64 occurrences
-        if "R64" in instr.upper():
+        # expand all r64 occurrences
+        if "r64" in instr.lower():
             tmp = []
             for pat in patterns:
-                count = pat.upper().count("R64")
+                count = pat.count("r64")
                 expanded = [pat]
                 for _ in range(count):
                     newexpanded = []
                     for e in expanded:
-                        pos = e.upper().find("R64")
+                        pos = e.find("r64")
                         if pos >= 0:
                             for reg in Registers64BitsOrder:
-                                newexpanded.append(e[:pos] + reg + e[pos+3:])
+                                reg_l = str(reg).strip().lower()
+                                newexpanded.append(e[:pos] + reg_l + e[pos+3:])
                         else:
                             newexpanded.append(e)
                     expanded = newexpanded
                 tmp.extend(expanded)
             patterns = tmp
 
-        # expand all -N occurrences
-        # Example:
-        #   MOV EAX,[EBP-N]
-        # with mindistance=4 maxdistance=8
-        # becomes
-        #   MOV EAX,[EBP-4]
-        #   MOV EAX,[EBP-5]
-        #   ...
-        if "-N" in instr.upper():
+        # expand all -n occurrences
+        if "-n" in instr.lower():
             tmp = []
             for pat in patterns:
-                count = pat.upper().count("-N")
+                count = pat.count("-n")
                 expanded = [pat]
                 for _ in range(count):
                     newexpanded = []
                     for e in expanded:
-                        pos = e.upper().find("-N")
+                        pos = e.find("-n")
                         if pos >= 0:
                             for dist in range(int(mindistance), int(maxdistance) + 1):
-                                newexpanded.append(e[:pos] + "-" + str(dist) + e[pos+2:])
+                                newexpanded.append(e[:pos] + ("-0x%x" % dist) + e[pos+2:])
                         else:
                             newexpanded.append(e)
                     expanded = newexpanded
                 tmp.extend(expanded)
             patterns = tmp
 
-        return patterns
+        # force final lowercase for safety
+        out = []
+        for p in patterns:
+            out.append(p.lower())
+        return out
 
     # remember whether the first block contains placeholders
     for instr in first_block:
-        instr_u = instr.upper()
-        if "R32" in instr_u:
+        if "r32" in instr:
             result["first_has_r32"] = True
-        if "R64" in instr_u:
+        if "r64" in instr:
             result["first_has_r64"] = True
-        if "-N" in instr_u:
+        if "-n" in instr:
             result["first_has_offset"] = True
 
     # expand each instruction in the first block separately,
@@ -9976,18 +9912,19 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
         newcombined = []
         for base in combined:
             for variant in instr_list:
-                newcombined.append(base + [variant])
+                newcombined.append(base + [variant.lower()])
         combined = newcombined
 
     # deduplicate case-insensitively while preserving order
     seen = {}
     for pat in combined:
-        key = ";".join(pat).upper()
+        key = ";".join(pat).lower()
         if key not in seen:
             seen[key] = True
-            result["first_patterns"].append(pat)
+            result["first_patterns"].append([x.lower() for x in pat])
 
     return result
+
 
 def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 	"""
@@ -10336,7 +10273,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			dbg.log("[+] Lauching forward disassembly on %d pointers (%d different instruction type(s)). This may take a while" % (totalfound, len(allpointers)))
 	for ptrtypes in allpointers:
 		if not silent:
-			dbg.log("    Current type: '%s': %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
+			dbg.log("    Processing start instruction: '%s': %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
 		for thisptr in allpointers[ptrtypes]:
 			thisdisam = ""
 			try:
