@@ -10460,6 +10460,20 @@ def normalizeInstructionText(instr):
 	instr = instr.replace("ymmword  ptr", "ymmword ptr")
 	instr = instr.replace("zmmword  ptr", "zmmword ptr")
 
+	# strip ptr qualifiers completely
+	instr = re.sub(r"\bbyte ptr\s+", "", instr)
+	instr = re.sub(r"\bword ptr\s+", "", instr)
+	instr = re.sub(r"\bdword ptr\s+", "", instr)
+	instr = re.sub(r"\bfword ptr\s+", "", instr)
+	instr = re.sub(r"\bqword ptr\s+", "", instr)
+	instr = re.sub(r"\btbyte ptr\s+", "", instr)
+	instr = re.sub(r"\bxmmword ptr\s+", "", instr)
+	instr = re.sub(r"\bymmword ptr\s+", "", instr)
+	instr = re.sub(r"\bzmmword ptr\s+", "", instr)
+
+	# strip segment prefixes completely
+	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s*", "", instr)	
+
 	# strip spaces after segment prefixes like ds: [eax] -> ds:[eax]
 	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s+\[", r"\1:[", instr)
 
@@ -10725,7 +10739,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			try:
 				for depth in xrange(maxdepth):
 					tinstr = getDisasmInstruction(dbg.disasmForward(thisptr, depth)).lower() + "\n"
-					tinstr = normalizeInstructionText(tinstr)
+					tinstr = normalizeInstructionText(tinstr) + "\n"
 					if tinstr != "???":
 						thisdisam += tinstr
 					else:
@@ -10737,7 +10751,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			thisdisam = thisdisam.strip("\n")
 			if DEBUG_MODE:
 				dbgp("Disassembly at 0x%08x: " % thisptr)
-				dbgp("%s" % thisdisasm)
+				dbgp("%s" % thisdisam)
 			ptrcnt += 1
 			flipover += 1
 			if flipover > flipovermax:
