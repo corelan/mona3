@@ -10244,7 +10244,7 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 	# normalize current first pattern key into a list of instructions
 	first_pattern = []
 	for item in first_pattern_flat.split(";"):
-		item = item.strip().lower()
+		item = normalizeInstructionText(item)
 		if item != "":
 			first_pattern.append(item)
 
@@ -10275,7 +10275,7 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 	for entry in full_parts:
 		if entry["type"] == "wildcard":
 			break
-		first_block.append(entry["text"].strip().lower())
+		first_block.append(normalizeInstructionText(entry["text"]))
 
 	# remove the first block from the full pattern to get remaining parts
 	remaining_parts = []
@@ -10286,7 +10286,7 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 			continue
 		remaining_parts.append({
 			"type": entry["type"],
-			"text": entry["text"].strip().lower()
+			"text": normalizeInstructionText(entry["text"])
 		})
 
 	if len(remaining_parts) == 0:
@@ -10294,10 +10294,11 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 
 	disasm_lines = []
 	for line in thisdisam.replace("\r", "").split("\n"):
-		line = line.strip().lower()
+		line = normalizeInstructionText(line)
 		if line != "":
 			if "???" in line:
 				return False, []
+	
 			disasm_lines.append(line)
 
 	if len(disasm_lines) == 0:
@@ -10319,22 +10320,21 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 	pos = len(first_pattern)
 
 	def instructionMatches(pattern_instr, disasm_instr):
-		p = pattern_instr.strip().lower()
-		d = disasm_instr.strip().lower()
-
+		p = normalizeInstructionText(pattern_instr)
+		d = normalizeInstructionText(disasm_instr)
 		if p == d:
 			return True
 
 		if "r32" in p:
 			for reg in Registers32BitsOrder:
 				reg_l = str(reg).strip().lower()
-				if p.replace("r32", reg_l) == d:
+				if normalizeInstructionText(p.replace("r32", reg_l)) == d:
 					return True
 
 		if "r64" in p:
 			for reg in Registers64BitsOrder:
 				reg_l = str(reg).strip().lower()
-				if p.replace("r64", reg_l) == d:
+				if normalizeInstructionText(p.replace("r64", reg_l)) == d:
 					return True
 
 		return False
@@ -10390,7 +10390,163 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 	return True, matched_sequence
 
 
-							
+
+	if instr is None:
+		return ""
+
+	instr = instr.strip().lower()
+
+	# collapse whitespace
+	instr = re.sub(r"\s+", " ", instr)
+
+	# normalize spaces around commas
+	instr = re.sub(r"\s*,\s*", ",", instr)
+
+	# normalize spaces around + and - inside brackets later
+	# but first convert WinDBG-style hex numbers like 10h, -10h, +10h
+	def repl_hex(m):
+		sign = m.group(1) or ""
+		hexpart = m.group(2).lower()
+		return sign + "0x" + hexpart
+
+	instr = re.sub(r"(?<![0-9a-z_])([+-]?)([0-9a-f]+)h\b", repl_hex, instr)
+
+	# normalize decimal displacements/immediates after + or -
+	# example: [ebp-8] -> [ebp-0x8], [eax+4] -> [eax+0x4]
+	def repl_signed_dec(m):
+		sign = m.group(1)
+		num = int(m.group(2), 10)
+		return sign + "0x%x" % num
+
+	instr = re.sub(r"([+-])([0-9]+)\b", repl_signed_dec, instr)
+
+	# normalize bare hex addresses/immediates if already 0x... => lowercase
+	instr = re.sub(r"\b0x([0-9a-fA-F]+)\b", lambda m: "0x" + m.group(1).lower(), instr)
+
+	# remove spaces around + and - inside memory references
+	def normalize_bracket_expr(m):
+		expr = m.group(1)
+		expr = re.sub(r"\s+", "", expr)
+		return "[" + expr + "]"
+
+	instr = re.sub(r"\[([^\]]+)\]", normalize_bracket_expr, instr)
+
+	# final whitespace cleanup
+	instr = re.sub(r"\s+", " ", instr).strip()
+
+	return inst
+
+def normalizeInstructionText(instr):
+	if instr is None:
+		return ""
+
+	instr = str(instr).strip().lower()
+	if instr == "":
+		return ""
+
+	# unify whitespace first
+	instr = instr.replace("\t", " ")
+	instr = re.sub(r"\s+", " ", instr).strip()
+
+	# normalize spaces around commas
+	instr = re.sub(r"\s*,\s*", ",", instr)
+
+	# normalize common ptr qualifiers
+	instr = instr.replace("byte  ptr", "byte ptr")
+	instr = instr.replace("word  ptr", "word ptr")
+	instr = instr.replace("dword  ptr", "dword ptr")
+	instr = instr.replace("fword  ptr", "fword ptr")
+	instr = instr.replace("qword  ptr", "qword ptr")
+	instr = instr.replace("tbyte  ptr", "tbyte ptr")
+	instr = instr.replace("xmmword  ptr", "xmmword ptr")
+	instr = instr.replace("ymmword  ptr", "ymmword ptr")
+	instr = instr.replace("zmmword  ptr", "zmmword ptr")
+
+	# strip spaces after segment prefixes like ds: [eax] -> ds:[eax]
+	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s+\[", r"\1:[", instr)
+
+	# convert windbg hex constants:
+	#   10h     -> 0x10
+	#   -10h    -> -0x10
+	#   +10h    -> +0x10
+	#   0ffh    -> 0xff
+	def _replace_hex_h(m):
+		sign = m.group(1) or ""
+		num = m.group(2).lower()
+		return sign + "0x" + num
+
+	instr = re.sub(r"(?<![0-9a-z_])([+-]?)([0-9a-f]+)h\b", _replace_hex_h, instr)
+
+	# normalize existing 0x... values to lowercase
+	instr = re.sub(r"\b0x([0-9a-fA-F]+)\b", lambda m: "0x" + m.group(1).lower(), instr)
+
+	# normalize bracketed memory expressions
+	def _normalize_brackets(m):
+		expr = m.group(1).strip()
+
+		# remove all internal whitespace
+		expr = re.sub(r"\s+", "", expr)
+
+		# convert signed decimal displacements to hex:
+		#   +4  -> +0x4
+		#   -8  -> -0x8
+		# but do not touch scale factors after '*'
+		expr = re.sub(
+			r'(?<!\*)([+-])([0-9]+)\b',
+			lambda x: x.group(1) + "0x%x" % int(x.group(2), 10),
+			expr
+		)
+
+		# convert unsigned decimal after opening bracket or after another +/- if any remain
+		# usually less common, but allows things like [4+eax] -> [0x4+eax]
+		expr = re.sub(
+			r'(^|[+\-])([0-9]+)(?=($|[+\-*]))',
+			lambda x: x.group(1) + "0x%x" % int(x.group(2), 10),
+			expr
+		)
+
+		# normalize explicit +-
+		expr = expr.replace("+-", "-")
+		expr = expr.replace("-+", "-")
+		expr = expr.replace("++", "+")
+		expr = expr.replace("--", "+")
+
+		return "[" + expr + "]"
+
+	instr = re.sub(r"\[([^\]]+)\]", _normalize_brackets, instr)
+
+	# normalize immediates outside brackets, but only signed ones
+	# examples:
+	#   add eax,4   -> add eax,4        (left untouched on purpose)
+	#   cmp eax,-1  -> cmp eax,-0x1
+	# If you also want bare unsigned immediates normalized, uncomment the extra block below.
+	instr = re.sub(
+		r'(?<=,)([+-])([0-9]+)\b',
+		lambda m: m.group(1) + "0x%x" % int(m.group(2), 10),
+		instr
+	)
+
+	# OPTIONAL:
+	# normalize bare unsigned decimal immediates after comma:
+	#   add eax,4 -> add eax,0x4
+	# Uncomment if you want that behavior everywhere.
+	#
+	# instr = re.sub(
+	# 	r'(?<=,)([0-9]+)\b',
+	# 	lambda m: "0x%x" % int(m.group(1), 10),
+	# 	instr
+	# )
+
+	# strip spaces that may still survive around segment-colon memory forms
+	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s*\[", r"\1:[", instr)
+
+	# final whitespace cleanup
+	instr = re.sub(r"\s+", " ", instr).strip()
+
+	return instr
+
+
+
 def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	"""
 	Performs a search for instructions, accepting wildcards
@@ -10570,6 +10726,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			try:
 				for depth in xrange(maxdepth):
 					tinstr = getDisasmInstruction(dbg.disasmForward(thisptr, depth)).lower() + "\n"
+					tinstr = normalizeInstructionText(tinstr)
 					if tinstr != "???":
 						thisdisam += tinstr
 					else:
