@@ -9939,9 +9939,11 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	# for each of the findings, see if it contains the other instructions too
 	# disassemble forward up to 'maxdepth' instructions
 	if len(allpointers) > 0:
-			if not silent:
-				dbg.log("[+] Backward disassembly on %d start pointers" % len(allpointers))
+		if not silent:
+			dbg.log("[+] Backward disassembly on %d types" % len(allpointers))
 	for ptrtypes in allpointers:
+		if not silent:
+			dbg.log("   Current type: %s: %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
 		for ptrs in allpointers[ptrtypes]:
 			thisline = ""
 			try:
