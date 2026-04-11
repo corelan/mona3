@@ -2650,8 +2650,9 @@ class Debugger:
 
 			if not thisinstruction in self.AsmCache:
 				objdisasm = pykd.disasm(address)
+
 				if DEBUG_MODE:
-					dbgp("instruction not in cache, assembling")
+					dbgp("instruction '%s' not in cache, assembling" % thisinstruction)
 				try:
 					objdisasm.asm(thisinstruction)
 				except Exception as e:
@@ -2660,6 +2661,18 @@ class Debugger:
 						dbgp("unable to assemble instruction '%s'" % thisinstruction)
 						dbgp("error: %s" % str(e))
 					return ""
+
+				# assembled at a temporary scratch address; invalidate any cached
+				# disassembly/opcode for that address before reading bytes back
+				global disAsmCache
+				if address in disAsmCache:
+					del disAsmCache[address]
+				if address in self.OpcodeCache:
+					del self.OpcodeCache[address]
+
+				opc = opcode(address)
+				thesebytes = opc.getBytes()
+
 				opc = opcode(address)	
 				thesebytes = opc.getBytes()
 				if DEBUG_MODE:

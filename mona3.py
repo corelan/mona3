@@ -10306,15 +10306,17 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 
 	# If the disassembly output starts with the first pattern again,
 	# skip those lines so we only match the remainder.
+	# The forward disassembly must start with the selected first pattern.
+	# If not, this pointer does not belong to this start-instruction variant.
 	pos = 0
-	if len(disasm_lines) >= len(first_pattern):
-		matches_first_pattern = True
-		for i in range(len(first_pattern)):
-			if disasm_lines[i] != first_pattern[i]:
-				matches_first_pattern = False
-				break
-		if matches_first_pattern:
-			pos = len(first_pattern)
+	if len(disasm_lines) < len(first_pattern):
+		return False, []
+
+	for i in range(len(first_pattern)):
+		if disasm_lines[i] != first_pattern[i]:
+			return False, []
+
+	pos = len(first_pattern)
 
 	def instructionMatches(pattern_instr, disasm_instr):
 		p = pattern_instr.strip().lower()
@@ -10466,6 +10468,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 		desiredacl_human = ""
 		if desiredacl in MnProc.memProtConstants:
 			desiredacl_human = "(%s)" % MnProc.memProtConstants[desiredacl][0]
+		dbg.log("")
 		dbg.log("[+] Filtering applicable pages")
 		dbg.log("    Desired Access Control: %s %s" % (desiredacl, desiredacl_human))
 		for pageaddress in allpages:
@@ -10499,7 +10502,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 
 
 	parsed = parseInstructionWildcardSearch(pattern, mindistance, maxdistance)
-
+	dbg.log("")
 	dbg.log("[+] Parsed input and found %d initial instructions to search" % len(parsed["first_patterns"]))
 	for first_pattern in parsed["first_patterns"]:
 		dbg.log("    Searching for %s" % first_pattern)
@@ -10510,24 +10513,34 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			instrseq = b""
 			for first_pattern_instruction in first_pattern:
 				buf = dbg.assemble(first_pattern_instruction)
+				if DEBUG_MODE:
+					dbgp("        %s -> %s" % (first_pattern_instruction, bin2hex(buf)))
 				instrseq += buf
-			first_pattern_flat = ";".join(first_pattern)
 			# when providing bytes already,  it expects a desc/bytes tuple
+			first_pattern_flat = ";".join(first_pattern)
 			pointers = searchInRange([(first_pattern_flat, instrseq)], mBase, mTop, criteria)
 			nrfound = 0
 			for ptrkeys in pointers:
 				nrfound += len(pointers[ptrkeys])
 			if nrfound > 0:
 				dbg.log("     Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
-			# flatten first_pattern
 			
 			for instrkey in pointers:
-				if not first_pattern_flat in allpointers:
-					# store a fresh list of pointers for this pattern
-					allpointers[first_pattern_flat] = list(pointers[instrkey])
+				# keep results keyed by the actual pattern we searched for
+				if not instrkey in allpointers:
+					allpointers[instrkey] = list(pointers[instrkey])
 				else:
-					# merge in the new pointers, avoid nested lists
-					allpointers[first_pattern_flat].extend(pointers[instrkey])
+					allpointers[instrkey].extend(pointers[instrkey])
+
+				# de-duplicate while preserving order to keep counts accurate
+				if len(allpointers[instrkey]) > 1:
+					seen_ptrs = set()
+					deduped = []
+					for p in allpointers[instrkey]:
+						if p not in seen_ptrs:
+							seen_ptrs.add(p)
+							deduped.append(p)
+					allpointers[instrkey] = deduped
 
 
 	totalfound = 0
@@ -10546,9 +10559,11 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 		flipovermax = 7500
 	if totalfound > 0:
 		if not silent:
+			dbg.log("")
 			dbg.log("[+] Lauching forward disassembly on %d pointers (%d different instruction type(s)). This may take a while" % (totalfound, len(allpointers)))
 	for ptrtypes in allpointers:
 		if not silent:
+
 			dbg.log("    Processing start instruction: '%s': %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
 		for thisptr in allpointers[ptrtypes]:
 			thisdisam = ""
@@ -10578,7 +10593,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 						(eta, ptrcnt, totalfound, perc, nrhits))
 
 				flipover = 0
-			matched, matched_sequence = doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam)
+			matched, matched_sequence = doesForwardDisasmMatch(parsed, ptrtypes, thisdisam)
+			#matched, matched_sequence = doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam)
 			if matched:
 				full_instr = "#".join(matched_sequence)
 				if not full_instr in results:
