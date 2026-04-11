@@ -9720,20 +9720,58 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
         "PUSH EBX#POP EAX"
         "PUSH EBX#*#MOV EAX,R32#JMP ESP"
         "MOV RAX,R64#*#JMP RSP#*"
-        "MOV EAX,DWORD PTR [EBP-N]#JMP ESP"
+        "MOV EAX,[EBP-N]#JMP ESP"
+        "MOV EAX,[EBP+N]#JMP ESP"
+        "MOV EAX,[EBP-N4:40]#JMP ESP"
+        "MOV EAX,[EBP+N0x4:0x40]#JMP ESP"
+        "ADD ESP,IMM"
+        "ADD ESP,IMM4:40"
+        "ADD ESP,IMM0x4:0x40"
+        "*#DEC EAX#*#CALL ESP"
+        "#DEC EAX#CALL ESP"
 
     Supported special tokens
     ------------------------
-    *    = wildcard instruction placeholder
-    R32  = placeholder for any 32-bit register
-    R64  = placeholder for any 64-bit register
-    -N   = placeholder for any negative offset in the range mindistance..maxdistance
+    *       = wildcard instruction placeholder
+    R32     = placeholder for any 32-bit register
+    R64     = placeholder for any 64-bit register
+
+    -N      = placeholder for any negative offset in the global range
+              mindistance..maxdistance
+    +N      = placeholder for any positive offset in the global range
+              mindistance..maxdistance
+    -Nx:y   = placeholder for any negative offset in the specific range x..y
+              for that occurrence only
+    +Nx:y   = placeholder for any positive offset in the specific range x..y
+              for that occurrence only
+
+    IMM     = placeholder for any immediate value in the global range
+              mindistance..maxdistance
+    IMMx:y  = placeholder for any immediate value in the specific range x..y
+              for that occurrence only
+
+              Examples:
+                  -n4:40
+                  +n4:40
+                  -n0x4:0x40
+                  +n0x4:0x40
+                  imm4:40
+                  imm0x4:0x40
+                  imm4:0x40
+
+              If a bound starts with 0x, it is interpreted as hex.
+              Otherwise it is interpreted as decimal.
 
     Notes
     -----
-    - All stored instructions are normalized to lowercase
-    - Expanded register replacements are also forced to lowercase
-    - Expanded offsets are emitted as lowercase hex with 0x prefix
+    - Leading empty fragments and leading wildcards are removed until the pattern
+      starts with a real instruction.
+    - Trailing wildcards are removed.
+    - All stored instructions are normalized to lowercase.
+    - Expanded register replacements are also forced to lowercase.
+    - Expanded offsets and immediates are emitted as lowercase hex with 0x prefix.
+    - If, after normalization, no real instruction remains, the function returns
+      an empty result with valid=False.
     """
 
     result = {
@@ -9744,10 +9782,14 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
         "has_wildcards": False,
         "first_has_r32": False,
         "first_has_r64": False,
-        "first_has_offset": False
+        "first_has_offset": False,
+        "first_has_imm": False,
+        "valid": False,
+        "error": ""
     }
 
     if userinput is None:
+        result["error"] = "no input provided"
         return result
 
     try:
@@ -9759,6 +9801,7 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
             searchtxt = ""
 
     if not searchtxt:
+        result["error"] = "empty input"
         return result
 
     # normalize input
@@ -9766,19 +9809,31 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
     while "##" in searchtxt:
         searchtxt = searchtxt.replace("##", "#")
 
-    # split into fragments and remove empty ones
+    # split into fragments and normalize to lowercase
     rawparts = searchtxt.split("#")
     cleaned = []
     for p in rawparts:
-        p = p.strip()
+        p = p.strip().lower()
         if p != "":
-            cleaned.append(p.lower())
+            cleaned.append(p)
+
+    # remove leading wildcards until the first real instruction
+    while len(cleaned) > 0 and cleaned[0] == "*":
+        cleaned.pop(0)
 
     # remove trailing wildcards
     while len(cleaned) > 0 and cleaned[-1] == "*":
         cleaned.pop()
 
-    if len(cleaned) == 0:
+    # must contain at least one real instruction
+    has_real_instruction = False
+    for p in cleaned:
+        if p != "*":
+            has_real_instruction = True
+            break
+
+    if not has_real_instruction:
+        result["error"] = "pattern does not contain a real instruction"
         return result
 
     result["normalized"] = "#".join(cleaned)
@@ -9805,14 +9860,198 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
         first_block.append(entry["text"])
 
     if len(first_block) == 0:
+        result["error"] = "pattern does not start with a real instruction"
         return result
+
+    def parse_num_value(numtxt):
+        """
+        Parse a numeric bound.
+        0x-prefixed values are hex, everything else is decimal.
+        """
+        numtxt = str(numtxt).strip().lower()
+        if numtxt.startswith("0x"):
+            return int(numtxt, 16)
+        return int(numtxt, 10)
+
+    def find_offset_token(instr):
+        """
+        Find the next offset token in an instruction.
+
+        Supported forms:
+            -n
+            +n
+            -n4:40
+            +n4:40
+            -n0x4:0x40
+            +n0x4:0x40
+            -n4:0x40
+            +n4:0x40
+
+        Returns:
+            (startpos, endpos, sign, minval, maxval)
+        or
+            None
+        """
+        instr_l = instr.lower()
+
+        idx_minus = instr_l.find("-n")
+        idx_plus = instr_l.find("+n")
+
+        if idx_minus < 0 and idx_plus < 0:
+            return None
+
+        if idx_minus < 0:
+            idx = idx_plus
+            sign = "+"
+        elif idx_plus < 0:
+            idx = idx_minus
+            sign = "-"
+        else:
+            if idx_minus < idx_plus:
+                idx = idx_minus
+                sign = "-"
+            else:
+                idx = idx_plus
+                sign = "+"
+
+        # plain +/-n using global min/max
+        if idx + 2 >= len(instr_l):
+            return (idx, idx + 2, sign, int(mindistance), int(maxdistance))
+
+        pos = idx + 2
+        nextch = instr_l[pos]
+
+        # if next char is not a digit, treat as plain +/-n
+        # note: 0x starts with '0', so digit check covers that too
+        if not nextch.isdigit():
+            return (idx, idx + 2, sign, int(mindistance), int(maxdistance))
+
+        # try to parse attached range
+        first_start = pos
+        if instr_l[pos:pos+2] == "0x":
+            pos += 2
+            while pos < len(instr_l) and instr_l[pos] in "0123456789abcdef":
+                pos += 1
+        else:
+            while pos < len(instr_l) and instr_l[pos].isdigit():
+                pos += 1
+
+        first_txt = instr_l[first_start:pos]
+        if first_txt == "":
+            return (idx, idx + 2, sign, int(mindistance), int(maxdistance))
+
+        # must have colon for per-token range
+        if pos >= len(instr_l) or instr_l[pos] != ":":
+            return (idx, idx + 2, sign, int(mindistance), int(maxdistance))
+
+        pos += 1
+
+        # parse second bound
+        second_start = pos
+        if pos < len(instr_l) and instr_l[pos:pos+2] == "0x":
+            pos += 2
+            while pos < len(instr_l) and instr_l[pos] in "0123456789abcdef":
+                pos += 1
+        else:
+            while pos < len(instr_l) and instr_l[pos].isdigit():
+                pos += 1
+
+        second_txt = instr_l[second_start:pos]
+        if second_txt == "":
+            return None
+
+        try:
+            minval = parse_num_value(first_txt)
+            maxval = parse_num_value(second_txt)
+        except:
+            return None
+
+        return (idx, pos, sign, minval, maxval)
+
+    def find_imm_token(instr):
+        """
+        Find the next immediate token in an instruction.
+
+        Supported forms:
+            imm
+            imm4:40
+            imm0x4:0x40
+            imm4:0x40
+            imm0x4:40
+
+        Returns:
+            (startpos, endpos, minval, maxval)
+        or
+            None
+        """
+        instr_l = instr.lower()
+        idx = instr_l.find("imm")
+        if idx < 0:
+            return None
+
+        # plain imm using global min/max
+        if idx + 3 >= len(instr_l):
+            return (idx, idx + 3, int(mindistance), int(maxdistance))
+
+        pos = idx + 3
+        nextch = instr_l[pos]
+
+        # if next char is not a digit, treat as plain imm
+        # note: 0x starts with '0', so digit check covers that too
+        if not nextch.isdigit():
+            return (idx, idx + 3, int(mindistance), int(maxdistance))
+
+        # try to parse attached range
+        first_start = pos
+        if instr_l[pos:pos+2] == "0x":
+            pos += 2
+            while pos < len(instr_l) and instr_l[pos] in "0123456789abcdef":
+                pos += 1
+        else:
+            while pos < len(instr_l) and instr_l[pos].isdigit():
+                pos += 1
+
+        first_txt = instr_l[first_start:pos]
+        if first_txt == "":
+            return (idx, idx + 3, int(mindistance), int(maxdistance))
+
+        # must have colon for per-token range
+        if pos >= len(instr_l) or instr_l[pos] != ":":
+            return (idx, idx + 3, int(mindistance), int(maxdistance))
+
+        pos += 1
+
+        # parse second bound
+        second_start = pos
+        if pos < len(instr_l) and instr_l[pos:pos+2] == "0x":
+            pos += 2
+            while pos < len(instr_l) and instr_l[pos] in "0123456789abcdef":
+                pos += 1
+        else:
+            while pos < len(instr_l) and instr_l[pos].isdigit():
+                pos += 1
+
+        second_txt = instr_l[second_start:pos]
+        if second_txt == "":
+            return None
+
+        try:
+            minval = parse_num_value(first_txt)
+            maxval = parse_num_value(second_txt)
+        except:
+            return None
+
+        return (idx, pos, minval, maxval)
 
     def expand_instruction(instr):
         """
         Expand one instruction for:
             - r32
             - r64
-            - -n
+            - -n / +n
+            - per-token offset ranges such as -n4:40 or +n0x4:0x40
+            - imm
+            - per-token immediate ranges such as imm4:40 or imm0x4:0x40
 
         Generates all combinations if multiple placeholders are present.
         Everything returned is lowercase.
@@ -9859,29 +10098,66 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
                 tmp.extend(expanded)
             patterns = tmp
 
-        # expand all -n occurrences
-        if "-n" in instr.lower():
+        # expand all offset occurrences
+        while True:
+            still_has_offset = False
             tmp = []
+
             for pat in patterns:
-                count = pat.count("-n")
-                expanded = [pat]
-                for _ in range(count):
-                    newexpanded = []
-                    for e in expanded:
-                        pos = e.find("-n")
-                        if pos >= 0:
-                            for dist in range(int(mindistance), int(maxdistance) + 1):
-                                newexpanded.append(e[:pos] + ("-0x%x" % dist) + e[pos+2:])
-                        else:
-                            newexpanded.append(e)
-                    expanded = newexpanded
-                tmp.extend(expanded)
+                tokeninfo = find_offset_token(pat)
+                if tokeninfo is None:
+                    tmp.append(pat)
+                    continue
+
+                still_has_offset = True
+                startpos, endpos, sign, minval, maxval = tokeninfo
+
+                # normalize bounds if user gave them reversed
+                if minval > maxval:
+                    minval, maxval = maxval, minval
+
+                for dist in range(int(minval), int(maxval) + 1):
+                    tmp.append(pat[:startpos] + ("%s0x%x" % (sign, dist)) + pat[endpos:])
+
             patterns = tmp
 
-        # force final lowercase for safety
+            if not still_has_offset:
+                break
+
+        # expand all immediate occurrences
+        while True:
+            still_has_imm = False
+            tmp = []
+
+            for pat in patterns:
+                tokeninfo = find_imm_token(pat)
+                if tokeninfo is None:
+                    tmp.append(pat)
+                    continue
+
+                still_has_imm = True
+                startpos, endpos, minval, maxval = tokeninfo
+
+                # normalize bounds if user gave them reversed
+                if minval > maxval:
+                    minval, maxval = maxval, minval
+
+                for dist in range(int(minval), int(maxval) + 1):
+                    tmp.append(pat[:startpos] + ("0x%x" % dist) + pat[endpos:])
+
+            patterns = tmp
+
+            if not still_has_imm:
+                break
+
+        # force lowercase and dedupe while preserving order
         out = []
+        seen_local = {}
         for p in patterns:
-            out.append(p.lower())
+            p = p.lower()
+            if p not in seen_local:
+                seen_local[p] = True
+                out.append(p)
         return out
 
     # remember whether the first block contains placeholders
@@ -9890,8 +10166,10 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
             result["first_has_r32"] = True
         if "r64" in instr:
             result["first_has_r64"] = True
-        if "-n" in instr:
+        if "-n" in instr or "+n" in instr:
             result["first_has_offset"] = True
+        if "imm" in instr:
+            result["first_has_imm"] = True
 
     # expand each instruction in the first block separately,
     # then create the cross-product as arrays of instructions
@@ -9907,7 +10185,7 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
                 newcombined.append(base + [variant.lower()])
         combined = newcombined
 
-    # deduplicate case-insensitively while preserving order
+    # deduplicate while preserving order
     seen = {}
     for pat in combined:
         key = ";".join(pat).lower()
@@ -9915,6 +10193,11 @@ def parseInstructionWildcardSearch(userinput, mindistance, maxdistance):
             seen[key] = True
             result["first_patterns"].append([x.lower() for x in pat])
 
+    if len(result["first_patterns"]) == 0:
+        result["error"] = "could not build first search patterns"
+        return result
+
+    result["valid"] = True
     return result
 
 
@@ -22809,18 +23092,25 @@ Mandatory arguments :
 Optional arguments:
         -b <address> : base/bottom address of the search range
         -t <address> : top address of the search range
-        -depth <nr>  : number of instructions to go deep
-        -all : show all instruction chains, even if it contains something that might break the chain	
-        -distance min=nr,max=nr : you can use a numeric offset wildcard (a single *) in the first instruction of the search
-        the distance parameter allows you to specify the range of the offset
+        -depth <nr>  : number of instructions to go deep (8 by default)
+        -distance min=nr,max=nr : global range for numeric offsets 
+           (default: 4 to 40 decimal)		
 
   Inside the instructions string, you can use the following wildcards :
-        * = any instruction
-        r32 = any 32bit register
-        r64 = any 64bit register
+        *        = any instruction
+        r32      = any 32bit register
+        r64      = any 64bit register
+        -n or +n = any number in a range (uses the -distance min, unless you specified a specific range)
+        -nx:y    = specify the minimum and maximum number for this range specifically
+		(same applies to +nx:y)
+		imm      = an immediate (number) in a range (uses the -distance values as well)
+		immx:y   = allows you to specify the range for this immediate
+
   Examples:
         pop r32#*#xor eax,eax#*#pop esi#ret
         push rbp#*#jmp rax
+        mov eax, [ebp+n10:20]#inc r32
+        add esp,imm0x100:0x200#pop r32#retn
         """
 
 
