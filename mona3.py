@@ -9777,7 +9777,37 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 					if not [mBase,mTop] in rangestosearch:
 						rangestosearch.append([mBase,mTop])
 	else:
-		rangestosearch.append([base,top])
+		# parse through all pages and look for the ones, within the range to search, that meet the access criteria
+		allpages = dbg.getMemoryPages()
+		desiredacl = criteria["accesslevel"]
+		desiredacl_human = ""
+		if desiredacl in memProtConstants:
+			desiredacl_human = "(%s)" % memProtConstants[desiredacl][0]
+		dbg.log("[+] Filtering applicable pages")
+		dbg.log("    Desired Access Control: %s %s" % (desiredacl, desiredacl_human))
+		for pageaddress in allpages:
+			thispage = allpages[pageaddress]
+			pagebegin = thispage.getBegin()
+			pageend = pagebegin + thispage.getSize()
+			if pagebegin >= base and pageend <= top:
+				pageaccess = thispage.getAccess(human=True)
+				compatible_pageacl = False
+				if not "accesslevel" in criteria:
+					compatible_pageacl = True
+				else:
+					
+					if desiredacl == "*":
+						compatible_pageacl = True
+					else:
+						desiredacl_str = memProtConstants[desiredacl][0]
+						if pageaccess.startswith(desiredacl_str):
+							compatible_pageacl = True
+				if compatible_pageacl:
+					dbg.log("    Adding page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+					rangestosearch.append([pagebegin, pageend])
+				else:
+					dbg.log("    Skipping page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+		#rangestosearch.append([base,top])
 	
 	pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" ,",",").replace("# ","#").replace(" #","#")
 	if len(pattern) == 0:
@@ -9813,7 +9843,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	mergestopped = False
 	mergetxt = ""
 	for instr in instructionparts:
-		if instr.find("*") == -1 and instr.find("r32") == -1 and not mergestopped:
+		if instr.find("*") == -1 and instr.find("r32") == -1 and instr.find("r64") == -1 and not mergestopped:
 			mergetxt += instr + "\n"
 		else:
 			allinstructions.append(instr)
@@ -9826,13 +9856,13 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	if mergetxt != "":
 		searchPattern.append(mergetxt)
 	else:
-		# at this point, we're sure the first instruction has some kind of r32 and/or offset variable
+		# at this point, we're sure the first instruction has some kind of r32/r64 and/or offset variable
 		# get all of the combinations for this one
 		# and use them as searchPattern
 		cnt = 0
 		stopped = False		
 		for instr in allinstructions:
-			if instr != "*" and (instr.find("r32") > -1 or instr.find("*") > -1) and not stopped:
+			if instr != "*" and (instr.find("r32") > -1 or instr.find("r64") > -1 or instr.find("*") > -1) and not stopped:
 				if instr.find("r32") > -1:
 					for reg in dbglib.Registers32BitsOrder:
 						thisinstr = instr.replace("r32",reg.lower())
@@ -9849,8 +9879,24 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 								startdist += 1
 						else:
 							searchPattern.append(thisinstr)
-				else:
-					# no r32
+				if instr.find("r64") > -1:
+					for reg in dbglib.Registers64BitsOrder:
+						thisinstr = instr.replace("r64",reg.lower())
+						if instr.find("*") > -1:
+							# contains a wildcard offset
+							startdist = mindistance
+							while startdist < maxdistance:
+								operator = ""
+								if startdist < 0:
+									operator = "-"
+								replacewith = operator + "0x%02x" % startdist
+								thisinstr2 = thisinstr.replace("*",replacewith)
+								searchPattern.append(thisinstr2)
+								startdist += 1
+						else:
+							searchPattern.append(thisinstr)
+				
+				if (instr.find("r32") == -1 and instr.find("r64") > -1):
 					if instr.find("*") > -1:
 						# contains a wildcard offset
 						startdist = mindistance
@@ -9864,6 +9910,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 							startdist += 1
 					else:
 						searchPattern.append(instr)
+
 				remaining.pop(cnt)
 				stopped = True
 			cnt += 1
@@ -9871,7 +9918,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	# search for all these beginnings
 	if len(searchPattern) > 0:
 		if not silent:
-			dbg.log("[+] Started search (%d start patterns)" % len(searchPattern))
+			dbg.log("[+] Started search (%d start pattern(s))" % len(searchPattern))
 		dbg.updateLog()
 		for ranges in rangestosearch:
 			mBase = ranges[0]
@@ -9882,12 +9929,18 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			oldsilent=silent
 			silent=True
 			pointers = searchInRange(searchPattern,mBase,mTop,criteria)
+			if not silent:
+				dbg.log("    Number of results: " % (len(pointers)))
 			silent=oldsilent
 			allpointers = mergeOpcodes(allpointers,pointers)	
+			if not silent:
+				dbg.log("    Processed range 0x%08x to 0x%08x - total number of pointers so far: %d" % (mBase, mTop, len(allpointers)))
 	
 	# for each of the findings, see if it contains the other instructions too
 	# disassemble forward up to 'maxdepth' instructions
-
+	if len(allpointers) > 0:
+			if not silent:
+				dbg.log("[+] Backward disassembly on %d start pointers" % len(allpointers))
 	for ptrtypes in allpointers:
 		for ptrs in allpointers[ptrtypes]:
 			thisline = ""
@@ -9931,6 +9984,12 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 					if searchfor.find("r32") > -1:
 						for reg in dbglib.Registers32BitsOrder:
 							searchlist.append(searchfor.replace("r32",reg.lower()))	
+					else:
+						searchlist.append(searchfor)
+				
+					if searchfor.find("r64") > -1:
+						for reg in dbglib.Registers64BitsOrder:
+							searchlist.append(searchfor.replace("r64",reg.lower()))	
 					else:
 						searchlist.append(searchfor)
 						
@@ -21739,13 +21798,13 @@ def procToBp(args):
 	instructionparts = []
 	global silent
 	oldsilent = silent
-	regs = Registers32BitsOrder
+	regnames = Registers32BitsOrder
 	if arch == 64:
 		# add 64bit regs as well
-		regs = Registers64BitsOrder
-		regs += Registers32BitsOrder
+		regnames = Registers64BitsOrder + Registers32BitsOrder
 	if DEBUG_MODE:
-		dbgp("Regs used: %s" % regs)
+		dbgp("Regs used: %s" % regnames)
+	regs = dbg.getRegs()
 	silent = True
 	if "a" in args:
 		if type(args["a"]).__name__.lower() != "bool":
@@ -21784,7 +21843,7 @@ def procToBp(args):
 
 	usedregs = []
 	
-	for reg in regs:
+	for reg in regnames:
 		for ipart in instructionparts:
 			if reg.upper() in ipart.upper():
 				usedregs.append(reg)
@@ -21794,7 +21853,7 @@ def procToBp(args):
 		argsyntax = ""
 		
 		for ipart in instructionparts:
-			for reg in regs:
+			for reg in regnames:
 				if reg.upper() in ipart.upper():
 
 					if "[" in ipart:
@@ -22391,11 +22450,15 @@ Optional arguments:
         -depth <nr>  : number of instructions to go deep
         -all : show all instruction chains, even if it contains something that might break the chain	
         -distance min=nr,max=nr : you can use a numeric offset wildcard (a single *) in the first instruction of the search
-        the distance parameter allows you to specify the range of the offset	
-Inside the instructions string, you can use the following wildcards :
+        the distance parameter allows you to specify the range of the offset
+
+  Inside the instructions string, you can use the following wildcards :
         * = any instruction
-        r32 = any register
-Example : pop r32#*#xor eax,eax#*#pop esi#ret
+        r32 = any 32bit register
+        r64 = any 64bit register
+  Examples:
+        pop r32#*#xor eax,eax#*#pop esi#ret
+        push rbp#*#jmp rax
         """
 
 
