@@ -485,8 +485,6 @@ def checkVersion():
 	return
 
 
-
-
 def getModuleFromAddress(address):
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())

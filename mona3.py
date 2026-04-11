@@ -20776,9 +20776,9 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 			res1 = s2
 			for index, _ in enumerate(as1):
 				res0 += as1[index]*xs[index] % 256
-			res0 = res0 - ((g2+sum_of_instructions)/256)
+			res0 = res0 - ((g2+sum_of_instructions)//256)
 			as2 = copy.copy(as1)
-			as2[index_for_higher_byte] = (g1 + ((g2+sum_of_instructions)/256)) % 256
+			as2[index_for_higher_byte] = (g1 + ((g2+sum_of_instructions)//256)) % 256
 			for index, _ in enumerate(as2):
 				res1 += as2[index]*ys[index] % 256
 			res1 = res1 - sum_of_instructions
@@ -20802,14 +20802,29 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 				sum_bytes += 2
 		resulting_string += postfix
 		sum_bytes += additionalLength
+		
 		if not silent:
-			info("[+] %i resulting bytes (%i bytes injection) of Unicode code alignment. Instructions:"%(sum_bytes,sum_bytes/2))
+			info("[+] %i resulting bytes (%i bytes injection) of Unicode code alignment. Instructions:"%(sum_bytes,sum_bytes//2))
 			info("   ", resulting_string)
-		hex_string = metasm(resulting_string)
+		hex_bytes = metasm(resulting_string)  # bytes expected
+		# Normalize to bytes in case caller ever returns str/iterable
+		if isinstance(hex_bytes, str):
+			hex_bytes = hex_bytes.encode('latin-1', 'backslashreplace')
+		elif not isinstance(hex_bytes, (bytes, bytearray)):
+			hex_bytes = bytes(hex_bytes)
+		to_iter = bytearray(hex_bytes)  # py2/py3: iteration yields ints
 		if not silent:
+			display = ''.join('\\x{:02x}'.format(b) for b in to_iter)
 			info("    Unicode safe opcodes without zero bytes:")
-			info("   ", hex_string)
-		thisresult[resulting_string] = hex_string
+			info("   ", display)
+		thisresult[resulting_string] = hex_bytes      # keep bytes for later use
+
+
+		#if not silent:
+		#	info("    Unicode safe opcodes without zero bytes:")
+		#	info("   ", hex_string)
+		#thisresult[resulting_string] = hex_string
+		
 		return thisresult
 
 
@@ -20860,7 +20875,7 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 				warn("    Couldn't find metasm assembly for %s" % str(instr))
 				warn("    You have to manually convert it in the metasm shell")
 				res += "<"+instr+">"
-		return res
+		return res.encode('latin-1')
 		
 	def getCyclic(originals):
 		cyclic = [0 for i in range(0,len(originals))]
