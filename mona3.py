@@ -10715,10 +10715,11 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 		if not silent:
 			dbg.log("")
 			dbg.log("[+] Lauching forward disassembly on %d pointers (%d different instruction type(s)). This may take a while" % (totalfound, len(allpointers)))
+	startcounter = 1
 	for ptrtypes in allpointers:
 		if not silent:
-
-			dbg.log("    Processing start instruction: '%s': %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
+			dbg.log("    Processing start instruction %d/%d: '%s': examining %d locations" % (startcounter, len(allpointers), ptrtypes, len(allpointers[ptrtypes])))
+		startcounter += 1
 		for thisptr in allpointers[ptrtypes]:
 			thisdisam = ""
 			try:
@@ -10734,6 +10735,9 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 				continue
 			allfound = True
 			thisdisam = thisdisam.strip("\n")
+			if DEBUG_MODE:
+				dbgp("Disassembly at 0x%08x: " % thisptr)
+				dbgp("%s" % thisdisasm)
 			ptrcnt += 1
 			flipover += 1
 			if flipover > flipovermax:
