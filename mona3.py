@@ -7281,17 +7281,26 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 					if DEBUG_MODE:
 						dbgp("        mem size: 0x%08x" % len(mem))
 
-				# loop on each sequence
-				for seq in sequences:
-					if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
-						buf = None
-						human_format = b""
-						if type(seq) == str:
-							human_format = seq.replace("\n"," # ").lower()
-							buf = dbg.assemble(seq)
-						else:
-							human_format = seq[0].replace("\n"," # ")
-							buf = seq[1]
+					# loop on each sequence
+					for seq in sequences:
+						if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
+							buf = None
+							human_format = b""
+							if isinstance(seq, str):
+								human_format = seq.replace("\n"," # ").lower()
+								buf = dbg.assemble(seq)
+							elif isinstance(seq, (bytes, bytearray)):
+								buf = bytes(seq)
+								human_format = " ".join(["%02x" % b for b in buf])
+							elif isinstance(seq, int):
+								buf = bytes([seq & 0xff])
+								human_format = "%02x" % (seq & 0xff)
+							elif isinstance(seq, (list, tuple)) and len(seq) >= 2:
+								human_format = str(seq[0]).replace("\n"," # ")
+								buf = seq[1]
+							else:
+								dbg.log(" ** Unsupported sequence type: %s" % type(seq), highlight=1)
+								continue
 
 						buf = ensure_bytes(buf)
 						
@@ -9705,6 +9714,805 @@ def findOffsetInPattern(searchpat,size=20280,args = {}):
 						if not silent:
 							dbg.log(" - Pattern %s not found in cyclic pattern%s " % (ascipat4,extratext))
 
+
+
+
+def parseInstructionWildcardSearch(userinput):
+	"""
+	Parse a user-provided instruction search string for wildcard-aware instruction matching.
+
+	Expected input format
+	---------------------
+	Instructions are separated with '#'
+
+	Examples:
+		"PUSH EBX#POP EAX"
+		"PUSH EBX#*#MOV EAX,R32#JMP ESP"
+		"MOV RAX,R64#*#JMP RSP#*"
+
+	Supported special tokens
+	------------------------
+	*    = wildcard instruction placeholder
+			Meaning: during later forward disassembly, one instruction may appear here
+			that can be anything.
+			Wildcards are kept in the parsed structure, but trailing wildcards are removed
+			because they serve no purpose.
+
+	R32  = placeholder for any 32-bit register
+	R64  = placeholder for any 64-bit register
+
+	The function uses the global arrays:
+		Registers32BitsOrder
+		Registers64BitsOrder
+
+	Return value
+	------------
+	Returns a dict with:
+
+		original:
+			Original user input
+
+		normalized:
+			Cleaned instruction string
+			- empty fragments removed
+			- duplicate separators collapsed
+			- trailing #* removed
+
+		parts:
+			Parsed sequence as a list of dicts:
+				{"type": "instruction", "text": "..."}
+				{"type": "wildcard",    "text": "*"}
+
+		first_patterns:
+			List of concrete search patterns for the initial memory search.
+			This is built from the consecutive instructions at the start of the pattern,
+			stopping at the first wildcard.
+			Those instructions are glued together with newline characters, because
+			searchInRange() can search for adjacent instructions.
+
+			Examples:
+				"PUSH EBX#POP EAX"
+					-> ["PUSH EBX\\nPOP EAX"]
+
+				"MOV EAX,R32#JMP ESP"
+					-> all MOV EAX,<reg> combinations, each followed by "\\nJMP ESP"
+
+				"PUSH EBX#*#MOV EAX,R32"
+					-> ["PUSH EBX"]
+
+		has_wildcards:
+			True if one or more wildcard entries remain after normalization
+
+		first_has_r32:
+			True if the first search block contains R32
+
+		first_has_r64:
+			True if the first search block contains R64
+
+	Notes
+	-----
+	This routine only parses and prepares the initial search phase.
+	It does NOT perform any actual memory search or forward disassembly.
+
+	Intended workflow
+	-----------------
+	1. Call this routine with the raw user input
+	2. For each entry in result["first_patterns"], call searchInRange()
+	3. For each returned pointer, do a forward disassembly
+	4. Compare the later parsed instructions in result["parts"], taking wildcards
+		and register placeholders into account
+	"""
+
+	result = {
+		"original": userinput,
+		"normalized": "",
+		"parts": [],
+		"first_patterns": [],
+		"has_wildcards": False,
+		"first_has_r32": False,
+		"first_has_r64": False
+	}
+
+	if userinput is None:
+		return result
+
+	try:
+		searchtxt = str(userinput).strip()
+	except:
+		try:
+			searchtxt = userinput.strip()
+		except:
+			searchtxt = ""
+
+	if not searchtxt:
+		return result
+
+	# normalize input a little
+	# - remove CR/LF
+	# - collapse repeated separators
+	searchtxt = searchtxt.replace("\r", "").replace("\n", "")
+	while "##" in searchtxt:
+		searchtxt = searchtxt.replace("##", "#")
+
+	# split into fragments and remove empty ones
+	rawparts = searchtxt.split("#")
+	cleaned = []
+	for p in rawparts:
+		p = p.strip()
+		if p != "":
+			cleaned.append(p)
+
+	# remove trailing wildcards
+	# examples:
+	#   "PUSH EBX#*"       -> "PUSH EBX"
+	#   "PUSH EBX#*#*"     -> "PUSH EBX"
+	while len(cleaned) > 0 and cleaned[-1] == "*":
+		cleaned.pop()
+
+	if len(cleaned) == 0:
+		return result
+
+	result["normalized"] = "#".join(cleaned)
+
+	# build parsed parts
+	for p in cleaned:
+		if p == "*":
+			result["has_wildcards"] = True
+			result["parts"].append({
+				"type": "wildcard",
+				"text": "*"
+			})
+		else:
+			result["parts"].append({
+				"type": "instruction",
+				"text": p
+			})
+
+	# build the first contiguous block of instructions
+	# this block ends when the first wildcard is encountered
+	#
+	# examples:
+	#   "PUSH EBX#POP EAX"
+	#       -> first block = ["PUSH EBX", "POP EAX"]
+	#
+	#   "PUSH EBX#*#MOV EAX,R32"
+	#       -> first block = ["PUSH EBX"]
+	#
+	#   "MOV EAX,R32#JMP ESP"
+	#       -> first block = ["MOV EAX,R32", "JMP ESP"]
+	first_block = []
+	for entry in result["parts"]:
+		if entry["type"] == "wildcard":
+			break
+		first_block.append(entry["text"])
+
+	if len(first_block) == 0:
+		return result
+
+	# helper to expand a single instruction containing one or more R32/R64 tokens
+	def expand_instruction(instr):
+		patterns = [instr]
+
+		# expand all R32 occurrences
+		if "R32" in instr.upper():
+			tmp = []
+			for pat in patterns:
+				count = pat.upper().count("R32")
+				expanded = [pat]
+				for _ in range(count):
+					newexpanded = []
+					for e in expanded:
+						pos = e.upper().find("R32")
+						if pos >= 0:
+							for reg in Registers32BitsOrder:
+								newexpanded.append(e[:pos] + reg + e[pos+3:])
+						else:
+							newexpanded.append(e)
+					expanded = newexpanded
+				tmp.extend(expanded)
+			patterns = tmp
+
+		# expand all R64 occurrences
+		if "R64" in instr.upper():
+			tmp = []
+			for pat in patterns:
+				count = pat.upper().count("R64")
+				expanded = [pat]
+				for _ in range(count):
+					newexpanded = []
+					for e in expanded:
+						pos = e.upper().find("R64")
+						if pos >= 0:
+							for reg in Registers64BitsOrder:
+								newexpanded.append(e[:pos] + reg + e[pos+3:])
+						else:
+							newexpanded.append(e)
+					expanded = newexpanded
+				tmp.extend(expanded)
+			patterns = tmp
+
+		return patterns
+
+	# remember whether the first block contains R32/R64 placeholders
+	for instr in first_block:
+		instr_u = instr.upper()
+		if "R32" in instr_u:
+			result["first_has_r32"] = True
+		if "R64" in instr_u:
+			result["first_has_r64"] = True
+
+	# expand each instruction in the first block separately,
+	# then create the cross-product and glue adjacent instructions with \n
+	#
+	# Example:
+	#   ["MOV EAX,R32", "JMP ESP"]
+	# becomes:
+	#   [
+	#       "MOV EAX,EAX\nJMP ESP",
+	#       "MOV EAX,ECX\nJMP ESP",
+	#       ...
+	#   ]
+	expanded_per_instruction = []
+	for instr in first_block:
+		expanded_per_instruction.append(expand_instruction(instr))
+
+	combined = [[]]
+	for instr_list in expanded_per_instruction:
+		newcombined = []
+		for base in combined:
+			for variant in instr_list:
+				newcombined.append(base + [variant])
+		combined = newcombined
+
+	# deduplicate case-insensitively while preserving order
+	seen = {}
+	for pat in combined:
+		key = "\n".join(pat).upper()
+		if key not in seen:
+			seen[key] = True
+			result["first_patterns"].append(pat)
+
+	return result
+
+
+def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
+    """
+    Check whether the current forward disassembly matches the full parsed search,
+    starting from a specific already-matched first_pattern_flat key.
+
+    Parameters
+    ----------
+    parsed : dict
+        Output from parseInstructionWildcardSearch()
+
+    first_pattern_flat : str
+        Flattened first pattern key, for example:
+            "push ebx;jmp esp"
+            "dec eax"
+            "mov eax,ecx;jmp esp"
+
+    thisdisam : str
+        Forward disassembly output, one instruction per line
+
+    Returns
+    -------
+    (matched, matched_sequence)
+
+        matched : bool
+            True if the full pattern matched
+
+        matched_sequence : list
+            The matched instruction sequence as a list of strings, suitable
+            for later joining with "#"
+
+    Notes
+    -----
+    - Instruction matching is case-insensitive
+    - Supports R32 / R64 placeholders
+    - Wildcard semantics:
+          * = skip zero or more disassembly lines until the next instruction matches
+    - If the first pattern already covers the entire search, the function returns
+      success immediately
+    """
+
+    if not parsed:
+        return False, []
+
+    if not first_pattern_flat:
+        return False, []
+
+    if thisdisam is None:
+        thisdisam = ""
+
+    # normalize current first pattern key into a list of instructions
+    first_pattern = []
+    for item in first_pattern_flat.split(";"):
+        item = item.strip().lower()
+        if item != "":
+            first_pattern.append(item)
+
+    if len(first_pattern) == 0:
+        return False, []
+
+    # normalize parsed parts
+    full_parts = parsed.get("parts", [])
+    if len(full_parts) == 0:
+        return False, []
+
+    # count total number of actual instructions in the full pattern
+    total_instruction_count = 0
+    has_wildcards = False
+    for entry in full_parts:
+        if entry["type"] == "instruction":
+            total_instruction_count += 1
+        elif entry["type"] == "wildcard":
+            has_wildcards = True
+
+    # if the first pattern already covers the entire search, then we're done
+    #
+    # example:
+    #   search = "push ebx#jmp esp"
+    #   first_pattern_flat = "push ebx;jmp esp"
+    #
+    if (not has_wildcards) and (len(first_pattern) == total_instruction_count):
+        return True, list(first_pattern)
+
+    # build the original first block from parsed
+    # (the consecutive instructions from the start until first wildcard)
+    first_block = []
+    for entry in full_parts:
+        if entry["type"] == "wildcard":
+            break
+        first_block.append(entry["text"].strip().lower())
+
+    # remove the first block from the full pattern to get remaining parts
+    remaining_parts = []
+    skipped = 0
+    for entry in full_parts:
+        if entry["type"] == "instruction" and skipped < len(first_block):
+            skipped += 1
+            continue
+        remaining_parts.append({
+            "type": entry["type"],
+            "text": entry["text"].strip().lower()
+        })
+
+    # if nothing remains, then the first pattern already matched everything relevant
+    if len(remaining_parts) == 0:
+        return True, list(first_pattern)
+
+    # normalize disassembly output
+    disasm_lines = []
+    for line in thisdisam.replace("\r", "").split("\n"):
+        line = line.strip().lower()
+        if line != "":
+            disasm_lines.append(line)
+
+    if len(disasm_lines) == 0:
+        return False, []
+
+    # If the disassembly output starts with the first pattern again,
+    # skip those lines so we only match the remainder.
+    #
+    # This is useful if thisdisam begins at the pointer itself and includes
+    # the instructions that were already found by searchInRange().
+    pos = 0
+    if len(disasm_lines) >= len(first_pattern):
+        matches_first_pattern = True
+        for i in range(len(first_pattern)):
+            if disasm_lines[i] != first_pattern[i]:
+                matches_first_pattern = False
+                break
+        if matches_first_pattern:
+            pos = len(first_pattern)
+
+    # helper to compare one pattern instruction against one disasm line
+    # supports r32 / r64 expansion
+    def instructionMatches(pattern_instr, disasm_instr):
+        p = pattern_instr.strip().lower()
+        d = disasm_instr.strip().lower()
+
+        if p == d:
+            return True
+
+        if "r32" in p:
+            for reg in Registers32BitsOrder:
+                reg_l = str(reg).strip().lower()
+                if p.replace("r32", reg_l) == d:
+                    return True
+
+        if "r64" in p:
+            for reg in Registers64BitsOrder:
+                reg_l = str(reg).strip().lower()
+                if p.replace("r64", reg_l) == d:
+                    return True
+
+        return False
+
+    # wildcard-aware sequential matching
+    #
+    # semantics:
+    #   * = skip zero or more disassembly lines until the next instruction matches
+    wildcard_open = False
+    matched_sequence = list(first_pattern)
+
+    idx = 0
+    while idx < len(remaining_parts):
+        entry = remaining_parts[idx]
+
+        if entry["type"] == "wildcard":
+            wildcard_open = True
+            idx += 1
+            continue
+
+        pattxt = entry["text"]
+
+        if wildcard_open:
+            found = False
+            while pos < len(disasm_lines):
+                if instructionMatches(pattxt, disasm_lines[pos]):
+                    found = True
+                    matched_sequence.append(disasm_lines[pos])
+                    pos += 1
+                    wildcard_open = False
+                    break
+                pos += 1
+
+            if not found:
+                return False, []
+        else:
+            if pos >= len(disasm_lines):
+                return False, []
+
+            if instructionMatches(pattxt, disasm_lines[pos]):
+                matched_sequence.append(disasm_lines[pos])
+                pos += 1
+            else:
+                return False, []
+
+        idx += 1
+
+    return True, matched_sequence
+
+							
+def findPatternWild_old(modulecriteria,criteria,pattern,base,top,patterntype):
+	"""
+	Performs a search for instructions, accepting wildcards
+	
+	Arguments :
+	modulecriteria - dictionary with criteria modules need to comply with.
+	criteria - dictionary with criteria the pointers need to comply with.
+	pattern - the pattern to search for.
+	base - the base address in memory the search should start at
+	top - the top address in memory the search should not go beyond
+	patterntype - type of search to conduct (str or bin)
+	"""
+	
+	global silent	
+	
+	rangestosearch = []
+	tmpsearch = []
+	
+	allpointers = {}
+	results = {}
+	
+	mindistance = 4
+	maxdistance = 40
+	
+	if "mindistance" in criteria:
+		mindistance = criteria["mindistance"]
+	if "maxdistance" in criteria:
+		maxdistance = criteria["maxdistance"]
+	
+	maxdepth = 8
+	
+	preventbreak = True
+	
+	if "all" in criteria:
+		preventbreak = False
+	
+	if "depth" in criteria:
+		maxdepth = criteria["depth"]
+	
+	if not silent:
+		dbg.log("[+] Type of search: %s" % patterntype)
+		dbg.log("[+] Searching for matches up to %d instructions deep" % maxdepth)
+		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
+	if len(modulecriteria) > 0:
+		modulestosearch = getModulesToQuery(modulecriteria)
+		# convert modules to ranges
+		for modulename in modulestosearch:
+			objmod = MnModule(modulename)
+			mBase = objmod.moduleBase
+			mTop = objmod.moduleTop
+			if mBase < base and base < mTop:
+				mBase = base
+			if mTop > top:
+				mTop = top
+			if mBase >= base and mBase < top:
+				if not [mBase,mTop] in rangestosearch:
+					rangestosearch.append([mBase,mTop])
+		# if no modules were specified, then also add  the other ranges (outside modules)
+		if not "modules" in modulecriteria:
+			outside = getRangesOutsideModules()
+			for range in outside:
+				mBase = range[0]
+				mTop = range[1]
+				if mBase < base and base < mTop:
+					mBase = base
+				if mTop > top:
+					mTop = top
+				if mBase >= base and mBase < top:
+					if not [mBase,mTop] in rangestosearch:
+						rangestosearch.append([mBase,mTop])
+	else:
+		# parse through all pages and look for the ones, within the range to search, that meet the access criteria
+		allpages = dbg.getMemoryPages()
+		desiredacl = criteria["accesslevel"]
+		desiredacl_human = ""
+		if desiredacl in memProtConstants:
+			desiredacl_human = "(%s)" % memProtConstants[desiredacl][0]
+		dbg.log("[+] Filtering applicable pages")
+		dbg.log("    Desired Access Control: %s %s" % (desiredacl, desiredacl_human))
+		for pageaddress in allpages:
+			thispage = allpages[pageaddress]
+			pagebegin = thispage.getBegin()
+			pageend = pagebegin + thispage.getSize()
+			if pagebegin >= base and pageend <= top:
+				pageaccess = thispage.getAccess(human=True)
+				compatible_pageacl = False
+				if not "accesslevel" in criteria:
+					compatible_pageacl = True
+				else:
+					if desiredacl == "*":
+						compatible_pageacl = True
+					else:
+						desiredacl_str = memProtConstants[desiredacl][0]
+						if pageaccess.startswith(desiredacl_str):
+							compatible_pageacl = True
+				if compatible_pageacl:
+					dbg.log("    Adding page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+					rangestosearch.append([pagebegin, pageend])
+				else:
+					if DEBUG_MODE:
+						dbgp("    Skipping page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+		#rangestosearch.append([base,top])
+	
+	pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" ,",",").replace("# ","#").replace(" #","#")
+	if len(pattern) == 0:
+		dbg.log("** Invalid search pattern **")
+		return
+
+
+	parsed = parseInstructionWildcardSearch(pattern)
+	# parsed["normalized"]     -> "PUSH EBX#*#MOV EAX,R32#JMP ESP"
+	# parsed["parts"]          -> parsed sequence
+	# parsed["first_patterns"] -> ["PUSH EBX"]
+
+	dbg.log("[+] Parsed input and found %d initial instructions to search" % len(parsed["first_patterns"]))
+	for first_pattern in parsed["first_patterns"]:
+		dbg.log("    Searching for %s" % first_pattern)
+
+
+
+	# break apart the instructions
+	# search for the first instruction(s)
+	allinstructions = pattern.split("#")
+	instructionparts = []
+	instrfound = False
+	for instruction in allinstructions:
+		instruction = instruction.strip().lower()
+		if instrfound and instruction != "":
+			instructionparts.append(instruction)
+		else:
+			if instruction != "*" and instruction != "":
+				instructionparts.append(instruction)
+				instrfound = True
+				
+	# remove wildcards placed at the end
+	for i in rrange(len(instructionparts)):
+		if instructionparts[i] == "*":
+			instructionparts.pop(i)
+		else:
+			break
+
+	# glue simple instructions together if possible
+	# reset array
+	allinstructions = []
+	stopnow = False
+	mergeinstructions = []
+	mergestopped = False
+	mergetxt = ""
+	if DEBUG_MODE:
+		dbgp("Instruction parts: %s" % instructionparts)
+	for instr in instructionparts:
+		if instr.find("*") == -1 and instr.find("r32") == -1 and instr.find("r64") == -1 and not mergestopped:
+			mergetxt += instr + "\n"
+		else:
+			allinstructions.append(instr)
+			mergestopped = True
+	mergetxt = mergetxt.strip("\n")
+
+	searchPattern = []
+	remaining = allinstructions
+
+	if mergetxt != "":
+		searchPattern.append(mergetxt)
+	else:
+		# at this point, we're sure the first instruction has some kind of r32/r64 and/or offset variable
+		# get all of the combinations for this one
+		# and use them as searchPattern
+		cnt = 0
+		stopped = False		
+		for instr in allinstructions:
+			if instr != "*" and (instr.find("r32") > -1 or instr.find("r64") > -1 or instr.find("*") > -1) and not stopped:
+				if instr.find("r32") > -1:
+					for reg in dbglib.Registers32BitsOrder:
+						thisinstr = instr.replace("r32",reg.lower())
+						if instr.find("*") > -1:
+							# contains a wildcard offset
+							startdist = mindistance
+							while startdist < maxdistance:
+								operator = ""
+								if startdist < 0:
+									operator = "-"
+								replacewith = operator + "0x%02x" % startdist
+								thisinstr2 = thisinstr.replace("*",replacewith)
+								searchPattern.append(thisinstr2)
+								startdist += 1
+						else:
+							searchPattern.append(thisinstr)
+				if instr.find("r64") > -1:
+					for reg in dbglib.Registers64BitsOrder:
+						thisinstr = instr.replace("r64",reg.lower())
+						if instr.find("*") > -1:
+							# contains a wildcard offset
+							startdist = mindistance
+							while startdist < maxdistance:
+								operator = ""
+								if startdist < 0:
+									operator = "-"
+								replacewith = operator + "0x%02x" % startdist
+								thisinstr2 = thisinstr.replace("*",replacewith)
+								searchPattern.append(thisinstr2)
+								startdist += 1
+						else:
+							searchPattern.append(thisinstr)
+				
+				if (instr.find("r32") == -1 and instr.find("r64") > -1):
+					if instr.find("*") > -1:
+						# contains a wildcard offset
+						startdist = mindistance
+						while startdist < maxdistance:
+							operator = ""
+							if startdist < 0:
+								operator = "-"
+							replacewith = operator + "0x%02x" % startdist
+							thisinstr2 = instr.replace("*",replacewith)
+							searchPattern.append(thisinstr2)
+							startdist += 1
+					else:
+						searchPattern.append(instr)
+
+				remaining.pop(cnt)
+				stopped = True
+			cnt += 1
+		
+	# search for all these beginnings
+	if len(searchPattern) > 0:
+		if not silent:
+			dbg.log("[+] Started search (%d start pattern(s))" % len(searchPattern))
+		dbg.updateLog()
+		for ranges in rangestosearch:
+			mBase = ranges[0]
+			mTop = ranges[1]
+			if not silent:
+				dbg.log("[+] Searching for startpattern %s between 0x%s and 0x%s" % (searchPattern,toHex(mBase),toHex(mTop)))
+			dbg.updateLog()
+			oldsilent=silent
+			silent=True
+			pointers = searchInRange(searchPattern,mBase,mTop,criteria)
+			if not silent:
+				dbg.log("    Number of results: " % (len(pointers)))
+			silent=oldsilent
+			allpointers = mergeOpcodes(allpointers,pointers)	
+			if not silent:
+				dbg.log("    Processed range 0x%08x to 0x%08x - total number of pointers so far: %d" % (mBase, mTop, len(allpointers)))
+	
+	# for each of the findings, see if it contains the other instructions too
+	# disassemble forward up to 'maxdepth' instructions
+	if len(allpointers) > 0:
+		if not silent:
+			dbg.log("[+] Forward disassembly on %d types" % len(allpointers))
+	for ptrtypes in allpointers:
+		if not silent:
+			dbg.log("    Current type: %s: %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
+		for ptrs in allpointers[ptrtypes]:
+			thisline = ""
+			try:
+				for depth in xrange(maxdepth):
+					tinstr = getDisasmInstruction(dbg.disasmForward(ptrs, depth)).lower() + "\n"
+					if tinstr != "???":
+						thisline += tinstr
+					else:
+						thisline = ""
+						break	
+			except:
+				continue
+			allfound = True
+			thisline = thisline.strip("\n")
+			
+			if thisline != "":
+				parts = thisline.split("\n")
+				maxparts = len(parts)-1
+				partcnt = 1
+				searchfor = ""
+				remcnt = 0
+				lastpos = 0
+				remmax = len(remaining)
+				while remcnt < remmax:
+				
+					searchfor = remaining[remcnt]
+						
+					searchlist = []
+					if searchfor == "*":
+						while searchfor == "*" and remcnt < remmax:
+							searchfor = remaining[remcnt+1]
+							rangemin = partcnt
+							rangemax = maxparts
+							remcnt += 1
+
+					else:
+						rangemin = partcnt
+						rangemax = partcnt
+						
+					if searchfor.find("r32") > -1:
+						for reg in dbglib.Registers32BitsOrder:
+							searchlist.append(searchfor.replace("r32",reg.lower()))	
+					else:
+						searchlist.append(searchfor)
+				
+					if searchfor.find("r64") > -1:
+						for reg in dbglib.Registers64BitsOrder:
+							searchlist.append(searchfor.replace("r64",reg.lower()))	
+					else:
+						searchlist.append(searchfor)
+						
+					partfound = False
+					
+					while rangemin <= rangemax and not partfound and rangemax <= maxparts:
+						for searchfor in searchlist:
+							if parts[rangemin].find(searchfor) > -1:						
+								partfound = True
+								lastpos = rangemin
+								partcnt = lastpos # set counter to current position
+								break
+						if not partfound and preventbreak:
+							#check if current instruction would break chain
+							if wouldBreakChain(parts[rangemin]):
+								# bail out
+								partfound = False
+								break
+						rangemin += 1
+						
+					remcnt += 1
+					partcnt += 1					
+					
+					if not partfound:
+						allfound = False
+						break
+
+					
+			if allfound:
+				theline = " # ".join(parts[:lastpos+1])
+				if theline != "":
+					if not theline in results:
+						results[theline] = [ptrs]
+					else:
+						results[theline] += [ptrs]
+	return results
+
+
 							
 def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	"""
@@ -9795,7 +10603,6 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 				if not "accesslevel" in criteria:
 					compatible_pageacl = True
 				else:
-					
 					if desiredacl == "*":
 						compatible_pageacl = True
 					else:
@@ -9806,230 +10613,100 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 					dbg.log("    Adding page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
 					rangestosearch.append([pagebegin, pageend])
 				else:
-					dbg.log("    Skipping page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+					if DEBUG_MODE:
+						dbgp("    Skipping page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
 		#rangestosearch.append([base,top])
 	
 	pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" ,",",").replace("# ","#").replace(" #","#")
 	if len(pattern) == 0:
 		dbg.log("** Invalid search pattern **")
 		return
-	
-	# break apart the instructions
-	# search for the first instruction(s)
-	allinstructions = pattern.split("#")
-	instructionparts = []
-	instrfound = False
-	for instruction in allinstructions:
-		instruction = instruction.strip().lower()
-		if instrfound and instruction != "":
-			instructionparts.append(instruction)
-		else:
-			if instruction != "*" and instruction != "":
-				instructionparts.append(instruction)
-				instrfound = True
-				
-	# remove wildcards placed at the end
-	for i in rrange(len(instructionparts)):
-		if instructionparts[i] == "*":
-			instructionparts.pop(i)
-		else:
-			break
 
-	# glue simple instructions together if possible
-	# reset array
-	allinstructions = []
-	stopnow = False
-	mergeinstructions = []
-	mergestopped = False
-	mergetxt = ""
-	for instr in instructionparts:
-		if instr.find("*") == -1 and instr.find("r32") == -1 and instr.find("r64") == -1 and not mergestopped:
-			mergetxt += instr + "\n"
-		else:
-			allinstructions.append(instr)
-			mergestopped = True
-	mergetxt = mergetxt.strip("\n")
 
-	searchPattern = []
-	remaining = allinstructions
+	parsed = parseInstructionWildcardSearch(pattern)
 
-	if mergetxt != "":
-		searchPattern.append(mergetxt)
-	else:
-		# at this point, we're sure the first instruction has some kind of r32/r64 and/or offset variable
-		# get all of the combinations for this one
-		# and use them as searchPattern
-		cnt = 0
-		stopped = False		
-		for instr in allinstructions:
-			if instr != "*" and (instr.find("r32") > -1 or instr.find("r64") > -1 or instr.find("*") > -1) and not stopped:
-				if instr.find("r32") > -1:
-					for reg in dbglib.Registers32BitsOrder:
-						thisinstr = instr.replace("r32",reg.lower())
-						if instr.find("*") > -1:
-							# contains a wildcard offset
-							startdist = mindistance
-							while startdist < maxdistance:
-								operator = ""
-								if startdist < 0:
-									operator = "-"
-								replacewith = operator + "0x%02x" % startdist
-								thisinstr2 = thisinstr.replace("*",replacewith)
-								searchPattern.append(thisinstr2)
-								startdist += 1
-						else:
-							searchPattern.append(thisinstr)
-				if instr.find("r64") > -1:
-					for reg in dbglib.Registers64BitsOrder:
-						thisinstr = instr.replace("r64",reg.lower())
-						if instr.find("*") > -1:
-							# contains a wildcard offset
-							startdist = mindistance
-							while startdist < maxdistance:
-								operator = ""
-								if startdist < 0:
-									operator = "-"
-								replacewith = operator + "0x%02x" % startdist
-								thisinstr2 = thisinstr.replace("*",replacewith)
-								searchPattern.append(thisinstr2)
-								startdist += 1
-						else:
-							searchPattern.append(thisinstr)
-				
-				if (instr.find("r32") == -1 and instr.find("r64") > -1):
-					if instr.find("*") > -1:
-						# contains a wildcard offset
-						startdist = mindistance
-						while startdist < maxdistance:
-							operator = ""
-							if startdist < 0:
-								operator = "-"
-							replacewith = operator + "0x%02x" % startdist
-							thisinstr2 = instr.replace("*",replacewith)
-							searchPattern.append(thisinstr2)
-							startdist += 1
-					else:
-						searchPattern.append(instr)
-
-				remaining.pop(cnt)
-				stopped = True
-			cnt += 1
-		
-	# search for all these beginnings
-	if len(searchPattern) > 0:
-		if not silent:
-			dbg.log("[+] Started search (%d start pattern(s))" % len(searchPattern))
-		dbg.updateLog()
+	dbg.log("[+] Parsed input and found %d initial instructions to search" % len(parsed["first_patterns"]))
+	for first_pattern in parsed["first_patterns"]:
+		dbg.log("    Searching for %s" % first_pattern)
 		for ranges in rangestosearch:
 			mBase = ranges[0]
 			mTop = ranges[1]
-			if not silent:
-				dbg.log("[+] Searching startpattern between 0x%s and 0x%s" % (toHex(mBase),toHex(mTop)))
-			dbg.updateLog()
-			oldsilent=silent
-			silent=True
-			pointers = searchInRange(searchPattern,mBase,mTop,criteria)
-			if not silent:
-				dbg.log("    Number of results: " % (len(pointers)))
-			silent=oldsilent
-			allpointers = mergeOpcodes(allpointers,pointers)	
-			if not silent:
-				dbg.log("    Processed range 0x%08x to 0x%08x - total number of pointers so far: %d" % (mBase, mTop, len(allpointers)))
-	
+			# convert the first_pattern sequence to a bytesequence
+			instrseq = b""
+			for first_pattern_instruction in first_pattern:
+				buf = dbg.assemble(first_pattern_instruction)
+				instrseq += buf
+			first_pattern_flat = ";".join(first_pattern)
+			# when providing bytes already,  it expects a desc/bytes tuple
+			pointers = searchInRange([(first_pattern_flat, instrseq)], mBase, mTop, criteria)
+			nrfound = 0
+			for ptrkeys in pointers:
+				nrfound += len(pointers[ptrkeys])
+			dbg.log("     Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
+			# flatten first_pattern
+			
+			for instrkey in pointers:
+				if not first_pattern_flat in allpointers:
+					# store a fresh list of pointers for this pattern
+					allpointers[first_pattern_flat] = list(pointers[instrkey])
+				else:
+					# merge in the new pointers, avoid nested lists
+					allpointers[first_pattern_flat].extend(pointers[instrkey])
+
+
+	totalfound = 0
+	for allkeys in allpointers:
+		totalfound += len(allpointers[allkeys])
 	# for each of the findings, see if it contains the other instructions too
 	# disassemble forward up to 'maxdepth' instructions
-	if len(allpointers) > 0:
+	startmoment = time.time()
+	ptrcnt = 0
+	nrhits = 0
+	flipovermax = 1000
+	flipover = 0
+	if totalfound > 20000:
+		flipovermax = 2000
+	if totalfound > 10000:
+		flipovermax = 7500
+	if totalfound > 0:
 		if not silent:
-			dbg.log("[+] Backward disassembly on %d types" % len(allpointers))
+			dbg.log("[+] Lauching forward disassembly on %d pointers (%d different instruction type(s)). This may take a while" % (totalfound, len(allpointers)))
 	for ptrtypes in allpointers:
 		if not silent:
-			dbg.log("   Current type: %s: %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
-		for ptrs in allpointers[ptrtypes]:
-			thisline = ""
+			dbg.log("    Current type: '%s': %d pointers" % (ptrtypes, len(allpointers[ptrtypes])))
+		for thisptr in allpointers[ptrtypes]:
+			thisdisam = ""
 			try:
 				for depth in xrange(maxdepth):
-					tinstr = getDisasmInstruction(dbg.disasmForward(ptrs, depth)).lower() + "\n"
+					tinstr = getDisasmInstruction(dbg.disasmForward(thisptr, depth)).lower() + "\n"
 					if tinstr != "???":
-						thisline += tinstr
+						thisdisam += tinstr
 					else:
-						thisline = ""
+						thisdisam = ""
 						break	
 			except:
 				continue
 			allfound = True
-			thisline = thisline.strip("\n")
-			
-			if thisline != "":
-				parts = thisline.split("\n")
-				maxparts = len(parts)-1
-				partcnt = 1
-				searchfor = ""
-				remcnt = 0
-				lastpos = 0
-				remmax = len(remaining)
-				while remcnt < remmax:
-				
-					searchfor = remaining[remcnt]
-						
-					searchlist = []
-					if searchfor == "*":
-						while searchfor == "*" and remcnt < remmax:
-							searchfor = remaining[remcnt+1]
-							rangemin = partcnt
-							rangemax = maxparts
-							remcnt += 1
+			thisdisam = thisdisam.strip("\n")
+			ptrcnt += 1
+			flipover += 1
+			if flipover > flipovermax:
+				eta = get_eta(startmoment, ptrcnt , totalfound)
+				dbg.log("    Update: ETA: %s (%d/%d) - nr of results so far: %d" % (eta, ptrcnt, totalfound, nrhits))
+				flipover = 0	
 
-					else:
-						rangemin = partcnt
-						rangemax = partcnt
-						
-					if searchfor.find("r32") > -1:
-						for reg in dbglib.Registers32BitsOrder:
-							searchlist.append(searchfor.replace("r32",reg.lower()))	
-					else:
-						searchlist.append(searchfor)
-				
-					if searchfor.find("r64") > -1:
-						for reg in dbglib.Registers64BitsOrder:
-							searchlist.append(searchfor.replace("r64",reg.lower()))	
-					else:
-						searchlist.append(searchfor)
-						
-					partfound = False
-					
-					while rangemin <= rangemax and not partfound and rangemax <= maxparts:
-						for searchfor in searchlist:
-							if parts[rangemin].find(searchfor) > -1:						
-								partfound = True
-								lastpos = rangemin
-								partcnt = lastpos # set counter to current position
-								break
-						if not partfound and preventbreak:
-							#check if current instruction would break chain
-							if wouldBreakChain(parts[rangemin]):
-								# bail out
-								partfound = False
-								break
-						rangemin += 1
-						
-					remcnt += 1
-					partcnt += 1					
-					
-					if not partfound:
-						allfound = False
-						break
+			matched, matched_sequence = doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam)
+			if matched:
+				full_instr = "#".join(matched_sequence)
+				if not full_instr in results:
+					results[full_instr] = []
+				results[full_instr].append(thisptr)
+				nrhits += 1
 
-					
-			if allfound:
-				theline = " # ".join(parts[:lastpos+1])
-				if theline != "":
-					if not theline in results:
-						results[theline] = [ptrs]
-					else:
-						results[theline] += [ptrs]
 	return results
 
-	
+
+
 def wouldBreakChain(instruction):
 	"""
 	Checks if the given instruction would potentially break the instruction chain
