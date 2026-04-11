@@ -546,10 +546,11 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 	# Determine column widths
 	col_widths = []
 	for i in range(expected_cols):
-		max_width = len(_ensure_text(headers[i]))
+		max_value_width = 0
 		for row in formatted_rows:
-			max_width = max(max_width, len(_ensure_text(row[i])))
-		col_widths.append(max_width)
+			max_value_width = max(max_value_width, len(_ensure_text(row[i])))
+		header_width = len(_ensure_text(headers[i]))
+		col_widths.append(max(max_value_width, header_width + 1))
 
 	# Build format string
 	fmt = "   ".join(["%%-%ds" % w for w in col_widths])
@@ -19871,6 +19872,12 @@ def procPageACL(args):
 		tolog = fmt % ("Start","End","Size","ACL", "Info")
 		dbg.log(tolog)
 		objfile.write(tolog,aclfile)
+
+		tolog = fmt % ("-" * addr_width,"-" * addr_width, "-" * size_width,"-" * acl_width, "-" * 30)
+		dbg.log(tolog)
+		objfile.write(tolog,aclfile)
+
+
 		for thispage in orderedpages:
 			page = allpages[thispage]
 			pagestart = page.getBaseAddress()
