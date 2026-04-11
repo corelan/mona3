@@ -16655,8 +16655,8 @@ def procgetPC(args):
 		dbg.log("Missing argument -r <register>",highlight=1)
 		return
 
-	valid_regs_32 = list(map(lambda x: x.lower(), Registers32BitsOrder))  
-	valid_regs_64 = list(map(lambda x: x.lower(), Registers64BitsOrder))  
+	valid_regs_32 = [x.lower() for x in Registers32BitsOrder]
+	valid_regs_64 = [x.lower() for x in Registers64BitsOrder]
 
 	if r32 not in valid_regs_32 and r32 not in valid_regs_64:
 		dbg.log("Invalid register '%s'." % r32, highlight=1)
