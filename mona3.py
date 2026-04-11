@@ -10305,8 +10305,6 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 		return False, []
 
 
-	# If the disassembly output starts with the first pattern again,
-	# skip those lines so we only match the remainder.
 	# The forward disassembly must start with the selected first pattern.
 	# If not, this pointer does not belong to this start-instruction variant.
 	pos = 0
@@ -10711,8 +10709,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	flipover = 0
 	if totalfound > 20000:
 		flipovermax = 2000
-	if totalfound > 10000:
-		flipovermax = 7500
+	elif totalfound > 10000:
+		flipovermax = 1000
 	if totalfound > 0:
 		if not silent:
 			dbg.log("")
