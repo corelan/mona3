@@ -149,47 +149,22 @@ DESC = "Corelan Consulting bv exploit development swiss army knife"
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 STACK_POINTER = "ESP" if arch == 32 else "RSP"
 PTR_SIZE_DIRECTIVE = "DWORD PTR" if arch == 32 else "QWORD PTR"
-g_modules={}
-g_modulesOrder=None
 _teb_addr_cache = None
 _peb_addr_cache = None
 _peb_list_cache = None
 MemoryPageACL={}
-global CritCache
-global vtableCache
-global stacklistCache
-global segmentlistCache
-global VACache
-global IATCache
-global NtGlobalFlag
-global FreeListBitmap
-global memProtConstants
-global currentArgs
-global disasmUpperChecked
-global disasmIsUpper
-global configFileCache
-global configwarningshown
 global scriptname
-
-NtGlobalFlag = -1
-FreeListBitmap = {}
-memProtConstants = {}
-CritCache={}
-IATCache={}
-vtableCache={}
-stacklistCache={}
-segmentlistCache={}
-configFileCache={}
-VACache={}
+currentArgs = []
+disasmUpperChecked = False
+disasmIsUpper = False
+configFileCache = {}
+configwarningshown = False
 ptr_counter = 0
 ptr_to_get = -1
 silent = False
-ignoremodules = False
+ignoremodules = True
 noheader = False
 dbg = dbglib.Debugger()
-disasmUpperChecked = False
-disasmIsUpper = False
-configwarningshown = False
 
 commands = {}
 
@@ -280,15 +255,7 @@ offsets = {
 #---------------------------------------#
 #  Populate constants                   #
 #---------------------------------------#	
-memProtConstants["X"] = ["PAGE_EXECUTE",0x10]
-memProtConstants["RX"] = ["PAGE_EXECUTE_READ",0x20]
-memProtConstants["RWX"] = ["PAGE_EXECUTE_READWRITE",0x40]
-memProtConstants["N"] = ["PAGE_NOACCESS",0x1]
-memProtConstants["R"] = ["PAGE_READONLY",0x2]
-memProtConstants["RW"] = ["PAGE_READWRITE",0x4]
-memProtConstants["GUARD"] = ["PAGE_GUARD",0x100]
-memProtConstants["NOCACHE"] = ["PAGE_NOCACHE",0x200]
-memProtConstants["WC"] = ["PAGE_WRITECOMBINE",0x400]
+
 
 #---------------------------------------#
 #  Utility functions                    #
@@ -304,26 +271,13 @@ def dbgp(s):
 
 def resetGlobals():
 	"""
-	Clears all global variables
+	Clears all process-level caches on MnProc and resets mona globals
 	"""
-	global CritCache
-	global vtableCache
-	global stacklistCache
-	global segmentlistCache
-	global VACache
-	global NtGlobalFlag
-	global FreeListBitmap
-	global memProtConstants
 	global currentArgs
+	global disasmUpperChecked
+	global mnproc
 
-	CritCache = None
-	vtableCache = None
-	stacklistCache = None
-	segmentlistCache = None
-	VACache = None
-	NtGlobalFlag = None
-	FreeListBitmap = None
-	memProtConstants = None
+	mnproc = MnProc()
 	currentArgs = None
 	disasmUpperChecked = False
 	return
@@ -618,9 +572,9 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 
 def getDisasmInstruction(disasmentry):
 	""" returns instruction string, checks if ASM is uppercase and converts to upper if needed """
-	instrline = disasmentry.getDisasm()
 	global disasmUpperChecked
 	global disasmIsUpper
+	instrline = disasmentry.getDisasm()
 	if disasmUpperChecked:
 		if not disasmIsUpper:
 			instrline = instrline.upper()
@@ -1689,15 +1643,18 @@ def getHeapFlag(flag):
 		return flagtext
 
 def decodeHeapHeader(headeraddress,headersize,key):
-	# get header and decode first 4 bytes
+	# get header and XOR first 8 bytes with encoding key (_HEAP_ENTRY sized)
+	key_size = 8
 	blockcnt = 0
 	fullheaderbytes = ""
 	decodedheader = ""
 	fullheaderbytes = ""
 	while blockcnt < headersize:
 		header = struct.unpack('<L',dbg.readMemory(headeraddress+blockcnt,4))[0]
-		if blockcnt == 0:
-			decodedheader = header ^ key
+		if blockcnt < key_size:
+			# extract the corresponding 4 bytes of the key
+			key_dword = (key >> (blockcnt * 8)) & 0xFFFFFFFF
+			decodedheader = header ^ key_dword
 		else:
 			decodedheader = header
 		headerbytes = "%08x" % decodedheader
@@ -1735,9 +1692,8 @@ def getStacks():
 	a dictionary, with key = threadID. Each entry contains an array with base and top of the stack
 	"""
 	stacks = {}
-	global stacklistCache
-	if len(stacklistCache) > 0:
-		return stacklistCache
+	if len(mnproc.stacklistCache) > 0:
+		return mnproc.stacklistCache
 	else:
 		threads = dbg.getAllThreads() 
 		for thread in threads:
@@ -1752,7 +1708,7 @@ def getStacks():
 				topStack = struct.unpack('<Q',dbg.readMemory(teb+8,8))[0]
 				baseStack = struct.unpack('<Q',dbg.readMemory(teb+16,8))[0]
 			stacks[tid] = [baseStack,topStack]
-		stacklistCache = stacks
+		mnproc.stacklistCache = stacks
 		return stacks
 
 def meetsAccessLevel(page,accessLevel):
@@ -2843,7 +2799,6 @@ class MnConfig:
 	"""
 	def __init__(self):
 	
-		global configwarningshown
 		self.configfile = "mona.ini"
 		self.currpath = os.path.dirname(os.path.realpath(self.configfile))
 		# first check if we will be saving the file into Immunity folder
@@ -2858,7 +2813,6 @@ class MnConfig:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 		# while listing, populate configFileCache at the same time
-		global configFileCache
 		# clear cache first
 		configFileCache = {}
 		headers = ["Parameter", "Value"]
@@ -2912,7 +2866,6 @@ class MnConfig:
 
 		toreturn = ""
 		curparam=[]
-		global configFileCache
 		#first check if parameter already exists in global cache
 		#if DEBUG_MODE:
 		#	dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
@@ -2988,7 +2941,6 @@ class MnConfig:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
-		global configFileCache
 		if len(configFileCache) > 0:
 			configFileCache[parameter.strip().lower()] = paramvalue
 		if os.path.exists(self.configfile):
@@ -3058,7 +3010,6 @@ class MnConfig:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
-		global configFileCache
 		paramdel = parameter.lower().strip()
 		if paramdel in configFileCache:
 			del configFileCache[paramdel] 
@@ -3913,13 +3864,12 @@ class MnModule:
 		
 	def getIAT(self):
 		IAT = {}
-		global IATCache
 		#dbg.log("")
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 			dbgp("    Getting IAT for %s." % (self.moduleKey))
 		try:
-			if not self.moduleKey in IATCache:  # if len(self.IAT) == 0:
+			if not self.moduleKey in mnproc.IATCache:  # if len(self.IAT) == 0:
 				
 				# METHOD 1 - Parse the strings from the IAT.  Fastest way
 				dbg.log("      Enumerating IAT, method 1 (Read IAT from memory)") 
@@ -4215,10 +4165,10 @@ class MnModule:
 					IAT[0] = "no_iat_found"
 
 				self.IAT = IAT
-				IATCache[self.moduleKey] = IAT
+				mnproc.IATCache[self.moduleKey] = IAT
 			else:
 				dbg.log("      Retrieving IAT from cache")             
-				IAT = IATCache[self.moduleKey] #IAT = self.IAT
+				IAT = mnproc.IATCache[self.moduleKey] #IAT = self.IAT
 		except:
 			import traceback
 			dbg.logLines(traceback.format_exc())
@@ -4319,13 +4269,12 @@ def getNtGlobalFlag():
 	if arch == 64:
 		flagoffset = 0xBC
 	pebaddress = get_peb_addr()
-	global NtGlobalFlag
-	if NtGlobalFlag == -1:
+	if mnproc.NtGlobalFlag == -1:
 		try:
-			NtGlobalFlag = struct.unpack('<L',dbg.readMemory(pebaddress+flagoffset,4))[0]
+			mnproc.NtGlobalFlag = struct.unpack('<L',dbg.readMemory(pebaddress+flagoffset,4))[0]
 		except:
-			NtGlobalFlag = 0
-	return NtGlobalFlag
+			mnproc.NtGlobalFlag = 0
+	return mnproc.NtGlobalFlag
 
 
 
@@ -5158,8 +5107,7 @@ class MnNTXPHeap(MnNTHeap):
 
 	def getFreeListInUseBitmap(self):
 		"""Read the FreeListInUse bitmap from the NT heap."""
-		global FreeListBitmap
-		if not self.heapbase in FreeListBitmap:
+		if not self.heapbase in mnproc.FreeListBitmap:
 			FreeListBitmapHeap = []
 			cnt = 0
 			while cnt < 4:
@@ -5169,8 +5117,8 @@ class MnNTXPHeap(MnNTHeap):
 				for thisbit in bitmapbits:
 					FreeListBitmapHeap.append(thisbit)
 				cnt += 1
-			FreeListBitmap[self.heapbase] = FreeListBitmapHeap
-		return FreeListBitmap[self.heapbase]
+			mnproc.FreeListBitmap[self.heapbase] = FreeListBitmapHeap
+		return mnproc.FreeListBitmap[self.heapbase]
 
 	def getFreeList(self):
 		"""Walk the 128 FreeLists of the NT heap."""
@@ -5283,16 +5231,14 @@ class MnNT7Heap(MnNTHeap):
 	def getEncodingKey(self):
 		"""Retrieve the Encoding key from the NT heap header.
 
-		Return: int, the Encoding key
+		Return: int, the Encoding key (8 bytes, _HEAP_ENTRY sized)
 		"""
 		self.Encoding = 0
 		offset = archValue(0x4c,0x7c)
 		self.EncodeFlagMask = struct.unpack('<L',dbg.readMemory(self.heapbase+offset,4))[0]
 		if self.EncodeFlagMask == 0x100000:
-			if arch == 32:
-				self.Encoding = struct.unpack('<L',dbg.readMemory(self.heapbase+0x50,4))[0]
-			elif arch == 64:
-				self.Encoding = struct.unpack('<L',dbg.readMemory(self.heapbase+0x80+0x8,4))[0]
+			encoding_offset = archValue(0x50, 0x80)
+			self.Encoding = struct.unpack('<Q',dbg.readMemory(self.heapbase+encoding_offset,8))[0]
 		return self.Encoding
 
 	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
@@ -5747,56 +5693,122 @@ class MnProc:
 	Aggregates all major process structures: PEB/TEB, modules,
 	stacks, heaps (with type detection, segments, VA blocks,
 	chunk statistics), and memory pages.
+
+	Also holds process-level caches as instance attributes.
 	"""
 
+	memProtConstants = {
+		"X": ["PAGE_EXECUTE", 0x10],
+		"RX": ["PAGE_EXECUTE_READ", 0x20],
+		"RWX": ["PAGE_EXECUTE_READWRITE", 0x40],
+		"N": ["PAGE_NOACCESS", 0x1],
+		"R": ["PAGE_READONLY", 0x2],
+		"RW": ["PAGE_READWRITE", 0x4],
+		"GUARD": ["PAGE_GUARD", 0x100],
+		"NOCACHE": ["PAGE_NOCACHE", 0x200],
+		"WC": ["PAGE_WRITECOMBINE", 0x400],
+	}
+
 	def __init__(self):
+		# --- process-level caches ---
+		self.CritCache = {}
+		self.vtableCache = {}
+		self.stacklistCache = {}
+		self.segmentlistCache = {}
+		self.VACache = {}
+		self.IATCache = {}
+		self.NtGlobalFlag = -1
+		self.FreeListBitmap = {}
+		self.g_modules = {}
+		self.g_modulesOrder = None
+
+		# --- populated by populate() ---
 		self.peb = None
 		self.teb = None
 		self.modules = {}      # {name: {"base","top","size",...}} from g_modules
 		self.stacks = {}       # {tid: [base, top]}
 		self.heapinfo = {}     # from getProcessHeapsInfo(): {"NT":{}, "Segment":{}, "Unknown":{}}
 		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
-		self.pages = {}        # {pagekey: page object} from dbg.getMemoryPages()
 		self.defaultheap = 0   # default process heap address
+
+	def populateVACache(self):
+		"""
+		Build a lookup table of all heap segment ranges and VA block ranges
+		into self.VACache for fast isInHeap() lookups.
+		"""
+		seg_ranges = []
+		va_ranges = []
+		try:
+			allheaps = dbg.getHeapsAddress()
+		except:
+			allheaps = []
+		for heap in allheaps:
+			segments = getSegmentsForHeap(heap)
+			for segment in segments:
+				segstart = segment
+				seglast = segments[segment][3]
+				seg_ranges.append((heap, segstart, seglast))
+			try:
+				mHeap = MnHeap(heap)
+				valist = mHeap.getVirtualAllocdBlocks()
+				for vachunk in valist:
+					vainfo = valist[vachunk]
+					va_ranges.append((vachunk, vachunk + vainfo["commit_size"]))
+			except:
+				pass
+		seg_ranges.sort(key=lambda x: x[1])
+		va_ranges.sort(key=lambda x: x[0])
+		self.VACache = {"segments": seg_ranges, "vablocks": va_ranges}
 
 	def populate(self, include_chunks=False):
 		"""
 		Populate all fields by querying the debugger.
 
 		Arguments:
-			include_chunks - bool. If True, getNTHeapInfo() is called for
-			                 each NT heap (walks segments and enumerates
-			                 chunks). This can be slow on large heaps.
+			include_chunks - bool. If True, walks segments and enumerates
+			                 chunks. This can be slow on large heaps.
 		"""
 		# PEB / TEB
-		try:
-			self.peb = get_peb_addr()
-		except:
-			pass
-		try:
-			self.teb = get_teb_addr()
-		except:
-			pass
+		if self.peb is None:
+			try:
+				self.peb = get_peb_addr()
+			except:
+				pass
+		if self.teb is None:
+			try:
+				self.teb = get_teb_addr()
+			except:
+				pass
 
 		# Modules
-		if len(g_modules) == 0:
-			populateModuleInfo()
-		self.modules = dict(g_modules)
+		if len(self.modules) == 0:
+			if len(self.g_modules) == 0:
+				populateModuleInfo()
+			self.modules = dict(self.g_modules)
 
 		# Stacks
-		self.stacks = getStacks()
+		if len(self.stacks) == 0:
+			self.stacks = getStacks()
 
 		# Heaps (type detection + encoding info)
-		self.heapinfo = getProcessHeapsInfo()
+		if len(self.heapinfo) == 0:
+			self.heapinfo = getProcessHeapsInfo()
 
 		# Default process heap
-		try:
-			self.defaultheap = getDefaultProcessHeap()
-		except:
-			pass
+		if self.defaultheap is None:
+			try:
+				self.defaultheap = getDefaultProcessHeap()
+			except:
+				pass
 
 		# NT heap detail (segments, VA blocks, optionally chunks)
 		for heapaddr in self.heapinfo.get("NT", {}):
+			# Skip if already populated (unless upgrading to include chunks)
+			if heapaddr in self.ntheapdetail:
+				existing = self.ntheapdetail[heapaddr]
+				needs_chunks = include_chunks and not existing.get("_has_chunks", False)
+				if not needs_chunks:
+					continue
 			try:
 				if include_chunks:
 					detail = getNTHeapInfo(heapaddr)
@@ -5806,6 +5818,7 @@ class MnProc:
 					except:
 						if "frontend_type" not in detail:
 							detail["frontend_type"] = 0
+					detail["_has_chunks"] = True
 					self.ntheapdetail[heapaddr] = detail
 				else:
 					mheap = MnHeap(heapaddr)
@@ -5823,28 +5836,6 @@ class MnProc:
 								"firstentry": seg["firstentry"],
 								"lastentry": seg["lastentry"],
 							}
-							# Walk chunks for stats
-							try:
-								chunks = walkSegment(seg["firstentry"], seg["lastentry"], heapaddr)
-								total = len(chunks)
-								busy = 0
-								free_count = 0
-								max_free = 0
-								for caddr in chunks:
-									c = chunks[caddr]
-									csize = c.size * heapgranularity
-									if c.flag & 0x01:
-										busy += 1
-									else:
-										free_count += 1
-										if csize > max_free:
-											max_free = csize
-								segdetail["total_chunks"] = total
-								segdetail["busy_chunks"] = busy
-								segdetail["free_chunks"] = free_count
-								segdetail["max_free"] = max_free
-							except:
-								pass
 							detail["segments"][segaddr] = segdetail
 					except:
 						pass
@@ -5855,9 +5846,6 @@ class MnProc:
 					self.ntheapdetail[heapaddr] = detail
 			except:
 				pass
-
-		# Memory pages
-		self.pages = dbg.getMemoryPages()
 
 	def getModulesSorted(self):
 		"""Return modules sorted by base address: [(name, properties), ...]"""
@@ -5878,10 +5866,6 @@ class MnProc:
 				result.append((addr, htype, info))
 		result.sort(key=lambda x: x[0])
 		return result
-
-	def getPagesSorted(self):
-		"""Return memory pages sorted by base address: [page, ...]"""
-		return [self.pages[k] for k in sorted(self.pages.keys())]
 
 	def getNTHeapAddresses(self):
 		"""Return sorted list of NT heap base addresses."""
@@ -5911,7 +5895,7 @@ class MnProc:
 		Each item: (start, end, category, description)
 
 		Categories: "PEB", "TEB", "Module", "Stack", "Heap", "Heap Segment",
-		            "Heap VA Block", "Page"
+		            "Heap VA Block"
 		"""
 		regions = []
 
@@ -5969,37 +5953,58 @@ class MnProc:
 			if heapaddr == self.defaultheap:
 				heapname += " [Default]"
 			fe_label = ""
+			seg_count = 0
+			va_count = 0
 			if heapaddr in self.ntheapdetail:
 				fe_type = self.ntheapdetail[heapaddr].get("frontend_type", 0)
 				fe_label = " | FrontEnd: %s" % fe_names.get(fe_type, "0x%x" % fe_type)
-			regions.append((heapaddr, heapaddr, "Heap", "%s (%s%s)" % (heapname, htype, fe_label)))
+				seg_count = len(self.ntheapdetail[heapaddr].get("segments", {}))
+				va_count = len(self.ntheapdetail[heapaddr].get("va_blocks", {}))
+			regions.append((heapaddr, heapaddr, "Heap", "%s (%s%s | Segments: %d | VA Blocks: %d)" % (heapname, htype, fe_label, seg_count, va_count)))
 
 			if heapaddr in self.ntheapdetail:
 				detail = self.ntheapdetail[heapaddr]
+				hidx = int(idx) if str(idx).isdigit() else 0
 				segaddrs = sorted(detail["segments"].keys())
 				for i, segaddr in enumerate(segaddrs):
 					seg = detail["segments"][segaddr]
-					flink = "0x%s (Segment%02d)" % (toHex(segaddrs[i + 1]), i + 1) if i < len(segaddrs) - 1 else "None"
-					blink = "0x%s (Segment%02d)" % (toHex(segaddrs[i - 1]), i - 1) if i > 0 else "None"
+					segname = "Segment%02d-%02d" % (i, hidx)
+					flink = "0x%s (%s)" % (toHex(segaddrs[i + 1]), "Segment%02d-%02d" % (i + 1, hidx)) if i < len(segaddrs) - 1 else "None"
+					blink = "0x%s (%s)" % (toHex(segaddrs[i - 1]), "Segment%02d-%02d" % (i - 1, hidx)) if i > 0 else "None"
 					chunk_info = ""
 					if "total_chunks" in seg:
 						chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
 							seg["total_chunks"], seg["busy_chunks"], seg["free_chunks"], seg["max_free"])
-					desc = "Segment%02d ( Heap: %s | FLink: %s | BLink: %s%s )" % (i, heapname, flink, blink, chunk_info)
+					desc = "%s ( Heap: %s | FLink: %s | BLink: %s%s )" % (segname, heapname, flink, blink, chunk_info)
 					regions.append((seg["base"], seg["end"], "Heap Segment", desc))
+
+					# Individual chunks within this segment
+					if "chunks" in seg:
+						all_seg_chunks = []
+						for state, chunklist in seg["chunks"].items():
+							for c in chunklist:
+								all_seg_chunks.append((c["address"], c["size"], c["flag"], state))
+						all_seg_chunks.sort(key=lambda x: x[0])
+						for ci, (caddr, csize, cflag, cstate) in enumerate(all_seg_chunks):
+							cend = caddr + csize
+							chunkname = "Chunk%04d-%03d-%02d" % (ci, i, hidx)
+							cdesc = "%s ( Heap: %s | %s | Size: 0x%x | Flag: 0x%02x [%s] )" % (
+								chunkname, heapname, segname, csize, cflag, cstate)
+							regions.append((caddr, cend, "Heap Chunk", cdesc))
 
 				vaaddrs = sorted(detail["va_blocks"].keys())
 				for i, vaaddr in enumerate(vaaddrs):
 					va = detail["va_blocks"][vaaddr]
 					vaend = vaaddr + va["commit_size"]
-					flink = "0x%s (VirtualAllocdBlock%02d)" % (toHex(vaaddrs[i + 1]), i + 1) if i < len(vaaddrs) - 1 else "None"
-					blink = "0x%s (VirtualAllocdBlock%02d)" % (toHex(vaaddrs[i - 1]), i - 1) if i > 0 else "None"
-					desc = "VirtualAllocdBlock%02d ( Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x )" % (i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
+					flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
+					blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
+					desc = "VirtualAllocdBlock%02d-%02d ( Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x )" % (hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
 					regions.append((vaaddr, vaend, "Heap VA Block", desc))
 
 		regions.sort(key=lambda x: x[0])
 		return regions
 
+mnproc = MnProc()
 
 #---------------------------------------#
 #  Class to access pointer properties   #
@@ -6215,11 +6220,11 @@ class MnPointer:
 		String with the name of the module a pointer belongs to,
 		or empty if pointer does not belong to a module
 		"""		
-		if len(g_modules)==0:
+		if len(mnproc.g_modules)==0:
 			populateModuleInfo()
 		if self.ownerName == "":
 			# not stack or heap
-			for thismodule,modproperties in g_modules.items():
+			for thismodule,modproperties in mnproc.g_modules.items():
 				thisbase = getModuleProperty(thismodule,"base")
 				thistop = getModuleProperty(thismodule,"top")
 				if (self.address >= thisbase) and (self.address <= thistop):
@@ -6259,34 +6264,22 @@ class MnPointer:
 
 		Return:
 		Boolean - True if pointer is in heap
-		"""	
-		segmentcnt = 0
+		"""
+		if len(mnproc.VACache) == 0:
+			mnproc.populateVACache()
 
-		for heap in dbg.getHeapsAddress():
-				# part of a segment ?
-				segments = getSegmentsForHeap(heap)
-				for segment in segments:
-					if segmentcnt == 0:
-						# in heap data structure
-						if self.address >= heap and self.address <= segment:
-							self.ownerName = "Heap Segment"
-							return True
-						segmentcnt += 1
-					if self.address >= segment:
-						last = segments[segment][3]
-						if self.address >= segment and self.address <= last:
-							self.ownerName = "Heap Segment"
-							return True
-		# maybe it's in a VA List ?
-		for heap in dbg.getHeapsAddress():
-			mHeap = MnHeap(heap)
-			valist = mHeap.getVirtualAllocdBlocks()
-			if len(valist) > 0:
-				for vachunk in valist:
-					vainfo = valist[vachunk]
-					if self.address >= vachunk and self.address <= (vachunk + vainfo["commit_size"]):
-						self.ownerName = "VirtualAllocdBlock"
-						return True
+		# Check segments
+		for heap, segstart, seglast in mnproc.VACache["segments"]:
+			if self.address >= heap and self.address <= seglast:
+				self.ownerName = "Heap Segment"
+				return True
+
+		# Check VA blocks
+		for vastart, vaend in mnproc.VACache["vablocks"]:
+			if self.address >= vastart and self.address <= vaend:
+				self.ownerName = "VirtualAllocdBlock"
+				return True
+
 		return False
 		
 
@@ -7020,9 +7013,8 @@ def getSegmentsForHeap(heapbase):
 		dbgp(get_current_function_name())
 	allsegmentsfound = False
 	segmentinfo = {}
-	global segmentlistCache
-	if heapbase in segmentlistCache:
-		return segmentlistCache[heapbase]
+	if heapbase in mnproc.segmentlistCache:
+		return mnproc.segmentlistCache[heapbase]
 	else:
 		try:
 			if DEBUG_MODE:
@@ -7089,7 +7081,7 @@ def getSegmentsForHeap(heapbase):
 				dbgp(traceback.format_exc())
 		if DEBUG_MODE:
 			dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
-		segmentlistCache[heapbase] = segmentinfo
+		mnproc.segmentlistCache[heapbase] = segmentinfo
 		return segmentinfo
 
 def containsBadChars(address, badchars=b"\x0a\x0d"):
@@ -7382,7 +7374,7 @@ def getRangesOutsideModules():
 	#get all ranges associated with modules
 	#force full rebuild to get all modules
 	populateModuleInfo()
-	for thismodule,modproperties in g_modules.items():
+	for thismodule,modproperties in mnproc.g_modules.items():
 		top = 0
 		base = 0
 		for modprop,modval in modproperties.items():
@@ -7405,7 +7397,7 @@ def getRangesOutsideModules():
 	return ranges
 
 def isModuleLoadedInProcess(modulename):
-	if len(g_modules) == 0:
+	if len(mnproc.g_modules) == 0:
 		populateModuleInfo()
 	modulefound = False
 	module = dbg.getModule(modulename)
@@ -7749,12 +7741,12 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
 		dbgp("function criteria: %s" % criteria)
-		dbgp("g_modules: %d entries" % len(g_modules))
-	if len(g_modules) == 0 or g_modulesOrder != peb_order:
+		dbgp("g_modules: %d entries" % len(mnproc.g_modules))
+	if len(mnproc.g_modules) == 0 or mnproc.g_modulesOrder != peb_order:
 		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
 
-	for thismodule, modproperties in g_modules.items():
+	for thismodule, modproperties in mnproc.g_modules.items():
 		if DEBUG_MODE:
 			dbgp("Check if module %s should be filtered" % thismodule)
 			dbgp("  Properties: %s" % modproperties)
@@ -7882,7 +7874,7 @@ def getModuleProperty(modname,parameter):
 	parameter=parameter.lower()
 	valtoreturn=""
 	# try case sensitive first
-	for thismodule,modproperties in g_modules.items():
+	for thismodule,modproperties in mnproc.g_modules.items():
 		if thismodule.strip() == modname:
 			return modproperties[parameter]
 	return valtoreturn
@@ -7903,8 +7895,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 		dbg.log("[+] Generating module info table, hang on...")
 		dbg.log("    - Processing modules")
 		#dbg.updateLog()
-	global g_modules, g_modulesOrder
-	g_modules={}
+	mnproc.g_modules={}
 	if DEBUG_MODE:
 		dbgp("Enumerating modules via getAllModules")
 	if __DEBUGGERAPP__ == "WinDBG":
@@ -7944,7 +7935,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 				modinfo["dllcharacteristics"]  = thismod.moduleDllCharacteristics
 				modinfo["sehtable"]            = thismod.moduleSEHTable
 				modinfo["sehcount"]            = thismod.moduleSEHCount
-				g_modules[thismod.moduleKey] = modinfo
+				mnproc.g_modules[thismod.moduleKey] = modinfo
 			else:
 				if not silent:
 					dbg.log("    - Oops, potential issue with module %s, skipping module" % key)
@@ -7958,7 +7949,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 		dbg.log("    - Done. Let's rock 'n roll.")
 		dbg.setStatusBar("")	
 		dbg.updateLog()
-	g_modulesOrder = peb_order
+	mnproc.g_modulesOrder = peb_order
 
 def ModInfoCached(modulename):
 	"""
@@ -8006,7 +7997,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	sort_keys  - list of (key, reverse) tuples from _parse_sort_spec(), or empty list
 	"""	
 	thistable = ""
-	if len(g_modules) == 0:
+	if len(mnproc.g_modules) == 0:
 		populateModuleInfo()
 
 	filtertext = criteriaToText(modulecriteria, True)
@@ -8018,7 +8009,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		excluded_by_configtext = " Some modules may be excluded because of the 'excluded_modules' config parameter: %s" % excludedlist
 
 	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
-	items = list(g_modules.items())
+	items = list(mnproc.g_modules.items())
 	if sort_keys:
 		# Apply compound sort in reverse key order so first key wins (stable sort)
 		for key, reverse in reversed(sort_keys):
@@ -8028,7 +8019,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(g_modules), len(modules))
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.g_modules), len(modules))
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
 	thistable += " | PEB order: %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
 	if sort_keys:
@@ -9781,8 +9772,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 		allpages = dbg.getMemoryPages()
 		desiredacl = criteria["accesslevel"]
 		desiredacl_human = ""
-		if desiredacl in memProtConstants:
-			desiredacl_human = "(%s)" % memProtConstants[desiredacl][0]
+		if desiredacl in MnProc.memProtConstants:
+			desiredacl_human = "(%s)" % MnProc.memProtConstants[desiredacl][0]
 		dbg.log("[+] Filtering applicable pages")
 		dbg.log("    Desired Access Control: %s %s" % (desiredacl, desiredacl_human))
 		for pageaddress in allpages:
@@ -9799,7 +9790,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 					if desiredacl == "*":
 						compatible_pageacl = True
 					else:
-						desiredacl_str = memProtConstants[desiredacl][0]
+						desiredacl_str = MnProc.memProtConstants[desiredacl][0]
 						if pageaccess.startswith(desiredacl_str):
 							compatible_pageacl = True
 				if compatible_pageacl:
@@ -11171,7 +11162,6 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	global ptr_counter
 	global silent
 	global noheader
-	global ignoremodules
 	
 
 	#vars
@@ -11837,7 +11827,6 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			ropdb += '</rop>\n</db>'
 			# write to file if needed
 			shortmodname = modulename.replace(".dll","")
-			ignoremodules = True
 			if ropdbchain.lower().find("virtualprotect") > -1:
 				ofile = MnLog(shortmodname+"_virtualprotect.xml")
 				thisofile = ofile.reset(showheader = False)
@@ -11846,7 +11835,6 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 				ofile = MnLog(shortmodname+"_virtualalloc.xml")
 				thisofile = ofile.reset(showheader = False)
 				ofile.write(ropdb,thisofile)
-			ignoremodules = False
 		
 		#go to the next one
 		
@@ -12946,12 +12934,12 @@ def readGadgetsFromFile(filename):
 def isGoodGadgetPtr(gadget,criteria):
 	#if DEBUG_MODE:
 	#	dbgp(get_current_function_name())
-	if gadget in CritCache:
-		return CritCache[gadget]
+	if gadget in mnproc.CritCache:
+		return mnproc.CritCache[gadget]
 	else:
 		gadgetptr = MnPointer(gadget)
 		status = meetsCriteria(gadgetptr,criteria)
-		CritCache[gadget] = status
+		mnproc.CritCache[gadget] = status
 		return status
 		
 def getStackPivotDistance(gadget,distance=0):
@@ -14679,13 +14667,16 @@ def procShowMODULES(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True, peb_order=peb_order)
 	showModuleTable("", modulestosearch, modulecriteria, sort_keys=sort_keys, peb_order=peb_order)
+	global ignoremodules
+	ignoremodules = False
 	logfile = MnLog("modules.txt")
 	thislog = logfile.reset()
+	ignoremodules = True
 
 
 def procModuleInfo(args):
 	"""Show detailed information about a single module, looked up by name or base address."""
-	if len(g_modules) == 0:
+	if len(mnproc.g_modules) == 0:
 		populateModuleInfo()
 
 	target_key = None
@@ -14697,7 +14688,7 @@ def procModuleInfo(args):
 			dbg.log("%s is an invalid address" % args["a"], highlight=1)
 			return
 		dbg.log("[+] Checking if address 0x%x is part of a module" % lookup_base)
-		for key, props in g_modules.items():
+		for key, props in mnproc.g_modules.items():
 			if props["base"] <= lookup_base < props["base"] + props["size"]:
 				target_key = key
 				break
@@ -14709,7 +14700,7 @@ def procModuleInfo(args):
 		# Look up by image name — match against filename or key, case-insensitive,
 		# with and without extension so 'kernel32' matches 'kernel32.dll'
 		needle = os.path.splitext(str(args["m"]).strip().lower())[0]
-		for key, props in g_modules.items():
+		for key, props in mnproc.g_modules.items():
 			fname = os.path.splitext((props["filename"] or props["name"]).lower())[0]
 			if fname == needle or os.path.splitext(props["name"].lower())[0] == needle:
 				target_key = key
@@ -14722,7 +14713,7 @@ def procModuleInfo(args):
 		dbg.log("[!] Provide -m <imagename> or -a <address/register>", highlight=1)
 		return
 
-	p = g_modules[target_key]
+	p = mnproc.g_modules[target_key]
 	base     = p["base"]
 	top      = p["top"]
 	size     = p["size"]
@@ -14995,7 +14986,7 @@ def procModuleInfo(args):
 	def _mod_info_by_filename(fname_lower):
 		"""Return (base, version, path) for a loaded module by filename, or (0,'','')."""
 		stem = os.path.splitext(fname_lower)[0]
-		for _key, props in g_modules.items():
+		for _key, props in mnproc.g_modules.items():
 			loaded = os.path.splitext((props.get("filename") or props.get("name", "")).lower())[0]
 			if loaded == stem:
 				return props.get("base", 0), props.get("version", ""), props.get("path", "")
@@ -15317,8 +15308,6 @@ def procCreatePATTERN(args):
 		pattern = createPattern(size,args)
 		dbg.log("Creating cyclic pattern of %d bytes" % size)				
 		dbg.log(pattern)
-		global ignoremodules
-		ignoremodules = True
 		objpatternfile = MnLog("pattern.txt")
 		patternfile = objpatternfile.reset()
 		# ASCII
@@ -15339,8 +15328,6 @@ def procCreatePATTERN(args):
 		if not silent:
 			dbg.log("Note: don't copy this pattern from the log window, it might be truncated !",highlight=1)
 			dbg.log("It's better to open %s and copy the pattern from the file" % patternfile,highlight=1)
-		
-		ignoremodules = False
 	return
 
 
@@ -16385,14 +16372,11 @@ def procByteArray(args):
 		outputline += '"\n'
 	output += outputline
 	
-	global ignoremodules
-	ignoremodules = True
 	arrayfilename="bytearray.txt"
 	objarrayfile = MnLog(arrayfilename)
 	arrayfile = objarrayfile.reset()
 	binfilename = arrayfile.replace("bytearray.txt","bytearray.bin")
 	objarrayfile.write(output,arrayfile)
-	ignoremodules = False
 	dbg.logLines(output)
 	dbg.log("")
 	binfile = open(binfilename,"wb")
@@ -16561,13 +16545,10 @@ def procPrintHeader(args):
 					output += thisline + "\"" + "\n"
 					linecnt += 1			
 
-	global ignoremodules
-	ignoremodules = True
 	headerfilename="header.txt"
 	objheaderfile = MnLog(headerfilename)
 	headerfile = objheaderfile.reset()
 	objheaderfile.write(output,headerfile)
-	ignoremodules = False
 	if not silent:
 		dbg.log("-" * 30)
 		dbg.logLines(output)
@@ -16753,13 +16734,10 @@ def procgetPC(args):
 	output += r32 + "|  call + 4:\n\"\\xe8\\xff\\xff\\xff\\xff\\xc3" + opcodes[r32] + "\"\n"
 	output += r32 + "|  fstenv:\n\"\\xd9\\xeb\\x9b\\xd9\\x74\\x24\\xf4" + opcodes[r32] + "\"\n"
 				
-	global ignoremodules
-	ignoremodules = True
 	getpcfilename="getpc.txt"
 	objgetpcfile = MnLog(getpcfilename)
 	getpcfile = objgetpcfile.reset()
 	objgetpcfile.write(output,getpcfile)
-	ignoremodules = False
 	dbg.logLines(output)
 	dbg.log("")			
 	dbg.log("Wrote to file %s" % getpcfile)
@@ -17153,8 +17131,6 @@ def procEgg(args):
 	#Convert binary to printable hex format
 	egghunter_hex = toniceHex(egghunter.strip().replace(b" ",b""),16)
 			
-	global ignoremodules
-	ignoremodules = True
 	hunterfilename="egghunter.txt"
 	objegghunterfile = MnLog(hunterfilename)
 	egghunterfile = objegghunterfile.reset()						
@@ -17188,8 +17164,6 @@ def procEgg(args):
 		dbg.logLines(block)	
 		objegghunterfile.write("\nShellcode, with tag :\n",egghunterfile)
 		objegghunterfile.write(block,egghunterfile)	
-
-	ignoremodules = False
 			
 	return
 
@@ -17224,7 +17198,6 @@ def procSuggest(args):
 	shellcodesizeEIP = 0
 	nullsallowed = True
 	
-	global ignoremodules
 	global noheader
 	global ptr_to_get
 	global silent
@@ -17280,9 +17253,7 @@ def procSuggest(args):
 
 	#ptr_to_get = 5				
 	noheader = True
-	ignoremodules = True
 	exploitfile = objexploitfile.reset()			
-	ignoremodules = False
 	noheader = False
 	
 	dbg.log(" ")
@@ -17319,12 +17290,10 @@ def procSuggest(args):
 				shellcodesizeSEH = mspresults["seh"][seh][3]
 				
 	if isSEH:
-		ignoremodules = True
 		noheader = True
 		exploitfilename_seh="exploit_seh.rb"
 		objexploitfile_seh = MnLog(exploitfilename_seh)
 		exploitfile_seh = objexploitfile_seh.reset()				
-		ignoremodules = False
 		noheader = False
 
 	# start building exploit structure
@@ -17735,18 +17704,76 @@ def procStacks(args):
 
 def procLayout(args):
 	global silent
-	global ignoremodules
 	silent = True
-	ignoremodules = True
-	proc = MnProc()
-	include_chunks = "chunks" in args
+	include_chunks = False
+
+	# Filter aliases -> internal region types they expand to
+	filter_map = {
+		"peb":       set(["PEB"]),
+		"teb":       set(["TEB"]),
+		"mod":       set(["Module"]),
+		"stack":     set(["Stack"]),
+		"heap":      set(["Heap", "Heap Segment"]),
+		"chunks":    set(["Heap", "Heap Segment", "Heap Chunk"]),
+		"vablocks":  set(["Heap", "Heap Segment", "Heap VA Block"]),
+		"all":       set(["PEB", "TEB", "Module", "Stack", "Heap", "Heap Segment", "Heap Chunk", "Heap VA Block"]),
+	}
+	all_internal = set(["PEB", "TEB", "Module", "Stack", "Heap", "Heap Segment", "Heap Chunk", "Heap VA Block"])
+	# By default, hide chunks and VA blocks
+	default_categories = all_internal - set(["Heap Chunk", "Heap VA Block"])
+	valid_filters = sorted(filter_map.keys())
+
+	show_all = "a" in args or "all" in args
+
+	if "f" in args or "filter" in args:
+		filterval = args.get("f", args.get("filter", ""))
+		if type(filterval).__name__.lower() == "bool":
+			dbg.log("Please provide a comma-separated list of types to show with -f", highlight=1)
+			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
+			silent = False
+			return
+		filter_names = [x.strip().lower() for x in filterval.split(",")]
+		show_categories = set()
+		for fn in filter_names:
+			if fn in filter_map:
+				show_categories |= filter_map[fn]
+			else:
+				dbg.log("Unknown filter '%s', ignoring" % fn, highlight=1)
+		if len(show_categories) == 0:
+			dbg.log("No valid types matched filter '%s'" % filterval, highlight=1)
+			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
+			silent = False
+			return
+	elif show_all:
+		show_categories = set(all_internal)
+	else:
+		show_categories = set(default_categories)
+
+	# Force chunk walking if chunks will be displayed
+	if "Heap Chunk" in show_categories:
+		include_chunks = True
+
+	# Flush cache if -walk is specified
+	if "walk" in args:
+		mnproc.peb = None
+		mnproc.teb = None
+		mnproc.modules = {}
+		mnproc.stacks = {}
+		mnproc.heapinfo = {}
+		mnproc.ntheapdetail = {}
+		mnproc.defaultheap = None
+		dbg.log("Cache flushed, re-walking process...")
+
 	dbg.log("Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
-	proc.populate(include_chunks=include_chunks)
-	regions = proc.getAllSorted()
+	mnproc.populate(include_chunks=include_chunks)
+	regions = mnproc.getAllSorted()
+
+	# Filter regions
+	regions = [r for r in regions if r[2] in show_categories]
+
 	if len(regions) == 0:
 		dbg.log("No regions found!", highlight=1)
 		silent = False
-		ignoremodules = False
 		return
 
 	filename = "proclayout.txt"
@@ -17772,6 +17799,8 @@ def procLayout(args):
 	objfile.write(header, logfile)
 	objfile.write(sep, logfile)
 
+	in_heap_chain = False
+	prev_category = ""
 	for region in regions:
 		start, end, category, description = region[0], region[1], region[2], region[3]
 		static_size = region[4] if len(region) > 4 else False
@@ -17786,15 +17815,29 @@ def procLayout(args):
 			pstart = "0x%08x" % start
 			pend = "0x%08x" % end
 		psize = "(static) 0x%x" % size if static_size else "0x%x" % size
-		tolog = fmt % (pstart, pend, psize, category, description)
+		indent = ""
+		if category == "Heap":
+			in_heap_chain = True
+		elif category in ("Heap Segment", "Heap VA Block"):
+			if in_heap_chain:
+				indent = "  \\_"
+		elif category == "Heap Chunk":
+			if prev_category in ("Heap Segment", "Heap Chunk"):
+				if in_heap_chain:
+					indent = "    \\_"
+				else:
+					indent = "  \\_"
+		else:
+			in_heap_chain = False
+		tolog = fmt % (pstart, pend, psize, category, indent + description)
 		dbg.log(tolog)
 		objfile.write(tolog, logfile)
+		prev_category = category
 
 	dbg.log(sep)
 	dbg.log("Total: %d regions" % len(regions))
 	objfile.write("Total: %d regions" % len(regions), logfile)
 	silent = False
-	ignoremodules = False
 	return
 
 
@@ -17838,7 +17881,7 @@ def procHeap(args):
 					lfhheapaddress = iHeap.getLFHAddress()
 					lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
 				if iHeap.getEncodingKey() > 0:
-					keyinfo = "Encoding key: 0x%08x" % iHeap.getEncodingKey()
+					keyinfo = "Encoding key: 0x%016x" % iHeap.getEncodingKey()
 			dbg.log("0x%08x (%d segment(s)%s) %s %s %s" % (heap,len(segments),segmentinfo,defheap,lfhheap,keyinfo))
 	else:
 		dbg.log(" ** No heaps found")
@@ -17944,8 +17987,6 @@ def procHeap(args):
 	if error:
 		return
 	else:
-		global ignoremodules
-		ignoremodules = True
 		statinfo = {}
 		logfile_b = ""
 		thislog_b = ""
@@ -18064,11 +18105,10 @@ def procHeap(args):
 				segments = getSegmentsForHeap(heapbase)
 
 				sortedsegments = []
-				global vtableCache
 				# read vtableCache from knowledge
-				vtableCache = dbg.getKnowledge("vtableCache")
-				if vtableCache is None:
-					vtableCache = {}
+				mnproc.vtableCache = dbg.getKnowledge("vtableCache")
+				if mnproc.vtableCache is None:
+					mnproc.vtableCache = {}
 
 				for seg in segments:
 					sortedsegments.append(seg)
@@ -18217,7 +18257,7 @@ def procHeap(args):
 												objects[objectptr-block] = [objectinfo,objconstr]
 											objsize = 0
 											if findvtablesize:
-												if not objconstr in vtableCache:
+												if not objconstr in mnproc.vtableCache:
 													cmd2run = "u %s::CreateElement L 12" % objconstr
 													objoutput = dbg.nativeCommand(cmd2run)
 													if not "HeapAlloc" in objoutput:
@@ -18254,10 +18294,9 @@ def procHeap(args):
 																				objsize = 0
 																		break
 															lineindex += 1
-													vtableCache[objconstr] = objsize
-												else:
-													objsize = vtableCache[objconstr]
-
+												mnproc.vtableCache[objconstr] = objsize
+											else:
+												objsize = mnproc.vtableCache[objconstr]
 							# remove object entries that belong to the same object
 							allobjects = []
 							objectstodelete = []
@@ -18272,7 +18311,7 @@ def procHeap(args):
 									objname = objects[optr][1]
 									objsize = 0
 									try:
-										objsize = vtableCache[objname]
+										objsize = mnproc.vtableCache[objname]
 									except:
 										objsize = 0
 									skipuntil = optr + objsize
@@ -18378,8 +18417,8 @@ def procHeap(args):
 									data = objects[ptr][0]
 									vtablename = objects[ptr][1]
 									datasize = 0
-									if vtablename in vtableCache:
-										datasize = vtableCache[vtablename]
+									if vtablename in mnproc.vtableCache:
+										datasize = mnproc.vtableCache[vtablename]
 									alldata = data
 									if datasize > 0:
 										blockinfo = "%s (0x%x bytes): %s" % (ptrtype,datasize,data)
@@ -18423,7 +18462,7 @@ def procHeap(args):
 						dbg.log(tolog)
 					logfile_l.write("",thislog_l)
 					logfile_l.write(tolog,thislog_l)
-				dbg.addKnowledge("vtableCache",vtableCache)
+				dbg.addKnowledge("vtableCache",mnproc.vtableCache)
 
 
 			if searchtype in ["segments","all","chunks"] or "stat" in args:
@@ -18619,7 +18658,6 @@ def procHeap(args):
 			except:
 				pass
 	#dbg.log("%s" % "*" * 90)					
-		ignoremodules = False
 	return
 
 def procGetIAT(args):
@@ -19055,12 +19093,9 @@ def procSkeleton(args):
 	
 	exploitfilename="msfskeleton.rb"
 	objexploitfile = MnLog(exploitfilename)
-	global ignoremodules
 	global noheader
 	noheader = True
-	ignoremodules = True
 	exploitfile = objexploitfile.reset()			
-	ignoremodules = False
 	noheader = False
 
 	modulecriteria = {}
@@ -19392,10 +19427,10 @@ def procInfoDump(args):
 	filename = "infodump.xml"
 	xmldata = '<info>\n'
 	xmldata += "<modules>\n"
-	if len(g_modules) == 0:
+	if len(mnproc.g_modules) == 0:
 		populateModuleInfo()
 	modulestoquery=[]
-	for thismodule,modproperties in g_modules.items():
+	for thismodule,modproperties in mnproc.g_modules.items():
 		xmldata += "  <module name='%s'>\n" % thismodule
 		thisbase = getModuleProperty(thismodule,"base")
 		thissize = getModuleProperty(thismodule,"size")
@@ -19522,6 +19557,19 @@ def procPageACL(args):
 		orderedpages = toshow
 		dbg.log("Showing %d pages" % len(orderedpages))
 	if len(orderedpages) > 0:
+		# Pre-build lookup tables to avoid per-page MnPointer/belongsTo overhead
+		if len(mnproc.g_modules) == 0:
+			populateModuleInfo()
+		mod_ranges = []
+		for modname, modprops in mnproc.g_modules.items():
+			mod_ranges.append((modprops["base"], modprops["top"], modname))
+		mod_ranges.sort()
+
+		stacks = getStacks()
+
+		if len(mnproc.VACache) == 0:
+			mnproc.populateVACache()
+
 		objfile = MnLog(filename)
 		aclfile = objfile.reset()
 		addr_width = 10
@@ -19543,23 +19591,46 @@ def procPageACL(args):
 			pageusage = ""
 			if __DEBUGGERAPP__ == "WinDBG":
 				pageusage = page.getUsage().strip()
-			ptr = MnPointer(pagestart)
 			mod = ""
 			sectionname = ""
-			try:
-				mod = ptr.belongsTo()
-				if not mod == "":
-					sectionname = page.getSection().strip()
-			except:
-				#print traceback.format_exc()
-				pass
+			# Check modules via pre-built sorted list (no MnPointer needed)
+			for modbase, modtop, modname in mod_ranges:
+				if modbase > pagestart:
+					break
+				if pagestart >= modbase and pagestart <= modtop:
+					mod = modname
+					try:
+						sectionname = page.getSection().strip()
+					except:
+						pass
+					break
 			if mod == "":
-				if ptr.isOnStack():
-					if not "Stack" in pageusage:
-						mod = "(%s)" % ptr.getOwnerName()
-				elif ptr.isInHeap():
-					if not "Heap" in pageusage:
-						mod = "(%s)" % ptr.getOwnerName()
+				# Check stacks
+				on_stack = False
+				for stack in stacks:
+					if stacks[stack][0] <= pagestart < stacks[stack][1]:
+						on_stack = True
+						break
+				if on_stack:
+					if "Stack" not in pageusage:
+						mod = "(Stack)"
+				else:
+					# Check heap segments
+					in_heap = False
+					owner = ""
+					for heap, segstart, seglast in mnproc.VACache["segments"]:
+						if pagestart >= heap and pagestart <= seglast:
+							in_heap = True
+							owner = "Heap Segment"
+							break
+					if not in_heap:
+						for vastart, vaend in mnproc.VACache["vablocks"]:
+							if pagestart >= vastart and pagestart <= vaend:
+								in_heap = True
+								owner = "VirtualAllocdBlock"
+								break
+					if in_heap and "Heap" not in pageusage:
+						mod = "(%s)" % owner
 			acl = page.getAccess(human=True)
 			tolog = ""
 			pusage = ""
@@ -21197,19 +21268,14 @@ def procEval(args):
 
 def procDiffHeap(args):
 
-	global ignoremodules
 	filenamebefore = "heapstate_before.db"
 	filenameafter = "heapstate_after.db"
-
-	ignoremodules = True
 
 	statefilebefore = MnLog(filenamebefore)
 	thisstatefilebefore = statefilebefore.reset(clear=False)
 
 	statefileafter = MnLog(filenameafter)
 	thisstatefileafter = statefileafter.reset(clear=False)
-
-	ignoremodules = False
 
 
 	beforestate = {}
@@ -21758,7 +21824,7 @@ def procChangeACL(args):
 		addyerror = True
 	if "acl" in args:
 		if type(args["acl"]).__name__.lower() != "bool":
-			if args["acl"].upper() in memProtConstants:
+			if args["acl"].upper() in MnProc.memProtConstants:
 				acl = args["acl"].upper()
 			else:
 				aclerror = True
@@ -21771,12 +21837,12 @@ def procChangeACL(args):
 	if aclerror:
 		dbg.log(" *** Please specify a valid memory protection constant with -acl ***")
 		dbg.log(" *** Valid values are :")
-		for acltype in memProtConstants:
-			dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),memProtConstants[acltype][0],memProtConstants[acltype][1]))
+		for acltype in MnProc.memProtConstants:
+			dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),MnProc.memProtConstants[acltype][0],MnProc.memProtConstants[acltype][1]))
 
 	if not addyerror and not aclerror:
-		pageacl = memProtConstants[acl][1]
-		pageaclname = memProtConstants[acl][0]
+		pageacl = MnProc.memProtConstants[acl][1]
+		pageaclname = MnProc.memProtConstants[acl][0]
 		dbg.log("[+] ACL Changes for address 0x%08x" % addy)
 		dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
 		dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
@@ -21960,14 +22026,14 @@ def procAllocMem(args):
 	aclerror = False
 	if "acl" in args:
 		if type(args["acl"]).__name__.lower() != "bool":
-			if args["acl"].upper() in memProtConstants:
+			if args["acl"].upper() in MnProc.memProtConstants:
 				acl = args["acl"].upper()
 			else:
 				aclerror = True
 				dbg.log(" *** Please specify a valid memory protection constant with -acl ***")
 				dbg.log(" *** Valid values are :")
-				for acltype in memProtConstants:
-					dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),memProtConstants[acltype][0],memProtConstants[acltype][1]))
+				for acltype in MnProc.memProtConstants:
+					dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),MnProc.memProtConstants[acltype][0],MnProc.memProtConstants[acltype][1]))
 
 	if addyerror:
 		dbg.log(" *** Please specify a valid address with -a ***",highlight=1)
@@ -21979,8 +22045,8 @@ def procAllocMem(args):
 		dbg.log("[+] Requested allocation size: 0x%08x (%d) bytes" % (size,size))
 		if addy > 0:
 			dbg.log("[+] Desired target location : 0x%08x" % addy)
-		pageacl = memProtConstants[acl][1]
-		pageaclname = memProtConstants[acl][0]
+		pageacl = MnProc.memProtConstants[acl][1]
+		pageaclname = MnProc.memProtConstants[acl][0]
 		if addy > 0:
 			dbg.log("    Current page ACL: %s" % getPointerAccess(addy))
 		dbg.log("    Desired page ACL: %s (0x%02x)" % (pageaclname,pageacl))
@@ -22629,10 +22695,24 @@ DEP Bypass options :
 	
 	stacksUsage = """Shows all stacks for each thread in the running application"""
 
-	proclayoutUsage = """Show a unified process memory layout map (PEB, TEB, modules, stacks, heaps, pages)
+	proclayoutUsage = """Show a unified process memory layout map (PEB, TEB, modules, stacks, heaps)
 
 Optional arguments:
-    -chunks : Include NT heap chunk detail (slower)"""
+    -a      : Show all region types (including chunks and VA blocks)
+    -f <types> : Filter by comma-separated types to display
+                 Valid types: peb, teb, mod, stack, heap, chunks, vablocks, all
+                 Each type expands to include related regions:
+                   heap     = Heap + Heap Segments
+                   chunks   = Heap + Heap Segments + Heap Chunks
+                   vablocks = Heap + Heap Segments + Heap VA Blocks
+                   all      = Everything
+                 Example: -f "heap,stack"
+                 Example: -f "chunks"  (shows heaps, segments and chunks)
+                 Example: -f "all"     (same as -a)
+
+By default, Heap Chunks and Heap VA Blocks are hidden.
+Use -a to show everything, or -f to pick specific types.
+    -walk   : Flush cached data and re-walk the process (pick up changes)"""
 	
 	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
 
