@@ -10639,9 +10639,10 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 		dbg.log("")
 		dbg.log("[+] Filtering applicable pages")
 		dbg.log("    Desired Access Control: %s %s" % (desiredacl, desiredacl_human))
-		for pageaddress in allpages:
-			thispage = allpages[pageaddress]
-			pagebegin = thispage.getBegin()
+		for opage in allpages.keys():
+			pageaddress = opage
+			thispage = allpages[opage]
+			pagebegin = thispage.getBaseAddress()
 			pageend = pagebegin + thispage.getSize()
 			if pagebegin >= base and pageend <= top:
 				pageaccess = thispage.getAccess(human=True)
@@ -10732,7 +10733,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	startcounter = 1
 	for ptrtypes in allpointers:
 		if not silent:
-			dbg.log("    Processing start instruction %d/%d: '%s': examining %d locations" % (startcounter, len(allpointers), ptrtypes, len(allpointers[ptrtypes])))
+			dbg.log("    Seq %d/%d, start instruction '%s', exploring %d locations" % (startcounter, len(allpointers), ptrtypes, len(allpointers[ptrtypes])))
 		startcounter += 1
 		for thisptr in allpointers[ptrtypes]:
 			thisdisam = ""
