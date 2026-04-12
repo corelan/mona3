@@ -74,9 +74,10 @@ __DEBUGGERAPP__ = ''
 arch = 32
 win7mode = False
 
-Registers32BitsOrder = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"]
-Registers64BitsOrder = ["RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
-						"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"]
+
+Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
+Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+						"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
 
 
 try:
@@ -148,16 +149,16 @@ DESC = "Corelan Consulting bv exploit development swiss army knife"
 #---------------------------------------#	
 
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
-STACK_POINTER = "ESP" if arch == 32 else "RSP"
-PTR_SIZE_DIRECTIVE = "DWORD PTR" if arch == 32 else "QWORD PTR"
+STACK_POINTER = "esp" if arch == 32 else "rsp"
+PTR_SIZE_DIRECTIVE = "dword ptr" if arch == 32 else "qword ptr"
 _teb_addr_cache = None
 _peb_addr_cache = None
 _peb_list_cache = None
 MemoryPageACL={}
 global scriptname
 currentArgs = []
-disasmUpperChecked = False
-disasmIsUpper = False
+disasmLowerChecked = False
+disasmIsLower = False
 configFileCache = {}
 configwarningshown = False
 ptr_counter = 0
@@ -173,7 +174,7 @@ if __DEBUGGERAPP__ == "WinDBG":
 	if pykd.getSymbolPath().replace(" ","") == "":
 		dbg.log("")
 		dbg.log("** Warning, no symbol path set ! ** ",highlight=1)
-		sympath = "srv*c:\symbols*http://msdl.microsoft.com/download/symbols"
+		sympath = "srv*c:\symbols*https://msdl.microsoft.com/download/symbols"
 		dbg.log("   I'll set the symbol path to %s" % sympath)
 		pykd.setSymbolPath(sympath)
 		dbg.log("   Symbol path set, now reloading symbols...")
@@ -275,12 +276,12 @@ def resetGlobals():
 	Clears all process-level caches on MnProc and resets mona globals
 	"""
 	global currentArgs
-	global disasmUpperChecked
+	global disasmLowerChecked
 	global mnproc
 
 	mnproc = MnProc()
 	currentArgs = None
-	disasmUpperChecked = False
+	disasmLowerChecked = False
 	return
 
 
@@ -591,22 +592,21 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 
 
 def getDisasmInstruction(disasmentry):
-	""" returns instruction string, checks if ASM is uppercase and converts to upper if needed """
-	global disasmUpperChecked
-	global disasmIsUpper
+	""" returns instruction string, convert to lower if needed """
+	global disasmLowerChecked
+	global disasmIsLower
 	instrline = disasmentry.getDisasm()
-	if disasmUpperChecked:
-		if not disasmIsUpper:
-			instrline = instrline.upper()
+	if disasmLowerChecked:
+		if not disasmIsLower:
+			instrline = instrline.lower()
 	else:
-		disasmUpperChecked = True
-		interim_instr = instrline.upper()
+		disasmLowerChecked = True
+		interim_instr = instrline.lower()
 		if interim_instr == instrline:
-			disasmIsUpper = True
+			disasmIsLower = True
 		else:
-			disasmIsUpper = False
-			#dbg.log("** It looks like you've configured the debugger to produce lowercase disassembly. Got it, all good **", highlight=1)
-			instrline = instrline.upper()
+			disasmIsLower = False
+			instrline = instrline.lower()
 	return instrline
 	
 
@@ -702,7 +702,7 @@ def getIntForPart(part):
 	The input string can be a hex value, decimal value, register, modulename, or modulee!functionname
 	"""
 	partclean = part
-	partclean = partclean.upper()
+	partclean = partclean.lower()
 	addyok = True
 	partval = 0
 	regs = dbg.getRegs()
@@ -1321,7 +1321,7 @@ def getSourceDest(instruction):
 	if "," in instructionparts:
 		haveboth = True
 
-	delkeys = ["DWORD","PTR","BYTE"]
+	delkeys = ["dword","ptr","byte"]
 
 	for d in delkeys:
 		if d in instructionparts:
@@ -1332,7 +1332,7 @@ def getSourceDest(instruction):
 
 		regfound = False
 		for r in regs:
-			if r.upper() in p.upper() and not "!" in p and not len(instr) == 0:
+			if r.lower() in p.lower() and not "!" in p and not len(instr) == 0:
 				regfound = True
 				seeninstr = True
 				break
@@ -1345,7 +1345,7 @@ def getSourceDest(instruction):
 				seensep = True
 		else:
 			for r in regs:
-				if r.upper() in p.upper():
+				if r.lower() in p.lower():
 					if not seensep or not haveboth:
 						dstp.append(p)
 						if not r in dsto:
@@ -1374,62 +1374,62 @@ def getAllRegs():
 	regs = []
 	if arch == 64:
 		regs = Registers64BitsOrder + Registers32BitsOrder
-		regs.append("R8D")
-		regs.append("R9D")
-		regs.append("R10D")
-		regs.append("R11D")
-		regs.append("R12D")
-		regs.append("R13D")
-		regs.append("R14D")
-		regs.append("R15D")
+		regs.append("r8d")
+		regs.append("r9d")
+		regs.append("r10d")
+		regs.append("r11d")
+		regs.append("r12d")
+		regs.append("r13d")
+		regs.append("r14d")
+		regs.append("r15d")
 
 	if arch == 32:
 		regs = Registers32BitsOrder 
 	
-	regs.append("AX")
-	regs.append("BX")
-	regs.append("CX")
-	regs.append("DX")
-	regs.append("BP")
-	regs.append("SP")
-	regs.append("SI")
-	regs.append("DI")
-	regs.append("AL")
-	regs.append("AH")
-	regs.append("BL")
-	regs.append("BH")
-	regs.append("CL")
-	regs.append("CH")
-	regs.append("DL")
-	regs.append("DH")
+	regs.append("ax")
+	regs.append("bx")
+	regs.append("cx")
+	regs.append("dx")
+	regs.append("bp")
+	regs.append("sp")
+	regs.append("si")
+	regs.append("di")
+	regs.append("al")
+	regs.append("ah")
+	regs.append("bl")
+	regs.append("bh")
+	regs.append("cl")
+	regs.append("ch")
+	regs.append("dl")
+	regs.append("dh")
 	return regs
 
 def getSmallerRegs(reg):
 
-	if reg == "EAX":
-		return ["AX","AL","AH"]
-	if reg == "AX":
-		return ["AL","AH"]
-	if reg == "EBX":
-		return ["BX","BL","BH"]
-	if reg == "BX":
-		return ["BL","BH"]
-	if reg == "ECX":
-		return ["CX","CL","CH"]
-	if reg == "CX":
-		return ["CL","CH"]
-	if reg == "EDX":
-		return ["DX","DL","DH"]
-	if reg == "DX":
-		return ["DL","DH"]
-	if reg == "ESP":
-		return ["SP"]
-	if reg == "EBP":
-		return ["BP"]
-	if reg == "ESI":
-		return ["SI"]
-	if reg == "EDI":
-		return ["DI"]
+	if reg == "eax":
+		return ["ax","al","ah"]
+	if reg == "ax":
+		return ["al","ah"]
+	if reg == "ebx":
+		return ["bx","bl","bh"]
+	if reg == "bx":
+		return ["bl","bh"]
+	if reg == "ecx":
+		return ["cx","cl","ch"]
+	if reg == "cx":
+		return ["cl","ch"]
+	if reg == "edx":
+		return ["dx","dl","dh"]
+	if reg == "dx":
+		return ["dl","dh"]
+	if reg == "esp":
+		return ["sp"]
+	if reg == "ebp":
+		return ["bp"]
+	if reg == "esi":
+		return ["si"]
+	if reg == "edi":
+		return ["di"]
 
 	return []
 
@@ -1445,9 +1445,9 @@ def isReg(reg):
 	"""
 	regs = []
 	if arch == 32:
-		regs=["eax","ebx","ecx","edx","esi","edi","ebp","esp"]
+		regs = Registers32BitsOrder
 	if arch == 64:
-		regs=["rax","rbx","rcx","rdx","rsi","rdi","rbp","rsp", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+		regs = Registers64BitsOrder
 	return str(reg).lower() in regs
 	
 
@@ -1492,29 +1492,29 @@ def Poly_ReturnDW(value):
 	I = random.randint(1, 3)
 	if I == 1:
 		if random.randint(1, 2) == 1:
-			return dbg.assemble( "SUB EAX,EAX\n ADD EAX,0x%08x" % value )
+			return dbg.assemble( "sub eax,eax\n add eax,0x%08x" % value )
 		else:
-			return dbg.assemble( "SUB EAX,EAX\n ADD EAX,-0x%08x" % value )
+			return dbg.assemble( "sub eax,eax\n add eax,-0x%08x" % value )
 	if I == 2:
-		return dbg.assemble( "PUSH 0x%08x\n POP EAX\n" % value )
+		return dbg.assemble( "push 0x%08x\n pop eax\n" % value )
 	if I == 3:
 		if random.randint(1, 2) == 1:
-			return dbg.assemble( "XCHG EAX,EDI\n DB 0xBF\n DD 0x%08x\n XCHG EAX,EDI" % value )
+			return dbg.assemble( "xchg eax,edi\n db 0xBF\n dd 0x%08x\n xchg eax,edi" % value )
 		else:
-			return dbg.assemble( "XCHG EAX,EDI\n MOV EDI,0x%08x\n XCHG EAX,EDI" % value )
+			return dbg.assemble( "xchg eax,edi\n mov edi,0x%08x\n XCHG eax,edi" % value )
 	return
 
 def Poly_Return0():
 	I = random.randint(1, 4)
 	if I == 1:
-		return dbg.assemble( "SUB EAX,EAX" )
+		return dbg.assemble( "sub eax,eax" )
 	if I == 2:
 		if random.randint(1, 2) == 1:
-			return dbg.assemble( "PUSH 0\n POP EAX" )
+			return dbg.assemble( "push 0\n pop eax" )
 		else:
-			return dbg.assemble( "DB 0x6A,0x00\n POP EAX" )
+			return dbg.assemble( "db 0x6A,0x00\n pop eax" )
 	if I == 3:
-		return dbg.assemble( "XCHG EAX,EDI\n SUB EDI,EDI\n XCHG EAX,EDI" )
+		return dbg.assemble( "xchg eax,edi\n sub edi,edi\n xchg eax,edi" )
 	if I == 4:
 		return Poly_ReturnDW(0)
 	return
@@ -2403,9 +2403,9 @@ class MnEncoder:
 		while blockcnt > 0:
 			if not silent:
 				dbg.log("[+] Processing block %d/%d" % (blockcnt,nrblocks))
-			encodedbytes[encodedline] = [b"\x25\x4a\x4d\x4e\x55","AND EAX,0x554E4D4A"]
+			encodedbytes[encodedline] = [b"\x25\x4a\x4d\x4e\x55","and eax,0x554E4D4A"]
 			encodedline += 1
-			encodedbytes[encodedline] = [b"\x25\x35\x32\x31\x2A","AND EAX,0x2A313235"]
+			encodedbytes[encodedline] = [b"\x25\x35\x32\x31\x2A","and eax,0x2A313235"]
 			encodedline += 1
 	
 			opcodes=[]
@@ -2470,7 +2470,7 @@ class MnEncoder:
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[3])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[6])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[9])
-			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[9],opcodes[6],opcodes[3],opcodes[0])]
+			encodedbytes[encodedline] = [thisencodedbyte,"sub eax,0x%s%s%s%s" % (opcodes[9],opcodes[6],opcodes[3],opcodes[0])]
 			encodedline += 1
 
 			thisencodedbyte = b"\x2D"
@@ -2478,7 +2478,7 @@ class MnEncoder:
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[4])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[7])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[10])
-			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[10],opcodes[7],opcodes[4],opcodes[1])]
+			encodedbytes[encodedline] = [thisencodedbyte,"sub eax,0x%s%s%s%s" % (opcodes[10],opcodes[7],opcodes[4],opcodes[1])]
 			encodedline += 1
 
 			thisencodedbyte = b"\x2D"
@@ -2486,10 +2486,10 @@ class MnEncoder:
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[5])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[8])
 			thisencodedbyte += hex2bin("\\x%s" % opcodes[11])
-			encodedbytes[encodedline] = [thisencodedbyte,"SUB EAX,0x%s%s%s%s" % (opcodes[11],opcodes[8],opcodes[5],opcodes[2])]
+			encodedbytes[encodedline] = [thisencodedbyte,"sub eax,0x%s%s%s%s" % (opcodes[11],opcodes[8],opcodes[5],opcodes[2])]
 			encodedline += 1
 
-			encodedbytes[encodedline] = [b"\x50","PUSH EAX"]
+			encodedbytes[encodedline] = [b"\x50","push eax"]
 			encodedline += 1
 			
 			blockcnt -= 1
@@ -2680,16 +2680,16 @@ class MnCallTraceHook(LogBpHook):
 	
 	def run(self,regs):
 		# get instruction at this address
-		thisaddress = regs["EIP"]
+		thisaddress = regs["eip"]
 		thisinstruction = self.instruction
 		allargs = []
 		argstr = ""
-		if thisinstruction.startswith("CALL "):
+		if thisinstruction.startswith("call "):
 			if self.showargs > 0:
 				for cnt in xrange(self.showargs):
 					thisarg = 0
 					try:
-						thisarg = struct.unpack('<L',dbg.readMemory(regs["ESP"]+(cnt*4),4))[0]
+						thisarg = struct.unpack('<L',dbg.readMemory(regs["esp"]+(cnt*4),4))[0]
 					except:
 						thisarg = 0
 					allargs.append(thisarg)
@@ -2720,24 +2720,24 @@ class MnCallTraceHook(LogBpHook):
 							content = bin2hex(bytecontent)
 						except:
 							content = ""
-						FILE.write("            Arg%d at 0x%08x : 0x%08x : %s\n" % (cnt,regs["ESP"]+(cnt*4),allargs[cnt],content))
+						FILE.write("            Arg%d at 0x%08x : 0x%08x : %s\n" % (cnt,regs["esp"]+(cnt*4),allargs[cnt],content))
 						cnt += 1
 				FILE.close()
 			except:
 				#dbg.log("OOPS", highlight=1)
 				pass
-		if thisinstruction.startswith("RETN"):
+		if thisinstruction.startswith("retn"):
 			returnto = 0
 			try:
-				returnto = struct.unpack('<L',dbg.readMemory(regs["ESP"],4))[0]
+				returnto = struct.unpack('<L',dbg.readMemory(regs["esp"],4))[0]
 			except:
 				returnto = 0
 			#dbg.log("ReturnTrace : 0x%08x : %s - Return To 0x%08x" % (thisaddress,thisinstruction,returnto), address = thisaddress)
 			try:
 				FILE=open(self.logfile,"a")
 				FILE.write("0x%08x : %s \n" % (thisaddress, thisinstruction))
-				FILE.write("            ReturnTo at 0x%08x : 0x%08x\n" % (regs["ESP"],returnto))
-				FILE.write("            EAX : 0x%08x\n" % regs["EAX"])
+				FILE.write("            ReturnTo at 0x%08x : 0x%08x\n" % (regs["esp"],returnto))
+				FILE.write("            eax : 0x%08x\n" % regs["eax"])
 				FILE.close()
 			except:
 				pass
@@ -2763,10 +2763,10 @@ class MnConditionalHook(LogBpHook):
 
 	def run(self, regs):
 		try:
-			if eval(self.condition, {"regs": regs, "EAX": regs["EAX"], "ECX": regs["ECX"],
-				"EDX": regs["EDX"], "EBX": regs["EBX"], "ESP": regs["ESP"],
-				"EBP": regs["EBP"], "ESI": regs["ESI"], "EDI": regs["EDI"],
-				"EIP": regs["EIP"]}):
+			if eval(self.condition, {"regs": regs, "eax": regs["eax"], "ecx": regs["ecx"],
+				"edx": regs["edx"], "ebx": regs["ebx"], "esp": regs["esp"],
+				"ebp": regs["ebp"], "esi": regs["esi"], "edi": regs["edi"],
+				"eip": regs["eip"]}):
 				dbg.log("[+] Condition met: %s" % self.condition, highlight=1)
 				dbg.pause()
 		except:
@@ -8677,9 +8677,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if not usefiles:
 		if len(endings) == 0:
 			#RETN only
-			search.append("RETN")
+			search.append("retn")
 			for i in range(0, maxoffset + 1, 2):
-				search.append("RETN 0x"+ toHexByte(i))
+				search.append("retn 0x"+ toHexByte(i))
 		else:
 			for ending in endings:
 				dbg.log("[+] Custom ending : %s" % ending)
@@ -8844,7 +8844,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 										dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
-											fullchain = thischain + " # " + endingtype.upper()
+											fullchain = thischain + " # " + endingtype.lower()
 											msfchain.append([endingtypeptr,endingtype])
 											thisopcode = dbg.disasm(endingtypeptr)
 											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
@@ -9267,15 +9267,15 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 	offsetval = 0
 	
 	for jreg in jopregs:
-		search.append("JMP " + jreg)
-		search.append("JMP [" + jreg + "]")
+		search.append("jmp " + jreg)
+		search.append("jmp [" + jreg + "]")
 		for offsetval in range(0, 40+1, 2):
-			search.append("JMP [" + jreg + "+0x" + toHexByte(offsetval)+"]")
+			search.append("jmp [" + jreg + "+0x" + toHexByte(offsetval)+"]")
 
-	search.append("JMP [ESP]")
+	search.append("jmp [esp]")
 		
 	for offsetval in range(0, 40+1, 2):
-		search.append("JMP [ESP+0x" + toHexByte(offsetval) + "]")
+		search.append("jmp [esp+0x" + toHexByte(offsetval) + "]")
 	
 	dbg.log("[+] Enumerating %d endings in %d module(s)..." % (len(search),len(modulestosearch)))
 	for thismodule in modulestosearch:
@@ -11984,68 +11984,68 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	modulestosearch = getModulesToQuery(modulecriteria)
 	
 	routinesetup["VirtualProtect"] = """--------------------------------------------
- EAX = NOP (0x90909090)
- ECX = lpOldProtect (ptr to W address)
- EDX = NewProtect (0x40)
- EBX = dwSize
- ESP = lPAddress (automatic)
- EBP = ReturnTo (ptr to jmp esp)
- ESI = ptr to VirtualProtect()
- EDI = ROP NOP (RETN)
+ eax = NOP (0x90909090)
+ ecx = lpOldProtect (ptr to W address)
+ edx = NewProtect (0x40)
+ ebx = dwSize
+ esp = lPAddress (automatic)
+ ebp = ReturnTo (ptr to jmp esp)
+ esi = ptr to VirtualProtect()
+ edi = ROP NOP (RETN)
  --- alternative chain ---
- EAX = ptr to &VirtualProtect()
- ECX = lpOldProtect (ptr to W address)
- EDX = NewProtect (0x40)
- EBX = dwSize
- ESP = lPAddress (automatic)
- EBP = POP (skip 4 bytes)
- ESI = ptr to JMP [EAX]
- EDI = ROP NOP (RETN)
- + place ptr to "jmp esp" on stack, below PUSHAD
+ eax = ptr to &VirtualProtect()
+ ecx = lpOldProtect (ptr to W address)
+ edx = NewProtect (0x40)
+ ebx = dwSize
+ esp = lPAddress (automatic)
+ ebp = POP (skip 4 bytes)
+ esi = ptr to JMP [EAX]
+ edi = ROP NOP (RETN)
+ + place ptr to "jmp esp" on stack, below pushad
 --------------------------------------------"""
 
 
 	routinesetup["VirtualAlloc"] = """--------------------------------------------
- EAX = NOP (0x90909090)
- ECX = flProtect (0x40)
- EDX = flAllocationType (0x1000)
- EBX = dwSize
- ESP = lpAddress (automatic)
- EBP = ReturnTo (ptr to jmp esp)
- ESI = ptr to VirtualAlloc()
- EDI = ROP NOP (RETN)
+ eax = NOP (0x90909090)
+ ecx = flProtect (0x40)
+ edx = flAllocationType (0x1000)
+ ebx = dwSize
+ esp = lpAddress (automatic)
+ ebp = ReturnTo (ptr to jmp esp)
+ esi = ptr to VirtualAlloc()
+ edi = ROP NOP (RETN)
  --- alternative chain ---
- EAX = ptr to &VirtualAlloc()
- ECX = flProtect (0x40)
- EDX = flAllocationType (0x1000)
- EBX = dwSize
- ESP = lpAddress (automatic)
- EBP = POP (skip 4 bytes)
- ESI = ptr to JMP [EAX]
- EDI = ROP NOP (RETN)
+ eax = ptr to &VirtualAlloc()
+ ecx = flProtect (0x40)
+ edx = flAllocationType (0x1000)
+ ebx = dwSize
+ esp = lpAddress (automatic)
+ ebp = POP (skip 4 bytes)
+ esi = ptr to JMP [EAX]
+ edi = ROP NOP (RETN)
  + place ptr to "jmp esp" on stack, below PUSHAD
 --------------------------------------------"""
 
 	routinesetup["SetInformationProcess"] = """--------------------------------------------
- EAX = SizeOf(ExecuteFlags) (0x4)
- ECX = &ExecuteFlags (ptr to 0x00000002)
- EDX = ProcessExecuteFlags (0x22)
- EBX = NtCurrentProcess (0xffffffff)
- ESP = ReturnTo (automatic)
- EBP = ptr to NtSetInformationProcess()
- ESI = <not used>
- EDI = ROP NOP (4 byte stackpivot)
+ eax = SizeOf(ExecuteFlags) (0x4)
+ ecx = &ExecuteFlags (ptr to 0x00000002)
+ edx = ProcessExecuteFlags (0x22)
+ ebx = NtCurrentProcess (0xffffffff)
+ esp = ReturnTo (automatic)
+ ebp = ptr to NtSetInformationProcess()
+ esi = <not used>
+ edi = ROP NOP (4 byte stackpivot)
 --------------------------------------------"""
 
 	routinesetup["SetProcessDEPPolicy"] = """--------------------------------------------
- EAX = <not used>
- ECX = <not used>
- EDX = <not used>
- EBX = dwFlags (ptr to 0x00000000)
- ESP = ReturnTo (automatic)
- EBP = ptr to SetProcessDEPPolicy()
- ESI = <not used>
- EDI = ROP NOP (4 byte stackpivot)
+ eax = <not used>
+ ecx = <not used>
+ edx = <not used>
+ ebx = dwFlags (ptr to 0x00000000)
+ esp = ReturnTo (automatic)
+ ebp = ptr to SetProcessDEPPolicy()
+ esi = <not used>
+ edi = ROP NOP (4 byte stackpivot)
 --------------------------------------------"""
 
 	updatetxt = ""
@@ -12194,7 +12194,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 					jmpmodinfo = ""
 					if jmpptr == 0:
 						jmptype = ""
-						jmpinfo = "Unable to find ptr to 'JMP ESP'"
+						jmpinfo = "Unable to find ptr to 'jmp esp'"
 					else:
 						jmpinfo = MnPointer(jmpptr).belongsTo() 
 						tmod = MnModule(jmpinfo)
@@ -12229,7 +12229,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 						for emptytype in suggestions:
 							if emptytype.startswith("empty "):
 								for retptr in suggestions[emptytype]:
-									if interestinggadgets[retptr].startswith("# XOR"):
+									if interestinggadgets[retptr].startswith("# xor"):
 										if getOffset(interestinggadgets[retptr]) == 0:
 											ropptr = retptr+2
 										break
@@ -12238,9 +12238,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 						tmod = MnModule(thismodname)
 						ropnopinfo = getGadgetAddressInfo(ropptr)
 
-						thischain[thisreg] = putValueInReg(thisreg,ropptr,"RETN (ROP NOP) [" + thismodname + "]" + ropnopinfo,suggestions,interestinggadgets,criteria)
+						thischain[thisreg] = putValueInReg(thisreg,ropptr,"retn (rop nop) [" + thismodname + "]" + ropnopinfo,suggestions,interestinggadgets,criteria)
 					else:
-						thischain[thisreg] = putValueInReg(thisreg,ropptr,"[-] Unable to find ptr to RETN (ROP NOP)",suggestions,interestinggadgets,criteria)					
+						thischain[thisreg] = putValueInReg(thisreg,ropptr,"[-] Unable to find ptr to retn (rop nop)",suggestions,interestinggadgets,criteria)					
 				
 				
 				if thistarget.__class__.__name__ == "int" or thistarget.__class__.__name__ == "long":
@@ -12366,8 +12366,8 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 						tohex_array.append(gadgetstep)
 						
 						if showfills:
-							vplogtxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
-							thischaintxt += createJunk(returnoffset,"Filler (RETN offset compensation)",fillersize)
+							vplogtxt += createJunk(returnoffset,"Filler (retn offset compensation)",fillersize)
+							thischaintxt += createJunk(returnoffset,"Filler (retn offset compensation)",fillersize)
 							if returnoffset > 0:
 								ropdbchain += '    <gadget value="junk">Filler</gadget>\n'
 							returnoffset = getOffset(interestinggadgets[gadgetstep])
@@ -12653,7 +12653,7 @@ def getGadgetAddressInfo(gadgetptr):
 def getRegImpact(instructionstr):
 	rimpact = {}
 	instrlineparts = instructionstr.split(" # ")
-	changers = ["ADD","SUB","ADC","INC","DEC","XOR"]
+	changers = ["add","sub","adc","inc","dec","xor"]
 	for i in instrlineparts:
 		instrparts = i.split(" ")
 		dreg = ""
@@ -12661,9 +12661,9 @@ def getRegImpact(instructionstr):
 		if len(instrparts) > 1:
 			if instrparts[0] in changers:
 				dreg = instrparts[1]
-				if instrparts[0] == "INC":
+				if instrparts[0] == "inc":
 					dval = -1
-				elif instrparts[0] == "DEC":
+				elif instrparts[0] == "dec":
 					dval = 1
 				else:
 					vparts = i.split(",")
@@ -12900,7 +12900,7 @@ def getPickupGadget(targetreg,targetval,freetext,suggestions,interestinggadgets,
 				popptreax = getShortestGadget(suggestions["pop eax"])
 				junksize = getJunk(interestinggadgets[popptrtar])-4
 				pickupchain.append([popptrtar,"",junksize])
-				pickupchain.append([theptr,"JMP [EAX] [" + thismodname + "]",0])
+				pickupchain.append([theptr,"jmp [eax] [" + thismodname + "]",0])
 				junksize = getJunk(interestinggadgets[popptreax])-4
 				pickupchain.append([popptreax,"",junksize])
 				pickupchain.append([targetval,freetext,0])
@@ -13142,9 +13142,9 @@ def putValueInReg(reg,value,freetext,suggestions,interestinggadgets,criteria):
 										# only look at real values
 										if isHexValue(instrvalueparts[1].rstrip()):
 											thisval = hexStrToInt(instrvalueparts[1])
-											if instrvalueparts[0].lstrip().startswith("ADD"):
+											if instrvalueparts[0].lstrip().startswith("add"):
 												totalvalue += thisval
-											if instrvalueparts[0].lstrip().startswith("SUB"):
+											if instrvalueparts[0].lstrip().startswith("sub"):
 												totalvalue -= thisval
 								# subtract totalvalue from target value
 								if totalvalue > 0:
@@ -13269,21 +13269,21 @@ def putValueInReg(reg,value,freetext,suggestions,interestinggadgets,criteria):
 								break
 							
 		if not gadgetfound and "add value to " + reg in suggestions and "pop " + reg in suggestions:
-			addtypes = ["ADD","ADC","XOR", "SUB"]
+			addtypes = ["add","adc","xor", "sub"]
 			for addtype in addtypes:
 				for ptrs in suggestions["add value to " + reg]:
 					thisinstr = interestinggadgets[ptrs]
 					thisparts = thisinstr.split("#")
 					addinstr = thisparts[1].lstrip().split(",")
 					if thisparts[1].startswith(addtype):
-						if addtype == "ADD" or addtype == "ADC":
+						if addtype == "add" or addtype == "adc":
 							addvalue = hexStrToInt(addinstr[1])
 							delta = value - addvalue
 							if delta < 0:
 								delta = 0xffffffff + delta + 1
-						if addtype == "XOR":
+						if addtype == "xor":
 							delta = hexStrToInt(addinstr[1]) ^ value
-						if addtype == "SUB":
+						if addtype == "sub":
 							addvalue = hexStrToInt(addinstr[1])
 							delta = value + addvalue
 							if delta < 0:
@@ -13303,21 +13303,21 @@ def putValueInReg(reg,value,freetext,suggestions,interestinggadgets,criteria):
 				if movetype.startswith("move") and movetype.endswith("-> " + reg):
 					fromreg = movetype.split(" ")[1]		
 					if "add value to " + fromreg in suggestions and "pop " + fromreg in suggestions:
-						addtypes = ["ADD","ADC","XOR","SUB"]
+						addtypes = ["add","adc","xor","sub"]
 						for addtype in addtypes:
 							for ptrs in suggestions["add value to " + fromreg]:
 								thisinstr = interestinggadgets[ptrs]
 								thisparts = thisinstr.split("#")
 								addinstr = thisparts[1].lstrip().split(",")
 								if thisparts[1].startswith(addtype):
-									if addtype == "ADD" or addtype == "ADC":
+									if addtype == "add" or addtype == "adc":
 										addvalue = hexStrToInt(addinstr[1])
 										delta = value - addvalue
 										if delta < 0:
 											delta = 0xffffffff + delta + 1
-									if addtype == "XOR":
+									if addtype == "xor":
 										delta = hexStrToInt(addinstr[1]) ^ value
-									if addtype == "SUB":
+									if addtype == "sub":
 										addvalue = hexStrToInt(addinstr[1])
 										delta = value + addvalue
 										if delta < 0:
@@ -13358,7 +13358,7 @@ def getGadgetMoveRegToReg(fromreg,toreg,suggestions,interestinggadgets):
 	if movetype in suggestions:
 		moveptr = getShortestGadget(suggestions[movetype])
 		moveinstr = interestinggadgets[moveptr].lstrip()
-		if moveinstr.startswith("# XOR") or moveinstr.startswith("# OR") or moveinstr.startswith("# AD"):
+		if moveinstr.startswith("# xor") or moveinstr.startswith("# or") or moveinstr.startswith("# ad"):
 			clearchain = clearReg(toreg,suggestions,interestinggadgets)
 			for cc in clearchain:
 				movechain.append([cc[0],cc[1],cc[2]])
@@ -13390,7 +13390,7 @@ def clearReg(reg,suggestions,interestinggadgets):
 						if movetype == "move " + increg + " -> " + reg and "pop " + increg in suggestions:
 							moveptr = getShortestGadget(suggestions[movetype])
 							moveinstr = interestinggadgets[moveptr].lstrip()
-							if not(moveinstr.startswith("# XOR") or moveinstr.startswith("# OR") or moveinstr.startswith("# AD")):
+							if not(moveinstr.startswith("# xor") or moveinstr.startswith("# or") or moveinstr.startswith("# ad")):
 								#kewl
 								pptr = getShortestGadget(suggestions["pop " + increg])
 								junksize = getJunk(interestinggadgets[pptr])-4
@@ -13464,7 +13464,7 @@ def getGadgetValueToReg(reg,value,suggestions,interestinggadgets):
 				#now move it to reg
 				if "move " + thisreg + " -> " + reg in suggestions:
 					bptr = getShortestGadget(suggestions["move " + thisreg + " -> " + reg])
-					if interestinggadgets[bptr].strip().startswith("# ADD"):
+					if interestinggadgets[bptr].strip().startswith("# add"):
 						if not "clear " + reg in suggestions:
 							# other way to clear reg, using pop + inc ?
 							if not "inc " + reg in suggestions or not "pop " + reg in suggestions:
@@ -13503,25 +13503,25 @@ def getOffset(instructions):
 	return offset
 	
 def getJunk(instructions):
-	junkpop = instructions.count("POP ") * 4
-	junkpush = instructions.count("PUSH ") * -4
-	junkpushad = instructions.count("PUSHAD ") * -32
-	junkpopad = instructions.count("POPAD") * 32
-	junkinc = instructions.count("INC ESP") * 1
-	junkdec = instructions.count("DEC ESP") * -1
+	junkpop = instructions.count("pop ") * 4
+	junkpush = instructions.count("push ") * -4
+	junkpushad = instructions.count("pushad ") * -32
+	junkpopad = instructions.count("popad") * 32
+	junkinc = instructions.count("inc esp") * 1
+	junkdec = instructions.count("dec esp") * -1
 	junkesp = 0
-	if instructions.find("ADD ESP,") > -1:
+	if instructions.find("add esp,") > -1:
 		instparts = instructions.split("#")
 		for part in instparts:
 			thisinstr = part.strip()
-			if thisinstr.startswith("ADD ESP,"):
+			if thisinstr.startswith("add esp,"):
 				value = thisinstr.split(",")
 				junkesp += hexStrToInt(value[1])
-	if instructions.find("SUB ESP,") > -1:
+	if instructions.find("sub esp,") > -1:
 		instparts = instructions.split("#")
 		for part in instparts:
 			thisinstr = part.strip()
-			if thisinstr.startswith("SUB ESP,"):
+			if thisinstr.startswith("sub esp,"):
 				value = thisinstr.split(",")
 				junkesp -= hexStrToInt(value[1])
 	junk = junkpop + junkpush + junkpopad + junkpushad + junkesp
@@ -13553,7 +13553,7 @@ def getShortestGadget(chaintypedict):
 	while thischaindict:
 		typeptr, thisinstr = random.choice(list(thischaindict.items()))
 
-		if thisinstr.startswith("# XOR") or thisinstr.startswith("# OR") or thisinstr.startswith("# AD"):
+		if thisinstr.startswith("# xor") or thisinstr.startswith("# or") or thisinstr.startswith("# ad"):
 			thisinstr += "     "	# make sure we don prefer MOV or XCHG
 		thiscount = thisinstr.count("#")
 		thischaindict.pop(typeptr)
@@ -13572,28 +13572,28 @@ def getShortestGadget(chaintypedict):
 def isInterestingGadget(instructions):
 	if isAsciiString(instructions):
 		interesting =	[
-						"POP E", "XCHG E", "LEA E", "PUSH E", "XOR E", "AND E", "NEG E", 
-						"OR E", "ADD E", "SUB E", "INC E", "DEC E", "POPAD", "PUSHAD",
-						"SUB A", "ADD A", "NOP", "ADC E",
-						"SUB BH", "SUB BL", "ADD BH", "ADD BL", 
-						"SUB CH", "SUB CL", "ADD CH", "ADD CL",
-						"SUB DH", "SUB DL", "ADD DH", "ADD DL",
-						"MOV E", "CLC", "CLD", "FS:", "FPA", "TEST "
+						"pop e", "xchg e", "lea e", "push e", "xor e", "and e", "neg e", 
+						"or e", "add e", "sub e", "inc e", "dec e", "popad", "pushad",
+						"sub a", "add a", "nop", "adc e",
+						"sub bh", "sub bl", "add bh", "add bl", 
+						"sub ch", "sub cl", "add ch", "add cl",
+						"sub dh", "sub dl", "ADD DH", "add dl",
+						"mov e", "clc", "cld", "fs:", "fpa", "test "
 						]
 
-		notinteresting = [ "MOV ESP,EBP", "LEA ESP"	]
+		notinteresting = [ "mov esp", "lea esp"	]
 		regs = dbglib.Registers32BitsOrder[:]
 		if arch == 64:
-			interesting.extend(["POP R", "XCHG R", "LEA R", "PUSH R", "XOR R", "AND R", "NEG R", "OR R", "ADD R",
-			                    "SUB R", "INC R", "DEC R", "SUB R", "ADD R", "ADC R", "MOV R"])
-			notinteresting.extend(["MOV RSP, RBP", "LEA RSP"])
+			interesting.extend(["pop r", "xchg r", "lea r", "push r", "xor r", "and r", "neg r", "or r", "add r",
+			                    "sub r", "inc r", "dec r", "sub r", "add r", "adc r", "mov r"])
+			notinteresting.extend(["mov rsp", "lea rsp"])
 			regs.extend(dbglib.Registers64BitsOrder)
 		individual = instructions.split("#")
 		cnt = 0
 		allgood = True
 		toskip = False
 		while (cnt < len(individual)-1) and allgood:	# do not check last one, which is the ending instruction
-			thisinstr = individual[cnt].strip().upper()
+			thisinstr = individual[cnt].strip().lower()
 			if thisinstr != "":
 				toskip = False
 				foundinstruction = False
@@ -13606,7 +13606,7 @@ def isInterestingGadget(instructions):
 							foundinstruction = True
 					if not foundinstruction:
 						#check the conditional instructions
-						if thisinstr.find("MOV DWORD PTR DS:[E") > -1:
+						if thisinstr.find("mov dword ptr ds:[e") > -1:
 							thisinstrparts = thisinstr.split(",")
 							if len(thisinstrparts) > 1:
 								if thisinstrparts[1] in regs:
@@ -13624,15 +13624,15 @@ def isInterestingGadget(instructions):
 	
 def isInterestingJopGadget(instructions):
 	interesting =	[
-					"POP E", "XCHG E", "LEA E", "PUSH E", "XOR E", "AND E", "NEG E", 
-					"OR E", "ADD E", "SUB E", "INC E", "DEC E", "POPAD", "PUSHAD",
-					"SUB A", "ADD A", "NOP", "ADC E",
-					"SUB BH", "SUB BL", "ADD BH", "ADD BL", 
-					"SUB CH", "SUB CL", "ADD CH", "ADD CL",
-					"SUB DH", "SUB DL", "ADD DH", "ADD DL",
-					"MOV E", "CLC", "CLD", "FS:", "FPA"
+					"pop e", "xchg e", "lea e", "push e", "xor e", "and e", "neg e", 
+					"or e", "add e", "sub e", "inc e", "dec e", "popad", "pushad",
+					"sub a", "add a", "nop", "adc e",
+					"sub bh", "sub bl", "add bh", "add bl", 
+					"sub ch", "sub cl", "add ch", "add cl",
+					"sub dh", "sub dl", "ADD DH", "add dl",
+					"mov e", "clc", "cld", "fs:", "fpa", "test "
 					]
-	notinteresting = [ "MOV ESP,EBP", "LEA ESP"	]
+	notinteresting = [ "mov esp,", "lea esp"	]
 	regs = dbglib.Registers32BitsOrder[:]
 	individual = instructions.split("#")
 	cnt = 0
@@ -13642,18 +13642,18 @@ def isInterestingJopGadget(instructions):
 	# what is the jmp instruction ?
 	lastinstruction = individual[len(individual)-1].replace("[","").replace("+"," ").replace("]","").strip()
 	
-	jmp = lastinstruction.split(' ')[1].strip().upper().replace(" ","")
+	jmp = lastinstruction.split(' ')[1].strip().lower().replace(" ","")
 	
-	regs = ["EAX","EBX","ECX","EDX","ESI","EDI","EBP","ESP"]
+	regs = Registers32BitsOrder
 	regs.remove(jmp)
-	if jmp != "ESP":
-		if instructions.find("POP "+jmp) > -1:
+	if jmp != "esp":
+		if instructions.find("pop "+jmp) > -1:
 			popfound=True
 		else:
 			for reg in regs:
-				poploc = instructions.find("POP "+reg)
+				poploc = instructions.find("pop "+reg)
 				if (poploc > -1):
-					if (instructions.find("MOV "+reg+","+jmp) > poploc) or (instructions.find("XCHG "+reg+","+jmp) > poploc) or (instructions.find("XCHG "+jmp+","+reg) > poploc):
+					if (instructions.find("mov "+reg+","+jmp) > poploc) or (instructions.find("xchg "+reg+","+jmp) > poploc) or (instructions.find("xchg "+jmp+","+reg) > poploc):
 						popfound = True
 		allgood = popfound
 	return allgood
@@ -13692,7 +13692,7 @@ def readGadgetsFromFile(filename):
 				if addrline == 0:	
 					thisptr = hexStrToInt(thisLineparts[0].replace("[addr: ",""))
 				thisLineparts = thisLine.split("  ")
-				thisinstrpart = thisLineparts[len(thisLineparts)-1].upper().strip()
+				thisinstrpart = thisLineparts[len(thisLineparts)-1].lower().strip()
 				if thisinstrpart != "":
 					thisinstr += " # " + thisinstrpart
 					ending = thisinstrpart
@@ -13753,40 +13753,40 @@ def getStackPivotDistance(gadget,distance=0):
 
 	if arch == 32:
 		for g in gadgets:
-			if "ADD ESP," in g:
+			if "add esp," in g:
 				offset += hexStrToInt(g.split(",")[1])
-			elif "SUB ESP," in g:
+			elif "sub esp," in g:
 				offset += hexStrToInt(g.split(",")[1])
-			elif "INC ESP" in g:
+			elif "inc esp" in g:
 				offset += 1
-			elif "DEC ESP" in g:
+			elif "dec esp" in g:
 				offset -= 1
-			elif "POP " in g:
+			elif "pop " in g:
 				offset += 4
-			elif "PUSH " in g:
+			elif "push " in g:
 				offset -= 4
-			elif "POPAD" in g:
+			elif "popad" in g:
 				offset += 32
-			elif "PUSHAD" in g:
+			elif "pushad" in g:
 				offset -= 32
-			elif ("DWORD PTR" in g or "[" in g) and "FS" not in g:
+			elif ("dword ptr" in g or "[" in g) and "fs" not in g:
 				return 0
 			
 	if arch == 64:
 		for g in gadgets:
-			if "ADD RSP," in g:
+			if "add rsp," in g:
 				offset += hexStrToInt(g.split(",")[1])
-			elif "SUB RSP," in g:
+			elif "sub rsp," in g:
 				offset += hexStrToInt(g.split(",")[1])
-			elif "INC RSP" in g:
+			elif "inc rsp" in g:
 				offset += 1
-			elif "DEC RSP" in g:
+			elif "dec rsp" in g:
 				offset -= 1
-			elif "POP " in g:
+			elif "pop " in g:
 				offset += 8
-			elif "PUSH " in g:
+			elif "push " in g:
 				offset -= 8
-			elif ("QWORD PTR" in g or "[" in g) and "FS" not in g:
+			elif ("qword ptr" in g or "[" in g) and "fss" not in g:
 				return 0
 
 	if mindistance <= offset and offset <= maxdistance:
@@ -13797,18 +13797,18 @@ def getStackPivotDistance(gadget,distance=0):
 def isGoodGadgetInstr(instruction):
 	if isAsciiString(instruction):
 		forbidden = [
-					"???", "LEAVE", "JMP ", "CALL ", "JB ", "JL ", "JE ", "JNZ ", 
-					"JGE ", "JNS ","SAL ", "LOOP", "LOCK", "BOUND", "SAR", "IN ", 
-					"OUT ", "RCL", "RCR", "ROL", "ROR", "SHL", "SHR", "INT", "JECX",
-					"JNP", "JPO", "JPE", "JCXZ", "JA", "JB", "JNA", "JNB", "JC", "JNC",
-					"JG", "JLE", "MOVS", "CMPS", "SCAS", "LODS", "STOS", "REP", "REPE",
-					"REPZ", "REPNE", "REPNZ", "LDS", "FST", "FIST", "FMUL", "FDIVR",
-					"FSTP", "FST", "FLD", "FDIV", "FXCH", "JS ", "FIDIVR", "SBB",
-					"SALC", "ENTER", "CWDE", "FCOM", "LAHF", "DIV", "JO", "OUT", "IRET",
-					"FILD", "RETF","HALT","HLT","AAM","FINIT","INT3"
+					"???", "leave", "enter", "jmp ", "call ", "jb ", "jl ", "je ", "jnz ", "jz "
+					"jge ", "jns ","sal ", "loop", "lock", "bound", "sar", "in ", 
+					"out ", "rcl", "rcr", "rol", "ror", "shl", "shr", "int", "jecx",
+					"jnp", "jpo", "jpe", "jcxz", "ja", "jb", "jna", "jnb", "jc", "jnc",
+					"jg", "jle", "movs", "cmps", "scas", "lods", "stos", "rep", "repe",
+					"repz", "repne", "repnz", "lds", "fst", "fist", "fmul", "fdivr", "imul"
+					"fstp", "fst", "fld", "fdiv", "fxchg", "js ", "fidivr", "sbb",
+					"salc", "cwde", "fcom", "lahf", "div", "jo", "out", "iret",
+					"fild", "retf","halt","hlt","aam","finit","int3"
 					]
 		for instr in forbidden:
-			if instruction.upper().find(instr) > -1:
+			if instruction.lower().find(instr) > -1:
 				return False
 		return True
 	return False
@@ -13816,18 +13816,18 @@ def isGoodGadgetInstr(instruction):
 def isGoodJopGadgetInstr(instruction):
 	if isAsciiString(instruction):
 		forbidden = [
-					"???", "LEAVE", "RETN", "CALL ", "JB ", "JL ", "JE ", "JNZ ", 
-					"JGE ", "JNS ","SAL ", "LOOP", "LOCK", "BOUND", "SAR", "IN ", 
-					"OUT ", "RCL", "RCR", "ROL", "ROR", "SHL", "SHR", "INT", "JECX",
-					"JNP", "JPO", "JPE", "JCXZ", "JA", "JB", "JNA", "JNB", "JC", "JNC",
-					"JG", "JLE", "MOVS", "CMPS", "SCAS", "LODS", "STOS", "REP", "REPE",
-					"REPZ", "REPNE", "REPNZ", "LDS", "FST", "FIST", "FMUL", "FDIVR",
-					"FSTP", "FST", "FLD", "FDIV", "FXCH", "JS ", "FIDIVR", "SBB",
-					"SALC", "ENTER", "CWDE", "FCOM", "LAHF", "DIV", "JO", "OUT", "IRET",
-					"FILD", "RETF","HALT","HLT","AAM","FINIT"
+					"???", "leave", "enter", "jmp ", "call ", "jb ", "jl ", "je ", "jnz ", "jz "
+					"jge ", "jns ","sal ", "loop", "lock", "bound", "sar", "in ", 
+					"out ", "rcl", "rcr", "rol", "ror", "shl", "shr", "int", "jecx",
+					"jnp", "jpo", "jpe", "jcxz", "ja", "jb", "jna", "jnb", "jc", "jnc",
+					"jg", "jle", "movs", "cmps", "scas", "lods", "stos", "rep", "repe",
+					"repz", "repne", "repnz", "lds", "fst", "fist", "fmul", "fdivr", "imul"
+					"fstp", "fst", "fld", "fdiv", "fxchg", "js ", "fidivr", "sbb",
+					"salc", "cwde", "fcom", "lahf", "div", "jo", "out", "iret",
+					"fild", "retf","halt","hlt","aam","finit","int3"
 					]
 		for instr in forbidden:
-			if instruction.upper().find(instr) > -1:
+			if instruction.lower().find(instr) > -1:
 				return False
 		return True	
 	return False
@@ -13841,43 +13841,44 @@ def isGadgetEnding(instruction,endings,verbosity=False):
 def getRopSuggestion(ropchains,allchains):
 	suggestions={}
 	if arch == 32:
-		arch_aware_regs = dbglib.Registers32BitsOrder[:]
-		arch_aware_regs.remove('ESP')
+		arch_aware_regs = Registers32BitsOrder[:]
+		arch_aware_regs.remove('esp')
 	else:
-		arch_aware_regs = dbglib.Registers64BitsOrder[:]
-		arch_aware_regs.remove('RSP')
-	regs = dbglib.Registers32BitsOrder[:]
-	regs.remove('ESP')
+		arch_aware_regs = Registers64BitsOrder[:]
+		arch_aware_regs.remove('rsp')
+	regs = Registers32BitsOrder[:]
+	regs.remove('esp')
 	if arch == 64:
-		regs.extend(dbglib.Registers64BitsOrder)
-		regs.remove('RSP')
+		regs.extend(Registers64BitsOrder)
+		regs.remove('rsp')
 
 	# pushad
 	# ======================
-	
 	if arch == 32: # we don't care about pushad in 64 bit
-		pushad_allowed = [ "INC ","DEC ","OR ","XOR ","LEA ","ADD ","SUB ", "PUSHAD", "RETN ", "NOP", "POP ","PUSH EAX","PUSH EDI","ADC ","FPATAN","MOV E" , "TEST ", "CMP "]
+		pushad_allowed = [ "inc ","dec ","or ","xor ","lea ","add ","sub ", "pushad", "retn ", "nop", "pop ","push eax","push edi","adc ","fpatan","mov e" , "test ", "cmp "]
 		for r in regs:
-			pushad_allowed.append("MOV "+r+",DWORD PTR DS:[ESP")	#stack
-			pushad_allowed.append("MOV "+r+",DWORD PTR SS:[ESP")	#stack
-			pushad_allowed.append("MOV "+r+",DWORD PTR DS:[ESI")	#virtualprotect
-			pushad_allowed.append("MOV "+r+",DWORD PTR SS:[ESI")	#virtualprotect
-			pushad_allowed.append("MOV "+r+",DWORD PTR DS:[EBP")	#stack
-			pushad_allowed.append("MOV "+r+",DWORD PTR SS:[EBP")	#stack
+			rl = r.lower()
+			pushad_allowed.append("mov "+rl+",dword ptr ds:[esp")	#stack
+			pushad_allowed.append("mov "+rl+",dword ptr ss:[esp")	#stack
+			pushad_allowed.append("mov "+rl+",dword ptr ds:[esi")	#virtualprotect
+			pushad_allowed.append("mov "+rl+",dword ptr ss:[esi")	#virtualprotect
+			pushad_allowed.append("mov "+rl+",dword ptr ds:[ebp")	#stack
+			pushad_allowed.append("mov "+rl+",dword ptr ss:[ebp")	#stack
 			for r2 in regs:
-				pushad_allowed.append("MOV "+r+","+r2)
-				pushad_allowed.append("XCHG "+r+","+r2)
-				pushad_allowed.append("LEA "+r+","+r2)
-		pushad_notallowed = ["POP ESP","POPAD","PUSH ESP","MOV ESP","ADD ESP", "INC ESP","DEC ESP","XOR ESP","LEA ESP","SS:","DS:"]
+				r2l = r2.lower()
+				pushad_allowed.append("mov "+rl+","+r2l)
+				pushad_allowed.append("xchg "+rl+","+r2l)
+				pushad_allowed.append("lea "+rl+","+r2l)
+		pushad_notallowed = ["pop esp","popad","push esp","mov esp","add esp", "inc esp","dec esp","xor esp","lea esp","ss:","ds:"]
 		for gadget in ropchains:
-			gadgetinstructions = ropchains[gadget].strip()
-			if gadgetinstructions.find("PUSHAD") == 2:
+			gadgetinstructions = ropchains[gadget].strip().lower()
+			if gadgetinstructions.find("pushad") == 2:
 				# does chain only contain allowed instructions
 				# one pop is allowed, as long as it's not pop esp
 				# push edi and push eax are allowed too (ropnop)
-				if gadgetinstructions.count("POP ") < 2 and suggestedGadgetCheck(gadgetinstructions,pushad_allowed,pushad_notallowed):
+				if gadgetinstructions.count("pop ") < 2 and suggestedGadgetCheck(gadgetinstructions,pushad_allowed,pushad_notallowed):
 					toadd={}
-					toadd[gadget] = gadgetinstructions
+					toadd[gadget] = ropchains[gadget].strip()
 					if not "pushad" in suggestions:
 						suggestions["pushad"] = toadd
 					else:
@@ -13888,28 +13889,31 @@ def getRopSuggestion(ropchains,allchains):
 	pickedupin = []
 	resulthash = ""
 	allowedpickup = True
+	ptr_size_directive_l = PTR_SIZE_DIRECTIVE.lower()
 	for r in arch_aware_regs:
+		rl = r.lower()
 		for r2 in arch_aware_regs:
-			pickup_allowed = ["NOP","RETN ","INC ","DEC ","OR ","XOR ","MOV ","LEA ","ADD ","SUB ","POP","ADC ","FPATAN", "TEST ", "CMP "]
-			pickup_target = ["MOV "+r+","+PTR_SIZE_DIRECTIVE+" SS:["+r2+"]", "MOV "+r+","+PTR_SIZE_DIRECTIVE+" DS:["+r2+"]"]
-			pickup_allowed.append("MOV "+r+","+PTR_SIZE_DIRECTIVE+" SS:["+r2+"]")
-			pickup_allowed.append("MOV "+r+","+PTR_SIZE_DIRECTIVE+" DS:["+r2+"]")
-			pickup_notallowed = ["POP "+r, "MOV "+r+",E", "LEA "+r+",E", "MOV ESP", "XOR ESP", "LEA ESP", "MOV DWORD PTR", "DEC ESP"]
+			r2l = r2.lower()
+			pickup_allowed = ["nop","retn ","inc ","dec ","or ","xor ","mov ","lea ","add ","sub ","pop","adc ","fpatan", "test ", "cmp "]
+			pickup_target = ["mov "+rl+","+ptr_size_directive_l+" ss:["+r2l+"]", "mov "+rl+","+ptr_size_directive_l+" ds:["+r2l+"]"]
+			pickup_allowed.append("mov "+rl+","+ptr_size_directive_l+" ss:["+r2l+"]")
+			pickup_allowed.append("mov "+rl+","+ptr_size_directive_l+" ds:["+r2l+"]")
+			pickup_notallowed = ["pop "+rl, "mov "+rl+",e", "lea "+rl+",e", "mov esp", "xor esp", "lea esp", "mov dword ptr", "dec esp"]
 			if arch == 64:
-				pickup_notallowed.extend(["MOV RSP", "XOR RSP", "LEA RSP", "DEC RSP", "MOV QWORD PTR"])
+				pickup_notallowed.extend(["mov rsp", "xor rsp", "lea rsp", "dec rsp", "mov qword ptr"])
 
 			for gadget in ropchains:
-				gadgetinstructions = ropchains[gadget].strip()	
+				gadgetinstructions = ropchains[gadget].strip().lower()
 				allowedpickup = False
 				for allowed in pickup_target:
-					if gadgetinstructions.find(allowed) == 2 and gadgetinstructions.count("DWORD PTR") == 1:
+					if gadgetinstructions.find(allowed) == 2 and gadgetinstructions.count("dword ptr") == 1:
 						allowedpickup = True
 						break
 				if allowedpickup:
 					if suggestedGadgetCheck(gadgetinstructions,pickup_allowed,pickup_notallowed):
 						toadd={}
-						toadd[gadget] = gadgetinstructions
-						resulthash = "pickup pointer into "+r.lower()
+						toadd[gadget] = ropchains[gadget].strip()
+						resulthash = "pickup pointer into "+rl
 						if not resulthash in suggestions:
 							suggestions[resulthash] = toadd
 						else:
@@ -13918,26 +13922,28 @@ def getRopSuggestion(ropchains,allchains):
 							pickedupin.append(r)
 	if len(pickedupin) == 0:
 		for r in arch_aware_regs:
+			rl = r.lower()
 			for r2 in arch_aware_regs:
-				pickup_allowed = ["NOP","RETN ","INC ","DEC ","OR ","XOR ","MOV ","LEA ","ADD ","SUB ","POP", "ADC ","FPATAN", "TEST ", "CMP "]
-				pickup_allowed.append("MOV "+r+","+PTR_SIZE_DIRECTIVE+" SS:["+r2+"+")
-				pickup_allowed.append("MOV "+r+","+PTR_SIZE_DIRECTIVE+" DS:["+r2+"+")
-				pickup_target = ["MOV "+r+","+PTR_SIZE_DIRECTIVE+" SS:["+r2+"+", "MOV "+r+","+PTR_SIZE_DIRECTIVE+" DS:["+r2+"+"]
-				pickup_notallowed = ["POP "+r, "MOV "+r+",E", "LEA "+r+",E", "MOV ESP", "XOR ESP", "LEA ESP", "MOV DWORD PTR"]
+				r2l = r2.lower()
+				pickup_allowed = ["nop","retn ","inc ","dec ","or ","xor ","mov ","lea ","add ","sub ","pop", "adc ","fpatan", "test ", "cmp "]
+				pickup_allowed.append("mov "+rl+","+ptr_size_directive_l+" ss:["+r2l+"+")
+				pickup_allowed.append("mov "+rl+","+ptr_size_directive_l+" ds:["+r2l+"+")
+				pickup_target = ["mov "+rl+","+ptr_size_directive_l+" ss:["+r2l+"+", "mov "+rl+","+ptr_size_directive_l+" ds:["+r2l+"+"]
+				pickup_notallowed = ["pop "+rl, "mov "+rl+",e", "lea "+rl+",e", "mov esp", "xor esp", "lea esp", "mov dword ptr"]
 				if arch == 64:
-					pickup_notallowed.extend(["MOV RSP", "XOR RSP", "LEA RSP", "MOV QWORD PTR"])
+					pickup_notallowed.extend(["mov rsp", "xor rsp", "lea rsp", "mov qword ptr"])
 				for gadget in ropchains:
-					gadgetinstructions = ropchains[gadget].strip()	
+					gadgetinstructions = ropchains[gadget].strip().lower()
 					allowedpickup = False
 					for allowed in pickup_target:
-						if gadgetinstructions.find(allowed) == 2 and gadgetinstructions.count(PTR_SIZE_DIRECTIVE) == 1:
+						if gadgetinstructions.find(allowed) == 2 and gadgetinstructions.count(ptr_size_directive_l) == 1:
 							allowedpickup = True
 							break
 					if allowedpickup:
 						if suggestedGadgetCheck(gadgetinstructions,pickup_allowed,pickup_notallowed):
 							toadd={}
-							toadd[gadget] = gadgetinstructions
-							resulthash = "pickup pointer into "+r.lower()
+							toadd[gadget] = ropchains[gadget].strip()
+							resulthash = "pickup pointer into "+rl
 							if not resulthash in suggestions:
 								suggestions[resulthash] = toadd
 							else:
@@ -13949,90 +13955,99 @@ def getRopSuggestion(ropchains,allchains):
 	for reg in arch_aware_regs:	#from
 		for reg2 in arch_aware_regs:	#to
 			if reg != reg2:
-				moveptr_allowed = ["NOP","RETN","POP ","INC ","DEC ","OR ","XOR ","ADD ","PUSH ","AND ", "XCHG ", "ADC ","FPATAN", "TEST ", "CMP "]
-				moveptr_notallowed = ["POP "+reg2,"MOV "+reg2+",","XCHG "+reg2+",","XOR "+reg2,"LEA "+reg2+",","AND "+reg2,"DS:","SS:","PUSHAD","POPAD", "DEC ESP", "DEC RSP"]
-				suggestions = mergeOpcodes(suggestions,getRegToReg("MOVE",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
+				reg2l = reg2.lower()
+				moveptr_allowed = ["nop","retn","pop ","inc ","dec ","or ","xor ","add ","push ","and ", "xchg ", "adc ","fpatan", "test ", "cmp "]
+				moveptr_notallowed = ["pop "+reg2l,"mov "+reg2l+",","xchg "+reg2l+",","xor "+reg2l,"lea "+reg2l+",","and "+reg2l,"ds:","ss:","pushad","popad", "dec esp", "dec rsp"]
+				suggestions = mergeOpcodes(suggestions,getRegToReg("move",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
 				# if we didn't find any, expand the search
 				if not ("move " + reg + " -> " + reg2).lower() in suggestions:
-					moveptr_allowed = ["NOP","RETN","POP ","INC ","DEC ","OR ","XOR ","ADD ","PUSH ","AND ", "XCHG ", "ADC ","FPATAN", "TEST ", "CMP "]
-					moveptr_notallowed = ["POP "+reg2,"MOV "+reg2+",","XCHG "+reg2+",","XOR "+reg2,"LEA "+reg2+",","AND "+reg2,"PUSHAD","POPAD", "DEC ESP", "DEC RSP"]
-					suggestions = mergeOpcodes(suggestions,getRegToReg("MOVE",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
-				
+					moveptr_allowed = ["nop","retn","pop ","inc ","dec ","or ","xor ","add ","push ","and ", "xchg ", "adc ","fpatan", "test ", "cmp "]
+					moveptr_notallowed = ["pop "+reg2l,"mov "+reg2l+",","xchg "+reg2l+",","xor "+reg2l,"lea "+reg2l+",","and "+reg2l,"pushad","popad", "dec esp", "dec rsp"]
+					suggestions = mergeOpcodes(suggestions,getRegToReg("move",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
+
 		reg2 = STACK_POINTER	#special case
 		if reg != reg2:
-			moveptr_allowed = ["NOP","RETN","POP ","INC ","DEC ","OR ","XOR ","ADD ","PUSH ","AND ", "MOV ", "XCHG ", "ADC ", "TEST ", "CMP "]
-			moveptr_notallowed = ["ADD "+reg2, "ADC "+reg2, "POP "+reg2,"MOV "+reg2+",","XCHG "+reg2+",","XOR "+reg2,"LEA "+reg2+",","AND "+reg2,"DS:","SS:","PUSHAD","POPAD", "DEC ESP", "DEC RSP"]
-			suggestions = mergeOpcodes(suggestions,getRegToReg("MOVE",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
-			
+			reg2l = reg2.lower()
+			moveptr_allowed = ["nop","retn","pop ","inc ","dec ","or ","xor ","add ","push ","and ", "mov ", "xchg ", "adc ", "test ", "cmp "]
+			moveptr_notallowed = ["add "+reg2l, "adc "+reg2l, "pop "+reg2l,"mov "+reg2l+",","xchg "+reg2l+",","xor "+reg2l,"lea "+reg2l+",","and "+reg2l,"ds:","ss:","pushad","popad", "dec esp", "dec rsp"]
+			suggestions = mergeOpcodes(suggestions,getRegToReg("move",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
+
 	# xor pointer into another pointer
 	# =================================
 	for reg in arch_aware_regs:	#from
 		for reg2 in arch_aware_regs:	#to
 			if reg != reg2:
-				xorptr_allowed = ["NOP","RETN","POP ","INC ","DEC ","OR ","XOR ","ADD ","PUSH ","AND ", "XCHG ", "ADC ","FPATAN", "TEST ", "CMP "]
-				xorptr_notallowed = ["POP "+reg2,"MOV "+reg2+",","XCHG "+reg2+",","XOR "+reg2,"LEA "+reg2+",","AND "+reg2,"DS:","SS:","PUSHAD","POPAD", "DEC ESP", "DEC RSP"]
-				suggestions = mergeOpcodes(suggestions,getRegToReg("XOR",reg,reg2,ropchains,xorptr_allowed,xorptr_notallowed))
+				reg2l = reg2.lower()
+				xorptr_allowed = ["nop","retn","pop ","inc ","dec ","or ","xor ","add ","push ","and ", "xchg ", "adc ","fpatan", "test ", "cmp "]
+				xorptr_notallowed = ["pop "+reg2l,"mov "+reg2l+",","xchg "+reg2l+",","xor "+reg2l,"lea "+reg2l+",","and "+reg2l,"ds:","ss:","pushad","popad", "dec esp", "dec rsp"]
+				suggestions = mergeOpcodes(suggestions,getRegToReg("xor",reg,reg2,ropchains,xorptr_allowed,xorptr_notallowed))
 	# get stack pointer
 	# =================
 	for reg in arch_aware_regs:
-		moveptr_allowed = ["NOP","RETN","POP ","INC ","DEC ","OR ","XOR ","ADD ","PUSH ","AND ","MOV ", "ADC ","FPATAN", "TEST ", "CMP "]
-		moveptr_notallowed = ["POP ESP","MOV ESP,","XCHG ESP,","XOR ESP","LEA ESP,","AND ESP", "ADD ESP", "],","SUB ESP","OR ESP",
-		                      "POP "+reg,"MOV "+reg,"XCHG "+reg,"XOR "+reg,"LEA "+reg,"AND "+reg]
-		suggestions = mergeOpcodes(suggestions,getRegToReg("MOVE",STACK_POINTER,reg,allchains,moveptr_allowed,moveptr_notallowed))
+		regl = reg.lower()
+		moveptr_allowed = ["nop","retn","pop ","inc ","dec ","or ","xor ","add ","push ","and ","mov ", "adc ","fpatan", "test ", "cmp "]
+		moveptr_notallowed = ["pop esp","mov esp,","xchg esp,","xor esp","lea esp,","and esp", "add esp", "],","sub esp","or esp",
+		                      "pop "+regl,"mov "+regl,"xchg "+regl,"xor "+regl,"lea "+regl,"and "+regl]
+		suggestions = mergeOpcodes(suggestions,getRegToReg("move",STACK_POINTER,reg,allchains,moveptr_allowed,moveptr_notallowed))
 	# add something to register
 	# =========================
 	for reg in arch_aware_regs:	#from
 		for reg2 in arch_aware_regs:	#to
 			if reg != reg2:
-				moveptr_allowed = ["NOP","RETN","POP ","INC ","DEC ","OR ","XOR ","ADD ","PUSH ","AND ", "ADC ","FPATAN", "TEST ", "CMP "]
-				moveptr_notallowed = ["POP "+reg2,"MOV "+reg2+",","XCHG "+reg2+",","XOR "+reg2,"LEA "+reg2+",","AND "+reg2,"DS:","SS:", "DEC ESP", "DEC RSP"]
-				suggestions = mergeOpcodes(suggestions,getRegToReg("ADD",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
+				reg2l = reg2.lower()
+				moveptr_allowed = ["nop","retn","pop ","inc ","dec ","or ","xor ","add ","push ","and ", "adc ","fpatan", "test ", "cmp "]
+				moveptr_notallowed = ["pop "+reg2l,"mov "+reg2l+",","xchg "+reg2l+",","xor "+reg2l,"lea "+reg2l+",","and "+reg2l,"ds:","ss:", "dec esp", "dec rsp"]
+				suggestions = mergeOpcodes(suggestions,getRegToReg("add",reg,reg2,ropchains,moveptr_allowed,moveptr_notallowed))
 	# add value to register
 	# =========================
 	for reg in regs:	#to
-		moveptr_allowed = ["NOP","RETN","POP ","INC ","DEC ","OR ","XOR ","ADD ","PUSH ","AND ", "ADC ", "SUB ","FPATAN", "TEST ", "CMP "]
-		moveptr_notallowed = ["POP "+reg,"MOV "+reg+",","XCHG "+reg+",","XOR "+reg,"LEA "+reg+",","DS:","SS:", "DEC ESP", "DEC RSP"]
-		suggestions = mergeOpcodes(suggestions, getRegToReg("ADDVAL",reg,reg,ropchains,moveptr_allowed,moveptr_notallowed))	
+		regl = reg.lower()
+		moveptr_allowed = ["nop","retn","pop ","inc ","dec ","or ","xor ","add ","push ","and ", "adc ", "sub ","fpatan", "test ", "cmp "]
+		moveptr_notallowed = ["pop "+regl,"mov "+regl+",","xchg "+regl+",","xor "+regl,"lea "+regl+",","ds:","ss:", "dec esp", "dec rsp"]
+		suggestions = mergeOpcodes(suggestions, getRegToReg("addval",reg,reg,ropchains,moveptr_allowed,moveptr_notallowed))
 
 	#inc reg
 	# =======
 	for reg in regs:
-		moveptr_allowed = ["NOP","RETN","POP ","INC " + reg,"DEC ","OR ","XOR ","ADD ","PUSH ","AND ", "ADC ", "SUB ","FPATAN", "TEST ", "CMP "]
-		moveptr_notallowed = ["POP "+reg,"MOV "+reg+",","XCHG "+reg+",","XOR "+reg,"LEA "+reg+",","DS:","SS:", "DEC ESP", "DEC RSP", "DEC "+reg]
-		suggestions = mergeOpcodes(suggestions,getRegToReg("INC",reg,reg,ropchains,moveptr_allowed,moveptr_notallowed))
-		
+		regl = reg.lower()
+		moveptr_allowed = ["nop","retn","pop ","inc " + regl,"dec ","or ","xor ","add ","push ","and ", "adc ", "sub ","fpatan", "test ", "cmp "]
+		moveptr_notallowed = ["pop "+regl,"mov "+regl+",","xchg "+regl+",","xor "+regl,"lea "+regl+",","ds:","ss:", "dec esp", "dec rsp", "dec "+regl]
+		suggestions = mergeOpcodes(suggestions,getRegToReg("inc",reg,reg,ropchains,moveptr_allowed,moveptr_notallowed))
+
 	#dec reg
 	# =======
 	for reg in regs:
-		moveptr_allowed = ["NOP","RETN","POP ","DEC " + reg,"INC ","OR ","XOR ","ADD ","PUSH ","AND ", "ADC ", "SUB ","FPATAN", "TEST ", "CMP "]
-		moveptr_notallowed = ["POP "+reg,"MOV "+reg+",","XCHG "+reg+",","XOR "+reg,"LEA "+reg+",","DS:","SS:", "DEC ESP", "DEC RSP", "INC "+reg]
-		suggestions = mergeOpcodes(suggestions,getRegToReg("DEC",reg,reg,ropchains,moveptr_allowed,moveptr_notallowed))	
+		regl = reg.lower()
+		moveptr_allowed = ["nop","retn","pop ","dec " + regl,"inc ","or ","xor ","add ","push ","and ", "adc ", "sub ","fpatan", "test ", "cmp "]
+		moveptr_notallowed = ["pop "+regl,"mov "+regl+",","xchg "+regl+",","xor "+regl,"lea "+regl+",","ds:","ss:", "dec esp", "dec rsp", "inc "+regl]
+		suggestions = mergeOpcodes(suggestions,getRegToReg("dec",reg,reg,ropchains,moveptr_allowed,moveptr_notallowed))
 	#popad reg
 	# =======
-	if arch == 32: 
-		popad_allowed = ["POPAD","RETN","INC ","DEC ","OR ","XOR ","ADD ","AND ", "ADC ", "SUB ","FPATAN","POP ", "TEST ", "CMP "]
-		popad_notallowed = ["POP ESP","PUSH ESP","MOV ESP","ADD ESP", "INC ESP","DEC ESP","XOR ESP","LEA ESP","SS:","DS:"]
+	if arch == 32:
+		popad_allowed = ["popad","retn","inc ","dec ","or ","xor ","add ","and ", "adc ", "sub ","fpatan","pop ", "test ", "cmp "]
+		popad_notallowed = ["pop esp","push esp","mov esp","add esp", "inc esp","dec esp","xor esp","lea esp","ss:","ds:"]
 		for gadget in ropchains:
-			gadgetinstructions = ropchains[gadget].strip()
-			if gadgetinstructions.find("POPAD") == 2:
+			gadgetinstructions = ropchains[gadget].strip().lower()
+			if gadgetinstructions.find("popad") == 2:
 				if suggestedGadgetCheck(gadgetinstructions,popad_allowed,popad_notallowed):
 					toadd={}
-					toadd[gadget] = gadgetinstructions
+					toadd[gadget] = ropchains[gadget].strip()
 					if not "popad" in suggestions:
 						suggestions["popad"] = toadd
 					else:
-						suggestions["popad"] = mergeOpcodes(suggestions["popad"],toadd)				
+						suggestions["popad"] = mergeOpcodes(suggestions["popad"],toadd)
 	# pop
 	# ===
 	for reg in regs:
-		pop_allowed = "POP "+reg+" # RETN"
+		regl = reg.lower()
+		pop_allowed = "pop "+regl+" # retn"
 		pop_notallowed = []
 		for gadget in ropchains:
-			gadgetinstructions = ropchains[gadget].strip()
+			gadgetinstructions = ropchains[gadget].strip().lower()
 			if gadgetinstructions.find(pop_allowed) == 2:
-				resulthash = "pop "+reg.lower()
+				resulthash = "pop "+regl
 				toadd = {}
-				toadd[gadget] = gadgetinstructions
+				toadd[gadget] = ropchains[gadget].strip()
 				if not resulthash in suggestions:
 					suggestions[resulthash] = toadd
 				else:
@@ -14041,14 +14056,14 @@ def getRopSuggestion(ropchains,allchains):
 	for reg in regs:
 		r = reg.lower()
 		if not "pop "+r in suggestions:
-			pop_notallowed = ["MOV "+reg+",","XCHG "+reg+",","XOR "+reg,"LEA "+reg+",","DS:","SS:", "DEC ESP", "DEC "+reg, "INC " + reg,"PUSH ","XOR "+reg]
+			pop_notallowed = ["mov "+r+",","xchg "+r+",","xor "+r,"lea "+r+",","ds:","ss:", "dec esp", "dec "+r, "inc " + r,"push ","xor "+r]
 			if arch == 64:
-				moveptr_notallowed.append("DEC RSP")
-				moveptr_notallowed.append("SUB RSP")
+				pop_notallowed.append("dec rsp")
+				pop_notallowed.append("sub rsp")
 			for rchain in ropchains:
-				rparts = ropchains[rchain].strip().split("#")
+				rparts = ropchains[rchain].strip().lower().split("#")
 				chainok = False
-				if rparts[1].strip() == "POP " + reg:
+				if len(rparts) > 1 and rparts[1].strip() == "pop " + r:
 						chainok = True
 				if chainok:
 					for rpart in rparts:
@@ -14057,9 +14072,11 @@ def getRopSuggestion(ropchains,allchains):
 							if thisinstr.find(pna) > -1:
 								chainok = False
 								break
+						if not chainok:
+							break
 				if chainok:
 					toadd = {}
-					toadd[rchain] = thisinstr				
+					toadd[rchain] = ropchains[rchain].strip()
 					if not "pop " + r in suggestions:
 						suggestions["pop " + r] = toadd
 					else:
@@ -14067,72 +14084,78 @@ def getRopSuggestion(ropchains,allchains):
 	# neg
 	# ===
 	for reg in regs:
-		neg_allowed = "NEG "+reg+" # RETN"
+		regl = reg.lower()
+		neg_allowed = "neg "+regl+" # retn"
 		neg_notallowed = []
 		for gadget in ropchains:
-			gadgetinstructions = ropchains[gadget].strip()
+			gadgetinstructions = ropchains[gadget].strip().lower()
 			if gadgetinstructions.find(neg_allowed) == 2:
-				resulthash = "neg "+reg.lower()
+				resulthash = "neg "+regl
 				toadd = {}
-				toadd[gadget] = gadgetinstructions
+				toadd[gadget] = ropchains[gadget].strip()
 				if not resulthash in suggestions:
 					suggestions[resulthash] = toadd
 				else:
-					suggestions[resulthash] = mergeOpcodes(suggestions[resulthash],toadd)		
+					suggestions[resulthash] = mergeOpcodes(suggestions[resulthash],toadd)
 	# empty
 	# =====
 	for reg in regs:
-		empty_allowed = ["XOR "+reg+","+reg+" # RETN","MOV "+reg+",FFFFFFFF # INC "+reg+" # RETN", "SUB "+reg+","+reg+" # RETN", "PUSH 0 # POP "+reg + " # RETN", "IMUL "+reg+","+reg+",0 # RETN", "AND "+reg+", 0 # RETN", "MOV "+reg+", 0 # RETN"]
+		regl = reg.lower()
+		empty_allowed = ["xor "+regl+","+regl+" # retn","mov "+regl+",ffffffff # inc "+regl+" # retn", "sub "+regl+","+regl+" # retn", "push 0 # pop "+regl + " # retn", "imul "+regl+","+regl+",0 # retn", "and "+regl+", 0 # retn", "mov "+regl+", 0 # retn"]
 		empty_notallowed = []
 		for gadget in ropchains:
-			gadgetinstructions = ropchains[gadget].strip()
+			gadgetinstructions = ropchains[gadget].strip().lower()
 			for empty in empty_allowed:
 				if gadgetinstructions.find(empty) == 2:
-					resulthash = "clear "+reg.lower()
+					resulthash = "clear "+regl
 					toadd = {}
-					toadd[gadget] = gadgetinstructions
+					toadd[gadget] = ropchains[gadget].strip()
 					if not resulthash in suggestions:
 						suggestions[resulthash] = toadd
 					else:
-						suggestions[resulthash] = mergeOpcodes(suggestions[resulthash],toadd)						
+						suggestions[resulthash] = mergeOpcodes(suggestions[resulthash],toadd)
 	return suggestions
+
 
 def getRegToReg(type,fromreg,toreg,ropchains,moveptr_allowed,moveptr_notallowed):
 	moveptr = []
 	instrwithout = ""
-	toreg = toreg.upper()
+	toreg = toreg.lower()
+	fromreg = fromreg.lower()
+	toregl = toreg.lower()
+	fromregl = fromreg.lower()
 	srcval = False
 	resulthash = ""
 	musthave = ""
-	if type == "MOVE":
-		moveptr.append("MOV "+toreg+","+fromreg)
-		#moveptr.append("LEA "+toreg+", ["+fromreg+"+")
+	if type == "move":
+		moveptr.append("mov "+toregl+","+fromregl)
+		#moveptr.append("lea "+toregl+", ["+fromregl+"+")
 		#if not (fromreg == "ESP" or toreg == "ESP"):
-		moveptr.append("XCHG "+fromreg+","+toreg)
-		moveptr.append("XCHG "+toreg+","+fromreg)
-		moveptr.append("PUSH "+fromreg)
-		moveptr.append("ADD "+toreg+","+fromreg)
-		moveptr.append("ADC "+toreg+","+fromreg)		
-		moveptr.append("XOR "+toreg+","+fromreg)
-	if type == "XOR":
-		moveptr.append("XOR "+toreg+","+fromreg)		
-	if type == "ADD":
-		moveptr.append("ADD "+toreg+","+fromreg)
-		moveptr.append("ADC "+toreg+","+fromreg)		
-		moveptr.append("XOR "+toreg+","+fromreg)
-	if type == "ADDVAL":
-		moveptr.append("ADD "+toreg+",")
-		moveptr.append("ADC "+toreg+",")		
-		moveptr.append("XOR "+toreg+",")		
-		moveptr.append("SUB "+toreg+",")	
+		moveptr.append("xchg "+fromregl+","+toregl)
+		moveptr.append("xchg "+toregl+","+fromregl)
+		moveptr.append("push "+fromregl)
+		moveptr.append("add "+toregl+","+fromregl)
+		moveptr.append("adc "+toregl+","+fromregl)
+		moveptr.append("xor "+toregl+","+fromregl)
+	if type == "xor":
+		moveptr.append("xor "+toregl+","+fromregl)
+	if type == "add":
+		moveptr.append("add "+toregl+","+fromregl)
+		moveptr.append("adc "+toregl+","+fromregl)
+		moveptr.append("xor "+toregl+","+fromregl)
+	if type == "addval":
+		moveptr.append("add "+toregl+",")
+		moveptr.append("adc "+toregl+",")
+		moveptr.append("xor "+toregl+",")
+		moveptr.append("sub "+toregl+",")
 		srcval = True
-		resulthash = "add value to " + toreg
-	if type == "INC":
-		moveptr.append("INC "+toreg)
-		resulthash = "inc " + toreg
-	if type == "DEC":
-		moveptr.append("DEC "+toreg)
-		resulthash = "dec " + toreg		
+		resulthash = "add value to " + toregl
+	if type == "inc":
+		moveptr.append("inc "+toregl)
+		resulthash = "inc " + toregl
+	if type == "dec":
+		moveptr.append("dec "+toregl)
+		resulthash = "dec " + toregl
 	results = {}
 	if resulthash == "":
 		resulthash = type +" "+fromreg+" -> "+toreg
@@ -14140,7 +14163,7 @@ def getRegToReg(type,fromreg,toreg,ropchains,moveptr_allowed,moveptr_notallowed)
 	for tocheck in moveptr:
 		origtocheck = tocheck
 		for gadget in ropchains:
-			gadgetinstructions = ropchains[gadget].strip()
+			gadgetinstructions = ropchains[gadget].strip().lower()
 			if gadgetinstructions.find(tocheck) == 2:
 				moveon = True
 				if srcval:
@@ -14151,15 +14174,15 @@ def getRegToReg(type,fromreg,toreg,ropchains,moveptr_allowed,moveptr_notallowed)
 						if isHexString(subinparts[0].strip()):
 							tocheck = tocheck + subinparts[0].strip()
 						else:
-							moveon = False						
+							moveon = False
 				if moveon:
 					instrwithout = gadgetinstructions.replace(tocheck,"")
-					if tocheck == "PUSH "+fromreg:
-						popreg = instrwithout.find("POP "+toreg)
-						popall = instrwithout.find("POP")
+					if tocheck == "push "+fromregl:
+						popreg = instrwithout.find("pop "+toregl)
+						popall = instrwithout.find("pop")
 						#make sure pop matches push
-						nrpush = gadgetinstructions.count("PUSH ")
-						nrpop = gadgetinstructions.count("POP ")
+						nrpush = gadgetinstructions.count("push ")
+						nrpop = gadgetinstructions.count("pop ")
 						pushpopmatch = False
 						if nrpop >= nrpush:
 							pushes = []
@@ -14171,43 +14194,44 @@ def getRegToReg(type,fromreg,toreg,ropchains,moveptr_allowed,moveptr_notallowed)
 							cntpop = nrpush
 							for parts in ropparts:
 								if parts.strip() != "":
-									if parts.strip().find("PUSH ") > -1:
+									if parts.strip().find("push ") > -1:
 										pushes.append(parts)
-										if parts.strip() == "PUSH "+fromreg:
+										if parts.strip() == "push "+fromregl:
 											cntpush += 1
-									if parts.strip().find("POP ") > -1:
+									if parts.strip().find("pop ") > -1:
 										pops.append(parts)
-										if parts.strip() == "POP "+toreg:
+										if parts.strip() == "pop "+toregl:
 											cntpop -= 1
 							if cntpush == cntpop:
 								#dbg.log("%s : POPS : %d, PUSHES : %d, pushindex : %d, popindex : %d" % (gadgetinstructions,len(pops),len(pushes),pushindex,popindex))
 								#dbg.log("push at %d, pop at %d" % (cntpush,cntpop))
 								pushpopmatch = True
-						if (popreg == popall) and instrwithout.count("POP "+toreg) == 1 and pushpopmatch:
+						if (popreg == popall) and instrwithout.count("pop "+toregl) == 1 and pushpopmatch:
 							toadd={}
-							toadd[gadget] = gadgetinstructions
+							toadd[gadget] = ropchains[gadget].strip()
 							if not resulthash in results:
 								results[resulthash] = toadd
 							else:
 								results[resulthash] = mergeOpcodes(results[resulthash],toadd)
-					else:			
+					else:
 						if suggestedGadgetCheck(instrwithout,moveptr_allowed,moveptr_notallowed):
 							toadd={}
-							toadd[gadget] = gadgetinstructions
+							toadd[gadget] = ropchains[gadget].strip()
 							if not resulthash in results:
 								results[resulthash] = toadd
 							else:
 								results[resulthash] = mergeOpcodes(results[resulthash],toadd)
 			tocheck = origtocheck
 	return results
-	
+
+
 def suggestedGadgetCheck(instructions,allowed,notallowed):
 	individual = instructions.split("#")
 	cnt = 0
 	allgood = True
 	toskip = False
 	while (cnt < len(individual)-1) and allgood:	# do not check last one, which is the ending instruction
-		thisinstr = individual[cnt].upper()
+		thisinstr = individual[cnt].lower()
 		if thisinstr.strip() != "":
 			toskip = False
 			foundinstruction = False
@@ -14332,11 +14356,11 @@ def goFindMSP(distance=0, args=None):
 
 	# determine stack pointer register / pointer size
 	if arch == 64:
-		sp_reg = "RSP"
+		sp_reg = "rsp"
 		ptr_size = 8
 		ptr_pack_fmt = "<Q"
 	else:
-		sp_reg = "ESP"
+		sp_reg = "esp"
 		ptr_size = 4
 		ptr_pack_fmt = "<L"
 
@@ -15273,7 +15297,7 @@ def procFindJMP(args, procUsage=""):
 			showerror = True
 		else:
 			#valid register ?
-			thisreg = args["r"].upper().strip()
+			thisreg = args["r"].lower().strip()
 			if arch == 32:
 				validregs = dbglib.Registers32BitsOrder
 			if arch == 64:
@@ -16653,7 +16677,7 @@ def procBp(args):
 	a = str(args["a"])
 
 	for reg in regs:
-		if reg.upper() == a.upper():
+		if reg.lower() == a.lower():
 			a=toHex(regs[reg])					
 			isReg_a = True
 			break
@@ -16977,7 +17001,7 @@ def procBu(args):
 			while not endAfound:
 				objInstr = dbg.disasmForward(loadlibraryA, cnt)
 				strInstr = getDisasmInstruction(objInstr)
-				if strInstr.startswith("RETN"):
+				if strInstr.startswith("retn"):
 					endAfound = True
 					loadlibraryA = objInstr.getAddress()
 				cnt += 1
@@ -16986,7 +17010,7 @@ def procBu(args):
 			while not endWfound:
 				objInstr = dbg.disasmForward(loadlibraryW, cnt)
 				strInstr = getDisasmInstruction(objInstr)
-				if strInstr.startswith("RETN"):
+				if strInstr.startswith("retn"):
 					endWfound = True
 					loadlibraryW = objInstr.getAddress()
 				cnt += 1	
@@ -18061,7 +18085,7 @@ def procSuggest(args):
 	
 	if "registers" in mspresults:
 		for reg in mspresults["registers"]:
-			if reg.upper() == "EIP":
+			if reg.lower() == "eip" or reg.lower() == "rip":
 				isEIP = True
 				eipval = mspresults["registers"][reg][0]
 				ptrx = MnPointer(eipval)
@@ -18263,7 +18287,7 @@ def procSuggest(args):
 						if ((offsetreg - initialoffsetEIP - 4)/2) > 0:
 							exploitstr += "    buffer << rand_text(" + str((offsetreg - initialoffsetEIP - 4)/2) + ")  #unicode junk\n"
 				stackadjust = 0
-				if largestreg.upper() == "ESP":
+				if largestreg.lower() == "esp":
 					if not isEIPUnicode:
 						exploitstr += "    buffer << Metasm::Shellcode.assemble(Metasm::Ia32.new, 'add esp,-1500').encode_string # avoid GetPC shellcode corruption\n"
 						stackadjust = 6
@@ -18273,7 +18297,7 @@ def procSuggest(args):
 					exploitstr += "    # and then manually encode with unicode inside the exploit section :\n\n"
 					exploitstr += "    enc = framework.encoders.create('x86/unicode_mixed')\n\n"
 					exploitstr += "    register_to_align_to = '" + largestreg.upper() + "'\n\n"
-					if largestreg.upper() == "ESP":
+					if largestreg.lower() == "esp":
 						exploitstr += "    # Note : since you are using ESP as bufferregister, make sure EBP points to a writeable address !\n"
 						exploitstr += "    # or patch the unicode decoder yourself\n"
 					exploitstr += "    enc.datastore.import_options_from_hash({ 'BufferRegister' => register_to_align_to })\n\n"
@@ -19971,9 +19995,9 @@ def procLoad(args):
 			targetloc = "EIP"
 		
 		regs = dbg.getRegs()
-		targetlocupper = targetloc.upper()	
-		if targetlocupper in regs:
-			targetloc = "0x" + toHex(regs[targetlocupper])
+		targetloclower = targetloc.lower()	
+		if targetloclower in regs:
+			targetloc = "0x" + toHex(regs[targetloclower])
 
 		if type(args["f"]).__name__.lower() != "bool":
 			inputfile = args["f"]
@@ -20852,8 +20876,8 @@ def procString(args):
 	else:
 		if type(args["a"]).__name__.lower() != "bool":
 			# check if it's a register or not
-			if str(args["a"]).upper() in regs:
-				addy = regs[str(args["a"].upper())]
+			if str(args["a"]).lower() in regs:
+				addy = regs[str(args["a"].lower())]
 			else:
 				addy = int(args["a"],16)
 		else:
@@ -21580,7 +21604,7 @@ def procUnicodeAlign(args):
 def prepareAlignment(leaks, address, bufferRegister, timeToRun, registers):
 
 	def getRegister(registerName):
-		registerName = registerName.upper()
+		registerName = registerName.lower()
 		regs = dbg.getRegs()
 		if registerName in regs:
 			return regs[registerName]
@@ -22230,383 +22254,7 @@ def procSymclean(args):
 	
 	dbg.log("=" * 60)
 
-	
 
-def procFlow(args):
-
-	srplist = []
-	endlist = []
-	cregs = []
-	cregsc = []
-	avoidlist = []
-	endloc = 0
-	rellist = {}
-	funcnamecache = {}
-	branchstarts = {}
-	maxinstr = 60
-	maxcalllevel = 3
-	callskip = 0
-	instrcnt = 0
-	regs = dbg.getRegs()
-	aregs = getAllRegs()
-	addy = regs["EIP"]
-	addyerror = False
-	eaddy = 0
-	showfuncposition = False
-
-	if "cl" in args:
-		if type(args["cl"]).__name__.lower() != "bool":
-			try:
-				maxcalllevel = int(args["cl"])
-			except:
-				pass
-
-	if "cs" in args:
-		if type(args["cs"]).__name__.lower() != "bool":
-			try:
-				callskip = int(args["cs"])
-			except:
-				pass
-	if "avoid" in args:
-		if type(args["avoid"]).__name__.lower() != "bool":
-			try:
-				avoidl = args["avoid"].replace("'","").replace('"',"").replace(" ","").split(",")
-				for aa in avoidl:
-					a,aok = getAddyArg(aa)
-					if aok:
-						if not a in avoidlist:
-							avoidlist.append(a)
-			except:
-				pass		
-
-	if "cr" in args:
-		if type(args["cr"]).__name__.lower() != "bool":
-			crdata = args["cr"]
-			crdata = crdata.replace("'","").replace('"',"").replace(" ","")
-			crlist = crdata.split(",")
-			for c in crlist:
-				c1 = c.upper()
-				if c1 in aregs:
-					cregs.append(c1)
-					csmall = getSmallerRegs(c1)
-					for cs in csmall:
-						cregs.append(cs)
-
-	if "crc" in args:
-		if type(args["crc"]).__name__.lower() != "bool":
-			crdata = args["crc"]
-			crdata = crdata.replace("'","").replace('"',"").replace(" ","")
-			crlist = crdata.split(",")
-			for c in crlist:
-				c1 = c.upper()
-				if c1 in aregs:
-					cregsc.append(c1)
-					csmall = getSmallerRegs(c1)
-					for cs in csmall:
-						cregsc.append(cs)
-
-	cregs = list(set(cregs))
-	cregsc = list(set(cregsc))
-
-	if "n" in args:
-		if type(args["n"]).__name__.lower() != "bool":
-			try:
-				maxinstr = int(args["n"])
-			except:
-				pass	
-
-	if "func" in args:
-		showfuncposition = True
-
-	if "a" in args:
-		if type(args["a"]).__name__.lower() != "bool":
-			addy,addyok = getAddyArg(args["a"])
-			if not addyok:		
-				dbg.log(" ** Please provide a valid start location with argument -a **")
-				return
-
-	if "e" in args:
-		if type(args["e"]).__name__.lower() != "bool":
-			eaddy,eaddyok = getAddyArg(args["e"])
-			if not eaddyok:
-				dbg.log(" ** Please provide a valid end location with argument -e **")
-				return										
-
-
-	dbg.log("[+] Max nr of instructions per branch: %d" % maxinstr)
-	dbg.log("[+] Maximum CALL level: %d" % maxcalllevel)
-	if len(avoidlist) > 0:
-		dbg.log("[+] Only showing flows that don't contains these pointer(s):")
-		for a in avoidlist:
-			dbg.log("    0x%08x" % a)
-	if callskip > 0:
-		dbg.log("[+] Skipping details of the first %d child functions" % callskip)
-	if eaddy > 0:
-		dbg.log("[+] Searching all possible paths between 0x%08x and 0x%08x" % (addy,eaddy))
-	else:
-		dbg.log("[+] Searching all possible paths from 0x%08x" % (addy))
-	if len(cregs) > 0:
-		dbg.log("[+] Controlled registers: %s" % cregs)
-	if len(cregsc) > 0:
-		dbg.log("[+] Controlled register contents: %s" % cregsc)
-
-	# first, get SRPs at this point
-	if addy == regs["EIP"]:
-		cmd2run = "k"
-		srpdata = dbg.nativeCommand(cmd2run)
-		for line in srpdata.split("\n"):
-			linedata = line.split(" ")
-			if len(linedata) > 1:
-				childebp = linedata[0]
-				srp = linedata[1]
-				if isAddress(childebp) and isAddress(srp):
-					srplist.append(hexStrToInt(srp))
-
-	branchstarts[addy] = [0,srplist,0]
-	curlocs = [addy]
-
-	# create relations
-	while len(curlocs) > 0:
-		curloc = curlocs.pop(0)
-		callcnt = 0
-		#dbg.log("New start location: 0x%08x" % curloc)
-		prevloc = curloc
-		instrcnt = branchstarts[curloc][0]
-		srplist = branchstarts[curloc][1]
-		currcalllevel = branchstarts[curloc][2]
-		while instrcnt < maxinstr:
-			beforeloc = prevloc
-			prevloc = curloc
-			try:
-				thisopcode = dbg.disasm(curloc)
-				instruction = getDisasmInstruction(thisopcode)				
-				instructionbytes = thisopcode.getBytes()
-				instructionsize = thisopcode.opsize
-				opupper = instruction.upper()
-				if opupper.startswith("RET"): 
-					if currcalllevel > 0:
-						currcalllevel -= 1
-					if len(srplist) > 0:
-						newloc = srplist.pop(0)
-						rellist[curloc] = [newloc]
-						curloc = newloc
-					else:
-						break
-				elif opupper.startswith("JMP"):
-					if "(" in opupper and ")" in opupper:
-						ipartsa = opupper.split(")")
-						ipartsb = ipartsa[0].split("(")
-						if len(ipartsb) > 0:
-							jmptarget = ipartsb[1]
-							if isAddress(jmptarget):
-								newloc = hexStrToInt(jmptarget)
-								rellist[curloc] = [newloc]
-								curloc = newloc
-				elif opupper.startswith("J"):
-					if "(" in opupper and ")" in opupper:
-						ipartsa = opupper.split(")")
-						ipartsb = ipartsa[0].split("(")
-						if len(ipartsb) > 0:
-							jmptarget = ipartsb[1]
-							if isAddress(jmptarget):
-								newloc = hexStrToInt(jmptarget)
-								if not newloc in curlocs:
-									curlocs.append(newloc)
-								branchstarts[newloc] = [instrcnt,srplist,currcalllevel]
-								newloc2 = prevloc + instructionsize
-								rellist[curloc] = [newloc,newloc2]
-								curloc = newloc2
-								#dbg.log("    Added 0x%08x as alternative branch start" % newloc)
-				elif opupper.startswith("CALL"):
-					
-					if ("(" in opupper and ")" in opupper) and currcalllevel < maxcalllevel and callcnt > callskip:
-						ipartsa = opupper.split(")")
-						ipartsb = ipartsa[0].split("(")
-						if len(ipartsb) > 0:
-							jmptarget = ipartsb[1]
-							if isAddress(jmptarget):
-								newloc = hexStrToInt(jmptarget)
-								rellist[curloc] = [newloc]
-								curloc = newloc
-						newretptr = prevloc + instructionsize
-						srplist.insert(0,newretptr)
-						currcalllevel += 1
-					else:
-						# don't show the function details, simply continue after the call
-						newloc = curloc+instructionsize
-						rellist[curloc] = [newloc]
-						curloc = newloc
-					callcnt += 1
-				else:
-					curloc += instructionsize
-					rellist[prevloc] = [curloc]
-			except:
-				#dbg.log("Unable to disasm at 0x%08x, past: 0x%08x" % (curloc,beforeloc))
-				if not beforeloc in endlist:
-					endlist.append(beforeloc)
-				instrcnt = maxinstr
-				break
-			#dbg.log("%d 0x%08x : %s  -> 0x%08x" % (instrcnt,prevloc,instruction,curloc))
-			instrcnt += 1
-		if not curloc in endlist:
-			endlist.append(curloc)
-
-	dbg.log("[+] Found total of %d possible flows" % len(endlist))
-
-	if eaddy > 0:
-		if eaddy in rellist:
-			endlist = [eaddy]
-			dbg.log("[+] Limit flows to cases that contain 0x%08x" % eaddy)
-		else:
-			dbg.log(" ** Unable to reach 0x%08x ** " % eaddy)
-			dbg.log("    Try increasing max nr of instructions with parameter -n")
-			return
-
-	filename = "flows.txt"
-	logfile = MnLog(filename)
-	thislog = logfile.reset()
-
-	dbg.log("[+] Processing %d endings" % len(endlist))
-	endingcnt = 1
-	processedresults = []
-	for endaddy in endlist:
-		dbg.log("[+] Creating all paths between 0x%08x and 0x%08x" % (addy,endaddy))
-		allpaths = findAllPaths(rellist,addy,endaddy)
-		if len(allpaths) == 0:
-			#dbg.log("    *** No paths from 0x%08x to 0x%08x *** " % (addy,endaddy))
-			continue
-
-		dbg.log("[+] Ending: 0x%08x (%d/%d), %d paths" % (endaddy,endingcnt,len(endlist), len(allpaths)))
-		endingcnt += 1
-
-		for p in allpaths:
-			if p in processedresults:
-				dbg.log("    > Skipping duplicate path from 0x%08x to 0x%08x" % (addy,endaddy))
-			else:
-				processedresults.append(p)
-				skipthislist = False
-				logl = "Path from 0x%08x to 0x%08x (%d instructions) :" % (addy,endaddy,len(p))
-				if len(avoidlist) > 0:
-					for a in avoidlist:
-						if a in p:
-							dbg.log("    > Skipping path, contains 0x%08x (which should be avoided)"%a)
-							skipthislist = True
-							break
-				if not skipthislist:
-					logfile.write("\n",thislog)
-					logfile.write(logl,thislog)
-					logfile.write("-" * len(logl),thislog)
-					dbg.log("    > Simulating path from 0x%08x to 0x%08x (%d instructions)" % (addy,endaddy,len(p)))
-					cregsb = []
-					for c in cregs:
-						cregsb.append(c)
-					cregscb = []
-					for c in cregsc:
-						cregscb.append(c)
-
-					prevfname = ""
-					fname = ""
-					foffset = ""
-					previnstruction = ""
-					for thisaddy in p:
-						if showfuncposition:
-							if previnstruction == "" or previnstruction.startswith("RET") or previnstruction.startswith("J") or previnstruction.startswith("CALL"):
-								if not thisaddy in funcnamecache:
-									fname,foffset = getFunctionName(thisaddy)
-									funcnamecache[thisaddy] = [fname,foffset]
-								else:
-									fname = funcnamecache[thisaddy][0]
-									foffset = funcnamecache[thisaddy][1]
-								if fname != prevfname:
-									prevfname = fname
-									locname = fname
-									if foffset != "":
-										locname += "+%s" % foffset
-									logfile.write("#--- %s ---" % locname,thislog)
-								#dbg.log("%s" % locname)
-
-						thisopcode = dbg.disasm(thisaddy)
-						instruction = getDisasmInstruction(thisopcode)
-						previnstruction = instruction
-						clist = []
-						clistc = []
-						for c in cregsb:
-							combins = []
-							combins.append(" %s" % c)
-							combins.append("[%s" % c)
-							combins.append(",%s" % c)
-							combins.append("%s]" % c)
-							combins.append("%s-" % c)
-							combins.append("%s+" % c)
-							combins.append("-%s" % c)
-							combins.append("+%s" % c)
-							for comb in combins:
-								if comb in instruction and not c in clist:
-									clist.append(c)
-
-						for c in cregscb:
-							combins = []
-							combins.append(" %s" % c)
-							combins.append("[%s" % c)
-							combins.append(",%s" % c)
-							combins.append("%s]" % c)
-							combins.append("%s-" % c)
-							combins.append("%s+" % c)
-							combins.append("-%s" % c)
-							combins.append("+%s" % c)
-							for comb in combins:
-								if comb in instruction and not c in clistc:
-									clistc.append(c)
-						
-						rsrc,rdst = getSourceDest(instruction)
-
-						csource = False
-						cdest = False
-
-						if rsrc in cregsb or rsrc in cregscb:
-							csource = True
-						if rdst in cregsb or rdst in cregscb:
-							cdest = True
-
-						destructregs = ["MOV","XOR","OR"]
-						writeregs = ["INC","DEC","AND"]
-
-
-						ocregsb = copy.copy(cregsb)
-
-						if not instruction.startswith("TEST") and not instruction.startswith("CMP"):
-							for d in destructregs:
-								if instruction.startswith(d):
-									sourcefound = False
-									sourcereg = ""
-									destfound = False
-									destreg = ""
-
-									for s in clist:
-										for sr in rsrc:
-											if s in sr and not sourcefound:
-												sourcefound = True
-												sourcereg = s
-										for sr in rdst:
-											if s in sr and not destfound:
-												destfound = True
-												destreg = s
-
-									if sourcefound and destfound:
-										if not destreg in cregsb:
-											cregsb.append(destreg)
-									if destfound and not sourcefound:
-										sregs = getSmallerRegs(destreg)
-										if destreg in cregsb:
-											cregsb.remove(destreg)
-										for s in sregs:
-											if s in cregsb:
-												cregsb.remove(s)
-									break
-
-						logfile.write("0x%08x : %s" % (thisaddy,instruction),thislog)
-						
-	return
 
 
 def procChangeACL(args):
@@ -22681,9 +22329,9 @@ def procToBp(args):
 				addyerror = True
 	else:
 		if arch == 32:
-			addy = regs["EIP"]
+			addy = regs["eip"]
 		else:
-			addy = regs["RIP"]
+			addy = regs["rip"]
 
 	if "e" in args:
 		executenow = True
@@ -22713,7 +22361,7 @@ def procToBp(args):
 	
 	for reg in regnames:
 		for ipart in instructionparts:
-			if reg.upper() in ipart.upper():
+			if reg.lower() in ipart.lower():
 				usedregs.append(reg)
 
 	if len(usedregs) > 0:
@@ -22722,7 +22370,7 @@ def procToBp(args):
 		
 		for ipart in instructionparts:
 			for reg in regnames:
-				if reg.upper() in ipart.upper():
+				if reg.lower() in ipart.lower():
 
 					if "[" in ipart:
 						regsyntax += ipart.replace("[","").replace("]","")
@@ -22745,13 +22393,13 @@ def procToBp(args):
 		regsyntax = regsyntax.strip(", ")
 		regsyntax += '\\",%s;' % argsyntax
 
-	if "CALL" in instruction.upper():
+	if "call" in instruction.lower():
 		if arch == 32:
 			dmpsyntax += '.echo;.printf \\"Stack (esp: 0x%p):\\",esp;.echo;dps esp L 0x4;'
 		if arch == 64:
 			dmpsyntax += '.echo;.printf \\"rcx: 0x%p, rdx: 0x%p, r8: 0x%p, r9: 0x%p\\", @rcx, @rdx, @r8, @rc9;'
 
-	if instruction.upper().startswith("RET"):
+	if instruction.lower().startswith("ret"):
 		if arch == 32:
 			dmpsyntax += '.echo;.printf \\"EAX: 0x%p, Ret To: 0x%p, Arg1: 0x%p, Arg2: 0x%p, Arg3: 0x%p, Arg4: 0x%p\\",eax,poi(esp),poi(esp+4),poi(esp+8),poi(esp+c),poi(esp+10);'
 		if arch == 64:
@@ -23744,16 +23392,6 @@ Arguments:
 Optional arguments:
     -e                : Execute breakpoint command right away"""
 
-	flowUsage = """Simulates execution flows from current location (EIP), tries all conditional jump combinations
-
-Optional arguments:
-    -e <address>                 : Show execution flows that will reach specified address
-    -avoid <address,address,...> : Only show paths that don't contain any of the pointers to avoid
-    -n <nr>                      : Max nr of instructions, default: 60
-    -cl <nr>                     : Max level of CALL to follow in detail, default: 3
-    -cs <nr>                     : Don't show details of first <nr> CALL/child functions. default: 0
-    -func                        : Show function names (slows down process)."""
-
 	symcleanUsage = """This functions removes .error files from symbol folder(s).
   By default, it will try to obtain the active symbol path and run through the relevant folder.
   You can also specify a folder yourself (but that's optional)
@@ -23844,7 +23482,6 @@ Arguments:
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
 		commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc",[32,64])
 		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
-		commands["flow"]		= MnCommand("flow","Simulate execution flows, including all branch combinations",flowUsage,procFlow,"flw")
 		commands["load"]		= MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
 		commands["symclean"]		= MnCommand("symclean","Remove .error files from all symbol folders", symcleanUsage, procSymclean,"symjunk",[32,64])
 	commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")

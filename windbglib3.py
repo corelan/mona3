@@ -82,9 +82,9 @@ ModuleCache = {}
 FuncCache = {}
 disAsmCache = {}
 
-Registers32BitsOrder = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"]
-Registers64BitsOrder = ["RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
-						"R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15"]
+Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
+Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+						"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
 
 if pykd.is64bitSystem():
 	arch = 64
@@ -244,30 +244,6 @@ def getPEBInfo(peb_addr=None):
 		print("  1. msdiaxxx.dll has not been registered correctly    and/or")
 		print("  2. symbols are missing for ntdll.dll")
 		print("")
-		print(" Possible solutions:")
-		print(" -------------------")
-		print(" 1. Re-register the VC runtime library:")
-		print("    * For PyKd v%s:" % currversion)
-		if currversion.startswith("0.2"):
-			print("      (Re)Install the x86 VC++ Redistributable Package for Visual Studio 2008")
-			print("       (https://www.microsoft.com/en-us/download/details.aspx?id=29)")
-			print("      Next, run the following command from an administrator prompt:")
-			print("        (x86) regsvr32.exe \"%ProgramFiles%\\Common Files\\microsoft shared\\VC\\msdia90.dll\"\n")
-			print("        (x64) regsvr32.exe \"%ProgramFiles(x86)%\\Common Files\\microsoft shared\\VC\\msdia90.dll\"\n")
-		else:
-			print("      Either install Visual Studio 2013, or get a copy of msdia120.dll and register it manually\n")
-			print("      You can find a copy of msdia120.dll inside the pykd.zip file inside the github repository")
-			print("      (Use at your own risk!).  Place the file in the correct 'VC' folder and run regsvr32 from an administrative prompt:")
-			print("        (x86) regsvr32.exe \"%ProgramFiles%\\Common Files\\microsoft shared\\VC\\msdia120.dll\"\n")
-			print("        (x64) regsvr32.exe \"%ProgramFiles(x86)%\\Common Files\\microsoft shared\\VC\\msdia120.dll\"\n")
-
-		print(" 2. Force download of the Symbols for ntdll.dll")
-		print("    * Connect to the internet, and verify that the symbol path is configured correctly")
-		print("      Assuming that the local symbol path is set to c:\\symbols,"  )
-		print("      run the following command from within the windbg application folder")
-		print("        symchk /r c:\\windows\\system32\\ntdll.dll /s SRV*c:\\symbols*http://msdl.microsoft.com/download/symbols")
-		print("")
-		print(" Restart windbg and try again")
 		exit(1)
 
 def getTEBInfo():
@@ -2119,13 +2095,13 @@ class Debugger:
 		regs = []
 		if arch == 32:
 			regs = Registers32BitsOrder[:]
-			regs.append("EIP")
+			regs.append("eip")
 		if arch == 64:
 			regs = Registers64BitsOrder[:]
-			regs.append("RIP")
+			regs.append("rip")
 		reginfo = {}
 		for thisreg in regs:
-			reginfo[thisreg.upper()] = int(pykd.reg(thisreg.lower()))
+			reginfo[thisreg.lower()] = int(pykd.reg(thisreg.lower()))
 		return reginfo
 	
 
@@ -2561,7 +2537,7 @@ class Debugger:
 			disasmLines = []
 			for line in disasmLinesTmp:
 				if line.replace(" ","") != "":
-					disasmLines.append(line)
+					disasmLines.append(line.lower())
 			lineindex = len(disasmLines)-1
 			if lineindex > -1:
 				asmline = disasmLines[lineindex]
@@ -2597,7 +2573,7 @@ class Debugger:
 				disasmLines = []
 				for line in disasmLinesTmp:
 					if line.replace(" ","") != "":
-						disasmLines.append(line)
+						disasmLines.append(line.lower())
 				lineindex = len(disasmLines)-depth
 				if lineindex > -1:
 					asmline = disasmLines[lineindex]
@@ -2617,6 +2593,7 @@ class Debugger:
 						dbgp("Depth 1, returning opcode at 0x%x" % address)
 					return self.getOpcode(address)
 			depth -= 1
+
 
 	def assemble(self,instructions):
 		allbytes = b""
@@ -2643,7 +2620,7 @@ class Debugger:
 		for thisinstruction in allinstructions:	
 			if DEBUG_MODE:
 				dbgp("current instruction : %s" % thisinstruction)
-			thisinstruction = thisinstruction.strip(" ").lstrip(" ")
+			thisinstruction = thisinstruction.strip(" ").lstrip(" ").lower()
 			if thisinstruction.startswith("ret") and not thisinstruction.startswith("retf"):
 				thisinstruction = thisinstruction.replace("retn","ret").replace("ret","retn")
 			thisinstruction = thisinstruction.replace(" ,",",").replace(", ",",")
@@ -3039,29 +3016,7 @@ class wmodule:
 				if DEBUG_MODE:
 					dbgp("Added to EATList: %s!%s at 0x%08x" % (self.modname, eatName, eatAddress))
 		return eatlist
-		ntHeader = getNtHeaders(self.modbase)
-		nrsections = int(ntHeader.FileHeader.NumberOfSections)
-		sectionsize = 40
-		sizeOptionalHeader = int(ntHeader.FileHeader.SizeOfOptionalHeader)
-		try:
-   			# Python 2
-			xrange
-		except NameError:
-			# Python 3, xrange is now named range
-			xrange = range
-
-		for sectioncnt in xrange(nrsections):
-			# IMAGE_SECTION_HEADER[i]
-			sectionstart = (ntHeader.OptionalHeader.getAddress() + sizeOptionalHeader) + (sectioncnt*sectionsize)
-			thissection = rstrip_nulls(pykd.loadChars(sectionstart, 8))
-			if thissection == sectionname:
-				# IMAGE_SECTION_HEADER.SizeOfRawData(DWORD)
-				thissectionsize = pykd.ptrDWord(sectionstart + 0x8 + 0x8)
-				# IMAGE_SECTION_HEADER.VirtualAddress(DWORD)
-				thissectionrva = pykd.ptrDWord(sectionstart + 0x4 + 0x8)
-				thissectionstart = self.modbase + thissectionrva
-				return thissectionstart
-		return 0
+	
 
 
 class wsymbol():
@@ -3374,32 +3329,32 @@ class opcode:
 		return hex2bin(self.dumpdata)
 
 	def isJmp(self):
-		if self.instruction.upper().startswith("JMP"):
+		if self.instruction.lower().startswith("jmp"):
 			return True
 		return False
 
 	def isCall(self):
-		if self.instruction.upper().startswith("CALL"):
+		if self.instruction.lower().startswith("call"):
 			return True
 		return False
 
 	def isPush(self):
-		if self.instruction.upper().startswith("PUSH"):
+		if self.instruction.lower().startswith("push"):
 			return True
 		return False
 
 	def isPop(self):
-		if self.instruction.upper().startswith("POP"):
+		if self.instruction.lower().startswith("pop"):
 			return True
 		return False
 
 	def isRet(self):
-		if self.instruction.upper().startswith("RET"):
+		if self.instruction.lower().startswith("ret"):
 			return True
 		return False
 
 	def isRep(self):
-		if self.instruction.upper().startswith("REP"):
+		if self.instruction.lower().startswith("rep"):
 			return True
 		return False		
 
@@ -3439,67 +3394,6 @@ class opcode:
 
 		return self.instruction
 
-
-	def getDisasm2(self):
-		if self.instruction == "":
-			disasmdata = ""
-
-			global disAsmCache
-			if self.address in disAsmCache:
-				disasmdata = disAsmCache[self.address]
-			else:
-				disasmlines = pykd.dbgCommand("u 0x%08x L 1" % self.address)
-				for thisline in disasmlines.split("\n"):
-					if thisline.lower().startswith(intToHexWinDbgFormat(self.address)):
-						disasmdata = thisline
-						#if DEBUG_MODE:
-						#	dbgp("Disasm at 0x%x: %s" % (self.address, thisline))
-						break
-			if disasmdata != "":
-				disAsmCache[self.address] = disasmdata
-				self.parseDisasm(disasmdata)
-				self.instruction = self.instruction.replace("   "," ").replace("  "," ")
-				# sanitize instruction to make output immlib compatible. Ugly. A bit.
-				instructionpieces = self.instruction.split(" ")
-				self.instruction = ""
-				extrainfo = ""
-				for instructionpiece in instructionpieces:
-					if ("{" not in instructionpiece and "s:" not in instructionpiece) or ("fs:[" in instructionpiece):
-							self.instruction += instructionpiece
-							self.instruction += " "
-					else:
-						extrainfo = instructionpiece.upper()
-						break
-				self.instruction = self.instruction.strip(" ").upper()
-				self.instruction = self.instruction.replace("   "," ").replace("  "," ")
-				if "SS:" in extrainfo:
-					self.instruction = self.instruction.replace("PTR [","PTR SS:[")
-				if "DS:" in extrainfo:
-					self.instruction = self.instruction.replace("PTR [","PTR DS:[")
-				self.instruction = self.instruction.replace("RET","RETN")	
-				if arch == 32:
-					self.instruction = self.instruction.replace(",[",",DWORD PTR DS:[")
-				if arch == 64:
-					self.instruction = self.instruction.replace(",[",",QWORD PTR DS:[")
-				if ",OFFSET" in self.instruction:
-					# find the value between ()
-					instrparts=self.instruction.split("(")
-					if len(instrparts) > 1:
-						instrparts2 = instrparts[1].split(")")
-						offsetval = instrparts2[0].replace(" ","").strip("H")
-						if offsetval != "":
-							pos = self.instruction.find(",OFFSET")
-							self.instruction = self.instruction[0:pos] + "," + offsetval
-				if "," in self.instruction and self.instruction.endswith("H"):
-					instructionparts = self.instruction.split(",")
-					cnt = 0
-					self.instruction = ""
-					while cnt < len(instructionparts)-1:
-						self.instruction = instructionparts[cnt] + ","
-						cnt += 1
-					self.instruction = self.instruction+ instructionparts[len(instructionparts)-1].strip("H")
-			self.dump = self.instruction
-		return self.instruction
 
 	def parseDisasm(self, disasmdata):
 		if arch == 32:
