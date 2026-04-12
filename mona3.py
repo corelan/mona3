@@ -15160,8 +15160,9 @@ def getAbsolutePath(filename):
 def procConfig(args):
 	#did we specify -get, -set, -add, -list or -del?
 	showerror = False
-	if not "set" in args and not "get" in args and not "add" in args and not "del" in args and not "list":
-		showerror = True
+	showlist = False
+	if not "set" in args and not "get" in args and not "add" in args and not "del" in args and not "list" in args:
+		showlist = True
 		
 	if "set" in args:
 		if type(args["set"]).__name__.lower() == "bool":
@@ -15202,8 +15203,7 @@ def procConfig(args):
 		#dbg.logLines(configUsage,highlight=1)
 		return
 	else:
-
-		if "list" in args:
+		if "list" in args or showlist:
 			dbg.log("Listing current values from configuration file:")
 			dbg.log("")
 			monaConfig = MnConfig()
