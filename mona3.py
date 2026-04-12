@@ -445,14 +445,17 @@ def DwordToBits(srcDword):
 	return bit_array
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequence=[]):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
 	padding : string to prepend to every printed line
 	"""
 
-	printsequence = itemsequence
+	if itemsequence is None:
+		printsequence = []
+	else:
+		printsequence = list(itemsequence)
 
 	if ptr_size is None:
 		ptr_size = 16 if sys.maxsize > 2**32 else 8
@@ -531,13 +534,12 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 			return [key] + list(value)
 		return [key, value]
 
-	# Build formatted rows
 	raw_rows = []
 	formatted_rows = []
 	expected_cols = len(headers)
+
 	if len(printsequence) == 0:
-		for key in data.keys():
-			printsequence.append(key)
+		printsequence = list(data.keys())
 
 	for key in printsequence:
 		if key in data:
@@ -557,7 +559,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 		else:
 			dbg.log("key %s not present" % key)
 			dbg.log("%s" % data)
-	# Determine column widths
+
 	col_widths = []
 	for i in range(expected_cols):
 		max_value_width = 0
@@ -566,20 +568,14 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 		header_width = len(_ensure_text(headers[i]))
 		col_widths.append(max(max_value_width, header_width + 1))
 
-	# Build format string
 	fmt = "   ".join(["%%-%ds" % w for w in col_widths])
 
-	# Helper to print with padding
 	def _p(line):
 		dbg.log("%s%s" % (padding, line))
 
-	# Header
 	_p(fmt % tuple([_ensure_text(h) for h in headers]))
-
-	# Separator
 	_p(fmt % tuple([("-" * w) for w in col_widths]))
 
-	# Rows
 	for raw_row, row in zip(raw_rows, formatted_rows):
 		line = fmt % tuple([_ensure_text(c) for c in row])
 		if len(types) > 0 and types[0].lower() == "pointer" and not __DEBUGGERAPP__ == "WinDBG":
@@ -8121,7 +8117,6 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 	global ptr_to_get
 
 	results_dict = {}
-	# keep pointer rows in insertion order across Python 2/3
 	results_dict_details = OrderedDict()
 
 	if all_opcodes:
@@ -8145,7 +8140,6 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 		headers = ["Type", "Number"]
 		types   = ["string", "int"]
 
-		# Keep the summary table in the same length-based order
 		print_dict_table(
 			results_dict,
 			headers,
@@ -8162,7 +8156,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 				dbg.log("")
 
 			messageshown = False
-			ptr_insertion_order = []
+			display_order = []
 
 			# Iterate details in the same length-based order as the summary
 			for optext in sorted_types:
@@ -8194,9 +8188,6 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 
 					logfile.write(ptrinfo,thislog)
 
-					if ptr not in ptr_insertion_order:
-						ptr_insertion_order.append(ptr)
-
 					if (ptr_to_get > -1) or (cnt < 20):
 						if not silent:
 							if DEBUG_MODE:
@@ -8206,6 +8197,9 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 							results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip(), extrainfo]
 						else:
 							results_dict_details[ptr] = [optext, ptrx.__str__().strip(), extrainfo]
+
+						if ptr not in display_order:
+							display_order.append(ptr)
 
 						cnt += 1
 
@@ -8226,7 +8220,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 				if len(results_dict_details) > 0:
 					headers = ["Address", "Type", "Address/ACLinfo", "Other info"]
 					types   = ["pointer", "string", "string", "string"]
-					print_dict_table(results_dict_details, headers, types, padding = "      ", itemsequence = ptr_insertion_order)
+					print_dict_table(results_dict_details, headers, types, padding = "      ", itemsequence = display_order)
 
 		dbg.log("")
 		dbg.log("    Found a total of %d pointers" % ptrcnt)
@@ -8235,6 +8229,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 		dbg.log("[+] Results :")
 		dbg.log("")
 		dbg.log("    Found a total of 0 pointers")
+
 
 
 	
