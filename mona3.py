@@ -285,6 +285,13 @@ def resetGlobals():
 	return
 
 
+def getRegisters():
+	# On Immunity, the register names are uppercase
+	# but we prefer lowercase
+    regs = dbg.getRegs()
+    return {reg.lower(): val for reg, val in regs.items()}
+
+
 def _ord(x):
     if isinstance(x, int):
         return x
@@ -636,7 +643,7 @@ def getAddyArg(argaddy):
 	addyparts = []
 	addypartsint = []
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	thispart = ""
 	argaddy = argaddy.replace("`","")
 	for c in str(argaddy):
@@ -701,9 +708,9 @@ def getIntForPart(part):
 	partclean = partclean.lower()
 	addyok = True
 	partval = 0
-	regs = dbg.getRegs()
-	if partclean in regs:
-		partval = regs[partclean]
+	regs = getRegisters()
+	if partclean.lower() in regs:
+		partval = regs[partclean.lower()]
 	elif partclean.lower() == "heap" or partclean.lower() == "processheap":
 		partval = getDefaultProcessHeap()
 	else:
@@ -9695,8 +9702,8 @@ def findOffsetInPattern(searchpat,size=20280,args = {}):
 			extratext = " (lowercase) "
 		if len(searchpat)==3:
 			#register ?
-			searchpat = searchpat.upper()
-			regs = dbg.getRegs()		
+			searchpat = searchpat.lower()
+			regs = getRegisters()
 			if searchpat in regs:
 				searchpat = "0x" + toHex(regs[searchpat])
 		if len(searchpat)==4:
@@ -14334,7 +14341,7 @@ def goFindMSP(distance=0, args=None):
 		args = {}
 
 	results = {}
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	criteria = {}
 	criteria["accesslevel"] = "*"
 
@@ -16592,7 +16599,7 @@ def procCompare(args):
 	filename = ""
 	skipmodules = False
 	findunicode = False
-	allregs = dbg.getRegs()
+	allregs = getRegisters()
 	if "f" in args:
 		filename = getAbsolutePath(args["f"].replace('"',"").replace("'",""))
 		#see if we can read the file
@@ -16623,7 +16630,7 @@ def procOffset(args):
 	extratext2 = ""
 	isReg_a1 = False
 	isReg_a2 = False
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	if "a1" not in args:
 		dbg.log("Missing mandatory argument -a1 <address>", highlight=1)
 		return
@@ -16632,7 +16639,6 @@ def procOffset(args):
 		dbg.log("Missing mandatory argument -a2 <address>", highlight=1)
 		return		
 	a2 = args["a2"]
-
 
 	a1,addyok = getAddyArg(args["a1"])
 	if not addyok:			
@@ -16662,7 +16668,7 @@ def procOffset(args):
 # ----- bp: Set a breakpoint on read/write/exe access ----- #
 def procBp(args):
 	isReg_a = False
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	thistype = ""
 	
 	if "a" not in args:
@@ -19989,7 +19995,7 @@ def procLoad(args):
 		else:
 			targetloc = "EIP"
 		
-		regs = dbg.getRegs()
+		regs = getRegisters()
 		targetloclower = targetloc.lower()	
 		if targetloclower in regs:
 			targetloc = "0x" + toHex(regs[targetloclower])
@@ -20071,7 +20077,7 @@ def procFillChunk(args):
 
 	reference = ""
 	fillchar = "A"
-	allregs = dbg.getRegs()
+	allregs = getRegisters()
 	origreference = ""
 
 	deref = False
@@ -20859,7 +20865,7 @@ def procString(args):
 	useunicode = False
 	terminatestring = True
 	addy = 0
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	stringtowrite = ""
 	# read or write ?
 	if not "r" in args and not "w" in args:
@@ -21357,7 +21363,7 @@ def procDumpObj(args):
 	levels = 0
 	size = 0
 	nestedsize = 0x28
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	if "a" in args:
 		if type(args["a"]).__name__.lower() != "bool":
 			addy,addyok = getAddyArg(args["a"])
@@ -21447,7 +21453,7 @@ def procCopy(args):
 	src = 0
 	dst = 0
 	nrbytes = 0
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	if "src" in args:
 		if type(args["src"]).__name__.lower() != "bool":
 			src,addyok = getAddyArg(args["src"])
@@ -21507,7 +21513,7 @@ def procUnicodeAlign(args):
 	timeToRun = 15
 	registers = {"eax":0, "ebx":0, "ecx":0, "edx":0, "esp":0, "ebp":0,}
 	showerror = False
-	regs = dbg.getRegs()
+	regs = getRegisters()
 
 	if "l" in args:
 		leaks = True
@@ -21516,7 +21522,7 @@ def procUnicodeAlign(args):
 		if type(args["a"]).__name__.lower() != "bool":
 			address,addyok = getAddyArg(args["a"])
 	else:
-		address = regs["EIP"]
+		address = regs["eip"]
 		if leaks:
 			address += 1
 
@@ -21559,7 +21565,7 @@ def procUnicodeAlign(args):
 	dbg.log("[+] Start address for venetian alignment routine: 0x%08x" % address)
 	dbg.log("[+] Will prepend alignment with null byte compensation? %s" % str(leaks).lower())
 	# ebp must be writeable for this routine to work
-	value_of_ebp = regs["EBP"]
+	value_of_ebp = regs["ebp"]
 	dbg.log("[+] Checking if ebp (0x%08x) is writeable" % value_of_ebp)
 	ebpaccess = getPointerAccess(value_of_ebp)
 	if not "WRITE" in ebpaccess:
@@ -21600,7 +21606,7 @@ def prepareAlignment(leaks, address, bufferRegister, timeToRun, registers):
 
 	def getRegister(registerName):
 		registerName = registerName.lower()
-		regs = dbg.getRegs()
+		regs = getRegisters()
 		if registerName in regs:
 			return regs[registerName]
 
@@ -22315,7 +22321,7 @@ def procToBp(args):
 		regnames = Registers64BitsOrder + Registers32BitsOrder
 	if DEBUG_MODE:
 		dbgp("Regs used: %s" % regnames)
-	regs = dbg.getRegs()
+	regs = getRegisters()
 	silent = True
 	if "a" in args:
 		if type(args["a"]).__name__.lower() != "bool":
