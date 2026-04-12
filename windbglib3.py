@@ -3292,6 +3292,71 @@ class Function:
 		return ""
 
 
+def cleanDisasmInstruction(instr):
+	"""
+	Reduce a WinDBG disassembly instruction to a clean, stable form.
+
+	Goals:
+	- keep operands
+	- remove debugger-only decorations
+	- preserve fs:/gs: prefixes
+	- drop ds:/es:/ss:/cs: prefixes
+	- keep numbers as-is (do not force conversions here)
+	- keep output lowercase
+	"""
+	if instr is None:
+		return ""
+
+	instr = ensure_text(instr).strip().lower()
+	if instr == "":
+		return ""
+
+	# collapse whitespace first
+	instr = re.sub(r"\s+", " ", instr)
+
+	# strip WinDBG comments / symbol braces
+	# example: "mov eax,dword ptr [eax] {blah}"
+	instr = re.sub(r"\s*\{[^}]*\}", "", instr)
+
+	# normalize comma spacing
+	instr = re.sub(r"\s*,\s*", ",", instr)
+
+	# remove "offset " keyword but keep the target
+	instr = re.sub(r",\s*offset\s+", ",", instr)
+
+	# remove ptr size keywords globally
+	instr = re.sub(r"\b(?:byte|word|dword|qword|fword|tbyte|xmmword|ymmword|zmmword)\s+ptr\b", "", instr)
+
+	# normalize spaces again after removing ptr markers
+	instr = re.sub(r"\s+", " ", instr).strip()
+
+	# drop segment prefixes except fs:/gs:
+	# examples:
+	#   es:[edi] -> [edi]
+	#   ds:[eax] -> [eax]
+	#   fs:[30h] -> fs:[30h]
+	#   gs:[60h] -> gs:[60h]
+	instr = re.sub(r"\b(?!(?:fs|gs):)(?:cs|ds|es|ss):(?=\[)", "", instr)
+
+	# some string instructions can have two memory operands with segment prefixes
+	# remove non-fs/gs prefixes even if spacing is odd
+	instr = re.sub(r"\b(?!(?:fs|gs)\b)(?:cs|ds|es|ss):", "", instr)
+
+	# normalize bracket math spacing
+	instr = re.sub(r"\[\s*", "[", instr)
+	instr = re.sub(r"\s*\]", "]", instr)
+	instr = re.sub(r"\s*\+\s*", "+", instr)
+	instr = re.sub(r"\s*-\s*", "-", instr)
+
+	# normalize stray spaces after mnemonic
+	instr = re.sub(r"\s+", " ", instr).strip()
+
+	# remove spaces after comma for a compact compare-friendly form
+	instr = instr.replace(", ", ",")
+
+	return instr
+
+
 class opcode:
 
 	opsize = 0
@@ -3339,6 +3404,43 @@ class opcode:
 		return False		
 
 	def getDisasm(self):
+		if self.instruction == "":
+			disasmdata = ""
+
+			global disAsmCache
+			if self.address in disAsmCache:
+				disasmdata = disAsmCache[self.address]
+			else:
+				if arch == 32:
+					cmd = "u 0x%08x L 1" % self.address
+				else:
+					cmd = "u %s L 1" % intToHexWinDbgFormat(self.address)
+
+				disasmlines = pykd.dbgCommand(cmd)
+				for thisline in disasmlines.split("\n"):
+					thisline = thisline.rstrip()
+					if thisline.lower().startswith(intToHexWinDbgFormat(self.address).lower()):
+						disasmdata = thisline
+						break
+
+			if disasmdata != "":
+				disAsmCache[self.address] = disasmdata
+				self.parseDisasm(disasmdata)
+
+				# keep dumpdata/opsize from parseDisasm()
+				# only reduce the textual instruction to a stable form
+				self.instruction = cleanDisasmInstruction(self.instruction)
+
+				# keep RET vs RETN normalization minimal and explicit
+				if self.instruction == "ret":
+					self.instruction = "retn"
+
+			self.dump = self.instruction
+
+		return self.instruction
+
+
+	def getDisasm2(self):
 		if self.instruction == "":
 			disasmdata = ""
 

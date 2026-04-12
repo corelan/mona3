@@ -128,6 +128,7 @@ import itertools
 import traceback
 import pickle
 import json
+from collections import OrderedDict
 import math
 import argparse
 import time
@@ -580,7 +581,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 	# Rows
 	for raw_row, row in zip(raw_rows, formatted_rows):
 		line = fmt % tuple([_ensure_text(c) for c in row])
-		if len(types) > 0 and types[0].lower() == "pointer":
+		if len(types) > 0 and types[0].lower() == "pointer" and not __DEBUGGERAPP__ == "WinDBG":
 			addr_val = _pointer_to_int(raw_row[0])
 			if addr_val is not None:
 				dbg.log("%s%s" % (padding, line), address=addr_val)
@@ -8105,7 +8106,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 	Write the output of a search operation to log file
 
 	Arguments:
-	all_opcodes - dictionary containing the results of a search 
+	all_opcodes - dictionary containing the results of a search
 	logfile - the MnLog object
 	thislog - the filename to write to
 
@@ -8115,32 +8116,43 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 	"""
 	ptrcnt = 0
 	cnt = 0
-	
+
 	global silent
-	
+	global ptr_to_get
+
 	results_dict = {}
-	results_dict_details = {}
+	# keep pointer rows in insertion order across Python 2/3
+	results_dict_details = OrderedDict()
 
 	if all_opcodes:
 		dbg.log("")
 		dbg.log("[+] Writing results to %s" % thislog)
-		for hf in all_opcodes:
+
+		# Sort types by length (short -> long) for consistent output ordering
+		sorted_types = sorted(all_opcodes.keys(), key=lambda k: len(str(k)))
+
+		for hf in sorted_types:
 			if not silent:
 				try:
-					#dbg.log("    - Number of pointers of type '%s' : %d " % (hf,len(all_opcodes[hf])))
 					if forcelower:
 						results_dict[hf.lower()] = [len(all_opcodes[hf])]
 					else:
 						results_dict[hf] = [len(all_opcodes[hf])]
 				except:
 					results_dict["unable to display"] = [len(all_opcodes[hf])]
-					#dbg.log("    - Number of pointers of type '<unable to display>' : %d " % (len(all_opcodes[hf])))
 
 		dbg.log("")
 		headers = ["Type", "Number"]
 		types   = ["string", "int"]
-		print_dict_table(results_dict, headers, types, padding = "      ", itemsequence = [])
 
+		# Keep the summary table in the same length-based order
+		print_dict_table(
+			results_dict,
+			headers,
+			types,
+			padding = "      ",
+			itemsequence = sorted(results_dict.keys(), key=lambda k: len(str(k)))
+		)
 
 		if not ptronly:
 
@@ -8148,73 +8160,83 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 				dbg.log("")
 				dbg.log("[+] Results : ")
 				dbg.log("")
+
 			messageshown = False
-			for optext,pointers in all_opcodes.items():
+			ptr_insertion_order = []
+
+			# Iterate details in the same length-based order as the summary
+			for optext in sorted_types:
+				pointers = all_opcodes[optext]
 				for ptr in pointers:
 					ptrinfo = ""
 					modinfo = ""
 					ptrx = MnPointer(ptr)
 					modname = ptrx.belongsTo()
 					extrainfo = ""
+
 					if not modname == "":
 						modobj = MnModule(modname)
 						ptrextra = ""
-						rva=0
+						rva = 0
 						if (modobj.isRebase or modobj.isAslr):
 							rva = ptr - modobj.moduleBase
-							ptrextra = " (b+0x" + toHex(rva)+") "
-						ptrinfo = "0x" + toHex(ptr) + ptrextra + " : " + optext + " | " + ptrx.__str__()  + " " + modobj.__str__()
+							ptrextra = " (b+0x" + toHex(rva) + ") "
+						ptrinfo = "0x" + toHex(ptr) + ptrextra + " : " + optext + " | " + ptrx.__str__() + " " + modobj.__str__()
 						extrainfo = modobj.__str__()
 					else:
-						ptrinfo = "0x" + toHex(ptr) + " : " + optext + " | " + ptrx.__str__() 
+						ptrinfo = "0x" + toHex(ptr) + " : " + optext + " | " + ptrx.__str__()
 						if ptrx.isOnStack():
 							extrainfo = " [Stack] "
 							ptrinfo += extrainfo
 						elif ptrx.isInHeap():
-							extrainfo = " [Heap "
+							extrainfo = " [Heap] "
 							ptrinfo += extrainfo
+
 					logfile.write(ptrinfo,thislog)
+
+					if ptr not in ptr_insertion_order:
+						ptr_insertion_order.append(ptr)
+
 					if (ptr_to_get > -1) or (cnt < 20):
 						if not silent:
 							if DEBUG_MODE:
 								dbgp("  %s" % ptrinfo)
+
 						if forcelower:
-							results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip() , extrainfo]
+							results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip(), extrainfo]
 						else:
-							results_dict_details[ptr] = [optext, ptrx.__str__().strip() , extrainfo]
+							results_dict_details[ptr] = [optext, ptrx.__str__().strip(), extrainfo]
+
 						cnt += 1
+
 					ptrcnt += 1
+
 					if (ptr_to_get == -1 or ptr_to_get > 20) and cnt == 20 and not silent and not messageshown:
 						dbg.log("    Please wait while I'm processing all remaining results and writing everything to file...")
 						dbg.log("")
 						messageshown = True
 
-			headers = ["Address", "Type", "Address/ACLinfo", "Other info"]
-			types   = ["pointer", "string", "string", "string"]
-			print_dict_table(results_dict_details, headers, types, padding = "      ", itemsequence = [])
+			if not silent:
+				if ptr_to_get > -1:
+					dbg.log("[+] Showing search result %d..." % ptr_to_get)
+				elif ptrcnt > 20:
+					dbg.log("[+] Done. Only the first 20 pointers are shown here. For more pointers, open %s..." % thislog)
+				dbg.log("")
 
-			if cnt < ptrcnt:
-				if not silent:
-					dbg.log("")
-					dbg.log("[+] Done. Only the first %d pointers are shown here. For more pointers, open %s..." % (cnt,thislog)) 
-		else:
-			allptr = []
-			ptrcnt = 0
-			ptrinfo = ""
-			dbg.log("... Please wait while I'm processing results and writing everything to file...")
-			for optext,pointers in all_opcodes.items():
-				for ptr in pointers:
-					if not ptr in allptr:
-						ptrinfo += "0x%s\n" % toHex(ptr)
-						ptrcnt += 1
-			if not silent:
-				dbg.log("[+] Writing results to file")
-			logfile.write(ptrinfo,thislog)
-			if not silent:
-				dbg.log("[+] Done")
-	dbg.log("")
-	dbg.log("    Found a total of %d pointers" % ptrcnt, highlight=1)
-	dbg.setStatusBar("Done. Found %d pointers" % ptrcnt)
+				if len(results_dict_details) > 0:
+					headers = ["Address", "Type", "Address/ACLinfo", "Other info"]
+					types   = ["pointer", "string", "string", "string"]
+					print_dict_table(results_dict_details, headers, types, padding = "      ", itemsequence = ptr_insertion_order)
+
+		dbg.log("")
+		dbg.log("    Found a total of %d pointers" % ptrcnt)
+	else:
+		dbg.log("")
+		dbg.log("[+] Results :")
+		dbg.log("")
+		dbg.log("    Found a total of 0 pointers")
+
+
 	
 def mergeOpcodes(all_opcodes,found_opcodes):
 	"""
@@ -10452,6 +10474,8 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 
 	return inst
 
+
+
 def normalizeInstructionText(instr):
 	if instr is None:
 		return ""
@@ -10460,46 +10484,33 @@ def normalizeInstructionText(instr):
 	if instr == "":
 		return ""
 
-	# unify whitespace first
+	# normalize whitespace
 	instr = instr.replace("\t", " ")
 	instr = re.sub(r"\s+", " ", instr).strip()
 
 	# normalize spaces around commas
 	instr = re.sub(r"\s*,\s*", ",", instr)
 
-	# normalize common ptr qualifiers
-	instr = instr.replace("byte  ptr", "byte ptr")
-	instr = instr.replace("word  ptr", "word ptr")
-	instr = instr.replace("dword  ptr", "dword ptr")
-	instr = instr.replace("fword  ptr", "fword ptr")
-	instr = instr.replace("qword  ptr", "qword ptr")
-	instr = instr.replace("tbyte  ptr", "tbyte ptr")
-	instr = instr.replace("xmmword  ptr", "xmmword ptr")
-	instr = instr.replace("ymmword  ptr", "ymmword ptr")
-	instr = instr.replace("zmmword  ptr", "zmmword ptr")
+	# normalize ptr qualifier spacing, but do not remove them yet
+	instr = re.sub(r"\bbyte\s+ptr\b", "byte ptr", instr)
+	instr = re.sub(r"\bword\s+ptr\b", "word ptr", instr)
+	instr = re.sub(r"\bdword\s+ptr\b", "dword ptr", instr)
+	instr = re.sub(r"\bfword\s+ptr\b", "fword ptr", instr)
+	instr = re.sub(r"\bqword\s+ptr\b", "qword ptr", instr)
+	instr = re.sub(r"\btbyte\s+ptr\b", "tbyte ptr", instr)
+	instr = re.sub(r"\bxmmword\s+ptr\b", "xmmword ptr", instr)
+	instr = re.sub(r"\bymmword\s+ptr\b", "ymmword ptr", instr)
+	instr = re.sub(r"\bzmmword\s+ptr\b", "zmmword ptr", instr)
 
-	# strip ptr qualifiers completely
-	instr = re.sub(r"\bbyte ptr\s+", "", instr)
-	instr = re.sub(r"\bword ptr\s+", "", instr)
-	instr = re.sub(r"\bdword ptr\s+", "", instr)
-	instr = re.sub(r"\bfword ptr\s+", "", instr)
-	instr = re.sub(r"\bqword ptr\s+", "", instr)
-	instr = re.sub(r"\btbyte ptr\s+", "", instr)
-	instr = re.sub(r"\bxmmword ptr\s+", "", instr)
-	instr = re.sub(r"\bymmword ptr\s+", "", instr)
-	instr = re.sub(r"\bzmmword ptr\s+", "", instr)
-
-	# strip segment prefixes completely
-	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s*", "", instr)	
-
-	# strip spaces after segment prefixes like ds: [eax] -> ds:[eax]
+	# normalize segment prefix spacing, but keep them for now
 	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s+\[", r"\1:[", instr)
+	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s*", r"\1:", instr)
 
-	# convert windbg hex constants:
-	#   10h     -> 0x10
-	#   -10h    -> -0x10
-	#   +10h    -> +0x10
-	#   0ffh    -> 0xff
+	# convert WinDBG-style hex constants:
+	#   10h    -> 0x10
+	#   -10h   -> -0x10
+	#   +10h   -> +0x10
+	# preserve leading zeros: 0BF5C73A5h -> 0x0bf5c73a5
 	def _replace_hex_h(m):
 		sign = m.group(1) or ""
 		num = m.group(2).lower()
@@ -10507,35 +10518,35 @@ def normalizeInstructionText(instr):
 
 	instr = re.sub(r"(?<![0-9a-z_])([+-]?)([0-9a-f]+)h\b", _replace_hex_h, instr)
 
-	# normalize existing 0x... values to lowercase
+	# normalize existing 0x... values to lowercase only, preserve leading zeros
 	instr = re.sub(r"\b0x([0-9a-fA-F]+)\b", lambda m: "0x" + m.group(1).lower(), instr)
 
-	# normalize bracketed memory expressions
+	# normalize memory expressions inside brackets only
 	def _normalize_brackets(m):
 		expr = m.group(1).strip()
 
-		# remove all internal whitespace
+		# remove all whitespace inside brackets
 		expr = re.sub(r"\s+", "", expr)
 
-		# convert signed decimal displacements to hex:
-		#   +4  -> +0x4
-		#   -8  -> -0x8
-		# but do not touch scale factors after '*'
+		# convert signed decimal displacements to hex, but do not touch scale factors
+		# [ebp-8]       -> [ebp-0x8]
+		# [eax+4]       -> [eax+0x4]
+		# [eax+ecx*4+8] -> [eax+ecx*4+0x8]
 		expr = re.sub(
 			r'(?<!\*)([+-])([0-9]+)\b',
 			lambda x: x.group(1) + "0x%x" % int(x.group(2), 10),
 			expr
 		)
 
-		# convert unsigned decimal after opening bracket or after another +/- if any remain
-		# usually less common, but allows things like [4+eax] -> [0x4+eax]
+		# convert leading decimal constant inside brackets too
+		# [4+eax] -> [0x4+eax]
 		expr = re.sub(
 			r'(^|[+\-])([0-9]+)(?=($|[+\-*]))',
 			lambda x: x.group(1) + "0x%x" % int(x.group(2), 10),
 			expr
 		)
 
-		# normalize explicit +-
+		# clean up repeated signs
 		expr = expr.replace("+-", "-")
 		expr = expr.replace("-+", "-")
 		expr = expr.replace("++", "+")
@@ -10545,35 +10556,38 @@ def normalizeInstructionText(instr):
 
 	instr = re.sub(r"\[([^\]]+)\]", _normalize_brackets, instr)
 
-	# normalize immediates outside brackets, but only signed ones
-	# examples:
-	#   add eax,4   -> add eax,4        (left untouched on purpose)
-	#   cmp eax,-1  -> cmp eax,-0x1
-	# If you also want bare unsigned immediates normalized, uncomment the extra block below.
+	# normalize signed decimal immediates after comma only
+	# cmp eax,-1 -> cmp eax,-0x1
+	# do not convert unsigned decimal immediates automatically
 	instr = re.sub(
 		r'(?<=,)([+-])([0-9]+)\b',
 		lambda m: m.group(1) + "0x%x" % int(m.group(2), 10),
 		instr
 	)
 
-	# normalize bare unsigned immediates (decimal or hex-looking) after a comma
-	# or directly after the mnemonic (e.g. "aad 3f"). This keeps operand matching
-	# consistent with patterns that use 0x-prefixed immediates.
-	def _normalize_bare_imm(m):
-		txt = m.group(1)
-		base = 16 if re.search(r"[a-f]", txt, re.IGNORECASE) else 10
-		return "0x%x" % int(txt, base)
+	# simplify memory operands:
+	# - remove ptr qualifiers
+	# - remove cs/ds/es/ss prefixes
+	# - keep fs/gs intact
+	# Examples:
+	#   movs dword ptr es:[edi],dword ptr [esi] -> movs [edi],[esi]
+	#   mov eax,dword ptr ds:[ebp-0x10]         -> mov eax,[ebp-0x10]
+	#   mov eax,dword ptr fs:[0x30]             -> mov eax,fs:[0x30]
+	instr = re.sub(
+		r"\b(byte|word|dword|fword|qword|tbyte|xmmword|ymmword|zmmword)\s+ptr\s+",
+		"",
+		instr
+	)
 
-	instr = re.sub(r'(?<=,)([0-9a-f]+)\b', _normalize_bare_imm, instr, flags=re.IGNORECASE)
-	instr = re.sub(r'(?<=\s)([0-9a-f]+)\b', _normalize_bare_imm, instr, flags=re.IGNORECASE)
+	# remove cs/ds/es/ss prefixes, but preserve fs/gs
+	instr = re.sub(r"\b(cs|ds|es|ss):", "", instr)
 
-	# strip spaces that may still survive around segment-colon memory forms
-	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s*\[", r"\1:[", instr)
-
-	# final whitespace cleanup
+	# final cleanup
 	instr = re.sub(r"\s+", " ", instr).strip()
+	instr = re.sub(r"\s*,\s*", ",", instr)
 
 	return instr
+
 
 
 
@@ -10710,8 +10724,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			for ptrkeys in pointers:
 				nrfound += len(pointers[ptrkeys])
 			if nrfound > 0:
-				dbg.log("     Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
-			
+				dbg.log("    Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
 			for instrkey in pointers:
 				# keep results keyed by the actual pattern we searched for
 				if not instrkey in allpointers:
@@ -10757,22 +10770,22 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			thisdisam = ""
 			try:
 				for depth in xrange(maxdepth):
-					tinstr = getDisasmInstruction(dbg.disasmForward(thisptr, depth)).lower() + "\n"
+					nextaddress = dbg.disasmForward(thisptr, depth)
+					tinstr = getDisasmInstruction(nextaddress).lower() + "\n"
 					tinstr = normalizeInstructionText(tinstr) + "\n"
 					if tinstr != "???":
 						thisdisam += tinstr
 					else:
 						thisdisam = ""
 						break	
-			except:
+			except Exception as e:
+				dbg.log("    Error: %s" % str(e))
 				continue
 			allfound = True
 			thisdisam = thisdisam.strip("\n")
 			if DEBUG_MODE:
 				dbgp("Disassembly at 0x%08x: " % thisptr)
 				dbgp("%s" % thisdisam)
-			if thisptr == 0x6F57BCDE:
-				dbg.logLines("%s" % thisdisam)
 			ptrcnt += 1
 			flipover += 1
 			if flipover > flipovermax:
@@ -16394,7 +16407,6 @@ def procFindWild(args):
 	allpointers = findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype)
 
 	# transform the results for easy display
-
 		
 	logfile = MnLog("findwild.txt")
 	thislog = logfile.reset()
