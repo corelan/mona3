@@ -458,6 +458,16 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 	if len(headers) != len(types):
 		raise ValueError("headers and types must have the same number of elements")
 
+	def _pointer_to_int(v):
+		try:
+			if isinstance(v, bytes):
+				v = v.decode("latin-1", "replace")
+			if isinstance(v, str):
+				return int(v, 0)
+			return int(v)
+		except Exception:
+			return None
+
 	def _ensure_text(v):
 		if v is None:
 			return ""
@@ -520,6 +530,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 		return [key, value]
 
 	# Build formatted rows
+	raw_rows = []
 	formatted_rows = []
 	expected_cols = len(headers)
 	if len(printsequence) == 0:
@@ -537,6 +548,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 					% (key, len(row), expected_cols)
 				)
 
+			raw_rows.append(row)
 			formatted_rows.append([
 				_format_value(row[i], types[i]) for i in range(expected_cols)
 			])
@@ -566,8 +578,14 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="",itemsequenc
 	_p(fmt % tuple([("-" * w) for w in col_widths]))
 
 	# Rows
-	for row in formatted_rows:
-		_p(fmt % tuple([_ensure_text(c) for c in row]))
+	for raw_row, row in zip(raw_rows, formatted_rows):
+		line = fmt % tuple([_ensure_text(c) for c in row])
+		if len(types) > 0 and types[0].lower() == "pointer":
+			addr_val = _pointer_to_int(raw_row[0])
+			if addr_val is not None:
+				dbg.log("%s%s" % (padding, line), address=addr_val)
+				continue
+		_p(line)
 
 
 
@@ -8159,7 +8177,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 					if (ptr_to_get > -1) or (cnt < 20):
 						if not silent:
 							if DEBUG_MODE:
-								dbgp("  %s" % ptrinfo,address=ptr)
+								dbgp("  %s" % ptrinfo)
 						if forcelower:
 							results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip() , extrainfo]
 						else:
@@ -10538,16 +10556,16 @@ def normalizeInstructionText(instr):
 		instr
 	)
 
-	# OPTIONAL:
-	# normalize bare unsigned decimal immediates after comma:
-	#   add eax,4 -> add eax,0x4
-	# Uncomment if you want that behavior everywhere.
-	#
-	# instr = re.sub(
-	# 	r'(?<=,)([0-9]+)\b',
-	# 	lambda m: "0x%x" % int(m.group(1), 10),
-	# 	instr
-	# )
+	# normalize bare unsigned immediates (decimal or hex-looking) after a comma
+	# or directly after the mnemonic (e.g. "aad 3f"). This keeps operand matching
+	# consistent with patterns that use 0x-prefixed immediates.
+	def _normalize_bare_imm(m):
+		txt = m.group(1)
+		base = 16 if re.search(r"[a-f]", txt, re.IGNORECASE) else 10
+		return "0x%x" % int(txt, base)
+
+	instr = re.sub(r'(?<=,)([0-9a-f]+)\b', _normalize_bare_imm, instr, flags=re.IGNORECASE)
+	instr = re.sub(r'(?<=\s)([0-9a-f]+)\b', _normalize_bare_imm, instr, flags=re.IGNORECASE)
 
 	# strip spaces that may still survive around segment-colon memory forms
 	instr = re.sub(r"\b(cs|ds|es|fs|gs|ss):\s*\[", r"\1:[", instr)
@@ -10753,6 +10771,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			if DEBUG_MODE:
 				dbgp("Disassembly at 0x%08x: " % thisptr)
 				dbgp("%s" % thisdisam)
+			if thisptr == 0x6F57BCDE:
+				dbg.logLines("%s" % thisdisam)
 			ptrcnt += 1
 			flipover += 1
 			if flipover > flipovermax:
