@@ -2,14 +2,11 @@
 
 This repository contains the necessary python files to run Mona v3 under WinDBG(X) and Immunity.
 
-Mona is compatible with Python3 versions as supported by PyKD and PyKD-ext. (i.e. up to (and including) Python 3.9.13).  
-Mona is backwards compatible and still runs on Python2.7.18 as well.
-
-Mona supports x86 and x64 debugging sessions. Please do keep in mind that not all mona commands are available in 64bit.
-
-Mona has been tested on Window7, Windows 10 and Windows 11.
-
-If you find bugs, please open an issue and explain details on how to reproduce the problem you're seeing.
+Some highlights:
+* Mona is compatible with Python3 versions as supported by PyKD and PyKD-ext. (i.e. up to (and including) Python 3.9.13).  
+* Mona is backwards compatible and still runs on Python2.7.18 as well.
+* Mona supports x86 and x64 debugging sessions. Please do keep in mind that not all mona commands are available in 64bit.
+* Mona has been tested on Window7, Windows 10 and Windows 11.
 
 
 
@@ -34,8 +31,9 @@ In a nutshell, the script will
 Download the `mona.py` and `windbglib.py` file from this repository and store the files inside the `x86` and `x64` folders of your WinDBG classic program folder.
 
 For example, on Windows 11:
-32bit: `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
-64bit: `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`
+
+* 32bit: store the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
+* 64bit: store the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`
 
 Please verify that the files contain the actual python code, and not html ;-)
 
@@ -104,3 +102,8 @@ set PATH=C:\Python27;%PATH%
 immunitydebugger.exe
 set PATH=%ORIGPATH%
 ```
+
+
+## Found a bug ?
+
+If you find bugs, please open an issue and explain details on how to reproduce the problem you're seeing.
