@@ -1,4 +1,4 @@
-# MONA
+# MONA v3
 
 This repository contains the necessary python files to run Mona v3 under WinDBG(X) and Immunity.
 
@@ -106,6 +106,13 @@ set PATH=C:\Python27;%PATH%
 immunitydebugger.exe
 set PATH=%ORIGPATH%
 ```
+
+---
+
+## Thank you
+
+Mona v3 would not have been possible without the hard work & dedication done by @apl3b 
+
 
 ---
 
