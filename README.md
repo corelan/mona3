@@ -51,36 +51,40 @@ For WinDBG classic, this means that you need to put the 2 files in the WinDBG Pr
 For Immunity Debugger, you'll have to put `mona.py` under `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`
 (You don't need `windbglib.py` in Immunity Debugger)
 
+And for WinDBGX, you'll have to reference the script files from whatever folder you put them in.
 
-An alternative approach would be to store the 2 files in a central location and to use symbolic links.
+An alternative approach would be to store the 2 files in a central location and to reference the files directly using their absolute path.
 That way, there is only one copy on your system.  Each time you run `mona up`, you'll updating the scripts for all debuggers right away.
 
+In order to avoid having to type the full path every time, we can define an alias in WinDBG Classic and WinDBGX
+And for Immunity Debugger, we can use a simply symlink. 
+
+Let's see what that looks like
 
 
-### 2.1. WinDBG Classic
+### 2.1. Set up central location
 
 Download the `mona.py` and `windbglib.py` file from this repository and store the files inside a folder under `C:\Tools\mona`.
 
+(Of course, if you decide to pick a different folder, update the commands in the next chapters accordingly)
+
 Please verify that the files contain the actual python code, and not html ;-)
 
-Next, create a symlink to this `C:\Tools\mona` folder with the following command:
 
-* `mklink /D "C:\Program Files (x86)\Windows Kits\10\Debuggers\x86\mona" "C:\Tools\mona"` (32 bit folder)
-* `mklink /D "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\mona" "C:\Tools\mona"` (64 bit folder)
+### 2.2. Usage in WinDBG Classic / WinDBGX
 
+In WinDBG Classic and WinDBGX,  we're going to reference the files directly from the `C:\Tools\mona` folder.  
 
-Note: we prefer to run the current version of `mona` with Python 3.
-If you don't need Python2, feel free to remove it from your system.
+We'll show how to use this in chapter 3
 
+Also, please note that we prefer and recommend to run `mona` with Python 3.9 in WinDBG(X)
+If you don't need Python2 (and not using Immunity Debugger), feel free to remove Python2 from your system.
 
-### 2.2 WinDBGX
-
-We're going to reference the files directly from the `C:\Tools\mona` folder.  
 
 
 ### 2.3 Immunity Debugger
 
-* Create a symlink of `mona.py` file under `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands` with the following command: 
+* Put a copy of `mona.py` file under `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands` with the following command: 
   * `mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py" "C:\Tools\mona\mona.py"`   
 * Install Python 2.7.18 32bit (not 64bit)
 * Make sure the 32bit version of C:\Python27 is in your path system environment variable.   
@@ -92,53 +96,41 @@ We're going to reference the files directly from the `C:\Tools\mona` folder.
 
 ## 3. Running Mona
 
-### 3.1. Running Mona in WinDBG Classic
+### 3.1. Running Mona in WinDBG Classic and WinDBGX
 
-Open WinDBG and attach it to the process you'd like to debug.
-At the WinDBG Command Line, load the pykd bootstrapper extension
+Open WinDBG(X) and attach it to the process you'd like to debug.
+At the WinDBG(X) Command Line, load the pykd bootstrapper extension
 ```
 !load pykd
 ```
+
 Now run mona using Python3.9:
 ```
-!py -3.9 mona\mona.py
+!py -3.9 C:\Tools\mona\mona.py
 ```
 
 Of course, you can also create an alias to make it easier to run mona commands:
 
 ```
-as mona !py -3.9 mona\mona.py
+as mona !py -3.9 C:\Tools\mona\mona.py
 ```
-Now you can simply invoke mona by running `mona` at the WinDBG Command Line.
+Now you can simply invoke mona by running `mona` at the WinDBG(X) Command Line.
 
 
-The procedure above works for both 32bit and 64bit debugging sessions.
+### 3.2. Auto loading pykd and creating an alias in WinDBG(X)
 
+In WinDBG Classic, we can use the `-c` command line option to automatically load pykd and create the alias to the mona script.
 
+Simply run windbg.exe -c "!load pykd;as mona !py -3.9 c:\Tools\mona\mona.py"
 
-### 3.2. Running Mona in WinDBGX
+While you can do the same thing when launching WinDBGX, you can also configure WinDBGX `Startup` settings and run the same commands:
 
-For WinDBGX you can load it in a similar fashion, but referencing the path under `C:\Tools`.
-At the WinDBGX Command Line, load the pykd bootstrapper extension
+Open `Files > Settings > Debugging settings > Startup` and paste in the following commands:
+
 ```
 !load pykd
+as mona !py -3.9 c:\Tools\mona\mona.py
 ```
-Now run mona using Python3.9:
-```
-!py -3.9 C:\Tools\mona\mona.py
-```
-You can also create an alias in the following way:
-```
-as mona !py -3.9 C:\Tools\mona\mona.py
-```
-
-Additionally, you can set up this start up configuration by navigating into `Files > Settings > Debugging settings > Startup`
-
-Insert your command of choice, such as the alias definition:
-```
-as mona !py -3.9 C:\Tools\mona\mona.py
-```
-
 
 You only need to do the procedure above once, as WinDBGX adapts to 32 or 64 bit depending on the debugging target.
 
