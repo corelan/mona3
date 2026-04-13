@@ -3768,10 +3768,12 @@ class MnModule:
 		excludedlist = thisconfig.get("excluded_modules")
 		modfound = False
 		if excludedlist:
-			allexcluded = excludedlist.split(',')
+			# allow both ';' and ',' as separators
+			allexcluded = [entry for entry in re.split(r"[;,]", excludedlist) if entry.strip()]
 			for exclentry in allexcluded:
 				if modulename.lower().strip().startswith(exclentry.lower().strip()):
 					modfound = True
+
 		self.isExcluded = modfound
 		
 		#done - populate variables
@@ -15187,6 +15189,7 @@ def procConfig(args):
 			params = args["set"].split(" ")
 			if len(params) < 2:
 				showerror = True
+
 	if "add" in args:
 		if type(args["add"]).__name__.lower() == "bool":
 			showerror = True
@@ -15195,6 +15198,7 @@ def procConfig(args):
 			params = args["add"].split(" ")
 			if len(params) < 2:
 				showerror = True
+
 	if "get" in args:
 		if type(args["get"]).__name__.lower() == "bool":
 			showerror = True
@@ -15245,6 +15249,8 @@ def procConfig(args):
 			dbg.log("    New value:")
 			dbg.log("")
 			configvalue = args["set"][0+len(configparam):len(args["set"])]
+			if configparam.lower() == "excluded_modules":
+				configvalue = configvalue.replace(",", ";")
 			monaConfig.set(configparam,configvalue)
 			configDict = {}
 			headers = ["Parameter", "New value"]
@@ -15268,7 +15274,15 @@ def procConfig(args):
 			configparam = value[0].strip()
 			dbg.log("[+] Adding additional value to parameter '%s'" % configparam)
 			dbg.log("    Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
-			configvalue = monaConfig.get(configparam).strip() + "," + args["add"][0+len(configparam):len(args["add"])].strip()
+			oldvalue = monaConfig.get(configparam)
+			if oldvalue is None:
+				oldvalue = ""
+			oldvalue = oldvalue.strip()
+			newvalue = args["add"][0+len(configparam):len(args["add"])].strip()
+			if oldvalue == "":
+				configvalue = newvalue
+			else:
+				configvalue = oldvalue + ";" + newvalue
 			monaConfig.set(configparam,configvalue)
 			dbg.log("    New value:")
 			dbg.log("")
