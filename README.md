@@ -22,7 +22,7 @@ In a nutshell, the script will
 
 * Install Python 3.9 32bit and 64bit
 * Install the pykd library via pip
-* Install the pykd-extension for WinDBG
+* Install the pykd-ext bootstrapper WinDBG extension
 * Install VS runtime and register certain DLLs
 
 
@@ -52,7 +52,7 @@ If you prefer to run `mona.py` under Immunity:
 
 * Download the `mona.py` file and place it under `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`.   You do not need `windbglib.py`
 * Install Python 2.7.18 32bit (not 64bit)
-* Make sure the 32bit version of C:\Python27 is in your path system environment variable
+* Make sure the 32bit version of C:\Python27 is in your path system environment variable.   If you prefer not to do so, see the chapter on "Running Mona in Immunity"
 
 (If you open a command prompt and type `python`, it should invoke the Python 2.7.18 32Bit interactive console)
 
@@ -62,6 +62,26 @@ If you prefer to run `mona.py` under Immunity:
 
 ### Running Mona in WinDBG Classic
 
+Open WinDBG and attach it to the process you'd like to debug.
+At the WinDBG Command Line, load the pykd bootstrapper extension
+```
+!load pykd
+```
+Now run mona using Python3:
+```
+!py -3 mona
+```
+
+Of course, you can also create an alias to make it easier to run mona commands:
+
+```
+as mona !py -3 mona
+```
+Now you can simply invoke mona by running `mona` at the WinDBG Command Line.
+
+
+
+
 
 ### Running Mona in WinDBGX
 
@@ -69,7 +89,7 @@ If you prefer to run `mona.py` under Immunity:
 ### Running Mona in Immunity
 
 Providing that your Python2 program folder is in the system path, you can simply launch Immunity Debugger and then run `!mona` at the Immunity Debugger command prompt.
-Of course, you can also create a launcher for Immunity Debugger that temporarily sets up the Path environment variable:
+If you prefer not to have C:\Python27 in your system PATH, you can also create a simple Immunity Debugger launcher script that temporarily sets up the Path environment variable:
 
 runimmunity.bat
 
