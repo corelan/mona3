@@ -67,19 +67,21 @@ At the WinDBG Command Line, load the pykd bootstrapper extension
 ```
 !load pykd
 ```
-Now run mona using Python3:
+Now run mona using Python3.9:
 ```
-!py -3 mona
+!py -3.9 mona
 ```
 
 Of course, you can also create an alias to make it easier to run mona commands:
 
 ```
-as mona !py -3 mona
+as mona !py -3.9 mona
 ```
 Now you can simply invoke mona by running `mona` at the WinDBG Command Line.
 
 
+The procedure above works for both 32bit and 64bit debugging sessions.
+Please do keep in mind that not all mona commands are available in 64bit.
 
 
 
