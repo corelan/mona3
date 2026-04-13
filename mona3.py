@@ -15250,7 +15250,7 @@ def procConfig(args):
 			dbg.log("")
 			configvalue = args["set"][0+len(configparam):len(args["set"])]
 			if configparam.lower() == "excluded_modules":
-				configvalue = configvalue.replace(",", ";")
+				configvalue = configvalue.replace(";", ",")
 			monaConfig.set(configparam,configvalue)
 			configDict = {}
 			headers = ["Parameter", "New value"]
@@ -22903,7 +22903,13 @@ Available options are :
     -add <parameter> <value_to_add>
     -del <parameter>
 
-Valid parameter names are : workingfolder, excluded_modules, author"""
+Valid parameter names are : workingfolder, excluded_modules, author
+You can set exclude multiple modules by separating their names with a comma,
+and/or by adding additional ones to the list using -add
+You cannot remove individual values from a parameter. You'll have to use
+-set to overwrite the existing value.
+
+"""
 	
 	jmpUsage = """Default module criteria : non aslr, non rebase 
 
