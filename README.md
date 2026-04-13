@@ -29,8 +29,8 @@ For Windows 10 and up, you can use the `CorelanPyKDInstall.ps` powershell script
 
 In a nutshell, the script will
 
-* Install Python 3.9 32bit and 64bit
-* Install the pykd library via pip
+* Install Python 3.9.13 32bit and 64bit
+* Install the pykd library for both Python versions
 * Install the pykd-ext bootstrapper WinDBG extension
 * Install VS runtime and register certain DLLs
 
@@ -122,7 +122,7 @@ set PATH=%ORIGPATH%
 
 ## Thank you
 
-Mona v3 would not have been possible without the hard work & dedication done by @apl3b 
+Mona v3 would not have been possible without the hard work & dedication done by [@apl3b](https://github.com/apl3b)
 
 
 ---
