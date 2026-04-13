@@ -3035,9 +3035,9 @@ class MnConfig:
 				return ""
 		return ""
 
-	def remove(self,parameter):
+	def clear(self,parameter):
 		"""
-		Removes a parameter from the config file
+		Removes/Clears a parameter from the config file
 
 		Arguments:
 		parameter - the name of the parameter to remove
@@ -3055,7 +3055,7 @@ class MnConfig:
 		if os.path.exists(self.configfile):
 			if DEBUG_MODE:
 				dbgp("Editing existing config file %s" % self.configfile)
-				dbgp("Removing parameter %s " % (parameter))			
+				dbgp("Removing / clearing parameter %s " % (parameter))			
 			#modify file
 			try:
 				configfileobj = open(self.configfile,"r")
@@ -15129,7 +15129,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 				elif mode == "list":
 					#dbg.log("Match found at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
 					bp_table[funcptr] = ["list", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
-			print_dict_table(bp_table, headers, types, padding = "   ",itemsequence = [])
+			print_dict_table(bp_table, headers, types, padding = "    ",itemsequence = [])
 
 	return
 
@@ -15216,6 +15216,16 @@ def procConfig(args):
 			params = args["del"].split(" ")
 			if len(params) < 1:
 				showerror = True
+	
+	if "clear" in args:
+		if type(args["clear"]).__name__.lower() == "bool":
+			showerror = True
+		else:
+			#count nr of words
+			params = args["clear"].split(" ")
+			if len(params) < 1:
+				showerror = True	
+
 
 	if showerror:
 		dbg.log("Invalid arguments - check the help for this command")
@@ -15238,7 +15248,7 @@ def procConfig(args):
 			headers = ["Parameter", "Value"]
 			types   = ["string", "string"]
 			configDict[paramname] = [thevalue]
-			print_dict_table(configDict, headers, types, padding = "   ", itemsequence = [])
+			print_dict_table(configDict, headers, types, padding = "    ", itemsequence = [])
 		
 		if "set" in args:
 			monaConfig = MnConfig()
@@ -15256,17 +15266,17 @@ def procConfig(args):
 			headers = ["Parameter", "New value"]
 			types   = ["string", "string"]
 			configDict[configparam] = [configvalue]
-			print_dict_table(configDict, headers, types, padding = "   ", itemsequence = [])
+			print_dict_table(configDict, headers, types, padding = "    ", itemsequence = [])
 			
-
-		if "del" in args:
+		if "clear" in args:
 			monaConfig = MnConfig()
-			value = args["del"].split(" ")
+			value = args["clear"].split(" ")
 			configparam = value[0].strip()
-			dbg.log("[+] Attempting to remove config parameter '%s'" % configparam)
+			dbg.log("[+] Attempting to clear config parameter '%s'" % configparam)
 			dbg.log("    Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
-			monaConfig.remove(configparam)
-			dbg.log("    Parameter %s removed" % (configparam))
+			monaConfig.clear(configparam)
+			dbg.log("    Parameter %s cleaered / removed" % (configparam))
+
 		
 		if "add" in args:
 			monaConfig = MnConfig()
@@ -15290,7 +15300,43 @@ def procConfig(args):
 			headers = ["Parameter", "New value"]
 			types   = ["string", "string"]
 			configDict[configparam] = [configvalue]
-			print_dict_table(configDict, headers, types, padding = "   ", itemsequence = [])			
+			print_dict_table(configDict, headers, types, padding = "    ", itemsequence = [])			
+
+
+
+		if "del" in args:
+			monaConfig = MnConfig()
+			value = args["del"].split(" ")
+			configparam = value[0].strip()
+			delvalue = args["del"][0+len(configparam):len(args["del"])].strip()
+
+			# get the current values
+			currentvalues = monaConfig.get(configparam)
+			valueslist = currentvalues.split(",")
+			newlist = []
+			valfound = False
+			for val in valueslist:
+				if val != delvalue:
+					newlist.append(val)
+				else:
+					valfound = True
+			configvalue = ",".join(newlist)
+
+			dbg.log("[+] Attempting to remove value '%s' from parameter '%s'" % (delvalue,configparam))
+			dbg.log("    Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+			monaConfig.set(configparam,configvalue)
+			if valfound:
+				dbg.log("    Value %s removed" % (delvalue))
+			else:
+				dbg.log("    Value %s not found" % (delvalue))
+			dbg.log("")
+			configDict = {}
+			headers = ["Parameter", "New value"]
+			types   = ["string", "string"]
+			configDict[configparam] = [configvalue]
+			print_dict_table(configDict, headers, types, padding = "    ", itemsequence = [])
+
+
 
 		
 # ----- Jump to register ----- #
@@ -19710,7 +19756,7 @@ def procFwptr(args):
 			headers = ["Address", "Target", "Instruction", "Module", "ACL/Pointer", "Sizeinfo"]
 			types = ["pointer", "pointer", "string", "string", "string", "string"]
 
-			print_dict_table(dict_fwptr_details, headers, types, padding = "   ", itemsequence = [])	
+			print_dict_table(dict_fwptr_details, headers, types, padding = "    ", itemsequence = [])	
 
 			dbg.log(" ")
 
@@ -19848,14 +19894,14 @@ def procGetxAT(args,mode=""):
 			headers = ["IAT Location", "In Module", "( = RVA)", "Contains","Which is address of function","Info about module the function belongs to" ]
 			types   = ["pointer", "string", "pointer", "pointer", "string", "string"]
 			dbg.log("")
-			print_dict_table(iat_table, headers, types, padding = "   ", itemsequence = [])
+			print_dict_table(iat_table, headers, types, padding = "    ", itemsequence = [])
 		if mode == "eat":
 			dbg.log("")
 			dbg.log("Results of the EAT search: %d entries found" % entriesfound )
 			headers = ["FuncPtr", "Module!Exported Function Name", "Module Base + Offset", "Info about this module" ]
 			types   = ["pointer", "string", "string", "string"]
 			dbg.log("")
-			print_dict_table(eat_table, headers, types, padding = "   ", itemsequence = [])			
+			print_dict_table(eat_table, headers, types, padding = "    ", itemsequence = [])			
 
 		if not silent:
 			dbg.log("")
@@ -22898,16 +22944,22 @@ Optional argument:
 	
 	configUsage = """Change config of mona.py
 Available options are : 
-    -get <parameter>
-    -set <parameter> <value>
-    -add <parameter> <value_to_add>
-    -del <parameter>
+    -get   <parameter>
+    -set   <parameter> <value>
+    -add   <parameter> <value_to_add>
+    -del   <parameter> <value_to_del>
+    -clear <parameter>
+	-list
 
-Valid parameter names are : workingfolder, excluded_modules, author
-You can set exclude multiple modules by separating their names with a comma,
-and/or by adding additional ones to the list using -add
-You cannot remove individual values from a parameter. You'll have to use
--set to overwrite the existing value.
+If you run 'config' without options, it will show the list of options currently set.
+	
+Mona uses the following parameters:
+  workingfolder
+  excluded_modules
+  author
+
+The exclude_modules parameter takes a comma-separated list of module names. 
+You can add items to the parameter using the -add option, and remove items using -del
 
 """
 	
