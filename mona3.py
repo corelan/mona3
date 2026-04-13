@@ -15275,7 +15275,11 @@ def procConfig(args):
 			dbg.log("[+] Attempting to clear config parameter '%s'" % configparam)
 			dbg.log("    Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			monaConfig.clear(configparam)
-			dbg.log("    Parameter %s cleaered / removed" % (configparam))
+			dbg.log("    Parameter %s cleared / removed" % (configparam))
+			dbg.log("")
+			dbg.log("[+] Listing current values from configuration file:")
+			dbg.log("")
+			monaConfig.list()
 
 		
 		if "add" in args:
