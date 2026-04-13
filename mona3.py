@@ -1003,9 +1003,24 @@ def getVariantType(typenr):
 
 def bin2hex(binbytes):
 	"""
-	Converts a binary string to a string of space-separated hexadecimal bytes.
+	Converts bytes/bytearray/str/int to a hex string
+	Py2/Py3 compatible
 	"""
-	return ' '.join('%02x' % _ord(c) for c in binbytes)
+	if binbytes is None:
+		return ""
+
+	# allow a single integer byte too
+	if isinstance(binbytes, int):
+		return "%02x" % (binbytes & 0xff)
+
+	out = []
+	for c in binbytes:
+		if isinstance(c, int):
+			out.append("%02x" % (c & 0xff))
+		else:
+			out.append("%02x" % _ord(c))
+	return ' '.join(out)
+
 
 def bin2hexstr(binbytes):
 	"""
@@ -22452,7 +22467,8 @@ def procAllocMem(args):
 	if "b" in args:
 		if type(args["b"]).__name__.lower() != "bool":
 			try:
-				fillbyte = hex2bin(args["b"])[0]
+				fillbyte = hex2bin(args["b"])				
+				fillbyte = fillbyte[:1]
 			except:
 				dbg.log(" *** Invalid byte specified with -b ***")
 				byteerror = True
@@ -22519,11 +22535,13 @@ def procAllocMem(args):
 			loc = 0
 			written = 0
 			towrite = size
+			addy = allocat
 			while loc < towrite:
 				try:
-					dbg.writeMemory(addy+loc,fillbyte)
+					dbg.writeMemory(addy+loc,_to_bytes(fillbyte))
 					written += 1
-				except:
+				except Exception as e:
+					dbg.log("    Error writing \\x%s to 0x%08x: %s" % (bin2hex(fillbyte), addy, str(e)))
 					pass
 				loc += 1
 			dbg.log("[+] Wrote %d times \\x%s to chunk at 0x%08x" % (written,bin2hex(fillbyte),addy))
@@ -23814,9 +23832,9 @@ def main(args):
 				else:
 					invokingCommand.parseProc(monaArgs)
 		else:
-			dbg.log("Sorry, command '%s' does not exist" % command, highlight = 1)
+			dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
 			dbg.log("")
-			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (launchcmd, str(arch)))
+			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (launchcmd, str(arch)), highlight=True)
 
 		
 		# ----- report ----- #
