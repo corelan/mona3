@@ -2,11 +2,13 @@
 
 This repository contains the necessary python files to run Mona v3 under WinDBG(X) and Immunity.
 
-Mona is now compatible with Python 2.7.18, as well as Python3 versions as supported by PyKD and PyKD-ext. (3.9.13)
+Mona is compatible with Python3 versions as supported by PyKD and PyKD-ext. (3.9.13).  It still runs on Python2.7.18 as well.
 
-It runs in x86 and x64 debugging sessions.
+Mona supports x86 and x64 debugging sessions.
 
-Mona has been tested on Window7, Windows 10 and Windows 11
+Mona has been tested on Window7, Windows 10 and Windows 11.
+
+If you find bugs, please open an issue and explain details on how to reproduce the problem you're seeing.
 
 
 
