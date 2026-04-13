@@ -8,7 +8,7 @@ Some highlights:
 * Mona supports x86 and x64 debugging sessions. Please do keep in mind that not all mona commands are available in 64bit.
 * Mona has been tested on Window7, Windows 10 and Windows 11.
 
-
+---
 
 # Preparing your system to run Mona
 
@@ -23,10 +23,12 @@ In a nutshell, the script will
 * Install the pykd-ext bootstrapper WinDBG extension
 * Install VS runtime and register certain DLLs
 
+---
+
 
 ## 2. Install mona & windbglib
 
-### WinDBG Classic
+### 2.1. WinDBG Classic
 
 Download the `mona.py` and `windbglib.py` file from this repository and store the files inside the `x86` and `x64` folders of your WinDBG classic program folder.
 
@@ -42,19 +44,21 @@ If you don't need Python2, feel free to remove it from your system.
 
 
 
-### WinDBGX
+### 2.2 WinDBGX
 
 
-### Immunity Debugger
+### 2.3 Immunity Debugger
 
-If you prefer to run `mona.py` under Immunity:
+If you would like to run `mona.py` under Immunity:
 
 * Download the `mona.py` file and place it under `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`.   You do not need `windbglib.py`
 * Install Python 2.7.18 32bit (not 64bit)
-* Make sure the 32bit version of C:\Python27 is in your path system environment variable.   If you prefer not to do so, see the chapter on "Running Mona in Immunity"
+* Make sure the 32bit version of C:\Python27 is in your path system environment variable.   
+    * If you prefer not to do so, see the chapter on "Running Mona in Immunity" for ideas on creating a launcher .bat file that temporarily sets up the PATH.
+    * If you open a command prompt and type `python`, it should invoke the Python 2.7.18 32Bit interactive console
 
-(If you open a command prompt and type `python`, it should invoke the Python 2.7.18 32Bit interactive console)
 
+---
 
 
 ## 3. Running Mona
@@ -102,6 +106,8 @@ set PATH=C:\Python27;%PATH%
 immunitydebugger.exe
 set PATH=%ORIGPATH%
 ```
+
+---
 
 
 ## Found a bug ?
