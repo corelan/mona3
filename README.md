@@ -1,3 +1,14 @@
+```
+___  ________ _   _   ___          _____ 
+|  \/  |  _  | \ | | / _ \        |____ |
+| .  . | | | |  \| |/ /_\ \ __   __   / /
+| |\/| | | | | . ` ||  _  | \ \ / /   \ \
+| |  | \ \_/ / |\  || | | |  \ V /.___/ /
+\_|  |_/\___/\_| \_/\_| |_/   \_/ \____/ 
+                                         
+                                         
+```
+
 # MONA v3
 
 This repository contains the necessary python files to run Mona v3 under WinDBG(X) and Immunity.

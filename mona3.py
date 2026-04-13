@@ -22714,6 +22714,22 @@ def getBanner():
 	banners[4] = bannertext
 
 
+	bannertext = """
+  ___  ________ _   _   ___          _____ 
+  |  \/  |  _  | \ | | / _ \        |____ |
+  | .  . | | | |  \| |/ /_\ \ __   __   / /
+  | |\/| | | | | . ` ||  _  | \ \ / /   \ \ 
+  | |  | \ \_/ / |\  || | | |  \ V /.___/ /
+  \_|  |_/\___/\_| \_/\_| |_/   \_/ \____/ 
+
+   www.corelan.be 
+   www.corelan-training.com  
+   www.corelan-certified.com
+                                         	
+	"""
+	banners[5] = bannertext
+
+
 	# pick random banner
 	bannerlist = []
 	for i in range (0, len(banners)):
