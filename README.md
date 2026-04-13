@@ -14,7 +14,7 @@ If you find bugs, please open an issue and explain details on how to reproduce t
 
 # Preparing your system to run Mona
 
-## Install dependencies
+## 1. Install dependencies
 
 For Windows 10 and up, you can use the `CorelanPyKDInstall.ps` powershell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining)
 
@@ -26,7 +26,7 @@ In a nutshell, the script will
 * Install VS runtime and register certain DLLs
 
 
-## Install mona & windbglib
+## 2. Install mona & windbglib
 
 ### WinDBG Classic
 
@@ -56,8 +56,29 @@ If you prefer to run `mona.py` under Immunity:
 
 (If you open a command prompt and type `python`, it should invoke the Python 2.7.18 32Bit interactive console)
 
-As with previous versions of mona, you can now run `!mona` at the Immunity Debugger command prompt.
 
 
+## 3. Running Mona
+
+### Running Mona in WinDBG Classic
 
 
+### Running Mona in WinDBGX
+
+
+### Running Mona in Immunity
+
+Providing that your Python2 program folder is in the system path, you can simply launch Immunity Debugger and then run `!mona` at the Immunity Debugger command prompt.
+Of course, you can also create a launcher for Immunity Debugger that temporarily sets up the Path environment variable:
+
+runimmunity.bat
+
+```
+@echo off
+c:
+cd "C:\Program Files (x86)\Immunity Inc\Immunity Debugger"
+set ORIGPATH=%PATH%
+set PATH=C:\Python27;%PATH%
+immunitydebugger.exe
+set PATH=%ORIGPATH%
+```
