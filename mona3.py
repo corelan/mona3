@@ -3011,7 +3011,7 @@ class MnConfig:
 				FILE=open(self.configfile,"w")
 				FILE.writelines(newcontent)
 				FILE.close()
-				dbg.log("     mona.ini saved under %s" % self.currpath)
+				dbg.log("    mona.ini saved under %s" % self.currpath)
 			except:
 				dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
 				return ""
@@ -3076,7 +3076,7 @@ class MnConfig:
 				FILE=open(self.configfile,"w")
 				FILE.writelines(newcontent)
 				FILE.close()
-				dbg.log("     mona.ini saved under %s" % self.currpath)
+				dbg.log("    mona.ini saved under %s" % self.currpath)
 			except:
 				dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
 				return ""
@@ -7881,7 +7881,7 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 	
 	
 	
-def getPointerAccess(address):
+def getPointerAccess(address, forcedread=False):
 	"""
 	Returns access level of specified address, in human readable format
 	
@@ -7896,7 +7896,7 @@ def getPointerAccess(address):
 	paccess = ""
 	try:
 		page   = dbg.getMemoryPageByAddress( address )
-		if page in MemoryPageACL:
+		if page in MemoryPageACL and not forcedread:
 			paccess = MemoryPageACL[page]
 		else:
 			paccess = page.getAccess( human = True )
@@ -15219,13 +15219,13 @@ def procConfig(args):
 		return
 	else:
 		if "list" in args or showlist:
-			dbg.log("Listing current values from configuration file:")
+			dbg.log("[+] Listing current values from configuration file:")
 			dbg.log("")
 			monaConfig = MnConfig()
 			monaConfig.list()
 
 		if "get" in args:
-			dbg.log("Reading value from configuration file:")
+			dbg.log("[+] Reading value from configuration file:")
 			dbg.log("")
 			monaConfig = MnConfig()
 			paramname = args["get"].split(" ")[0]
@@ -15240,9 +15240,9 @@ def procConfig(args):
 			monaConfig = MnConfig()
 			value = args["set"].split(" ")
 			configparam = value[0].strip()
-			dbg.log("Saving new value for parameter '%s'" % configparam)
-			dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
-			dbg.log("New value:")
+			dbg.log("[+] Saving new value for parameter '%s'" % configparam)
+			dbg.log("    Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+			dbg.log("    New value:")
 			dbg.log("")
 			configvalue = args["set"][0+len(configparam):len(args["set"])]
 			monaConfig.set(configparam,configvalue)
@@ -15257,20 +15257,20 @@ def procConfig(args):
 			monaConfig = MnConfig()
 			value = args["del"].split(" ")
 			configparam = value[0].strip()
-			dbg.log("Attempting to remove config parameter '%s'" % configparam)
-			dbg.log("Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+			dbg.log("[+] Attempting to remove config parameter '%s'" % configparam)
+			dbg.log("    Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			monaConfig.remove(configparam)
-			dbg.log("Parameter %s removed" % (configparam))
+			dbg.log("    Parameter %s removed" % (configparam))
 		
 		if "add" in args:
 			monaConfig = MnConfig()
 			value = args["add"].split(" ")
 			configparam = value[0].strip()
-			dbg.log("Adding additional value to parameter '%s'" % configparam)
-			dbg.log("Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
+			dbg.log("[+] Adding additional value to parameter '%s'" % configparam)
+			dbg.log("    Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			configvalue = monaConfig.get(configparam).strip() + "," + args["add"][0+len(configparam):len(args["add"])].strip()
 			monaConfig.set(configparam,configvalue)
-			dbg.log("New value:")
+			dbg.log("    New value:")
 			dbg.log("")
 			configDict = {}
 			headers = ["Parameter", "New value"]
@@ -22308,9 +22308,20 @@ def procChangeACL(args):
 		pageacl = MnProc.memProtConstants[acl][1]
 		pageaclname = MnProc.memProtConstants[acl][0]
 		dbg.log("[+] ACL Changes for address 0x%08x" % addy)
+		before_access = getPointerAccess(addy)
 		dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
 		dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
-		retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
+		if before_access != pageaclname:
+			#retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
+			retval = dbg.rVirtualProtect(addy,1,pageacl)
+			after_access = getPointerAccess(addy, forcedread = True)
+			dbg.log("[+] ACL after changing: %s" % after_access)
+			report_txt = "ACL changed successfully"
+			if before_access == after_access:
+				report_txt = "!! Failed to change ACL. VirtualProtect returned %s" % (retval) 
+			dbg.log("[+] %s" % report_txt)
+		else:
+			dbg.log("[+] No changes needed")
 	return
 
 

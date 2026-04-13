@@ -577,6 +577,9 @@ class Debugger:
 
 		oldprotect = ctypes.c_ulong(0)
 
+		if DEBUG_MODE:
+			dbgp("Calling VirtualProtectEx for PID %d with args (lpAddress: 0x%08x, dwSize: 0x%x, flNewProtect: 0x%x)" % (pid, lpAddress, dwSize, flNewProtect))
+
 		returnval = kernel32.VirtualProtectEx(
 			ctypes.c_void_p(hprocess),
 			ctypes.c_void_p(lpAddress),
