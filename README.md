@@ -112,24 +112,24 @@ Now run mona using Python3.9:
 Of course, you can also create an alias to make it easier to run mona commands:
 
 ```
-as mona !py -3.9 C:\Tools\mona\mona.py
+!as mona !py -3.9 C:\Tools\mona\mona.py
 ```
-Now you can simply invoke mona by running `mona` at the WinDBG(X) Command Line.
+Now you can simply invoke mona by running `!mona` at the WinDBG(X) Command Line.
 
 
 ### 3.2. Auto loading pykd and creating an alias in WinDBG(X)
 
 In WinDBG Classic, we can use the `-c` command line option to automatically load pykd and create the alias to the mona script.
 
-Simply run windbg.exe -c "!load pykd;as mona !py -3.9 c:\Tools\mona\mona.py"
+Simply run windbg.exe -c "!load pykd;as !mona !py -3.9 c:\Tools\mona\mona.py"
 
-While you can do the same thing when launching WinDBGX, you can also configure WinDBGX `Startup` settings and run the same commands:
+While you can do the same thing when launching WinDBGX, you can also configure WinDBGX `Startup` settings to run the same commands.
 
 Open `Files > Settings > Debugging settings > Startup` and paste in the following commands:
 
 ```
 !load pykd
-as mona !py -3.9 c:\Tools\mona\mona.py
+as !mona !py -3.9 c:\Tools\mona\mona.py
 ```
 
 You only need to do the procedure above once, as WinDBGX adapts to 32 or 64 bit depending on the debugging target.
