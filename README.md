@@ -39,7 +39,7 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 
 ## 1. Install dependencies
 
-**For Windows 10 and later**, use the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
+**For Windows 10 and later**, we recommend using the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
 
 The script will automatically:
 
@@ -48,7 +48,7 @@ The script will automatically:
 * ***Install*** **PyKD-ext** bootstrapper WinDBG extension
 * ***Install*** **Visual Studio runtime** and register required DLLs
 
-If you prefer to manually install those components, please verify (after installation) the desired Python3/PyKD behavior:
+If you prefer to install those components by yourself, please verify (after installation) the desired Python3/PyKD behavior:
 
 Open an administrator command prompt.
 Run `py -3.9-32`
@@ -61,6 +61,10 @@ You should get a Python interactive shell running Python 3.9.13 32bit
 Type `import pykd` (there should be no warnings or errors)
 Type `quit()`to exit the interactive shell.
 
+
+**Still running Windows 7 somewhere?**
+
+Install Python 2.7.18 yourself first, and then run the `CorelanWin7VMinstall.py` python script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining) to install all required components to run `mona` on Windows 7.
 
 
 ---
