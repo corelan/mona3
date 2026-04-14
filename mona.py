@@ -19368,6 +19368,7 @@ def procHeap(args):
 					else:
 						label = "0x%04x (%d)" % (binidx * gran, binidx * gran)
 					if count > 0:
+						dbg.log("")
 						dbg.log("    [%3d] %-14s %d" % (binidx, label, count))
 						if binidx == 0:
 							for i, chunk in enumerate(chunks):
