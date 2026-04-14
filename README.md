@@ -51,14 +51,22 @@ The script will automatically:
 If you prefer to install those components by yourself, please verify (after installation) the desired Python3/PyKD behavior:
 
 Open an administrator command prompt.
+
 Run `py -3.9-32`
+
 You should get a Python interactive shell running Python 3.9.13 32bit
+
 Type `import pykd` (there should be no warnings or errors)
+
 Type `quit()`to exit the interactive shell.
 
+
 Next, run `py -3.9-64`
+
 You should get a Python interactive shell running Python 3.9.13 32bit
+
 Type `import pykd` (there should be no warnings or errors)
+
 Type `quit()`to exit the interactive shell.
 
 
@@ -92,11 +100,13 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 ### 2.2 Centralized installation (recommended) 
 
 **Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
+
 ***We're going to use WinDBG(X) aliases to avoid having to type the full path ***.
 
 #### Step 1: Set up central location
 
 Create a central folder, for instance `C:\Tools\mona`.
+
 (If you decide to make another folder, please update the commands below accordingly)
 
 **Download** `mona.py` and `windbglib.py` from this repository and ***store*** them in the central folder: `C:\Tools\mona`
@@ -108,6 +118,7 @@ Create a central folder, for instance `C:\Tools\mona`.
 Reference the files directly from `C:\Tools\mona` using aliases (see **Section 3.2** for auto-loading setup).
 
 **Recommendation**: Use **Python 3.9** when running `mona` in WinDBG(X). 
+
 If not using Immunity Debugger or Python2 scripts, feel free to safely ***remove Python 2*** from your system.
 
 #### Step 3: Configure for Immunity Debugger
@@ -161,7 +172,9 @@ Now you can simply type `!mona` at the WinDBG(X) Command Line.
 **For WinDBG Classic:**
 
 ***Launch*** with the `-c` flag to auto-load **PyKD** and ***create*** the **mona** alias. 
+
 You could create a small batch file inside the WinDBG Program folders (both `x86` and `x64`) that has all the required command line arguments:
+
 For example, create `w.bat` with the following contents:
 
 ```batch
@@ -206,7 +219,9 @@ set PATH=%ORIGPATH%
 ```
 
 Run `runimmunity.bat` from an administrator prompt to ***launch*** **Immunity Debugger** with the correct Python path automatically configured.
+
 Or create a shortcut on your desktop to the `runimmunity.bat` file, and configure it to ***run as administrator*** right away:
+
 * Right click on the shortcut
 * Choose ***Properties***
 * Open the ***General*** tab and change the name to something like `Ìmmunity Debugger Py2`
