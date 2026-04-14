@@ -2669,17 +2669,22 @@ class Debugger:
 				thisinstruction = thisinstruction.replace("retn","ret").replace("ret","retn")
 			thisinstruction = thisinstruction.replace(" ,",",").replace(", ",",")
 
-			if not thisinstruction in self.AsmCache:
+			# Ensure thisinstruction is ASCII for PyKD compatibility
+			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
+
+			if not ascii_instruction in self.AsmCache:
 				objdisasm = pykd.disasm(address)
 
 				if DEBUG_MODE:
 					dbgp("instruction '%s' not in cache, assembling" % thisinstruction)
 				try:
-					objdisasm.asm(thisinstruction)
+					# Ensure thisinstruction is ASCII for PyKD compatibility
+					ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
+					objdisasm.asm(ascii_instruction)
 				except Exception as e:
 					print(str(e))
 					if DEBUG_MODE:
-						dbgp("unable to assemble instruction '%s'" % thisinstruction)
+						dbgp("unable to assemble instruction '%s'" % ascii_instruction)
 						dbgp("error: %s" % str(e))
 					return ""
 
@@ -2699,14 +2704,14 @@ class Debugger:
 				if DEBUG_MODE:
 					dbgp("bytes: %s " % thesebytes)
 				allbytes += thesebytes
-				self.AsmCache[thisinstruction] = thesebytes
+				self.AsmCache[ascii_instruction] = thesebytes
 				cached = False
 			else:
 			# return from cache
 				if DEBUG_MODE:
 					dbgp("return bytes from cache")
-					dbgp("cache: %s" % bin2hex(self.AsmCache[thisinstruction]))
-				allbytes += self.AsmCache[thisinstruction]
+					dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
+				allbytes += self.AsmCache[ascii_instruction]
 		if not cached:
 			putback = "eb 0x%08x " % address
 			# In Py2, iterating a bytes/str yields 1-char strings; format expects ints.
@@ -3362,7 +3367,7 @@ class opcode:
 	dump = ""
 
 	def __init__(self,address):
-		self.address = address
+		self.address = int(address)
 		self.dumpdata = ""
 		self.dump = ""
 		self.instruction = ""

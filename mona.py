@@ -19746,6 +19746,8 @@ def procFwptr(args):
 						# check if it's reading a pointer from somewhere
 						instrtext = getDisasmInstruction(thisinstr)
 						opcodepart = instrbytes.upper()[0:4]
+						if DEBUG_MODE:
+							dbg.log("Location: 0x%08x, Opcode: %s, Instruction: %s" % (loc, opcodepart,instrtext))
 						if opcodepart == "FF15" or opcodepart == "FF25":
 							if "[" in instrtext and "]" in instrtext:
 								parts1 = instrtext.split("[")
@@ -19805,11 +19807,15 @@ def procFwptr(args):
 													if dopatch:
 														dbg.writeLong(addyval,0x41414141)
 					if len(instrbytes) > 0:
-						loc = loc + len(instrbytes)/2
+						loc = loc + len(instrbytes)//2
 					else:
 						loc = loc + 1
-				except:
+				except Exception as e:
+					if DEBUG_MODE:
+						dbg.log("Error disassembling at 0x%08x: %s" % (int(loc), str(e)))
+						dbg.log(traceback.format_exc())
 					loc = loc + 1
+					continue
 			if not silent:
 				dbg.log("      Found %d pointers" % tmodcnt)
 				if chunksize > 0:
