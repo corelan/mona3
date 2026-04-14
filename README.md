@@ -11,13 +11,27 @@ ___  ________ _   _   ___          _____
 
 # MONA v3
 
-This repository contains the necessary python files to run Mona v3 under WinDBG(X) and Immunity.
+## Table of Contents
 
-Some highlights:
-* Mona is compatible with Python3 versions as supported by PyKD and PyKD-ext. (i.e. up to (and including) Python 3.9.13).  
-* Mona is backwards compatible and still runs on Python2.7.18 as well.
-* Mona supports x86 and x64 debugging sessions. Please do keep in mind that not all mona commands are available in 64bit.
-* Mona has been tested on Window7, Windows 10 and Windows 11.
+- [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
+  - [1. Install dependencies](#1-install-dependencies)
+  - [2. Install mona & windbglib](#2-install-mona--windbglib)
+    - [2.1 Distributed installation](#21-distributed-installation)
+    - [2.2 Centralized installation (recommended)](#22-centralized-installation-recommended)
+- [3. Running Mona](#3-running-mona)
+  - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
+  - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
+  - [3.3. Running Mona in Immunity](#33-running-mona-in-immunity)
+- [Thank you](#thank-you)
+- [Found a bug?](#found-a-bug)
+
+This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
+
+### Highlights
+* **Python 3 Support**: Compatible with **Python 3.9.13** (via PyKD and PyKD-ext)
+* **Backwards Compatible**: Still runs on **Python 2.7.18**
+* **Multi-Architecture**: Supports both ***x86 and x64*** debugging sessions *(note: not all commands are available in 64-bit)*
+* **Tested on**: Windows 7, Windows 10, and Windows 11
 
 ---
 
@@ -25,124 +39,128 @@ Some highlights:
 
 ## 1. Install dependencies
 
-For Windows 10 and up, you can use the `CorelanPyKDInstall.ps` powershell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining)
+**For Windows 10 and later**, use the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
 
-In a nutshell, the script will
+The script will automatically:
 
-* Install Python 3.9.13 32bit and 64bit
-* Install the pykd library for both Python versions
-* Install the pykd-ext bootstrapper WinDBG extension
-* Install VS runtime and register certain DLLs
+* ***Install*** **Python 3.9.13** (both 32-bit and 64-bit)
+* ***Install*** **PyKD** library for both Python versions
+* ***Install*** **PyKD-ext** bootstrapper WinDBG extension
+* ***Install*** **Visual Studio runtime** and register required DLLs
 
 ---
 
 
 ## 2. Install mona & windbglib
 
-It's quite common to run WinDBG Classic and WINDBGX on the same machine.  Perhaps you even have Immunity Debugger lying around.
+You have two installation approaches: ***distributed*** (multiple copies) or ***centralized*** (recommended - single copy).
 
-You have the option to install a copy of `mona.py` and `windbglib.py` for each application individually. 
+### 2.1 Distributed installation 
 
-For WinDBG classic, this means that you need to put the 2 files in the WinDBG Program folder:
+Install separate copies of `mona.py` and `windbglib.py` for each debugger application. This approach is useful if you have multiple debuggers on the same machine.
 
-* 32bit: store the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
-* 64bit: store the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`
+**For WinDBG Classic:**
+* **32-bit**: `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
+* **64-bit**: `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`
 
-For Immunity Debugger, you'll have to put `mona.py` under `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`
-(You don't need `windbglib.py` in Immunity Debugger)
+**For Immunity Debugger:**
+* Place `mona.py` in: `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`
+* *Note: You do not need `windbglib.py` for Immunity*
 
-And for WinDBGX, you'll have to reference the script files from whatever folder you put them in.
+**For WinDBGX:**
+* Reference the scripts from ***any location*** of your choice
 
-An alternative approach would be to store the 2 files in a central location and to reference the files directly using their absolute path.
-That way, there is only one copy on your system.  Each time you run `mona up`, you'll updating the scripts for all debuggers right away.
+### 2.2 Centralized installation (recommended) 
 
-In order to avoid having to type the full path every time, we can define an alias in WinDBG Classic and WinDBGX
-And for Immunity Debugger, we can use a simply symlink. 
+**Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. ***No path typing required*** (use aliases).
 
-Let's see what that looks like
+#### Step 1: Set up central location
 
+**Download** `mona.py` and `windbglib.py` from this repository and ***store*** them in a central folder: `C:\Tools\mona`
 
-### 2.1. Set up central location
+> **⚠️ Important**: Verify the downloaded files contain ***actual Python code***, not HTML
 
-Download the `mona.py` and `windbglib.py` file from this repository and store the files inside a folder under `C:\Tools\mona`.
+#### Step 2: Configure for WinDBG Classic / WinDBGX
 
-(Of course, if you decide to pick a different folder, update the commands in the next chapters accordingly)
+Reference the files directly from `C:\Tools\mona` using aliases (see **Section 3.2** for auto-loading setup).
 
-Please verify that the files contain the actual python code, and not html ;-)
+**Recommendation**: Use **Python 3.9** when running `mona` in WinDBG(X). If not using Immunity Debugger, you can safely ***remove Python 2*** from your system.
 
+#### Step 3: Configure for Immunity Debugger
 
-### 2.2. Usage in WinDBG Classic / WinDBGX
+**Option A: Create a symbolic link** (recommended)
+```batch
+mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py" "C:\Tools\mona\mona.py"
+```
 
-In WinDBG Classic and WinDBGX,  we're going to reference the files directly from the `C:\Tools\mona` folder.  
+**Option B: Copy the file directly**
+* Copy `mona.py` to: `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`
 
-We'll show how to use this in chapter 3
-
-Also, please note that we prefer and recommend to run `mona` with Python 3.9 in WinDBG(X)
-If you don't need Python2 (and not using Immunity Debugger), feel free to remove Python2 from your system.
-
-
-
-### 2.3 Immunity Debugger
-
-* Put a copy of `mona.py` file under `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands` with the following command: 
-  * `mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py" "C:\Tools\mona\mona.py"`   
-* Install Python 2.7.18 32bit (not 64bit)
-* Make sure the 32bit version of C:\Python27 is in your path system environment variable.   
-    * If you prefer not to do so, see the chapter on "Running Mona in Immunity" for ideas on creating a launcher .bat file that temporarily sets up the PATH.
-    * If you open a command prompt and type `python`, it should invoke the Python 2.7.18 32Bit interactive console
+**Python 2 Setup** (required for Immunity):
+* ***Install*** **Python 2.7.18** (***32-bit version only***)
+* ***Ensure*** the 32-bit `C:\Python27` folder is in your system **PATH** environment variable
+  * ***Verify*** by opening Command Prompt and typing `python` — it should launch Python 2.7.18 (32-bit)
+  * *Alternative*: See **Section 3.3** for a launcher `.bat` file to temporarily set the PATH
 
 ---
 
 
 ## 3. Running Mona
 
-### 3.1. Running Mona in WinDBG Classic and WinDBGX
+### 3.1. Running Mona in WinDBG(X)
 
-Open WinDBG(X) and attach it to the process you'd like to debug.
-At the WinDBG(X) Command Line, load the pykd bootstrapper extension
+**Step 1**: ***Open*** **WinDBG(X)** and ***attach*** it to your target process
+
+**Step 2**: At the WinDBG(X) Command Line, ***load*** the **PyKD** bootstrapper extension:
 ```
 !load pykd
 ```
 
-Now run mona using Python3.9:
+**Step 3**: ***Run*** **Mona** using **Python 3.9**:
 ```
 !py -3.9 C:\Tools\mona\mona.py
 ```
 
-Of course, you can also create an alias to make it easier to run mona commands:
-
+**Convenience**: ***Create an alias*** to avoid typing the full path every time:
 ```
 !as mona !py -3.9 C:\Tools\mona\mona.py
 ```
-Now you can simply invoke mona by running `!mona` at the WinDBG(X) Command Line.
+Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
 
 ### 3.2. Auto loading pykd and creating an alias in WinDBG(X)
 
-In WinDBG Classic, we can use the `-c` command line option to automatically load pykd and create the alias to the mona script.
+**For WinDBG Classic:**
 
-Simply run windbg.exe -c "!load pykd;as !mona !py -3.9 c:\Tools\mona\mona.py"
+***Launch*** with the `-c` flag to auto-load **PyKD** and ***create*** the **mona** alias:
+```batch
+windbg.exe -c "!load pykd;as !mona !py -3.9 c:\Tools\mona\mona.py"
+```
 
-While you can do the same thing when launching WinDBGX, you can also configure WinDBGX `Startup` settings to run the same commands.
+**For WinDBGX:**
 
-Open `Files > Settings > Debugging settings > Startup` and paste in the following commands:
-
+***Configure*** the **Startup settings** to auto-load on every session:
+1. Navigate to: ***Files > Settings > Debugging settings > Startup***
+2. ***Paste*** the following commands:
 ```
 !load pykd
 as !mona !py -3.9 c:\Tools\mona\mona.py
 ```
 
-You only need to do the procedure above once, as WinDBGX adapts to 32 or 64 bit depending on the debugging target.
+> **Note**: You only need to configure this ***once***. WinDBGX will automatically adapt to 32-bit or 64-bit depending on your debugging target.
 
 
 ### 3.3. Running Mona in Immunity
 
-Providing that your Python2 program folder is in the system path, you can simply launch Immunity Debugger and then run `!mona` at the Immunity Debugger command prompt.
-If you prefer not to have C:\Python27 in your system PATH, you can also create a simple Immunity Debugger launcher script that temporarily sets up the Path environment variable:
+**If Python 2.7 is in your system PATH:**
 
-runimmunity.bat
+Simply ***launch*** **Immunity Debugger** and type `!mona` at the command prompt.
 
-```
+**If you prefer NOT to have C:\\Python27 in your system PATH:**
+
+***Create*** a launcher batch file (`runimmunity.bat`) that ***temporarily*** sets the PATH variable:
+
+```batch
 @echo off
 c:
 cd "C:\Program Files (x86)\Immunity Inc\Immunity Debugger"
@@ -152,16 +170,16 @@ immunitydebugger.exe
 set PATH=%ORIGPATH%
 ```
 
+Double-click `runimmunity.bat` to ***launch*** **Immunity Debugger** with the correct Python path automatically configured.
+
 ---
 
 ## Thank you
 
-Mona v3 would not have been possible without the hard work & dedication done by [@apl3b](https://github.com/apl3b)
-
+Mona v3 would not have been possible without the ***hard work and dedication*** of **[@apl3b](https://github.com/apl3b)**. Thank you! 🙏
 
 ---
 
+## Found a bug?
 
-## Found a bug ?
-
-If you find bugs, please open an issue and explain details on how to reproduce the problem you're seeing.
+If you discover a bug, please ***open an issue*** and provide ***detailed steps to reproduce*** the problem.
