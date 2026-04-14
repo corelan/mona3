@@ -23,9 +23,10 @@ ___  ________ _   _   ___          _____
       - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
       - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
 - [3. Running Mona](#3-running-mona)
-  - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
-  - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
-  - [3.3. Running Mona in Immunity](#33-running-mona-in-immunity)
+  - [3.1 Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
+  - [3.2 Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
+  - [3.3 Running Mona in WinDBG Classic on Windows 7](#33-running-mona-in-windbg-classic-on-windows-7)
+  - [3.4 Running Mona in Immunity](#34-running-mona-in-immunity)
 - [Thank you](#thank-you)
 - [Found a bug?](#found-a-bug)
 
@@ -162,7 +163,7 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 ## 3. Running Mona
 
-### 3.1. Running Mona in WinDBG(X)
+### 3.1 Running Mona in WinDBG(X)
 
 **Step 1**: ***Open*** **WinDBG(X)** and ***attach*** it to your target process
 
@@ -187,7 +188,7 @@ On WinDBG(X):
 Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
 
-### 3.2. Auto loading pykd and creating an alias in WinDBG(X)
+### 3.2 Auto loading pykd and creating an alias in WinDBG(X)
 
 **For WinDBG Classic:**
 
@@ -217,8 +218,48 @@ as !mona !py -3.9 c:\Tools\mona\mona.py
 
 > **Note**: You only need to configure this ***once***. WinDBGX will automatically adapt to 32-bit or 64-bit depending on your debugging target.
 
+### 3.3 Running Mona in WinDBG Classic on Windows 7
 
-### 3.3. Running Mona in Immunity
+For Windows 7, we recommend using a small launcher script that sets a few Python related environment variables.
+
+To run mona with Python3, you could create this `wpy3.bat` file and save it inside the WinDBG Program folder
+
+```batch
+@echo off
+set ORIGPATH=%PATH%
+set PATH=%LOCALAPPDATA%\Programs\Python\Python38-32;%PATH%
+set PYTHONHOME=%LOCALAPPDATA%\Programs\Python\Python38-32
+set PYTHONPATH=%LOCALAPPDATA%\Programs\Python\Python38-32\Lib
+
+set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -3 c:\tools\mona\mona.py'
+
+%WINDBG_CMD% %*
+
+set PATH=%ORIGPATH%
+set PYTHONHOME=
+set PYTHONPATH=
+```
+
+For Python2, the corresponding `wpy2.bat` file would look like this:
+
+```batch
+@echo off
+set ORIGPATH=%PATH%
+set PYTHONHOME=C:\Python27
+set PATH=%PYTHONHOME%;%PATH%
+set PYTHONPATH=%PYTHONHOME%\Lib
+
+set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -2 c:\tools\mona\mona.py'
+
+%WINDBG_CMD% %*
+
+set PATH=%ORIGPATH%
+SET PYTHONHOME=
+SET PYTHONPATH=
+```
+
+
+### 3.4 Running Mona in Immunity
 
 **If Python 2.7 is in your system PATH:**
 
@@ -255,6 +296,7 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 * Use the ***Browse*** button and select the `immunitydebugger.exe` file inside `C:\Program Files (x86)\Immunity Inc\Immunity Debugger`
 * Select the first icon in the list and click OK
 * Click OK to save the changes
+
 
 
 
