@@ -16,7 +16,7 @@ ___  ________ _   _   ___          _____
 - [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
   - [1. Install dependencies](#1-install-dependencies)
     - [1.1 Windows 10 and later](#11-windows-10-and-later)
-    - [Windows 7](#windows-7)
+    - [Windows 7](#12-windows-7)
   - [2. Install mona & windbglib](#2-install-mona--windbglib)
     - [2.1 Distributed installation](#21-distributed-installation)
     - [2.2 Centralized installation (recommended)](#22-centralized-installation-recommended)
@@ -89,7 +89,7 @@ Type `import pykd` (there should be no warnings or errors)
 Type `quit()`to exit the interactive shell.
 
 
-### Windows 7
+### 1.2. Windows 7
 
 **Still running Windows 7 somewhere?**
 
