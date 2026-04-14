@@ -19387,7 +19387,7 @@ def procHeap(args):
 							chunksize = chunk.size * gran
 							freesize = chunksize - chunk.headersize
 							if binidx == 0:
-								dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes | UserSize: 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, freesize, _seg_label(chunk.segment)))
+								dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes | UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, freesize // gran, freesize, _seg_label(chunk.segment)))
 							else:
 								userblocks = freesize // gran
 								dbg.log("           0x%08x (UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, userblocks, freesize, _seg_label(chunk.segment)))
