@@ -87,9 +87,9 @@ try:
 except:		
 	try:
 		import pykd
-		import windbglib3 as dbglib
+		import windbglib as dbglib
 		#activate this with -debug flag
-		from windbglib3 import LogBpHook
+		from windbglib import LogBpHook
 		dbglib.checkVersion()
 		arch = dbglib.getArchitecture()
 		__DEBUGGERAPP__ = "WinDBG"
@@ -17472,7 +17472,7 @@ def procUpdate(args):
 	#url
 	dbg.setStatusBar("Running update process...")
 	dbg.updateLog()
-	updateurl = "https://github.com/corelan/mona3/raw/master/mona3.py"
+	updateurl = "https://github.com/corelan/mona3/raw/master/mona.py"
 	
 	currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
 	u = ""
@@ -17511,7 +17511,7 @@ def procUpdate(args):
 			shutil.copyfile(u[0],inspect.stack()[0][1])
 			dbg.log("    Done")					
 		except Exception as e:
-			dbg.log("    ** Unable to update mona3.py",highlight=1)
+			dbg.log("    ** Unable to update mona.py",highlight=1)
 			dbg.log("    ** %s" % str(e))
 		currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
 		dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
@@ -17520,20 +17520,20 @@ def procUpdate(args):
 
 	# update windbglib if needed
 	if __DEBUGGERAPP__ == "WinDBG":
-		dbg.log("[+] Locating windbglib3 path")
+		dbg.log("[+] Locating windbglib path")
 		paths = sys.path
 		filefound = False
 		libfile = ""
 		for ppath in paths:
-			libfile = ppath + "\\windbglib3.py"
+			libfile = ppath + "\\windbglib.py"
 			if os.path.isfile(libfile):
 				filefound=True
 				break
 		if not filefound:
-			dbg.log("    ** Unable to find windbglib3.py ! **")
+			dbg.log("    ** Unable to find windbglib.py ! **")
 		else:
 			dbg.log("[+] Checking if %s needs an update..." % libfile)
-			updateurl = "https://github.com/corelan/mona3/raw/master/windbglib3.py"
+			updateurl = "https://github.com/corelan/mona3/raw/master/windbglib.py"
 
 			currentversion,currentrevision = getVersionInfo(libfile)
 			u = ""
@@ -17573,7 +17573,7 @@ def procUpdate(args):
 					shutil.copyfile(u[0],libfile)
 					dbg.log("    Done")					
 				except Exception as e:
-					dbg.log("    ** Unable to update windbglib3.py",highlight=1)
+					dbg.log("    ** Unable to update windbglib.py",highlight=1)
 					dbg.log("    ** %s" % str(e))
 				currentversion,currentrevision = getVersionInfo(libfile)
 				dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
@@ -23632,7 +23632,7 @@ def _strip_launcher_and_script(argv):
 		first_raw = str(argv[0]).strip().strip('"').strip("'")
 		first_base = os.path.basename(first_raw).lower()
 
-		if first_base in ["!py", "py", "mona.py", "mona3.py"]:
+		if first_base in ["!py", "py", "mona.py", "mona"]:
 			argv = argv[1:]
 			continue
 		break
