@@ -15286,18 +15286,37 @@ def procConfig(args):
 			monaConfig = MnConfig()
 			value = args["add"].split(" ")
 			configparam = value[0].strip()
-			dbg.log("[+] Adding additional value to parameter '%s'" % configparam)
+			dbg.log("[+] Adding additional value(s) to parameter '%s'" % configparam)
 			dbg.log("    Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			oldvalue = monaConfig.get(configparam)
 			if oldvalue is None:
 				oldvalue = ""
 			oldvalue = oldvalue.strip()
-			newvalue = args["add"][0+len(configparam):len(args["add"])].strip()
-			if oldvalue == "":
-				configvalue = newvalue
+			newvalue_str = args["add"][0+len(configparam):len(args["add"])].strip()
+			
+			# Split old values and new values by comma
+			old_values = [v.strip() for v in oldvalue.split(",") if v.strip()]
+			new_values = [v.strip() for v in newvalue_str.split(",") if v.strip()]
+			
+			added_values = []
+			skipped_values = []
+			
+			for new_val in new_values:
+				if new_val in old_values:
+					skipped_values.append(new_val)
+					dbg.log("    Skipping '%s' - already present in parameter '%s'" % (new_val, configparam))
+				else:
+					added_values.append(new_val)
+					old_values.append(new_val)
+			
+			if added_values:
+				configvalue = ",".join(old_values)
+				monaConfig.set(configparam, configvalue)
+				dbg.log("    Added value(s): %s" % ", ".join(added_values))
 			else:
-				configvalue = oldvalue + ";" + newvalue
-			monaConfig.set(configparam,configvalue)
+				configvalue = oldvalue
+				dbg.log("    No new values added")
+			
 			dbg.log("    New value:")
 			dbg.log("")
 			configDict = {}
@@ -15312,27 +15331,39 @@ def procConfig(args):
 			monaConfig = MnConfig()
 			value = args["del"].split(" ")
 			configparam = value[0].strip()
-			delvalue = args["del"][0+len(configparam):len(args["del"])].strip()
+			delvalue_str = args["del"][0+len(configparam):len(args["del"])].strip()
 
 			# get the current values
 			currentvalues = monaConfig.get(configparam)
-			valueslist = currentvalues.split(",")
-			newlist = []
-			valfound = False
-			for val in valueslist:
-				if val != delvalue:
-					newlist.append(val)
+			if currentvalues is None:
+				currentvalues = ""
+			valueslist = [v.strip() for v in currentvalues.split(",") if v.strip()]
+			
+			# Split the values to delete by comma
+			del_values = [v.strip() for v in delvalue_str.split(",") if v.strip()]
+			
+			newlist = valueslist[:]
+			removed_values = []
+			not_found_values = []
+			
+			for del_val in del_values:
+				if del_val in newlist:
+					newlist.remove(del_val)
+					removed_values.append(del_val)
 				else:
-					valfound = True
+					not_found_values.append(del_val)
+			
 			configvalue = ",".join(newlist)
 
-			dbg.log("[+] Attempting to remove value '%s' from parameter '%s'" % (delvalue,configparam))
-			dbg.log("    Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
-			monaConfig.set(configparam,configvalue)
-			if valfound:
-				dbg.log("    Value %s removed" % (delvalue))
-			else:
-				dbg.log("    Value %s not found" % (delvalue))
+			dbg.log("[+] Attempting to remove value(s) '%s' from parameter '%s'" % (delvalue_str, configparam))
+			dbg.log("    Current value of parameter %s = %s" % (configparam, monaConfig.get(configparam)))
+			monaConfig.set(configparam, configvalue)
+			
+			if removed_values:
+				dbg.log("    Removed value(s): %s" % ", ".join(removed_values))
+			if not_found_values:
+				dbg.log("    Value(s) not found: %s" % ", ".join(not_found_values))
+			
 			dbg.log("")
 			configDict = {}
 			headers = ["Parameter", "New value"]
