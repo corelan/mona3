@@ -11110,7 +11110,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 					rawptr[ptr]=ptrtype
 		if not silent:
 			dbg.log("[+] Number of pointers to process : %d" % len(rawptr))
-		sortedptr = rawptr.items()
+		sortedptr = list(rawptr.items())
 		sortedptr.sort(key = itemgetter(0))
 		#skip consecutive ones and increment size
 		consec_delta = len(bytes)
@@ -20231,7 +20231,6 @@ def procFillChunk(args):
 
 	if "r" in args:
 		if type(args["r"]).__name__.lower() != "bool":
-
 			# break into pieces
 			reference = args["r"].upper()
 			origreference = reference
