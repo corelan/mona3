@@ -19274,6 +19274,10 @@ def procHeap(args):
 		for heapbase in heap_to_query:
 			mHeap = MnHeap(heapbase)
 			heapbase_extra = ""
+			heapidx = allheaps.index(heapbase) if heapbase in allheaps else 0
+			heapname = "Heap %d" % heapidx
+			if heapbase == getDefaultProcessHeap():
+				heapname += " [Default]"
 			frontendinfo = []
 			frontendheapptr = 0
 			frontendheaptype = 0
@@ -19286,7 +19290,7 @@ def procHeap(args):
 			frontendinfo = [frontendheaptype,frontendheapptr]
 				
 			dbg.log("")
-			dbg.log("[+] Processing heap 0x%08x%s" % (heapbase,heapbase_extra))
+			dbg.log("[+] Processing heap 0x%08x - %s%s" % (heapbase, heapname, heapbase_extra))
 
 			if searchtype == "fea":
 				if win7mode:
@@ -19355,6 +19359,13 @@ def procHeap(args):
 				gran = heapgranularity
 				total_free = 0
 
+				# Build segment index-to-address map
+				seglist = mHeap.getHeapSegmentList()
+				seg_sorted = sorted(seglist.keys())
+				def _seg_label(segid):
+					segaddr = seg_sorted[segid] if segid < len(seg_sorted) else 0
+					return "Segment%02d-%02d - 0x%08x" % (segid, heapidx, segaddr)
+
 				dbg.log("")
 				dbg.log("    Bin  ExpSize                                Chunks")
 				dbg.log("    ---  ------------------------------------   ------")
@@ -19374,7 +19385,7 @@ def procHeap(args):
 						dbg.log("")
 						for i, chunk in enumerate(chunks):
 							chunksize = chunk.size * gran
-							dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes) [Segment: Segment%02d-%02d]" % (chunk.chunkptr, chunk.size, chunksize, chunk.segment, chunk.segment))
+							dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, _seg_label(chunk.segment)))
 							if i < count - 1:
 								dbg.log("             |")
 								dbg.log("             V")
