@@ -73,11 +73,11 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 ### 2.2 Centralized installation (recommended) 
 
 **Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
-***We're also going to use WinDBG(X) aliases to avoid having to type the full path ***.
+***We're going to use WinDBG(X) aliases to avoid having to type the full path ***.
 
 #### Step 1: Set up central location
 
-Create a central folder, for instance `C:\Tools\mona`
+Create a central folder, for instance `C:\Tools\mona`.
 (If you decide to make another folder, please update the commands below accordingly)
 
 **Download** `mona.py` and `windbglib.py` from this repository and ***store*** them in the central folder: `C:\Tools\mona`
