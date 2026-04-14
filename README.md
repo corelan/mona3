@@ -29,8 +29,8 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 
 ### Highlights
 * **Python 3 Support**: Compatible with **Python 3.9.13** (via PyKD and PyKD-ext)
-* **Backwards Compatible**: Still runs on **Python 2.7.18**
-* **Multi-Architecture**: Supports both ***x86 and x64*** debugging sessions *(note: not all commands are available in 64-bit)*
+* **Backwards Compatible**: Still runs on **Python 2.7.18** (via PyKD and PyKD-ext)
+* **Multi-Architecture**: Supports both ***x86 and x64*** debugging sessions *(note: not all `mona`commands are available in 64-bit)*
 * **Tested on**: Windows 7, Windows 10, and Windows 11
 
 ---
@@ -60,23 +60,27 @@ You have two installation approaches: ***distributed*** (multiple copies) or ***
 Install separate copies of `mona.py` and `windbglib.py` for each debugger application. This approach is useful if you have multiple debuggers on the same machine.
 
 **For WinDBG Classic:**
-* **32-bit**: `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
-* **64-bit**: `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`
+* **32-bit**: put the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
+* **64-bit**: put the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`
 
 **For Immunity Debugger:**
 * Place `mona.py` in: `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`
 * *Note: You do not need `windbglib.py` for Immunity*
 
 **For WinDBGX:**
-* Reference the scripts from ***any location*** of your choice
+* Reference `mona.py` from ***any location*** of your choice
 
 ### 2.2 Centralized installation (recommended) 
 
-**Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. ***No path typing required*** (use aliases).
+**Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
+***We're also going to use WinDBG(X) aliases to avoid having to type the full path ***.
 
 #### Step 1: Set up central location
 
-**Download** `mona.py` and `windbglib.py` from this repository and ***store*** them in a central folder: `C:\Tools\mona`
+Create a central folder, for instance `C:\Tools\mona`
+(If you decide to make another folder, please update the commands below accordingly)
+
+**Download** `mona.py` and `windbglib.py` from this repository and ***store*** them in the central folder: `C:\Tools\mona`
 
 > **⚠️ Important**: Verify the downloaded files contain ***actual Python code***, not HTML
 
@@ -84,7 +88,8 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 
 Reference the files directly from `C:\Tools\mona` using aliases (see **Section 3.2** for auto-loading setup).
 
-**Recommendation**: Use **Python 3.9** when running `mona` in WinDBG(X). If not using Immunity Debugger, you can safely ***remove Python 2*** from your system.
+**Recommendation**: Use **Python 3.9** when running `mona` in WinDBG(X). 
+If not using Immunity Debugger or Python2 scripts, feel free to safely ***remove Python 2*** from your system.
 
 #### Step 3: Configure for Immunity Debugger
 
@@ -170,7 +175,23 @@ immunitydebugger.exe
 set PATH=%ORIGPATH%
 ```
 
-Double-click `runimmunity.bat` to ***launch*** **Immunity Debugger** with the correct Python path automatically configured.
+Run `runimmunity.bat` from an administrator prompt to ***launch*** **Immunity Debugger** with the correct Python path automatically configured.
+Or create a shortcut on your desktop to the `runimmunity.bat` file, and configure it to ***run as administrator*** right away:
+* Right click on the shortcut
+* Choose ***Properties***
+* Open the ***General*** tab and change the name to something like `Ìmmunity Debugger Py2`
+* Open the ***Shortcut*** tab
+* Click ***Advanced***
+* Enable ***Run as administrator***
+* Click OK to save the changes
+
+If you'd like, you can also change the icon.  From the same ***Shortcut*** tab sheet:
+* Click ***Change Icon***.  You'll probably get a warning because the script does not have icons. Click OK
+* Use the ***Browse*** button and select the `immunitydebugger.exe` file inside `C:\Program Files (x86)\Immunity Inc\Immunity Debugger`
+* Select the first icon in the list and click OK
+* Click OK to save the changes
+
+
 
 ---
 
