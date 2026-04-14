@@ -14559,8 +14559,8 @@ def goFindMSP(distance=0, args=None):
 					thissize = getPatternLength(regs[reg], pattype, args)
 					if thissize > 0:
 						if not silent:
-							dbg.log("    %s (0x%s) points at offset %d in %s pattern (length %d)" % (reg, toHex(regs[reg]), offset, pattype, thissize))
-						tofile += "    %s (0x%s) points at offset %d in %s pattern (length %d)\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
+							dbg.log("    %s (0x%s) points at offset %d in %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+						tofile += "    %s (0x%s) points at offset %d in %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 						registers_to[reg] = [regs[reg], offset, thissize, pattype]
 				else:
 					# reversed ?
@@ -14572,8 +14572,8 @@ def goFindMSP(distance=0, args=None):
 						thissize = getPatternLength(regs[reg], pattype, args)
 						if thissize > 0:
 							if not silent:
-								dbg.log("    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d)" % (reg, toHex(regs[reg]), offset, pattype, thissize))
-							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d)\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
+								dbg.log("    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 							registers_to[reg] = [regs[reg], offset, thissize, pattype]
 
 	if "registers" not in results:
