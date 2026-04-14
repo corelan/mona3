@@ -48,6 +48,21 @@ The script will automatically:
 * ***Install*** **PyKD-ext** bootstrapper WinDBG extension
 * ***Install*** **Visual Studio runtime** and register required DLLs
 
+If you prefer to manually install those components, please verify (after installation) the desired Python3/PyKD behavior:
+
+Open an administrator command prompt.
+Run `py -3.9-32`
+You should get a Python interactive shell running Python 3.9.13 32bit
+Type `import pykd` (there should be no warnings or errors)
+Type `quit()`to exit the interactive shell.
+
+Next, run `py -3.9-64`
+You should get a Python interactive shell running Python 3.9.13 32bit
+Type `import pykd` (there should be no warnings or errors)
+Type `quit()`to exit the interactive shell.
+
+
+
 ---
 
 
@@ -122,9 +137,13 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 ```
 
 **Step 3**: ***Run*** **Mona** using **Python 3.9**:
+
+On WinDBG(X):
 ```
 !py -3.9 C:\Tools\mona\mona.py
 ```
+(You can run the same command on 32bit and 64bit debugging sessions, WinDBG(X) will select the appropriate Python3.9.13 version)
+
 
 **Convenience**: ***Create an alias*** to avoid typing the full path every time:
 ```
@@ -137,12 +156,19 @@ Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
 **For WinDBG Classic:**
 
-***Launch*** with the `-c` flag to auto-load **PyKD** and ***create*** the **mona** alias:
+***Launch*** with the `-c` flag to auto-load **PyKD** and ***create*** the **mona** alias. 
+You could create a small batch file inside the WinDBG Program folders (both `x86` and `x64`) that has all the required command line arguments:
+For example, create `w.bat` with the following contents:
+
 ```batch
-windbg.exe -c "!load pykd;as !mona !py -3.9 c:\Tools\mona\mona.py"
+set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9 C:\Tools\mona\mona.py' "
+
+%WINDBG_CMD% %*
 ```
 
 **For WinDBGX:**
+
+In WinDBGX, we can use the "Startup Settings"
 
 ***Configure*** the **Startup settings** to auto-load on every session:
 1. Navigate to: ***Files > Settings > Debugging settings > Startup***
