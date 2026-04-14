@@ -4826,6 +4826,17 @@ class MnHeap(object):
 		"""
 		return {}
 
+	def getFreeBins(self):
+		"""Return free chunks organized by size bin (0-127).
+
+		Bin index maps to allocation size: bin N = N * heapgranularity bytes.
+		Bin 0 holds chunks > 127 * heapgranularity (the overflow bin).
+
+		Return: dict {bin_index: [MnChunk, ...]}
+		        Only populated bins are included.
+		"""
+		return {}
+
 
 	def getVirtualAllocdBlocks(self):
 		"""
@@ -5263,6 +5274,21 @@ class MnNTXPHeap(MnNTHeap):
 			flindex += 1
 		return freelists
 
+	def getFreeBins(self):
+		"""Return free chunks organized by size bin (0-127).
+
+		XP has a natural 1:1 mapping from FreeLists[0..127] to bins.
+
+		Return: dict {bin_index: [MnChunk, ...]}
+		"""
+		bins = {}
+		freelists = self.getFreeList()
+		for flindex, entries in freelists.items():
+			chunks = [entries[k] for k in sorted(entries.keys())]
+			if chunks:
+				bins[flindex] = chunks
+		return bins
+
 	def getHeapSegmentList(self):
 		"""Walk the XP _HEAP.Segments[64] pointer array.
 
@@ -5474,6 +5500,23 @@ class MnNT7Heap(MnNTHeap):
 		except:
 			pass
 		return freelists
+
+	def getFreeBins(self):
+		"""Return free chunks organized by size bin (0-127).
+
+		Vista/7 uses a single unified free list.  Each chunk is bucketed
+		by its size field: bin = size if size < 128, else bin 0 (overflow).
+
+		Return: dict {bin_index: [MnChunk, ...]}
+		"""
+		bins = {}
+		freelists = self.getFreeList()
+		for chunk in freelists.values():
+			bin_idx = chunk.size if chunk.size < 128 else 0
+			if bin_idx not in bins:
+				bins[bin_idx] = []
+			bins[bin_idx].append(chunk)
+		return bins
 
 	def getFrontEndHeapUsageData(self):
 		"""Read the FrontEndHeapUsageData array (Vista/Win7).
@@ -19294,39 +19337,42 @@ def procHeap(args):
 				dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
 				dbg.log("     ** Not implemented yet **")
 				
-			if searchtype == "freelist" or (searchtype == "all" and not win7mode):
-				flindex = 0
+			if searchtype == "freelist" or searchtype == "all":
 				dbg.log("[+] BackEnd Allocator : FreeLists")
 				dbg.log("[+] Getting FreeLists for heap 0x%08x" % heapbase)
-				thisfreelist = mHeap.getFreeList()
+
+				# XP-only: show FreeListsInUseBitmap
 				thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()
-				bitmapstr = ""
-				for bit in thisfreelistinusebitmap:
-					bitmapstr += str(bit)
-				dbg.log("[+] FreeListsInUseBitmap:")
-				printDataArray(bitmapstr,32,prefix="    ")
-				# make sure the freelist is printed in the correct order
-				flindex = 0
-				while flindex < 128:
-					if flindex in thisfreelist:
-						freelist_addy = heapbase + 0x178 + (8 * flindex)
-						expectedsize = ">1016"
-						expectedsize2 = ">0x%x" % 1016
-						if flindex != 0:
-							expectedsize2 = str(8 * flindex)
-							expectedsize = "0x%x" % (8 * flindex)			
-						dbg.log("[+] FreeList[%02d] at 0x%08x, Expected size: %s (%s)" % (flindex,freelist_addy,expectedsize,expectedsize2))
-						flindicator = 0
-						for flentry in thisfreelist[flindex]:
-							freelist_chunk = thisfreelist[flindex][flentry]
-							chunksize = freelist_chunk.size * 8
-							dbg.log("     ChunkPtr: 0x%08x, Header: 0x%x bytes, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d) " % (freelist_chunk.chunkptr, freelist_chunk.headersize, freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
-							if flindex != 0 and chunksize != (8*flindex):
-								dbg.log("     ** Header may be corrupted! **", highlight = True)
-							flindicator = 1
-						if flindex > 1 and int(bitmapstr[flindex]) != flindicator:
-							dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
-					flindex += 1
+				if thisfreelistinusebitmap:
+					bitmapstr = ""
+					for bit in thisfreelistinusebitmap:
+						bitmapstr += str(bit)
+					dbg.log("[+] FreeListsInUseBitmap:")
+					printDataArray(bitmapstr,32,prefix="    ")
+
+				# Unified bin display — works on XP, Vista/7, 8/10/11
+				freebins = mHeap.getFreeBins()
+				gran = heapgranularity
+				total_free = 0
+
+				dbg.log("")
+				dbg.log("    Bin  ExpSize       Chunks")
+				dbg.log("    ---  ----------    ------")
+
+				for binidx in range(128):
+					chunks = freebins.get(binidx, [])
+					count = len(chunks)
+					total_free += count
+					if binidx == 0:
+						label = ">0x%x" % (127 * gran)
+					else:
+						label = "0x%04x (%d)" % (binidx * gran, binidx * gran)
+					if count > 0:
+						dbg.log("    [%3d] %-14s %d" % (binidx, label, count))
+
+				dbg.log("")
+				dbg.log("[+] Total free chunks: %d across %d bins" % (total_free, len(freebins)))
+				dbg.log("")
 
 			if searchtype == "layout" or searchtype == "all":
 				segments = getSegmentsForHeap(heapbase)
