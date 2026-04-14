@@ -23139,7 +23139,10 @@ Optional arguments:
 Note : the charset must match the charset that was used to create the pattern !
 """
 
-	findwildUsage = """Find instructions in memory, accepts wildcards :
+	findwildUsage = """Find instructions in memory, accepts wildcards.
+
+By default, findwild searches through the entire memory space and considers executable pages.
+If you only want to search in executable pages that are part of modules, use the -m * argument
 
 Mandatory arguments :
         -s <instruction#instruction#instruction>  (separate instructions with #)
