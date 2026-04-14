@@ -259,7 +259,19 @@ offsets = {
 	"SegmentList" : {
 		"vista" : [0x0a8,0x128],
 		"win8" : [0x0a4,0x120],
-	}
+	},
+	"FreeLists" : {
+		"xp" : [0x178,0x178],
+		"vista" : [0x0c4,0x138],
+		"win8" : [0x0c0,0x130],
+	},
+	"BlocksIndex" : {
+		"vista" : [0x0b8,0x120],
+		"win8" : [0x0b4,0x118],
+	},
+	"FrontEndHeapUsageData" : {
+		"vista" : [0x0d8,0x180],
+	},
 }
 
 
@@ -4966,8 +4978,36 @@ class MnNTHeap(MnHeap):
 	# +0x0dc Counters         : _HEAP_COUNTERS
 	# +0x130 TuningParameters : _HEAP_TUNING_PARAMETERS	
 
+	# Signature (0xeeffeeff) probe offsets per era: (class, x86, x64)
+	#   Era 3 "Hardened" (8/10/11):  0x060, 0x098
+	#   Era 2 "Encoded"  (Vista/7):  0x064, 0x0a0
+	#   Era 1 "Raw"      (XP):       0x008, 0x008
+	_SIGNATURE_PROBES = None  # built lazily after subclasses exist
+
+	@classmethod
+	def _getSignatureProbes(cls):
+		if cls._SIGNATURE_PROBES is None:
+			cls._SIGNATURE_PROBES = [
+				(MnNT8Heap,   archValue(0x060, 0x098)),
+				(MnNT7Heap,   archValue(0x064, 0x0a0)),
+				(MnNTXPHeap,  archValue(0x008, 0x008)),
+			]
+		return cls._SIGNATURE_PROBES
+
 	def __new__(cls, address):
 		if cls is MnNTHeap:
+			# Probe-based detection: find 0xeeffeeff at known Signature
+			# offsets to identify the _HEAP struct layout from raw memory,
+			# without relying on OS version strings.
+			_SIG = 0xeeffeeff
+			try:
+				for target_cls, sig_offset in cls._getSignatureProbes():
+					sig = struct.unpack('<I', dbg.readMemory(address + sig_offset, 4))[0]
+					if sig == _SIG:
+						return object.__new__(target_cls)
+			except:
+				pass
+			# Fallback to win7mode boolean
 			if win7mode:
 				return object.__new__(MnNT7Heap)
 			else:
@@ -5395,6 +5435,132 @@ class MnNT7Heap(MnNTHeap):
 		"""
 		frontendheaptype = self.getFrontEndHeapType()
 		return frontendheaptype == 0x2
+
+	def getFreeList(self):
+		"""Walk the unified FreeLists doubly-linked list (Vista/Win7).
+
+		On Vista/7 the 128-entry FreeList array was replaced by a single
+		doubly-linked list at _HEAP.FreeLists.  Each node points at the
+		_HEAP_FREE_ENTRY whose Flink/Blink sit immediately after the
+		encoded 8-byte chunk header.
+
+		Return: dict keyed by sequential index, each value is a MnChunk.
+		"""
+		freelists = {}
+		ptrsize = archValue(4, 8)
+		headersize = archValue(8, 16)
+		freelist_offset = getOsOffset("FreeLists")
+		listhead = self.heapbase + freelist_offset
+
+		try:
+			flink = readPtrSizeBytes(listhead)
+			index = 0
+			while flink != 0 and flink != listhead:
+				# flink points at the Flink/Blink pair inside the free entry;
+				# the chunk header starts headersize bytes before that.
+				chunk_addr = flink - headersize
+				chunk = self.getHeapChunkHeaderAtAddress(chunk_addr, headersize, "freelist")
+				if chunk is not None:
+					freelists[index] = chunk
+				index += 1
+				# Read next Flink from the list node
+				next_flink = readPtrSizeBytes(flink)
+				if next_flink == flink:
+					break
+				flink = next_flink
+				# Safety valve
+				if index > 0xFFFF:
+					break
+		except:
+			pass
+		return freelists
+
+	def getFrontEndHeapUsageData(self):
+		"""Read the FrontEndHeapUsageData array (Vista/Win7).
+
+		This array contains per-bucket activation counters that track
+		how many allocations of each size class have been made.  When a
+		counter exceeds a threshold the LFH is activated for that bucket.
+
+		Return: list of 128 int counters, or empty list on failure.
+		"""
+		counters = []
+		try:
+			offset = getOsOffset("FrontEndHeapUsageData")
+			data = dbg.readMemory(self.heapbase + offset, 128 * 2)
+			for i in range(128):
+				val = struct.unpack('<H', data[i*2:(i+1)*2])[0]
+				counters.append(val)
+		except:
+			pass
+		return counters
+
+
+class MnNT8Heap(MnNT7Heap):
+	"""
+	NT Heap implementation for Windows 8 / 8.1.
+
+	Inherits Win7 behaviour (XOR encoding, SegmentList, LFH).
+	Offset differences are handled by getOsOffset().
+
+	_HEAP (Windows 8 x86 selected fields)
+	+0x000 Entry            : _HEAP_ENTRY
+	+0x008 SegmentSignature : Uint4B
+	+0x00c SegmentFlags     : Uint4B
+	+0x010 SegmentListEntry : _LIST_ENTRY
+	+0x018 Heap             : Ptr32 _HEAP
+	+0x01c BaseAddress      : Ptr32 Void
+	+0x020 NumberOfPages    : Uint4B
+	+0x024 FirstEntry       : Ptr32 _HEAP_ENTRY
+	+0x028 LastValidEntry   : Ptr32 _HEAP_ENTRY
+	+0x040 Flags            : Uint4B
+	+0x044 ForceFlags       : Uint4B
+	+0x048 CompatibilityFlags : Uint4B
+	+0x04c EncodeFlagMask   : Uint4B
+	+0x050 Encoding         : _HEAP_ENTRY
+	+0x060 Signature        : Uint4B
+	+0x09c VirtualAllocdBlocks : _LIST_ENTRY
+	+0x0a4 SegmentList      : _LIST_ENTRY
+	+0x0c8 FreeLists        : _LIST_ENTRY
+	+0x0d0 FrontEndHeap     : Ptr32 Void
+	+0x0d6 FrontEndHeapType : UChar
+	"""
+	pass
+
+
+class MnNT10Heap(MnNT7Heap):
+	"""
+	NT Heap implementation for Windows 10 / 11.
+
+	Inherits Win7 behaviour (XOR encoding, SegmentList, LFH).
+	Offset differences are handled by getOsOffset() with build-based
+	resolution for fields like FrontEndHeap and FrontEndHeapType.
+
+	_HEAP (Windows 10 x86 selected fields)
+	+0x000 Entry            : _HEAP_ENTRY
+	+0x008 SegmentSignature : Uint4B
+	+0x00c SegmentFlags     : Uint4B
+	+0x010 SegmentListEntry : _LIST_ENTRY
+	+0x018 Heap             : Ptr32 _HEAP
+	+0x01c BaseAddress      : Ptr32 Void
+	+0x020 NumberOfPages    : Uint4B
+	+0x024 FirstEntry       : Ptr32 _HEAP_ENTRY
+	+0x028 LastValidEntry   : Ptr32 _HEAP_ENTRY
+	+0x040 Flags            : Uint4B
+	+0x044 ForceFlags       : Uint4B
+	+0x048 CompatibilityFlags : Uint4B
+	+0x04c EncodeFlagMask   : Uint4B
+	+0x050 Encoding         : _HEAP_ENTRY
+	+0x060 Signature        : Uint4B
+	+0x09c VirtualAllocdBlocks : _LIST_ENTRY
+	+0x0a4 SegmentList      : _LIST_ENTRY
+	+0x0c8 FreeLists        : _LIST_ENTRY
+	+0x0d4 FrontEndHeap     : Ptr32 Void  (build < 17763)
+	+0x0e4 FrontEndHeap     : Ptr32 Void  (build >= 17763)
+	+0x0da FrontEndHeapType : UChar       (build < 17763)
+	+0x0ea FrontEndHeapType : UChar       (build >= 17763)
+	"""
+	pass
 
 
 class MnSegmentHeap(MnHeap):
