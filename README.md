@@ -53,8 +53,14 @@ If you prefer to install those components by yourself, please verify (after inst
 Open an administrator command prompt.
 
 Run `py -3.9-32`
+You should get a Python interactive shell running Python 3.9.13 32bit:
 
-You should get a Python interactive shell running Python 3.9.13 32bit
+```batch
+C:\>py -3.9-32
+Python 3.9.13 (tags/v3.9.13:6de2ca5, May 17 2022, 16:24:45) [MSC v.1929 32 bit (Intel)] on win32
+Type "help", "copyright", "credits" or "license" for more information.
+>>>
+```
 
 Type `import pykd` (there should be no warnings or errors)
 
@@ -62,8 +68,14 @@ Type `quit()`to exit the interactive shell.
 
 
 Next, run `py -3.9-64`
-
 You should get a Python interactive shell running Python 3.9.13 32bit
+
+```batch
+C:\>py -3.9-64
+Python 3.9.13 (tags/v3.9.13:6de2ca5, May 17 2022, 16:36:42) [MSC v.1929 64 bit (AMD64)] on win32
+Type "help", "copyright", "credits" or "license" for more information.
+>>>
+```
 
 Type `import pykd` (there should be no warnings or errors)
 
