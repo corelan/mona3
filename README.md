@@ -227,9 +227,9 @@ To run mona with Python3, you could create this `wpy3.bat` file and save it insi
 ```batch
 @echo off
 set ORIGPATH=%PATH%
-set PATH=%LOCALAPPDATA%\Programs\Python\Python38-32;%PATH%
 set PYTHONHOME=%LOCALAPPDATA%\Programs\Python\Python38-32
-set PYTHONPATH=%LOCALAPPDATA%\Programs\Python\Python38-32\Lib
+set PATH=%PYTHONHOME%;%PATH%
+set PYTHONPATH=%PYTHONHOME%\Lib
 
 set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -3 c:\tools\mona\mona.py'
 
