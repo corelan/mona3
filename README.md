@@ -15,9 +15,14 @@ ___  ________ _   _   ___          _____
 
 - [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
   - [1. Install dependencies](#1-install-dependencies)
+    - [1.1 Windows 10 and later](#11-windows-10-and-later)
+    - [Windows 7](#windows-7)
   - [2. Install mona & windbglib](#2-install-mona--windbglib)
     - [2.1 Distributed installation](#21-distributed-installation)
     - [2.2 Centralized installation (recommended)](#22-centralized-installation-recommended)
+      - [Step 1: Set up central location](#step-1-set-up-central-location)
+      - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
+      - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
 - [3. Running Mona](#3-running-mona)
   - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
   - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
@@ -38,6 +43,8 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 # Preparing your system to run Mona
 
 ## 1. Install dependencies
+
+### 1.1 Windows 10 and later
 
 **For Windows 10 and later**, we recommend using the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
 
@@ -81,6 +88,8 @@ Type `import pykd` (there should be no warnings or errors)
 
 Type `quit()`to exit the interactive shell.
 
+
+### Windows 7
 
 **Still running Windows 7 somewhere?**
 
