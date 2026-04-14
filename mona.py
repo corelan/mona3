@@ -8627,8 +8627,8 @@ def get_eta(startmoment, done, total):
 
 	eta_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(eta_time))
 
-	# If less than 10 minutes remaining → add human-readable duration
-	if eta_seconds < 600:
+	# If less than 15 minutes remaining → add human-readable duration
+	if eta_seconds < 900:
 		secs = int(eta_seconds)
 		mins = secs // 60
 		secs = secs % 60
