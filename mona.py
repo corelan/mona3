@@ -1802,32 +1802,49 @@ def splitToPtrInstr(input):
 	
 	thispointer = -1
 	thisinstruction = ""
-	split1 = re.compile(" ")
-	split2 = re.compile(":")
-	split3 = re.compile("\*\*")
 	
 	thisline = input.lower()
-	if thisline.startswith("0x"):
+	is_bytes = isinstance(thisline, bytes)
+	
+	# Create appropriate patterns based on input type
+	if is_bytes:
+		split1 = re.compile(b" ")
+		split2 = re.compile(b":")
+		split3 = re.compile(b"\*\*")
+		startswith_arg = b"0x"
+		newline_arg = b"\n"
+		carriage_arg = b"\r"
+		colon_arg = b":"
+	else:
+		split1 = re.compile(" ")
+		split2 = re.compile(":")
+		split3 = re.compile("\*\*")
+		startswith_arg = "0x"
+		newline_arg = "\n"
+		carriage_arg = "\r"
+		colon_arg = ":"
+	
+	if thisline.startswith(startswith_arg):
 		#get the pointer
 		parts = split1.split(input)
-		part1 = parts[0].replace("\n","").replace("\r","")
+		part1 = parts[0].replace(newline_arg, b"" if is_bytes else "").replace(carriage_arg, b"" if is_bytes else "")
 		if len(part1) != 10:
-			return thispointer,thisinstruction
+			return thispointer, thisinstruction
 		else:
 			thispointer = hexStrToInt(part1)
 			if len(parts) > 1:
 				subparts = split2.split(input)
-				subpartsall = ""
+				subpartsall = b"" if is_bytes else ""
 				if len(subparts) > 1:
 					cnt = 1
 					while cnt < len(subparts):
-						subpartsall += subparts[cnt] + ":"
-						cnt +=1
+						subpartsall += subparts[cnt] + colon_arg
+						cnt += 1
 					subsubparts = split3.split(subpartsall)
 					thisinstruction = subsubparts[0].strip()
-			return thispointer,thisinstruction
+			return thispointer, thisinstruction
 	else:
-		return thispointer,thisinstruction
+		return thispointer, thisinstruction
 		
 		
 def getNrOfDictElements(thisdict):
@@ -9467,7 +9484,11 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 		pointerlist = []
 		for thisLine in content:
 			refpointer,instr = splitToPtrInstr(thisLine)
-			instr = instr.replace('\n','').replace('\r','').strip(":")
+			# Handle both bytes and string types
+			if isinstance(instr, bytes):
+				instr = instr.replace(b'\n', b'').replace(b'\r', b'').strip(b":")
+			else:
+				instr = instr.replace('\n','').replace('\r','').strip(":")
 			if refpointer != -1 and not refpointer in filedata:
 				filedata[refpointer] = instr
 				pointerlist.append(refpointer)
