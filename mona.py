@@ -10497,7 +10497,7 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 		hexpart = m.group(2).lower()
 		return sign + "0x" + hexpart
 
-	instr = re.sub(r"(?<![0-9a-z_])([+-]?)([0-9a-f]+)h\b", repl_hex, instr)
+	instr = re.sub(r"(?<![0-9a-z_])([+-]?)([0-9a-f]{2,})h\b", repl_hex, instr)
 
 	# normalize decimal displacements/immediates after + or -
 	# example: [ebp-8] -> [ebp-0x8], [eax+4] -> [eax+0x4]
@@ -10566,7 +10566,7 @@ def normalizeInstructionText(instr):
 		num = m.group(2).lower()
 		return sign + "0x" + num
 
-	instr = re.sub(r"(?<![0-9a-z_])([+-]?)([0-9a-f]+)h\b", _replace_hex_h, instr)
+	instr = re.sub(r"(?<![0-9a-z_])([+-]?)([0-9a-f]{2,})h\b", _replace_hex_h, instr)
 
 	# normalize existing 0x... values to lowercase only, preserve leading zeros
 	instr = re.sub(r"\b0x([0-9a-fA-F]+)\b", lambda m: "0x" + m.group(1).lower(), instr)
