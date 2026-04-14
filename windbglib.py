@@ -2601,20 +2601,61 @@ class Debugger:
 	def assemble(self,instructions):
 		allbytes = b""
 		address = pykd.reg("eip") if arch == 32 else pykd.reg("rip")
+		origbytes = b""
+		read_success = True
+		
 		if DEBUG_MODE:
 			dbgp("instructions: %s" % instructions)
-			dbgp("address: 0x%s" % intToHex(address))
+			dbgp("address: %s" % intToHex(address))
 			dbgp("pykd.isValid(address): %s" % pykd.isValid(address))
-		if not pykd.isValid(address):
-			# assemble somewhere else - let's say at the ntdll entrypoint
+		
+		# Determine read size based on architecture
+		read_size = 20 if arch == 32 else 40
+		
+		# Check if address is valid and try to read from it
+		if pykd.isValid(address):
+			try:
+				origbytes = self.readMemory(address, read_size)
+				if DEBUG_MODE:
+					dbgp("Successfully read from valid address %s" % intToHex(address))
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Failed to read from valid address %s: %s" % (intToHex(address), str(e)))
+				# If read fails, use fallback address
+				read_success = False
+		else:
+			read_success = False
+		
+		# If address was invalid or read failed, use fallback address
+		if not pykd.isValid(address) or (read_success == False and origbytes == b""):
+			if DEBUG_MODE:
+				dbgp("Using fallback address (original was invalid or unreadable)")
 			thismod = pykd.module("ntdll")
 			thismodbase = thismod.begin()
 			ntHeader = getNtHeaders(thismodbase)
 			entrypoint = ntHeader.OptionalHeader.AddressOfEntryPoint
-			address = thismodbase + entrypoint
+			
+			# Only add 0x1000 if entrypoint is 0
+			if entrypoint == 0:
+				address = thismodbase + 0x1000
+				if DEBUG_MODE:
+					dbgp("Fallback address set to: %s (module base: %s + 0x1000, entrypoint was 0)" % (intToHex(address), intToHex(thismodbase)))
+			else:
+				address = thismodbase + entrypoint
+				if DEBUG_MODE:
+					dbgp("Fallback address set to: %s (module base: %s + entrypoint: %s)" % (intToHex(address), intToHex(thismodbase), intToHex(entrypoint)))
+			
+			try:
+				origbytes = self.readMemory(address, read_size)
+				if DEBUG_MODE:
+					dbgp("Successfully read from fallback address %s" % intToHex(address))
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Failed to read from fallback address %s: %s" % (intToHex(address), str(e)))
+				origbytes = b""
+		
 		allinstructions = instructions.lower().split("\n")
 		
-		origbytes = bytes(bytearray(pykd.loadBytes(address, 20)))
 		if DEBUG_MODE:
 			dbgp("allinstructions: %s" % allinstructions)
 			dbgp("origbytes: %s" % bin2hex(origbytes))

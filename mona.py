@@ -7355,6 +7355,11 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 						buf = ensure_bytes(buf)
 						
+						# Skip if buf is empty to avoid "ValueError: empty separator"
+						if not buf or len(buf) == 0:
+							dbg.log(" ** Search pattern '%s' resulted in empty buffer, skipping **" % human_format, highlight=1)
+							continue
+						
 						recur_find   = []		
 						try:
 							buf_len      = len(buf)
@@ -7363,7 +7368,9 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 						except Exception as e:
 							process_error_found = True
 							dbg.log(" ** Unable to process searchPattern '%s'. **" % human_format)
+							dbg.log("%s" % str(buf))
 							dbg.log(str(e))
+							dbg.log("%s" % traceback.format_exc())
 							break
 						
 						for i in mem_list:
