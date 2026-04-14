@@ -19369,6 +19369,21 @@ def procHeap(args):
 						label = "0x%04x (%d)" % (binidx * gran, binidx * gran)
 					if count > 0:
 						dbg.log("    [%3d] %-14s %d" % (binidx, label, count))
+						if binidx == 0:
+							for i, chunk in enumerate(chunks):
+								chunksize = chunk.size * gran
+								dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes) [Segment: Segment%02d-%02d]" % (chunk.chunkptr, chunk.size, chunksize, chunk.segment, chunk.segment))
+								if i < count - 1:
+									dbg.log("             |")
+									dbg.log("             V")
+						else:
+							line = "          "
+							for i, chunk in enumerate(chunks):
+								chunksize = chunk.size * gran
+								line += " 0x%08x (Size: 0x%x blocks | 0x%x bytes) [Segment: Segment%02d-%02d]" % (chunk.chunkptr, chunk.size, chunksize, chunk.segment, chunk.segment)
+								if i < count - 1:
+									line += " ->"
+							dbg.log(line)
 
 				dbg.log("")
 				dbg.log("[+] Total free chunks: %d across %d bins" % (total_free, len(freebins)))
