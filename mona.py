@@ -19356,20 +19356,20 @@ def procHeap(args):
 				total_free = 0
 
 				dbg.log("")
-				dbg.log("    Bin  ExpSize       Chunks")
-				dbg.log("    ---  ----------    ------")
+				dbg.log("    Bin  ExpSize                                Chunks")
+				dbg.log("    ---  ------------------------------------   ------")
 
 				for binidx in range(128):
 					chunks = freebins.get(binidx, [])
 					count = len(chunks)
 					total_free += count
 					if binidx == 0:
-						label = ">0x%x" % (127 * gran)
+						label = "(ExpSize: >0x%x blocks | >0x%x bytes)" % (127, 127 * gran)
 					else:
-						label = "0x%04x (%d)" % (binidx * gran, binidx * gran)
+						label = "(ExpSize: 0x%x blocks | 0x%x bytes)" % (binidx, binidx * gran)
 					if count > 0:
 						dbg.log("")
-						dbg.log("    [%3d] %-14s %d" % (binidx, label, count))
+						dbg.log("    [%3d] %-40s %d" % (binidx, label, count))
 						if binidx == 0:
 							for i, chunk in enumerate(chunks):
 								chunksize = chunk.size * gran
