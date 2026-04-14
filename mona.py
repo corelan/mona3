@@ -19385,7 +19385,11 @@ def procHeap(args):
 						dbg.log("")
 						for i, chunk in enumerate(chunks):
 							chunksize = chunk.size * gran
-							dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, _seg_label(chunk.segment)))
+							if binidx == 0:
+								dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes | UserSize: 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, chunk.usersize, _seg_label(chunk.segment)))
+							else:
+								userblocks = chunk.usersize // gran
+								dbg.log("           0x%08x (UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, userblocks, chunk.usersize, _seg_label(chunk.segment)))
 							if i < count - 1:
 								dbg.log("             |")
 								dbg.log("             V")
