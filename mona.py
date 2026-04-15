@@ -14897,13 +14897,6 @@ def goFindMSP(distance=0, args=None):
 
 def args2criteria(args,modulecriteria,criteria):
 
-	thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
-	thisversion = thisversion.replace("'","")
-	dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (get_current_datetime(),thisversion,thisrevision, arch))
-	dbg.log("[ -- START -- ] Python : %s)" % getPythonVersion())
-	if __DEBUGGERAPP__ == "WinDBG":
-		dbg.log("[ -- START -- ] PyKD: %s " % dbg.getPyKDVersionNr())
-	dbg.log("")
 	dbg.log("[+] Processing arguments and criteria")
 	global ptr_to_get
 	
@@ -23896,6 +23889,15 @@ def main(args):
 
 	try:
 		starttime = datetime.datetime.now()
+
+		thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
+		thisversion = thisversion.replace("'","")
+		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (get_current_datetime(),thisversion,thisrevision, arch))
+		dbg.log("[ -- START -- ] Python : %s)" % getPythonVersion())
+		if __DEBUGGERAPP__ == "WinDBG":
+			dbg.log("[ -- START -- ] PyKD: %s " % dbg.getPyKDVersionNr())
+		dbg.log("")
+
 		ptr_counter = 0
 
 		# fill up the commands dict
@@ -24014,8 +24016,8 @@ def main(args):
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
 		dbg.log("")
-		dbg.log("[+] This mona.py action took %s" % str(delta))	
-		dbg.log("    Current date/time: %s" % get_current_datetime())
+		dbg.log("[ -- END -- ] This mona.py action took %s" % str(delta))	
+		dbg.log("[ -- END -- ] Current date/time: %s" % get_current_datetime())
 		dbg.setStatusBar("Done")
 		if DEBUG_MODE and __DEBUGGERAPP__ == "WinDBG":
 			dbg.nativeCommand(".logclose")
