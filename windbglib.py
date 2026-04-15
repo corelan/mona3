@@ -2658,7 +2658,7 @@ class Debugger:
 		
 		if DEBUG_MODE:
 			dbgp("instructions: %s" % instructions)
-			dbgp("address: %s" % intToHex(address))
+			dbgp("Using address to assemble: %s" % intToHex(address))
 			dbgp("pykd.isValid(address): %s" % pykd.isValid(address))
 		
 		# Determine read size based on architecture
@@ -2681,7 +2681,7 @@ class Debugger:
 		# If address was invalid or read failed, use fallback address
 		if not pykd.isValid(address) or (read_success == False and origbytes == b""):
 			if DEBUG_MODE:
-				dbgp("Using fallback address (original was invalid or unreadable)")
+				dbgp("Using fallback address (original was invalid or unreadable): %s" % intToHex(address))
 			thismod = pykd.module("ntdll")
 			thismodbase = thismod.begin()
 			ntHeader = getNtHeaders(thismodbase)
@@ -2719,7 +2719,7 @@ class Debugger:
 			thisinstruction = thisinstruction.strip(" ").lstrip(" ").lower()
 			if thisinstruction.startswith("ret") and not thisinstruction.startswith("retf"):
 				thisinstruction = thisinstruction.replace("retn","ret").replace("ret","retn")
-			thisinstruction = thisinstruction.replace(" ,",",").replace(", ",",")
+			thisinstruction = thisinstruction.replace(" ,",",").replace(", ",",").replace("  "," ")
 
 			# Ensure thisinstruction is ASCII for PyKD compatibility
 			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
