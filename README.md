@@ -14,19 +14,19 @@ ___  ________ _   _   ___          _____
 
 - [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
   - [1. Install dependencies](#1-install-dependencies)
-    - [1.1 Windows 10 and later](#11-windows-10-and-later)
-    - [1.2 Windows 7](#12-windows-7)
+    - [1.1.Windows 10 and later](#11-windows-10-and-later)
+    - [1.2. Windows 7](#12-windows-7)
   - [2. Install mona & windbglib](#2-install-mona--windbglib)
-    - [2.1 Distributed installation](#21-distributed-installation)
-    - [2.2 Centralized installation (recommended)](#22-centralized-installation-recommended)
+    - [2.1. Distributed installation](#21-distributed-installation)
+    - [2.2. Centralized installation (recommended)](#22-centralized-installation-recommended)
       - [Step 1: Set up central location](#step-1-set-up-central-location)
       - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
       - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
-- [3. Running Mona](#3-running-mona)
-  - [3.1 Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
-  - [3.2 Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
-  - [3.3 Running Mona in WinDBG Classic on Windows 7](#33-running-mona-in-windbg-classic-on-windows-7)
-  - [3.4 Running Mona in Immunity](#34-running-mona-in-immunity)
+  - [3. Running Mona](#3-running-mona)
+    - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
+    - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
+    - [3.3. Running Mona in WinDBG Classic on Windows 7](#33-running-mona-in-windbg-classic-on-windows-7)
+    - [3.4. Running Mona in Immunity](#34-running-mona-in-immunity)
 - [Thank you](#thank-you)
 - [Found a bug?](#found-a-bug)
 
@@ -49,7 +49,7 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 
 <br> 
 
-### 1.1 Windows 10 and later
+### 1.1.Windows 10 and later
 
 **For Windows 10 and later**, we recommend using the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
 
@@ -97,7 +97,7 @@ Type `quit()`to exit the interactive shell.
 
 <br> 
 
-### 1.2 Windows 7
+### 1.2. Windows 7
 
 **Still running Windows 7 somewhere?**
 
@@ -118,7 +118,7 @@ You have two installation approaches: ***distributed*** (multiple copies) or ***
 
 <br> 
 
-### 2.1 Distributed installation 
+### 2.1. Distributed installation 
 
 Install separate copies of `mona.py` and `windbglib.py` for each debugger application. This approach is useful if you have multiple debuggers on the same machine.
 
@@ -135,7 +135,7 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 
 <br> 
 
-### 2.2 Centralized installation (recommended) 
+### 2.2. Centralized installation (recommended) 
 
 **Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
 
@@ -186,7 +186,7 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 <br> 
 
-### 3.1 Running Mona in WinDBG(X)
+### 3.1. Running Mona in WinDBG(X)
 
 **Step 1**: ***Open*** **WinDBG(X)** and ***attach*** it to your target process
 
@@ -212,7 +212,7 @@ Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
 <br> 
 
-### 3.2 Auto loading pykd and creating an alias in WinDBG(X)
+### 3.2. Auto loading pykd and creating an alias in WinDBG(X)
 
 **For WinDBG Classic:**
 
@@ -244,7 +244,7 @@ as !mona !py -3.9 c:\Tools\mona\mona.py
 
 <br> 
 
-### 3.3 Running Mona in WinDBG Classic on Windows 7
+### 3.3. Running Mona in WinDBG Classic on Windows 7
 
 For Windows 7, we recommend using a small launcher script that sets a few Python related environment variables.
 
@@ -286,7 +286,7 @@ SET PYTHONPATH=
 
 <br> 
 
-### 3.4 Running Mona in Immunity
+### 3.4. Running Mona in Immunity
 
 **If Python 2.7 is in your system PATH:**
 
