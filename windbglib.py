@@ -3175,9 +3175,10 @@ class Debugger:
 			if DEBUG_MODE:
 				dbgp("returning '%s'" % output)
 			return output
-		except:
-			#dprintln(traceback.format_exc())
-			#dprintln(cmd2run)
+		except Exception as e:
+			if DEBUG_MODE:
+				dbgp("Error executing command '%s': %s" % (cmd2run, str(e)))
+				dbgp("%s" % traceback.format_exc())
 			return ""
 
 	"""
