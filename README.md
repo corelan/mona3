@@ -139,8 +139,9 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 
 **Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
 
-***We're going to use WinDBG(X) aliases to avoid having to type the full path ***.
+> We're going to use WinDBG(X) aliases to avoid having to type the full path.
 
+<br> 
 
 #### Step 1: Set up central location
 
@@ -152,6 +153,7 @@ Create a central folder, for instance `C:\Tools\mona`.
 
 > **⚠️ Important**: Verify the downloaded files contain ***actual Python code***, not HTML
 
+<br> 
 
 #### Step 2: Configure for WinDBG Classic / WinDBGX
 
@@ -161,6 +163,7 @@ Reference the files directly from `C:\Tools\mona` using aliases (see **Section 3
 
 If not using Immunity Debugger or Python2 scripts, feel free to safely ***remove Python 2*** from your system.
 
+<br> 
 
 #### Step 3: Configure for Immunity Debugger
 
