@@ -2650,6 +2650,17 @@ class Debugger:
 			depth -= 1
 
 
+	def cleanInstruction(self,thisinstruction):
+
+		thisinstruction = thisinstruction.strip(" ").lstrip(" ").lower()
+		thisinstruction = thisinstruction.replace("  "," ")
+		if thisinstruction.startswith("ret") and not thisinstruction.startswith("retf"):
+			thisinstruction = thisinstruction.replace("retn","ret").replace("ret","retn")
+		thisinstruction = thisinstruction.replace(" ,",",").replace(", ",",")
+		
+		return thisinstruction
+
+
 	def assemble(self,instructions):
 		allbytes = b""
 		address = pykd.reg("eip") if arch == 32 else pykd.reg("rip")
@@ -2658,9 +2669,30 @@ class Debugger:
 		
 		if DEBUG_MODE:
 			dbgp("instructions: %s" % instructions)
-			dbgp("Using address to assemble: %s" % intToHex(address))
-			dbgp("pykd.isValid(address): %s" % pykd.isValid(address))
+			dbgp("Using address to assemble if needed: %s" % intToHex(address))
+
+		allinstructions = instructions.lower().split("\n")
 		
+		if DEBUG_MODE:
+			dbgp("allinstructions: %s" % allinstructions)
+			dbgp("origbytes: %s" % bin2hex(origbytes))
+
+		# in most cases, we just need to assemble one instruction.  if it's cached, we don't even need to check for an address
+
+		if len(allinstructions) == 1:
+			thisinstruction = allinstructions[0]
+			thisinstruction = self.cleanInstruction(thisinstruction)
+			# Ensure thisinstruction is ASCII for PyKD compatibility
+			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
+			if ascii_instruction in self.AsmCache:
+				if DEBUG_MODE:
+					dbgp("Single instruction '%s' found in cache, returning cached bytes" % ascii_instruction)
+					dbgp("return bytes from cache")
+					dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
+				return self.AsmCache[ascii_instruction]
+
+
+		# more than one or need to assemble? then do address check first
 		# Determine read size based on architecture
 		read_size = 20 if arch == 32 else 40
 		
@@ -2706,20 +2738,13 @@ class Debugger:
 					dbgp("Failed to read from fallback address %s: %s" % (intToHex(address), str(e)))
 				origbytes = b""
 		
-		allinstructions = instructions.lower().split("\n")
-		
-		if DEBUG_MODE:
-			dbgp("allinstructions: %s" % allinstructions)
-			dbgp("origbytes: %s" % bin2hex(origbytes))
 
+		
 		cached = True
 		for thisinstruction in allinstructions:	
 			if DEBUG_MODE:
 				dbgp("current instruction : %s" % thisinstruction)
-			thisinstruction = thisinstruction.strip(" ").lstrip(" ").lower()
-			if thisinstruction.startswith("ret") and not thisinstruction.startswith("retf"):
-				thisinstruction = thisinstruction.replace("retn","ret").replace("ret","retn")
-			thisinstruction = thisinstruction.replace(" ,",",").replace(", ",",").replace("  "," ")
+			thisinstruction = self.cleanInstruction(thisinstruction)
 
 			# Ensure thisinstruction is ASCII for PyKD compatibility
 			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
