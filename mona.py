@@ -2863,6 +2863,8 @@ class MnConfig:
 					dbg.log(" ** Warning: using mona.ini file from %s" % self.currpath, highlight=True)
 					configwarningshown = True
 	
+	def getFileName(self):
+		return os.path.join(self.currpath, self.configfile)
 
 	def list(self):
 		if DEBUG_MODE:
@@ -15272,16 +15274,19 @@ def procConfig(args):
 		#dbg.logLines(configUsage,highlight=1)
 		return
 	else:
+		monaConfig = MnConfig()
+		configfilename = monaConfig.getFileName()
+
 		if "list" in args or showlist:
-			dbg.log("[+] Listing current values from configuration file:")
+			dbg.log("[+] Listing all parameters and values stored in configuration file")
+			dbg.log("    Config file: %s" % configfilename)
 			dbg.log("")
-			monaConfig = MnConfig()
 			monaConfig.list()
 
 		if "get" in args:
-			dbg.log("[+] Reading value from configuration file:")
+			dbg.log("[+] Reading value from configuration file")
+			dbg.log("    Config file: %s" % configfilename)
 			dbg.log("")
-			monaConfig = MnConfig()
 			paramname = args["get"].split(" ")[0]
 			thevalue = monaConfig.get(paramname)
 			configDict = {}
@@ -15291,10 +15296,10 @@ def procConfig(args):
 			print_dict_table(configDict, headers, types, padding = "    ", itemsequence = [])
 		
 		if "set" in args:
-			monaConfig = MnConfig()
 			value = args["set"].split(" ")
 			configparam = value[0].strip()
 			dbg.log("[+] Saving new value for parameter '%s'" % configparam)
+			dbg.log("    Config file: %s" % configfilename)
 			dbg.log("    Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			dbg.log("    New value:")
 			dbg.log("")
@@ -15309,10 +15314,10 @@ def procConfig(args):
 			print_dict_table(configDict, headers, types, padding = "    ", itemsequence = [])
 			
 		if "clear" in args:
-			monaConfig = MnConfig()
 			value = args["clear"].split(" ")
 			configparam = value[0].strip()
 			dbg.log("[+] Attempting to clear config parameter '%s'" % configparam)
+			dbg.log("    Config file: %s" % configfilename)
 			dbg.log("    Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			monaConfig.clear(configparam)
 			dbg.log("    Parameter %s cleared / removed" % (configparam))
@@ -15323,10 +15328,10 @@ def procConfig(args):
 
 		
 		if "add" in args:
-			monaConfig = MnConfig()
 			value = args["add"].split(" ")
 			configparam = value[0].strip()
 			dbg.log("[+] Adding additional value(s) to parameter '%s'" % configparam)
+			dbg.log("    Config file: %s" % configfilename)
 			dbg.log("    Old value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			oldvalue = monaConfig.get(configparam)
 			if oldvalue is None:
@@ -15368,7 +15373,6 @@ def procConfig(args):
 
 
 		if "del" in args:
-			monaConfig = MnConfig()
 			value = args["del"].split(" ")
 			configparam = value[0].strip()
 			delvalue_str = args["del"][0+len(configparam):len(args["del"])].strip()
@@ -15396,6 +15400,8 @@ def procConfig(args):
 			configvalue = ",".join(newlist)
 
 			dbg.log("[+] Attempting to remove value(s) '%s' from parameter '%s'" % (delvalue_str, configparam))
+			dbg.log("    Config file: %s" % configfilename)
+
 			dbg.log("    Current value of parameter %s = %s" % (configparam, monaConfig.get(configparam)))
 			monaConfig.set(configparam, configvalue)
 			
