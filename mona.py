@@ -22986,7 +22986,8 @@ def procHelp(args, helpForCommand=None):
 						aliastxt = " / " + commands[item[0]].alias
 					dbg.logLines("  %s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
 		dbg.log("")
-		dbg.log("If you would like to get help about a specific command, use the -h option with that command.", highlight=True)
+		dbg.log("  If you would like to get help about a specific command,", highlight=True)
+		dbg.log("  run the command with the -h option.", highlight=True)
 		dbg.log("")
 	else:
 		# help for a specific command

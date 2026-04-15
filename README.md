@@ -209,7 +209,7 @@ set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9 C:\Tools\mona\m
 In WinDBGX, we can use the "Startup Settings"
 
 ***Configure*** the **Startup settings** to auto-load on every session:
-1. Navigate to: ***Files > Settings > Debugging settings > Startup***
+1. Navigate to: ***File > Settings > Debugging settings > Startup***
 2. ***Paste*** the following commands:
 ```
 !load pykd
