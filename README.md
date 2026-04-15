@@ -39,11 +39,11 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 * **Tested on**: Windows 7, Windows 10, and Windows 11
 
 ---
-
+<br> <br> 
 # Preparing your system to run Mona
-
+<br> 
 ## 1. Install dependencies
-
+<br> 
 ### 1.1 Windows 10 and later
 
 **For Windows 10 and later**, we recommend using the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
@@ -88,7 +88,7 @@ Type `import pykd` (there should be no warnings or errors)
 
 Type `quit()`to exit the interactive shell.
 
-
+<br> 
 ### 1.2 Windows 7
 
 **Still running Windows 7 somewhere?**
@@ -98,11 +98,11 @@ Install Python 2.7.18 yourself first, and then run the `CorelanWin7VMinstall.py`
 
 ---
 
-
+<br> <br> 
 ## 2. Install mona & windbglib
 
 You have two installation approaches: ***distributed*** (multiple copies) or ***centralized*** (recommended - single copy).
-
+<br> 
 ### 2.1 Distributed installation 
 
 Install separate copies of `mona.py` and `windbglib.py` for each debugger application. This approach is useful if you have multiple debuggers on the same machine.
@@ -117,7 +117,7 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 
 **For WinDBGX:**
 * Reference `mona.py` from ***any location*** of your choice
-
+<br> 
 ### 2.2 Centralized installation (recommended) 
 
 **Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
@@ -160,9 +160,9 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 ---
 
-
+<br> <br> 
 ## 3. Running Mona
-
+<br> 
 ### 3.1 Running Mona in WinDBG(X)
 
 **Step 1**: ***Open*** **WinDBG(X)** and ***attach*** it to your target process
@@ -187,7 +187,7 @@ On WinDBG(X):
 ```
 Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
-
+<br> 
 ### 3.2 Auto loading pykd and creating an alias in WinDBG(X)
 
 **For WinDBG Classic:**
@@ -217,7 +217,7 @@ as !mona !py -3.9 c:\Tools\mona\mona.py
 ```
 
 > **Note**: You only need to configure this ***once***. WinDBGX will automatically adapt to 32-bit or 64-bit depending on your debugging target.
-
+<br> 
 ### 3.3 Running Mona in WinDBG Classic on Windows 7
 
 For Windows 7, we recommend using a small launcher script that sets a few Python related environment variables.
@@ -258,7 +258,7 @@ SET PYTHONHOME=
 SET PYTHONPATH=
 ```
 
-
+<br> 
 ### 3.4 Running Mona in Immunity
 
 **If Python 2.7 is in your system PATH:**
@@ -301,13 +301,13 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 
 
 ---
-
+<br> <br> 
 ## Thank you
 
 Mona v3 would not have been possible without the ***hard work and dedication*** of **[@apl3b](https://github.com/apl3b)**. Thank you! 🙏
 
 ---
-
+<br> <br> 
 ## Found a bug?
 
 If you discover a bug, please ***open an issue*** and provide ***detailed steps to reproduce*** the problem.
