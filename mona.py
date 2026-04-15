@@ -23903,7 +23903,7 @@ def main(args):
 		thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
 		thisversion = thisversion.replace("'","")
 		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (get_current_datetime(),thisversion,thisrevision, arch))
-		dbg.log("[ -- START -- ] Python : %s)" % getPythonVersion())
+		dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
 		if __DEBUGGERAPP__ == "WinDBG":
 			dbg.log("[ -- START -- ] PyKD: %s " % dbg.getPyKDVersionNr())
 		dbg.log("")
