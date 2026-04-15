@@ -65,6 +65,7 @@ If you prefer to install those components by yourself, please verify (after inst
 Open an administrator command prompt.
 
 Run `py -3.9-32`
+
 You should get a Python interactive shell running Python 3.9.13 32bit:
 
 ```batch
@@ -80,6 +81,7 @@ Type `quit()`to exit the interactive shell.
 
 
 Next, run `py -3.9-64`
+
 You should get a Python interactive shell running Python 3.9.13 32bit
 
 ```batch
@@ -99,7 +101,11 @@ Type `quit()`to exit the interactive shell.
 
 **Still running Windows 7 somewhere?**
 
-Install Python 2.7.18 yourself first, and then run the `CorelanWin7VMinstall.py` python script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining) to install all required components to run `mona` on Windows 7.
+Begin by installing Python 2.7.18.
+
+Next, download a copy of the `CorelanWin7VMinstall.py` python script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining) and run it from an administrator command prompt.
+
+This will install all required components to run `mona` on Windows 7.
 
 
 ---
@@ -135,6 +141,7 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 
 ***We're going to use WinDBG(X) aliases to avoid having to type the full path ***.
 
+
 #### Step 1: Set up central location
 
 Create a central folder, for instance `C:\Tools\mona`.
@@ -145,6 +152,7 @@ Create a central folder, for instance `C:\Tools\mona`.
 
 > **⚠️ Important**: Verify the downloaded files contain ***actual Python code***, not HTML
 
+
 #### Step 2: Configure for WinDBG Classic / WinDBGX
 
 Reference the files directly from `C:\Tools\mona` using aliases (see **Section 3.2** for auto-loading setup).
@@ -152,6 +160,7 @@ Reference the files directly from `C:\Tools\mona` using aliases (see **Section 3
 **Recommendation**: Use **Python 3.9** when running `mona` in WinDBG(X). 
 
 If not using Immunity Debugger or Python2 scripts, feel free to safely ***remove Python 2*** from your system.
+
 
 #### Step 3: Configure for Immunity Debugger
 
