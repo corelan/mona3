@@ -12112,6 +12112,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	
 		thischain = {}
 		updatetxt = "Attempting to produce rop chain for %s" % routine 
+		dbg.log("")
+		dbg.log("-" * 80)
+		dbg.log("")
 		dbg.log("[+] %s" % updatetxt)
 		objprogressfile.write("- " + updatetxt,progressfile)
 		vplogtxt += "\n"
@@ -13682,7 +13685,7 @@ def isInterestingJopGadget(instructions):
 					"sub dh", "sub dl", "ADD DH", "add dl",
 					"mov e", "clc", "cld", "fs:", "fpa", "test "
 					]
-	notinteresting = [ "mov esp,", "lea esp"	]
+	notinteresting = [ "mov esp,", "lea esp"]
 	regs = dbglib.Registers32BitsOrder[:]
 	individual = instructions.split("#")
 	cnt = 0
@@ -13694,8 +13697,16 @@ def isInterestingJopGadget(instructions):
 	
 	jmp = lastinstruction.split(' ')[1].strip().lower().replace(" ","")
 	
-	regs = Registers32BitsOrder
-	regs.remove(jmp)
+	#regs = Registers32BitsOrder
+
+	if DEBUG_MODE:
+		dbgp("jmp instruction : %s" % jmp)
+	if jmp in regs:
+		regs.remove(jmp)
+	else:
+		if DEBUG_MODE:
+			dbgp("jmp instruction %s not in regs list, something wrong?" % jmp)
+			dbgp("regs list: %s" % regs)
 	if jmp != "esp":
 		if instructions.find("pop "+jmp) > -1:
 			popfound=True
@@ -13707,6 +13718,7 @@ def isInterestingJopGadget(instructions):
 						popfound = True
 		allgood = popfound
 	return allgood
+
 
 def readGadgetsFromFile(filename):
 	"""
@@ -14887,7 +14899,11 @@ def args2criteria(args,modulecriteria,criteria):
 
 	thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
 	thisversion = thisversion.replace("'","")
-	dbg.logLines("\n---------- Mona command started on %s (v%s, rev %s) %sbit ----------" % (get_current_datetime(),thisversion,thisrevision, arch))
+	dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (get_current_datetime(),thisversion,thisrevision, arch))
+	dbg.log("[ -- START -- ] Python : %s)" % getPythonVersion())
+	if __DEBUGGERAPP__ == "WinDBG":
+		dbg.log("[ -- START -- ] PyKD: %s " % dbg.getPyKDVersionNr())
+	dbg.log("")
 	dbg.log("[+] Processing arguments and criteria")
 	global ptr_to_get
 	
