@@ -14,7 +14,7 @@ ___  ________ _   _   ___          _____
 
 - [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
   - [1. Install dependencies](#1-install-dependencies)
-    - [1.1.Windows 10 and later](#11-windows-10-and-later)
+    - [1.1. Windows 10 and later](#11-windows-10-and-later)
     - [1.2. Windows 7](#12-windows-7)
   - [2. Install mona & windbglib](#2-install-mona--windbglib)
     - [2.1. Distributed installation](#21-distributed-installation)
@@ -49,7 +49,7 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 
 <br> 
 
-### 1.1.Windows 10 and later
+### 1.1. Windows 10 and later
 
 **For Windows 10 and later**, we recommend using the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
 
