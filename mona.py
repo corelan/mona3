@@ -8219,10 +8219,9 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 					ptrx = MnPointer(ptr)
 					modname = ptrx.belongsTo()
 					extrainfo = ""
-
+					ptrextra = ""
 					if not modname == "":
 						modobj = MnModule(modname)
-						ptrextra = ""
 						rva = 0
 						if (modobj.isRebase or modobj.isAslr):
 							rva = ptr - modobj.moduleBase
@@ -8246,9 +8245,9 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 								dbgp("  %s" % ptrinfo)
 
 						if forcelower:
-							results_dict_details[ptr] = [optext.lower(), ptrx.__str__().strip(), extrainfo]
+							results_dict_details[ptr] = [optext.lower(), ptrextra +ptrx.__str__().strip(), extrainfo]
 						else:
-							results_dict_details[ptr] = [optext, ptrx.__str__().strip(), extrainfo]
+							results_dict_details[ptr] = [optext, ptrextra + ptrx.__str__().strip(), extrainfo]
 
 						if ptr not in display_order:
 							display_order.append(ptr)
@@ -15551,7 +15550,9 @@ def procFindSEH(args, procUsage=""):
 	thislog = logfile.reset()
 	processResults(all_opcodes,logfile,thislog,specialcases,forcelower=True)
 	
-	
+
+
+
 # ----- MODULES ------ #
 PEB_ORDER_VALID = ("load", "memory", "init")
 # Single source of truth for every sortable module column.
