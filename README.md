@@ -337,7 +337,7 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 
 Mona v3 would not have been possible without the ***hard work and dedication*** of **[@apl3b](https://github.com/apl3b)**. Thank you! 🙏
 
----
+
 <br> <br> 
 
 ## Found a bug?

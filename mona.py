@@ -3198,7 +3198,7 @@ class MnLog:
 						fh.write("  OS : " + osver + ", release " + osrel + "\n")
 						fh.write("  Process being debugged : " + debuggedname +" (pid " + str(thispid) + ")\n")
 						currmonaargs = " ".join(x for x in currentArgs)
-						fh.write("  Current mona arguments: %s\n" % currmonaargs)
+						fh.write("  You ran: %s\n" % currmonaargs)
 						fh.write("=" * separatorlength + '\n')
 						fh.write("  " + get_current_datetime() + "\n")
 						fh.write("=" * separatorlength + '\n')
@@ -21430,7 +21430,9 @@ def procDumpLog(args):
 		f.close()
 
 		for tline in contents:
-			line = str(tline)
+			line = ensure_text(tline)
+			if DEBUG_MODE:
+				dbgp("Read line from logfile: %s" % line)
 			if line.startswith("alloc("):
 				size = ""
 				addy = ""
