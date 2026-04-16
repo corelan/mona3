@@ -7734,28 +7734,37 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
 
+	# Build exclusion set once from config
+	excluded_prefixes = []
+	try:
+		excludedlist = MnConfig().get("excluded_modules")
+		if excludedlist:
+			excluded_prefixes = [e.lower().strip() for e in re.split(r"[;,]", excludedlist) if e.strip()]
+	except Exception:
+		pass
+
 	for thismodule, modproperties in mnproc.g_modules.items():
 		if DEBUG_MODE:
 			dbgp("Check if module %s should be filtered" % thismodule)
 			dbgp("  Properties: %s" % modproperties)
 
-		thismod = MnModule(thismodule)
+		is_excluded = any(thismodule.lower().startswith(p) for p in excluded_prefixes)
 		included = True
 
-		if not thismod.isExcluded:
+		if not is_excluded:
 			filter_map = {
-				"safeseh": ("isSafeSEH", "SAFESEH"),
-				"aslr":    ("isAslr",    "ASLR"),
-				"rebase":  ("isRebase",  "REBASE"),
-				"os":      ("isOS",      "OS"),
-				"nx":      ("isNX",      "NX"),
-				"cfg":     ("isCFG",     "CFG"),
+				"safeseh": ("safeseh", "SAFESEH"),
+				"aslr":    ("aslr",    "ASLR"),
+				"rebase":  ("rebase",  "REBASE"),
+				"os":      ("os",      "OS"),
+				"nx":      ("nx",      "NX"),
+				"cfg":     ("cfg",     "CFG"),
 			}
 
-			for critkey, (attrname, dbgname) in filter_map.items():
+			for critkey, (propkey, dbgname) in filter_map.items():
 				if critkey in criteria:
 					keep_criteria = str_to_bool(criteria[critkey])
-					module_state = getattr(thismod, attrname)
+					module_state = modproperties[propkey]
 
 					if DEBUG_MODE:
 						dbgp("   %s needs to be %s (=%s)" % (dbgname, criteria[critkey], keep_criteria))
@@ -7776,15 +7785,16 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 		if DEBUG_MODE:
 			dbgp("   After criteria check: included = %s" % included)
 		# filter by path regex ?
+		mod_path = modproperties.get("path", "")
 		if included and ("cmp" in criteria) and criteria["cmp"]:
 			try:
-				if not re.search(criteria["cmp"], str(thismod.modulePath), re.IGNORECASE):
+				if not re.search(criteria["cmp"], str(mod_path), re.IGNORECASE):
 					included = False
 			except re.error:
 				included = False
 		#override all previous decision if "modules" criteria was provided
 		
-		just_filename = os.path.basename(thismod.modulePath.lower().strip())
+		just_filename = os.path.basename(mod_path.lower().strip())
 
 		if ("modules" in criteria) and (criteria["modules"] != ""):
 			included = False
@@ -7803,21 +7813,21 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 					#endswith ?
 					if modulename[0] == "*":
 						if modulenamewithout == just_filename[len(just_filename)-len(modulenamewithout):len(just_filename)]:
-							if not thismod.moduleKey in modulestoquery and not thismod.isExcluded:
-								modulestoquery.append(thismod.moduleKey)
+							if thismodule not in modulestoquery and not is_excluded:
+								modulestoquery.append(thismodule)
 					#startswith ?
 					if modulename[len(modulename)-1] == "*":
-						if (modulenamewithout == just_filename[0:len(modulenamewithout)] and not thismod.isExcluded):
-							if not thismod.moduleKey in modulestoquery:
-								modulestoquery.append(thismod.moduleKey)
+						if (modulenamewithout == just_filename[0:len(modulenamewithout)] and not is_excluded):
+							if thismodule not in modulestoquery:
+								modulestoquery.append(thismodule)
 					#contains ?
-					if ((modulename[0] == "*" and modulename[len(modulename)-1] == "*") or (modulename.find("*") == -1)) and not thismod.isExcluded:
+					if ((modulename[0] == "*" and modulename[len(modulename)-1] == "*") or (modulename.find("*") == -1)) and not is_excluded:
 						if just_filename.find(modulenamewithout) > -1:
-							if not thismod.moduleKey in modulestoquery:
-								modulestoquery.append(thismod.moduleKey)
+							if thismodule not in modulestoquery:
+								modulestoquery.append(thismodule)
 
 		if included:
-			modulestoquery.append(thismod.moduleKey)		
+			modulestoquery.append(thismodule)		
 	return modulestoquery	
 	
 	
@@ -7858,25 +7868,10 @@ def getModuleProperty(modname,parameter):
 	value associated with the given parameter / module combination
 	
 	"""
-	modname=modname.strip()
-	parameter=parameter.lower()
-	valtoreturn=""
-	# try case sensitive first
-	for thismodule,modproperties in mnproc.g_modules.items():
-		if thismodule.strip() == modname:
-			return modproperties[parameter]
-	return valtoreturn
-
-
-def populateModuleInfo(from_memory=False, peb_order="load"):
-	"""
-	Populate global dictionary with information about all loaded modules
-	
-	Return:
-	Dictionary
-	"""
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	modproperties = mnproc.g_modules.get(modname.strip())
+	if modproperties is not None:
+		return modproperties[parameter.lower()]
+	return ""
 
 	if not silent:
 		dbg.setStatusBar("Getting modules info...")
