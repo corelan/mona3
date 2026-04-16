@@ -2712,82 +2712,6 @@ class MnEncoder:
 		newvals.append(val3)
 		return newvals		
 		
-		
-#---------------------------------------#
-#   Class to perform call tracing       #
-#---------------------------------------#
-
-class MnCallTraceHook(LogBpHook):
-	def __init__(self, callptr, showargs, instruction, logfile):
-		LogBpHook.__init__(self)
-		self.callptr = callptr
-		self.showargs = showargs
-		self.logfile = logfile
-		self.instruction = instruction
-	
-	def run(self,regs):
-		# get instruction at this address
-		thisaddress = regs["eip"]
-		thisinstruction = self.instruction
-		allargs = []
-		argstr = ""
-		if thisinstruction.startswith("call "):
-			if self.showargs > 0:
-				for cnt in xrange(self.showargs):
-					thisarg = 0
-					try:
-						thisarg = struct.unpack('<L',dbg.readMemory(regs["esp"]+(cnt*4),4))[0]
-					except:
-						thisarg = 0
-					allargs.append(thisarg)
-					argstr += "0x%08x, " % thisarg
-				argstr = argstr.strip(" ")
-				argstr = argstr.strip(",")
-				#dbg.log("CallTrace : 0x%08x : %s (%s)" % (thisaddress,thisinstruction,argstr),address = thisaddress)
-			#else:
-				#dbg.log("CallTrace : 0x%08x : %s" % (thisaddress,thisinstruction), address = thisaddress)
-			# save to file
-			try:
-				FILE=open(self.logfile,"a")
-				textra = ""
-				for treg in dbglib.Registers32BitsOrder:
-					if thisinstruction.lower().find(treg.lower()) > -1:
-						textra += "%s = 0x%08x, " % (treg,regs[treg])
-				if textra != "":
-					textra = textra.strip(" ")
-					textra = textra.strip(",")
-					textra = "(" + textra + ")"
-				FILE.write("0x%08x : %s %s\n" % (thisaddress, thisinstruction, textra))
-				if self.showargs > 0:
-					cnt = 0
-					while cnt < len(allargs):
-						content = ""
-						try:
-							bytecontent = dbg.readMemory(allargs[cnt],16)
-							content = bin2hex(bytecontent)
-						except:
-							content = ""
-						FILE.write("            Arg%d at 0x%08x : 0x%08x : %s\n" % (cnt,regs["esp"]+(cnt*4),allargs[cnt],content))
-						cnt += 1
-				FILE.close()
-			except:
-				#dbg.log("OOPS", highlight=1)
-				pass
-		if thisinstruction.startswith("retn"):
-			returnto = 0
-			try:
-				returnto = struct.unpack('<L',dbg.readMemory(regs["esp"],4))[0]
-			except:
-				returnto = 0
-			#dbg.log("ReturnTrace : 0x%08x : %s - Return To 0x%08x" % (thisaddress,thisinstruction,returnto), address = thisaddress)
-			try:
-				FILE=open(self.logfile,"a")
-				FILE.write("0x%08x : %s \n" % (thisaddress, thisinstruction))
-				FILE.write("            ReturnTo at 0x%08x : 0x%08x\n" % (regs["esp"],returnto))
-				FILE.write("            eax : 0x%08x\n" % regs["eax"])
-				FILE.close()
-			except:
-				pass
 				
 #---------------------------------------#
 #   Class to set deferred BP Hooks      #
@@ -16948,129 +16872,6 @@ def procBp(args):
 		dbg.log("[+] Hardware breakpoint set on %s of 0x%s" % (thistype, toHex(a)))
 
 
-# ----- ct: calltrace ---- #
-def procCallTrace(args):
-	modulecriteria={}
-	criteria={}
-	criteria["accesslevel"] = "X"
-	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-	modulestosearch = getModulesToQuery(modulecriteria)
-	hooks = []
-	rethooks = []
-	showargs = 0
-	hookrets = False
-	if not "m" in args:
-		dbg.log(" ** Please specify what module(s) you want to include in the trace, using argument -m **",highlight=1)
-		return
-	if "a" in args:
-		if args["a"] != "":
-			try:
-				showargs = int(args["a"])
-			except:
-				showargs = 0
-				
-	if "r" in args:
-		hookrets = True
-	toignore = []
-	limit_scope = True
-	if not "all" in args:
-		# fill up array
-		toignore.append("PeekMessage")
-		toignore.append("GetParent")
-		toignore.append("GetFocus")
-		toignore.append("EnterCritical")
-		toignore.append("LeaveCritical")
-		toignore.append("GetWindow")
-		toignore.append("CallnextHook")
-		toignore.append("TlsGetValue")
-		toignore.append("DefWindowProc")
-		toignore.append("SetTextColor")
-		toignore.append("DrawText")
-		toignore.append("TranslateAccel")
-		toignore.append("TranslateMessage")
-		toignore.append("DispatchMessage")
-		toignore.append("isChild")
-		toignore.append("GetSysColor")
-		toignore.append("SetBkColor")
-		toignore.append("GetDlgCtrl")
-		toignore.append("CallWindowProc")
-		toignore.append("HideCaret")
-		toignore.append("MessageBeep")
-		toignore.append("SetWindowText")
-		toignore.append("GetDlgItem")
-		toignore.append("SetFocus")
-		toignore.append("SetCursor")
-		toignore.append("LoadCursor")
-		toignore.append("SetEvent")
-		toignore.append("SetDlgItem")
-		toignore.append("SetWindowPos")
-		toignore.append("GetDC")
-		toignore.append("ReleaseDC")
-		toignore.append("GetDeviceCaps")
-		toignore.append("GetClientRect")
-		toignore.append("etLastError")
-	else:
-		limit_scope = False
-	if len( modulestosearch) > 0:
-		dbg.log("[+] Initializing log file")
-		logfile = MnLog("calltrace.txt")
-		thislog = logfile.reset()			
-		dbg.log("[+] Number of CALL arguments to display : %d" % showargs)
-		dbg.log("[+] Finding instructions & placing hooks")
-		for thismod in modulestosearch:
-			dbg.updateLog()
-			objMod = dbg.getModule(thismod)
-			if not objMod.isAnalysed:
-				dbg.log("    Analysing code...")
-				objMod.Analyse()
-			themod = MnModule(thismod)
-			modcodebase = themod.moduleCodebase
-			modcodetop = themod.moduleCodetop		
-			dbg.setStatusBar("Placing hooks in %s..." % thismod)
-			dbg.log("    * %s (0x%08x - 0x%08x)" % (thismod,modcodebase,modcodetop))
-			ccnt = 0
-			rcnt = 0
-			thisaddr = modcodebase
-			allfuncs = dbg.getAllFunctions(modcodebase)
-			for func in allfuncs:
-				thisaddr = func
-				thisfunc = dbg.getFunction(thisaddr)
-				instrcnt = 0
-				while thisfunc.hasAddress(thisaddr):
-					try:
-						if instrcnt == 0:
-							thisopcode = dbg.disasm(thisaddr)
-						else:
-							thisopcode = dbg.disasmForward(thisaddr,1)
-							thisaddr = thisopcode.getAddress()
-						instruction = getDisasmInstruction(thisopcode)
-						if instruction.startswith("CALL "):
-							ignore_this_instruction = False
-							for ignores in toignore:
-								if instruction.lower().find(ignores.lower()) > -1:
-									ignore_this_instruction = True
-									break
-							if not ignore_this_instruction:
-								if not thisaddr in hooks:
-									hooks.append(thisaddr)
-									myhook = MnCallTraceHook(thisaddr,showargs,instruction,thislog)
-									myhook.add("HOOK_CT_%s" % thisaddr , thisaddr)
-							ccnt += 1
-						if hookrets and instruction.startswith("RETN"):
-							if not thisaddr in rethooks:
-								rethooks.append(thisaddr)
-								myhook = MnCallTraceHook(thisaddr,showargs,instruction,thislog)
-								myhook.add("HOOK_CT_%s" % thisaddr , thisaddr)									
-					except:
-						#dbg.logLines(traceback.format_exc(),highlight=True)
-						break
-					instrcnt += 1
-		dbg.log("[+] Total number of CALL hooks placed : %d" % len(hooks))
-		if hookrets:
-			dbg.log("[+] Total number of RETN hooks placed : %d" % len(rethooks))
-	else:
-		dbg.log("[!] No modules selected or found",highlight=1)
-	return "Done"
 	
 # ----- bu: set a deferred breakpoint ---- #
 def procBu(args):
@@ -23404,14 +23205,6 @@ Mandatory arguments :
     Warning, modulename.functionname is case sensitive !
 	""" 
 	
-	calltraceUsage = """Logs all CALL instructions
-
-Mandatory arguments :
-    -m module : specify what module to search for CALL instructions (global option)	
-
-Optional arguments:
-    -a <number> : number of arguments to show for each CALL
-    -r : also trace RETN instructions (will slow down process!)""" 	
 
 	fillchunkUsage = """Fills a heap chunk, referenced by a register, with A's (or another character)
 
@@ -23658,7 +23451,6 @@ Arguments:
 	#commands["heapcookie"]      = MnCommand("heapcookie","Looks for writeable pointers that can help avoiding cookie check during arbitrary free",heapCookieUsage,procHeapCookie,"hc")
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
-		commands["calltrace"]	= MnCommand("calltrace","Log all CALL instructions",calltraceUsage,procCallTrace,"ct")
 	if __DEBUGGERAPP__ == "WinDBG":
 		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
