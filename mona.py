@@ -3579,6 +3579,7 @@ class MnModule:
 		#if DEBUG_MODE:
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
+			dbgp("Creating MnModule object for module '%s'" % modulename)
 		modisaslr = True
 		modissafeseh = True
 		modrebased = True
@@ -19871,6 +19872,12 @@ def procGetxAT(args,mode=""):
 				thisxat = thismod.getEAT()
 
 
+			ptrsize = 4
+			pfmt = '<L'
+			if arch == 64:
+				ptrsize = 8
+				pfmt = '<Q'
+
 			for thisfunc in thisxat:
 				thisfuncname = thisxat[thisfunc].lower()
 				origfuncname = thisfuncname
@@ -19884,7 +19891,7 @@ def procGetxAT(args,mode=""):
 				if mode == "iat":
 					try:
 						#dbg.log("reading 0x%08x" % thisfunc)
-						theptr = struct.unpack('<L',dbg.readMemory(thisfunc,4))[0]
+						theptr = struct.unpack(pfmt,dbg.readMemory(thisfunc,ptrsize))[0]
 						ptrx = MnPointer(theptr)
 						iatptr_modname = ptrx.belongsTo()
 						#dbg.log("ptr 0x%08x belongs to %s" % (theptr, iatptr_modname))
@@ -19954,7 +19961,6 @@ def procGetxAT(args,mode=""):
 			headers = ["IAT Location", "In Module", "( = RVA)", "Contains","Which is address of function","Info about module the function belongs to" ]
 			types   = ["pointer", "string", "pointer", "pointer", "string", "string"]
 			dbg.log("")
-			dbg.log("%s" % iat_table)
 			print_dict_table(iat_table, headers, types, padding = "    ", itemsequence = [])
 		if mode == "eat":
 			dbg.log("")
