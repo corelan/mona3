@@ -4065,7 +4065,7 @@ class MnModule:
 
 										if current_iat_target > 0:
 											ptrx = MnPointer(current_iat_target)
-											modname = ptrx.belongsTo()
+											modname = ptrx.belongsTo(modulesOnly=True)
 											tmod = MnModule(modname)
 											thisfunc = dbglib.Function(dbg, current_iat_target)
 											thisfuncfullname = ensure_text(thisfunc.getName()).lower()
@@ -6285,12 +6285,12 @@ class MnPointer:
 	def startsWithNull(self):
 		return self.startsWithNull
 		
-	def belongsTo(self):
+	def belongsTo(self, modulesOnly=False):
 		"""
 		Retrieves the module a given pointer belongs to
 
 		Arguments:
-		None
+		modulesOnly - bool, if True only check modules, skip stack/heap checks
 
 		Return:
 		String with the name of the module a pointer belongs to,
@@ -6308,8 +6308,9 @@ class MnPointer:
 					return thismodule
 			# if it's not a module, maybe it's stack or heap
 			# just call the functions, to populate owner
-			if not self.isOnStack():
-				self.isInHeap()
+			if not modulesOnly:
+				if not self.isOnStack():
+					self.isInHeap()
 		return ""
 	
 
@@ -7084,81 +7085,34 @@ def getSegmentList(heapbase):
 
 
 def getSegmentsForHeap(heapbase):
-	# either return the base of the segment, or the base of the default process heap
+	"""Get segments for a heap, delegating to MnHeap.getHeapSegmentList().
+
+	Return: dict {segaddr: [base, end, firstentry, lastentry]}
+	"""
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
-	allsegmentsfound = False
-	segmentinfo = {}
 	if heapbase in mnproc.segmentlistCache:
 		return mnproc.segmentlistCache[heapbase]
-	else:
-		try:
-			if DEBUG_MODE:
-				dbgp("getSegmentsForHeap(0x%x): win7mode=%s" % (heapbase, str(win7mode)))
-			if win7mode:
-				# first one  = heap itself
-				offset = getOsOffset("SegmentList")
-				if DEBUG_MODE:
-					dbgp("getSegmentsForHeap: SegmentList offset=0x%x" % offset)
-				segmentcnt = 0
-				subtract = archValue(0x10,0x18)
-				firstoffset = 0
-				firstbase = readPtrSizeBytes(heapbase + archValue(0x1c,0x30))
-				firstentry = readPtrSizeBytes(heapbase + archValue(0x24,0x40))
-				firstlast = readPtrSizeBytes(heapbase + archValue(0x28,0x48))
-				if DEBUG_MODE:
-					dbgp("getSegmentsForHeap: first seg base=0x%x entry=0x%x last=0x%x" % (firstbase, firstentry, firstlast))
-				if not heapbase in segmentinfo:
-					segmentinfo[heapbase] = [firstbase,firstlast,firstentry,firstlast]
-				# optional list with additional segments
-				# nested list
-				segbase = heapbase
-				lastindex = heapbase + offset
-				allsegmentsfound = False
-				lastsegment = readPtrSizeBytes(heapbase+offset+archValue(4,8)) - subtract
-				if heapbase == lastsegment:
-					allsegmentsfound = True
-				segmentcnt = 1
-				while not allsegmentsfound and segmentcnt < 100:
-					nextbase = readPtrSizeBytes(segbase + archValue(0x10,0x18)) - subtract
-					segbase = nextbase
-					if nextbase > 0 and (nextbase+subtract != lastindex):
-						segbaseaddr = readPtrSizeBytes(segbase + archValue(0x1c,0x30))
-						segfirst = readPtrSizeBytes(segbase + archValue(0x24,0x40))
-						seglast = readPtrSizeBytes(segbase + archValue(0x28,0x48))
-						if not segbase in segmentinfo:
-							segmentinfo[segbase] = [segbaseaddr,seglast,segfirst,seglast]
-					else:
-						allsegmentsfound = True
-					segmentcnt += 1
-			else:
-				offset = archValue(0x058,0x0a0)
-				i = 0
-				while not allsegmentsfound:
-					thisbase = readPtrSizeBytes(heapbase + offset + i*archValue(4,8))
-					if thisbase > 0 and not thisbase in segmentinfo:
-						# get start and end of segment
-						segstart = thisbase
-						segend = getSegmentEnd(segstart)
-						# get first and last valid entry
-						firstentry = readPtrSizeBytes(segstart + archValue(0x20,0x38))
-						lastentry = readPtrSizeBytes(segstart + archValue(0x24,0x40))
-						segmentinfo[thisbase] = [segstart,segend,firstentry,lastentry]
-					else:
-						allsegmentsfound = True
-					i += 1
-					# avoid infinite loop
-					if i > 100:
-						allsegmentsfound = True
-		except Exception as e:
-			if DEBUG_MODE:
-				dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)))
-				import traceback
-				dbgp(traceback.format_exc())
+	segmentinfo = {}
+	try:
+		mHeap = MnHeap(heapbase)
+		seglist = mHeap.getHeapSegmentList()
+		for segaddr, sinfo in seglist.items():
+			segmentinfo[segaddr] = [
+				sinfo["base"],
+				sinfo["end"],
+				sinfo["firstentry"],
+				sinfo["lastentry"],
+			]
+	except Exception as e:
 		if DEBUG_MODE:
-			dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
-		mnproc.segmentlistCache[heapbase] = segmentinfo
-		return segmentinfo
+			dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)))
+			import traceback
+			dbgp(traceback.format_exc())
+	if DEBUG_MODE:
+		dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
+	mnproc.segmentlistCache[heapbase] = segmentinfo
+	return segmentinfo
 
 def containsBadChars(address, badchars=b"\x0a\x0d"):
 	"""
