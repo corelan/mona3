@@ -343,3 +343,7 @@ Mona v3 would not have been possible without the ***hard work and dedication*** 
 ## Found a bug?
 
 If you discover a bug, please ***open an issue*** and provide ***detailed steps to reproduce*** the problem.
+
+## Want to contribute?
+
+Check our [CONTRIBUTING.md](CONTRIBUTING.md) file for more info
