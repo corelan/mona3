@@ -4067,14 +4067,12 @@ class MnModule:
 											current_iat_target = 0
 
 										if current_iat_target > 0:
-											ptrx = MnPointer(current_iat_target)
-											modname = ptrx.belongsTo(modulesOnly=True)
-											tmod = MnModule(modname)
+											tmod = mnproc.getModuleForAddress(current_iat_target)
 											thisfunc = dbglib.Function(dbg, current_iat_target)
 											thisfuncfullname = ensure_text(thisfunc.getName()).lower()
 
 											if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % current_iat_target):
-												if not tmod is None:
+												if tmod is not None:
 													imagename = tmod.getShortName()
 													eatlist = tmod.getEAT()
 													if current_iat_target in eatlist:
@@ -4135,6 +4133,7 @@ class MnModule:
 					# another search method, not accurate, but might find *something*
 					dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
 					funccalls = self.getFunctionCalls()
+					_eat_cache = {}
 
 					for functype in funccalls:
 						for fptr in funccalls[functype]:
@@ -4199,14 +4198,14 @@ class MnModule:
 											iatptr = 0
 
 										# see if we can find the original function name using the EAT
-										tptr = MnPointer(ptr)
-										modname = tptr.belongsTo()
-										tmod = MnModule(modname)
+										tmod = mnproc.getModuleForAddress(iatptr) if iatptr > 0 else None
 										ofullname = thisfuncfullname
 
-										if not tmod is None:
+										if tmod is not None:
 											imagename = tmod.getShortName()
-											eatlist = tmod.getEAT()
+											if imagename not in _eat_cache:
+												_eat_cache[imagename] = tmod.getEAT()
+											eatlist = _eat_cache[imagename]
 											if iatptr in eatlist:
 												thisfuncfullname = "." + imagename + "!" + eatlist[iatptr]
 
