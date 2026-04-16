@@ -11866,7 +11866,7 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 		comparetable.add(0, ['0x%08x' % location, msg, badbstr, sctype, locinfo])
 
 	objlogfile.write("-" * 100, logfile)
-	log('[+] Comparing with memory at location : 0x%08x (%s)' % (location, MnPointer(location).memLocation()), highlight=1)
+	log('[+] Comparing with memory at location : %s (%s)' % (PTR_PRINT % location, MnPointer(location).memLocation()), highlight=1)
 	dbg.updateLog()
 
 	mem = read_memory(dbg, location, 2 * len(src))
@@ -21441,9 +21441,11 @@ def procCopy(args):
 		try:
 			dbg.writeMemory(dst,sourcebytes)
 			dbg.log("    Done.")
-		except:
+		except Exception as e:
 			dbg.log("    *** Copy failed, check if both locations are accessible/mapped",highlight=1)
-
+			dbg.log("    *** %s" % str(e))
+			if DEBUG_MODE:
+				dbgp("    *** Traceback: %s" % traceback.format_exc())
 	return
 
 
