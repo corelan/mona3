@@ -647,6 +647,12 @@ def getAddyArg(argaddy):
 	addypartsint = []
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
 	regs = getRegisters()
+
+	if argaddy.lower() in regs:
+		if DEBUG_MODE:
+			dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[argaddy.lower()]))
+		return regs[argaddy.lower()], True
+
 	thispart = ""
 	argaddy = argaddy.replace("`","")
 	for c in str(argaddy):
@@ -21420,15 +21426,17 @@ def procCopy(args):
 	if src == 0:
 		errorsfound = True
 		dbg.log("*** Please specify a valid source address to argument -src ***",highlight=1)
+		dbg.log("*** You provided '%s', and that resolves into 0" % args["src"],highlight=1)
 	if dst == 0:
 		errorsfound = True
 		dbg.log("*** Please specify a valid destination address to argument -dst ***",highlight=1)
+		dbg.log("*** You provided '%s', and that resolves into 0" % args["dst"],highlight=1)
 	if nrbytes == 0:
 		errorsfound = True
 		dbg.log("*** Please specify a valid number of bytes to argument -n ***",highlight=1)
 
 	if not errorsfound:
-		dbg.log("[+] Attempting to copy 0x%08x bytes from 0x%08x to 0x%08x" % (nrbytes, src, dst))
+		dbg.log("[+] Attempting to copy 0x%08x bytes from %s to %s" % (nrbytes, PTR_PRINT % src, PTR_PRINT % dst))
 		sourcebytes = dbg.readMemory(src,nrbytes)
 		try:
 			dbg.writeMemory(dst,sourcebytes)
