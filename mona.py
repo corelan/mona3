@@ -2298,9 +2298,18 @@ def archValue(x86, x64):
 
 def readPtrSizeBytes(ptr):
 	if arch == 32:
-		return struct.unpack('<L',dbg.readMemory(ptr,4))[0]
+		data = dbg.readMemory(ptr,4)
+		expected = 4
+		fmt = '<L'
 	elif arch == 64:
-		return struct.unpack('<Q',dbg.readMemory(ptr,8))[0]
+		data = dbg.readMemory(ptr,8)
+		expected = 8
+		fmt = '<Q'
+	if not data or len(data) < expected:
+		if DEBUG_MODE:
+			dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
+		return 0
+	return struct.unpack(fmt, data)[0]
 
 def getOsOffset(name):
 	osrelease = dbg.getOsRelease()
@@ -3833,7 +3842,9 @@ class MnModule:
 		self.moduleCodebase = mcodebase
 
 		self.moduleDllCharacteristics = mdllcharacteristics
+
 		self.moduleSEHTable = msehtable
+
 		self.moduleSEHCount = msehcount
 
 	def __str__(self):
@@ -3853,7 +3864,11 @@ class MnModule:
 			if arch == 32:
 				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 			else:
-								outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
+				if DEBUG_MODE:
+					dbgp("Module %s" % self.moduleKey)
+					dbgp(" ModuleCharacteristics: 0x%x" % self.moduleDllCharacteristics)
+					dbgp(" Version: %s" % self.moduleVersion)
+				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 		else:
 			outstring = "[None]"
 		return outstring
@@ -19931,8 +19946,11 @@ def procGetxAT(args,mode=""):
 						try:
 							ModObj = MnModule(iatptr_modname)
 							modinfohr = "%s" % (ModObj.__str__())
-						except:
+						except Exception as e:
 							modinfohr = ""
+							if DEBUG_MODE:
+								dbgp("Error getting module for %s: %s" % (iatptr_modname, str(e)))
+								dbgp("%s" % traceback.format_exc())
 							pass
 					except Exception as e:
 						dbg.log("Error in procGetxAT: %s" % str(e))
@@ -19982,6 +20000,7 @@ def procGetxAT(args,mode=""):
 			headers = ["IAT Location", "In Module", "( = RVA)", "Contains","Which is address of function","Info about module the function belongs to" ]
 			types   = ["pointer", "string", "pointer", "pointer", "string", "string"]
 			dbg.log("")
+			dbg.log("%s" % iat_table)
 			print_dict_table(iat_table, headers, types, padding = "    ", itemsequence = [])
 		if mode == "eat":
 			dbg.log("")
