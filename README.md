@@ -29,6 +29,7 @@ ___  ________ _   _   ___          _____
     - [3.4. Running Mona in Immunity](#34-running-mona-in-immunity)
 - [Thank you](#thank-you)
 - [Found a bug?](#found-a-bug)
+- [Want to contribute?](#want-to-contribute)
 
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
@@ -343,6 +344,8 @@ Mona v3 would not have been possible without the ***hard work and dedication*** 
 ## Found a bug?
 
 If you discover a bug, please ***open an issue*** and provide ***detailed steps to reproduce*** the problem.
+
+<br> <br> 
 
 ## Want to contribute?
 
