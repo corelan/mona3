@@ -22228,7 +22228,7 @@ def procChangeACL(args):
 	if not addyerror and not aclerror:
 		pageacl = MnProc.memProtConstants[acl][1]
 		pageaclname = MnProc.memProtConstants[acl][0]
-		dbg.log("[+] ACL Changes for address 0x%08x" % addy)
+		dbg.log("[+] ACL Changes for address %s" % (PTR_PRINT % addy))
 		before_access = getPointerAccess(addy)
 		dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
 		dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
