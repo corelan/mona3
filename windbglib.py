@@ -90,6 +90,8 @@ if pykd.is64bitSystem():
 	arch = 64
 
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
+PTR_SIZE = 4 if arch == 32 else 8
+PTR_FMT = '<L' if arch == 32 else '<Q'
 
 # Utility functions
 

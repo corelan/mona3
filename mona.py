@@ -151,6 +151,8 @@ DESC = "Corelan Consulting bv exploit development swiss army knife"
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 STACK_POINTER = "esp" if arch == 32 else "rsp"
 PTR_SIZE_DIRECTIVE = "dword ptr" if arch == 32 else "qword ptr"
+PTR_SIZE = 4 if arch == 32 else 8
+PTR_FMT = '<L' if arch == 32 else '<Q'
 _teb_addr_cache = None
 _peb_addr_cache = None
 _peb_list_cache = None
@@ -668,7 +670,7 @@ def getAddyArg(argaddy):
 				partval,partok = getIntForPart(cleaned.replace("[","").replace("]",""))
 				if partok:
 					try:
-						partval = struct.unpack('<L',dbg.readMemory(partval,4))[0]
+						partval = struct.unpack(PTR_FMT,dbg.readMemory(partval,PTR_SIZE))[0]
 					except:
 						partval = 0
 						partok = False
@@ -1646,7 +1648,7 @@ def getSegmentEnd(segmentstart):
 	offset = 0x24
 	if win7mode:
 		offset = 0x28
-	segmentend = struct.unpack('<L',dbg.readMemory(segmentstart + offset,4))[0]
+	segmentend = struct.unpack(PTR_FMT,dbg.readMemory(segmentstart + offset,PTR_SIZE))[0]
 	return segmentend
 
 
@@ -1688,7 +1690,7 @@ def decodeHeapHeader(headeraddress,headersize,key):
 	decodedheader = ""
 	fullheaderbytes = ""
 	while blockcnt < headersize:
-		header = struct.unpack('<L',dbg.readMemory(headeraddress+blockcnt,4))[0]
+		header = struct.unpack(PTR_FMT,dbg.readMemory(headeraddress+blockcnt,PTR_SIZE))[0]
 		if blockcnt < key_size:
 			# extract the corresponding 4 bytes of the key
 			key_dword = (key >> (blockcnt * 8)) & 0xFFFFFFFF
@@ -19871,13 +19873,6 @@ def procGetxAT(args,mode=""):
 			else:
 				thisxat = thismod.getEAT()
 
-
-			ptrsize = 4
-			pfmt = '<L'
-			if arch == 64:
-				ptrsize = 8
-				pfmt = '<Q'
-
 			for thisfunc in thisxat:
 				thisfuncname = thisxat[thisfunc].lower()
 				origfuncname = thisfuncname
@@ -19891,7 +19886,7 @@ def procGetxAT(args,mode=""):
 				if mode == "iat":
 					try:
 						#dbg.log("reading 0x%08x" % thisfunc)
-						theptr = struct.unpack(pfmt,dbg.readMemory(thisfunc,ptrsize))[0]
+						theptr = struct.unpack(PTR_FMT,dbg.readMemory(thisfunc,PTR_SIZE))[0]
 						ptrx = MnPointer(theptr)
 						iatptr_modname = ptrx.belongsTo()
 						#dbg.log("ptr 0x%08x belongs to %s" % (theptr, iatptr_modname))
