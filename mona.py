@@ -153,6 +153,7 @@ STACK_POINTER = "esp" if arch == 32 else "rsp"
 PTR_SIZE_DIRECTIVE = "dword ptr" if arch == 32 else "qword ptr"
 PTR_SIZE = 4 if arch == 32 else 8
 PTR_FMT = '<L' if arch == 32 else '<Q'
+PTR_PRINT = "0x%08x" if arch == 32 else "0x%016x"
 _teb_addr_cache = None
 _peb_addr_cache = None
 _peb_list_cache = None
@@ -20460,10 +20461,7 @@ def procPEB(args):
 	Show the address of the PEB
 	"""
 	pebaddy = get_peb_addr()
-	if arch == 32:
-		dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
-	if arch == 64:
-		dbg.log("PEB is located at 0x%16x" % pebaddy,address=pebaddy)
+	dbg.log("PEB is located at " + PTR_PRINT % pebaddy, address=pebaddy)
 	return
 
 def procTEB(args):
@@ -20471,10 +20469,7 @@ def procTEB(args):
 	Show the address of the TEB for the current thread
 	"""
 	tebaddy = get_teb_addr()
-	if arch == 32:
-		dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
-	if arch == 64:
-		dbg.log("TEB is located at 0x%16x" % tebaddy,address=tebaddy)
+	dbg.log("TEB is located at " + PTR_PRINT % tebaddy, address=tebaddy)
 	return
 
 def procPageACL(args):

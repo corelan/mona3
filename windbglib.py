@@ -92,7 +92,7 @@ if pykd.is64bitSystem():
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 PTR_SIZE = 4 if arch == 32 else 8
 PTR_FMT = '<L' if arch == 32 else '<Q'
-
+PTR_PRINT = "0x%08x" if arch == 32 else "0x%016x"
 # Utility functions
 
 DEBUG_MODE = False
