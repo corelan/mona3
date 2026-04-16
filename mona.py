@@ -8388,7 +8388,6 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	nrkeys = len(modulestosearch)
 	keycnt = 1
 	for key in modulestosearch:
-		curmod = dbg.getModule(key)
 		if DEBUG_MODE:
 			dbgp("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
 		keycnt += 1
@@ -14972,8 +14971,6 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 		for thismodule in modulestosearch:
 			if not silent:
 				dbg.log("    Querying module %s" % thismodule)
-			# get all
-			themod = dbg.getModule(thismodule)
 			tmod = MnModule(thismodule)
 			shortname = tmod.getShortName()
 			#syms = themod.getSymbols()
