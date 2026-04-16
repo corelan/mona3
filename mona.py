@@ -7873,6 +7873,17 @@ def getModuleProperty(modname,parameter):
 		return modproperties[parameter.lower()]
 	return ""
 
+
+def populateModuleInfo(from_memory=False, peb_order="load"):
+	"""
+	Populate global dictionary with information about all loaded modules
+	
+	Return:
+	Dictionary
+	"""
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+
 	if not silent:
 		dbg.setStatusBar("Getting modules info...")
 		dbg.log("[+] Generating module info table, hang on...")
