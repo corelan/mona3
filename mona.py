@@ -22454,7 +22454,7 @@ def procAllocMem(args):
 		else:
 			retval = dbg.rVirtualProtect(addy,1,pageacl)
 		
-		dbg.log("[+] Allocated memory at 0x%08x" % allocat)
+		dbg.log("[+] Allocated memory at %s" % (PTR_PRINT % allocat))
 		#if allocat > 0:
 		#	dbg.log("    ACL 0x%08x: %s" % (allocat,getPointerAccess(allocat)))
 		#else:
@@ -22462,7 +22462,7 @@ def procAllocMem(args):
 
 		if allocat == 0 and fillup and not writemore:
 			dbg.log("[+] It looks like the page was already mapped. Use the -force argument")
-			dbg.log("    to make me write to 0x%08x anyway" % addy)
+			dbg.log("    to make me write to %s anyway" % (PTR_PRINT % addy))
 		if (allocat > 0 and fillup) or (writemore and fillup):
 			loc = 0
 			written = 0
