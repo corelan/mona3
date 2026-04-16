@@ -4068,14 +4068,12 @@ class MnModule:
 											current_iat_target = 0
 
 										if current_iat_target > 0:
-											ptrx = MnPointer(current_iat_target)
-											modname = ptrx.belongsTo(modulesOnly=True)
-											tmod = MnModule(modname)
+											tmod = mnproc.getModuleForAddress(current_iat_target)
 											thisfunc = dbglib.Function(dbg, current_iat_target)
 											thisfuncfullname = ensure_text(thisfunc.getName()).lower()
 
 											if thisfuncfullname.endswith(".unknown") or thisfuncfullname.endswith(".%08x" % current_iat_target):
-												if not tmod is None:
+												if tmod is not None:
 													imagename = tmod.getShortName()
 													eatlist = tmod.getEAT()
 													if current_iat_target in eatlist:
@@ -4136,6 +4134,7 @@ class MnModule:
 					# another search method, not accurate, but might find *something*
 					dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
 					funccalls = self.getFunctionCalls()
+					_eat_cache = {}
 
 					for functype in funccalls:
 						for fptr in funccalls[functype]:
@@ -4200,14 +4199,14 @@ class MnModule:
 											iatptr = 0
 
 										# see if we can find the original function name using the EAT
-										tptr = MnPointer(ptr)
-										modname = tptr.belongsTo()
-										tmod = MnModule(modname)
+										tmod = mnproc.getModuleForAddress(iatptr) if iatptr > 0 else None
 										ofullname = thisfuncfullname
 
-										if not tmod is None:
+										if tmod is not None:
 											imagename = tmod.getShortName()
-											eatlist = tmod.getEAT()
+											if imagename not in _eat_cache:
+												_eat_cache[imagename] = tmod.getEAT()
+											eatlist = _eat_cache[imagename]
 											if iatptr in eatlist:
 												thisfuncfullname = "." + imagename + "!" + eatlist[iatptr]
 
@@ -5810,6 +5809,15 @@ class MnProc:
 		self.heapinfo = {}     # from getProcessHeapsInfo(): {"NT":{}, "Segment":{}, "Unknown":{}}
 		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
 		self.defaultheap = 0   # default process heap address
+
+	def getModuleForAddress(self, addr):
+		"""Return the MnModule containing *addr*, or None."""
+		if len(self.g_modules) == 0:
+			populateModuleInfo()
+		for modkey, props in self.g_modules.items():
+			if props["base"] <= addr <= props["top"]:
+				return MnModule(modkey)
+		return None
 
 	def populateVACache(self):
 		"""
@@ -19886,29 +19894,17 @@ def procGetxAT(args,mode=""):
 				theptr = 0
 				if mode == "iat":
 					try:
-						#dbg.log("reading 0x%08x" % thisfunc)
 						theptr = struct.unpack(PTR_FMT,dbg.readMemory(thisfunc,PTR_SIZE))[0]
-						ptrx = MnPointer(theptr)
-						iatptr_modname = ptrx.belongsTo()
-						#dbg.log("ptr 0x%08x belongs to %s" % (theptr, iatptr_modname))
-						if not iatptr_modname == "" and "!" in iatptr_modname:
-							iatptr_modparts = iatptr_modname.split("!")
-							iatptr_modname = iatptr_modparts[0]
-						if not "!" in origfuncname and iatptr_modname != "":
-							origfuncname = iatptr_modname.lower() + "!" + origfuncname
-							thisfuncname = origfuncname
-						if "!" in origfuncname:
-							oparts = origfuncname.split("!")
-							origfuncname = iatptr_modname.lower() + "!" + oparts[1]
-						try:
-							ModObj = MnModule(iatptr_modname)
-							modinfohr = "%s" % (ModObj.__str__())
-						except Exception as e:
-							modinfohr = ""
-							if DEBUG_MODE:
-								dbgp("Error getting module for %s: %s" % (iatptr_modname, str(e)))
-								dbgp("%s" % traceback.format_exc())
-							pass
+						targetMod = mnproc.getModuleForAddress(theptr)
+						if targetMod is not None:
+							iatptr_modname = targetMod.getShortName()
+							modinfohr = "%s" % targetMod
+							if "!" not in origfuncname:
+								origfuncname = iatptr_modname.lower() + "!" + origfuncname
+								thisfuncname = origfuncname
+							else:
+								oparts = origfuncname.split("!")
+								origfuncname = iatptr_modname.lower() + "!" + oparts[1]
 					except Exception as e:
 						dbg.log("Error in procGetxAT: %s" % str(e))
 						continue
