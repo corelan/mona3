@@ -5810,6 +5810,15 @@ class MnProc:
 		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
 		self.defaultheap = 0   # default process heap address
 
+	def getModuleForAddress(self, addr):
+		"""Return the MnModule containing *addr*, or None."""
+		if len(self.g_modules) == 0:
+			populateModuleInfo()
+		for modkey, props in self.g_modules.items():
+			if props["base"] <= addr <= props["top"]:
+				return MnModule(modkey)
+		return None
+
 	def populateVACache(self):
 		"""
 		Build a lookup table of all heap segment ranges and VA block ranges
@@ -19885,29 +19894,17 @@ def procGetxAT(args,mode=""):
 				theptr = 0
 				if mode == "iat":
 					try:
-						#dbg.log("reading 0x%08x" % thisfunc)
 						theptr = struct.unpack(PTR_FMT,dbg.readMemory(thisfunc,PTR_SIZE))[0]
-						ptrx = MnPointer(theptr)
-						iatptr_modname = ptrx.belongsTo(modulesOnly=True)
-						#dbg.log("ptr 0x%08x belongs to %s" % (theptr, iatptr_modname))
-						if not iatptr_modname == "" and "!" in iatptr_modname:
-							iatptr_modparts = iatptr_modname.split("!")
-							iatptr_modname = iatptr_modparts[0]
-						if not "!" in origfuncname and iatptr_modname != "":
-							origfuncname = iatptr_modname.lower() + "!" + origfuncname
-							thisfuncname = origfuncname
-						if "!" in origfuncname:
-							oparts = origfuncname.split("!")
-							origfuncname = iatptr_modname.lower() + "!" + oparts[1]
-						if iatptr_modname != "":
-							try:
-								ModObj = MnModule(iatptr_modname)
-								modinfohr = "%s" % (ModObj.__str__())
-							except Exception as e:
-								modinfohr = ""
-								if DEBUG_MODE:
-									dbgp("Error getting module for %s: %s" % (iatptr_modname, str(e)))
-									dbgp("%s" % traceback.format_exc())
+						targetMod = mnproc.getModuleForAddress(theptr)
+						if targetMod is not None:
+							iatptr_modname = targetMod.getShortName()
+							modinfohr = "%s" % targetMod
+							if "!" not in origfuncname:
+								origfuncname = iatptr_modname.lower() + "!" + origfuncname
+								thisfuncname = origfuncname
+							else:
+								oparts = origfuncname.split("!")
+								origfuncname = iatptr_modname.lower() + "!" + oparts[1]
 					except Exception as e:
 						dbg.log("Error in procGetxAT: %s" % str(e))
 						continue
