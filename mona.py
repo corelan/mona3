@@ -19888,7 +19888,7 @@ def procGetxAT(args,mode=""):
 						#dbg.log("reading 0x%08x" % thisfunc)
 						theptr = struct.unpack(PTR_FMT,dbg.readMemory(thisfunc,PTR_SIZE))[0]
 						ptrx = MnPointer(theptr)
-						iatptr_modname = ptrx.belongsTo()
+						iatptr_modname = ptrx.belongsTo(modulesOnly=True)
 						#dbg.log("ptr 0x%08x belongs to %s" % (theptr, iatptr_modname))
 						if not iatptr_modname == "" and "!" in iatptr_modname:
 							iatptr_modparts = iatptr_modname.split("!")
@@ -19899,15 +19899,15 @@ def procGetxAT(args,mode=""):
 						if "!" in origfuncname:
 							oparts = origfuncname.split("!")
 							origfuncname = iatptr_modname.lower() + "!" + oparts[1]
-						try:
-							ModObj = MnModule(iatptr_modname)
-							modinfohr = "%s" % (ModObj.__str__())
-						except Exception as e:
-							modinfohr = ""
-							if DEBUG_MODE:
-								dbgp("Error getting module for %s: %s" % (iatptr_modname, str(e)))
-								dbgp("%s" % traceback.format_exc())
-							pass
+						if iatptr_modname != "":
+							try:
+								ModObj = MnModule(iatptr_modname)
+								modinfohr = "%s" % (ModObj.__str__())
+							except Exception as e:
+								modinfohr = ""
+								if DEBUG_MODE:
+									dbgp("Error getting module for %s: %s" % (iatptr_modname, str(e)))
+									dbgp("%s" % traceback.format_exc())
 					except Exception as e:
 						dbg.log("Error in procGetxAT: %s" % str(e))
 						continue
