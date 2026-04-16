@@ -20460,7 +20460,10 @@ def procPEB(args):
 	Show the address of the PEB
 	"""
 	pebaddy = get_peb_addr()
-	dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
+	if arch == 32:
+		dbg.log("PEB is located at 0x%08x" % pebaddy,address=pebaddy)
+	if arch == 64:
+		dbg.log("PEB is located at 0x%16x" % pebaddy,address=pebaddy)
 	return
 
 def procTEB(args):
@@ -20468,7 +20471,10 @@ def procTEB(args):
 	Show the address of the TEB for the current thread
 	"""
 	tebaddy = get_teb_addr()
-	dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
+	if arch == 32:
+		dbg.log("TEB is located at 0x%08x" % tebaddy,address=tebaddy)
+	if arch == 64:
+		dbg.log("TEB is located at 0x%16x" % tebaddy,address=tebaddy)
 	return
 
 def procPageACL(args):
