@@ -209,7 +209,7 @@ On WinDBG(X):
 
 **Convenience**: ***Create an alias*** to avoid typing the full path every time:
 ```
-!as mona !py -3.9 C:\Tools\mona3\mona.py
+!as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
 Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
@@ -261,7 +261,7 @@ set PATH=%PYTHONHOME%;%PATH%
 set PYTHONPATH=%PYTHONHOME%\Lib
 
 set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -3 C:\Tools\mona3\mona.py'
-
+s
 %WINDBG_CMD% %*
 
 set PATH=%ORIGPATH%
