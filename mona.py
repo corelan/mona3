@@ -8326,7 +8326,7 @@ def findJMP(modulecriteria={},criteria={},register="esp"):
 	
 def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	"""
-	Performs a search for pointers to pointers to interesting functions to facilitate a ROP exploit
+	Performs a search for pointers to pointers to interesting functions to facilitate a ROP chain
 
 	Arguments:
 	modulecriteria - dictionary with criteria modules need to comply with.
@@ -23427,8 +23427,8 @@ Arguments:
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
 	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC)
-	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP exploit and do ROP magic with them",ropUsage,procROP,"",[32,64])
-	commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP exploit",jopUsage,procJOP)		
+	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP chain and perhaps do some ROP magic with them",ropUsage,procROP,"",[32,64])
+	commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP chain",jopUsage,procJOP)		
 	commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
 	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
 	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod", [32,64])
