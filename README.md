@@ -146,11 +146,11 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 
 #### Step 1: Set up central location
 
-Create a central folder, for instance `C:\Tools\mona`.
+Create a central folder, for instance `C:\Tools\mona3`.
 
 (If you decide to make another folder, please update the commands below accordingly)
 
-**Download** `mona.py` and `windbglib.py` from this repository and ***store*** them in the central folder: `C:\Tools\mona`
+**Download** `mona.py` and `windbglib.py` from this repository and ***store*** them in the central folder: `C:\Tools\mona3`
 
 > **⚠️ Important**: Verify the downloaded files contain ***actual Python code***, not HTML
 
@@ -158,7 +158,7 @@ Create a central folder, for instance `C:\Tools\mona`.
 
 #### Step 2: Configure for WinDBG Classic / WinDBGX
 
-Reference the files directly from `C:\Tools\mona` using aliases (see **Section 3.2** for auto-loading setup).
+Reference the files directly from `C:\Tools\mona3` using aliases (see **Section 3.2** for auto-loading setup).
 
 **Recommendation**: Use **Python 3.9** when running `mona` in WinDBG(X). 
 
@@ -170,7 +170,7 @@ If not using Immunity Debugger or Python2 scripts, feel free to safely ***remove
 
 **Option A: Create a symbolic link** (recommended)
 ```batch
-mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py" "C:\Tools\mona\mona.py"
+mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py" "C:\Tools\mona3\mona.py"
 ```
 
 **Option B: Copy the file directly**
@@ -203,14 +203,14 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 On WinDBG(X):
 ```
-!py -3.9 C:\Tools\mona\mona.py
+!py -3.9 C:\Tools\mona3\mona.py
 ```
 (You can run the same command on 32bit and 64bit debugging sessions, WinDBG(X) will select the appropriate Python3.9.13 version)
 
 
 **Convenience**: ***Create an alias*** to avoid typing the full path every time:
 ```
-!as mona !py -3.9 C:\Tools\mona\mona.py
+!as mona !py -3.9 C:\Tools\mona3\mona.py
 ```
 Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
@@ -227,7 +227,7 @@ You could create a small batch file inside the WinDBG Program folders (both `x86
 For example, create `w.bat` with the following contents:
 
 ```batch
-set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9 C:\Tools\mona\mona.py' "
+set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9 C:\Tools\mona3\mona.py' "
 
 %WINDBG_CMD% %*
 ```
@@ -241,7 +241,7 @@ In WinDBGX, we can use the "Startup Settings"
 2. ***Paste*** the following commands:
 ```
 !load pykd
-as !mona !py -3.9 c:\Tools\mona\mona.py
+as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
 
 > **Note**: You only need to configure this ***once***. WinDBGX will automatically adapt to 32-bit or 64-bit depending on your debugging target.
@@ -261,7 +261,7 @@ set PYTHONHOME=%LOCALAPPDATA%\Programs\Python\Python38-32
 set PATH=%PYTHONHOME%;%PATH%
 set PYTHONPATH=%PYTHONHOME%\Lib
 
-set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -3 c:\tools\mona\mona.py'
+set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -3 C:\Tools\mona3\mona.py'
 
 %WINDBG_CMD% %*
 
@@ -279,7 +279,7 @@ set PYTHONHOME=C:\Python27
 set PATH=%PYTHONHOME%;%PATH%
 set PYTHONPATH=%PYTHONHOME%\Lib
 
-set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -2 c:\tools\mona\mona.py'
+set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -2 C:\Tools\mona3\mona.py'
 
 %WINDBG_CMD% %*
 
