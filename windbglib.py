@@ -502,6 +502,7 @@ class Debugger:
 		self.MemoryPages = {}
 		self.AsmCache = {}
 		self.allmodules = {}
+		self._allmodules_lower = {}
 		self.OpcodeCache = {}
 		self.ModCache = {}
 		self._peb_list = None
@@ -3497,6 +3498,9 @@ class Debugger:
 					fullpath = full_path
 					break
 
+			if dll_base == 0 and fname in self._allmodules_lower:
+				return self._allmodules_lower[fname]
+
 			if dll_base == 0:
 				if DEBUG_MODE:
 					dbgp("Module '%s' not found via PEB walk" % modulename)
@@ -3553,6 +3557,7 @@ class Debugger:
 					wmod.setPath(full_path)
 					wmod.setSize(thismod.size())
 					self.allmodules[imagename] = wmod
+					self._allmodules_lower[imagename.lower()] = wmod
 				except:
 					continue
 		return self.allmodules
