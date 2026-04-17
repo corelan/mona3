@@ -3247,267 +3247,6 @@ class MnModule:
 	Class to access module properties
 	"""
 
-	# ------------------------------------------------------------------
-	# VS_VERSION_INFO parsing — inlined from windbglib so MnModule has
-	# no dbglib dependency for OS-module detection.
-	# ------------------------------------------------------------------
-
-	class _FixedFileInfo:
-		"""Mirrors VS_FIXEDFILEINFO (winver.h). Signature must be 0xFEEF04BD."""
-		SIGNATURE = 0xFEEF04BD
-
-		def __init__(self, data, offset):
-			(self.dw_signature, dw_struc_version,
-			 dw_file_version_ms, dw_file_version_ls,
-			 dw_product_version_ms, dw_product_version_ls,
-			 self.dw_file_flags_mask, self.dw_file_flags,
-			 self.dw_file_os, self.dw_file_type, self.dw_file_subtype,
-			 self.dw_file_date_ms, self.dw_file_date_ls) = struct.unpack_from("<13I", data, offset)
-			if self.dw_signature != self.SIGNATURE:
-				raise ValueError("Invalid VS_FIXEDFILEINFO signature: %s" % hex(self.dw_signature))
-			self.file_version = (dw_file_version_ms >> 16, dw_file_version_ms & 0xFFFF,
-			                     dw_file_version_ls >> 16, dw_file_version_ls & 0xFFFF)
-
-		@property
-		def file_version_str(self):
-			return "%d.%d.%d.%d" % self.file_version
-
-
-	class _StringTable:
-		"""One language/codepage block inside StringFileInfo."""
-		def __init__(self, lang_id, strings):
-			self.lang_id = lang_id
-			self.strings = strings
-
-		def get(self, key, default=None):
-			return self.strings.get(key, default)
-
-
-	class VSVersionInfo:
-		"""
-		Parse a VS_VERSION_INFO resource blob.
-		Use from_memory(modbase) or from_file(path) to construct.
-		"""
-
-		@staticmethod
-		def _align4(n):
-			return (n + 3) & ~3
-
-		def __init__(self, data):
-			self._data = data
-			self._parse()
-
-		def _read_node_header(self, offset):
-			w_length, w_value_length, w_type = struct.unpack_from("<HHH", self._data, offset)
-			pos = offset + 6
-			end = pos
-			while end + 1 < len(self._data) and self._data[end:end + 2] != b'\x00\x00':
-				end += 2
-			key = self._data[pos:end].decode('utf-16-le')
-			value_start = self._align4(end + 2)
-			return w_length, w_value_length, w_type, key, value_start
-
-		def _parse(self):
-			data = self._data
-			self.w_length, self.w_value_length, self.w_type, _, pos = self._read_node_header(0)
-			self.fixed = MnModule._FixedFileInfo(data, pos)
-			self.string_tables = []
-			pos = self._align4(pos + self.w_value_length)
-			root_end = self.w_length
-			while pos < root_end:
-				c_length, _, _, c_key, c_pos = self._read_node_header(pos)
-				if c_length == 0:
-					break
-				if c_key == 'StringFileInfo':
-					st_pos = c_pos
-					st_end = pos + c_length
-					while st_pos < st_end:
-						st_length, _, _, lang_key, s_pos = self._read_node_header(st_pos)
-						if st_length == 0:
-							break
-						strings = {}
-						s_end = st_pos + st_length
-						while s_pos < s_end:
-							s_length, s_value_length, _, s_key, s_val_pos = self._read_node_header(s_pos)
-							if s_length == 0:
-								break
-							raw = data[s_val_pos:s_val_pos + s_value_length * 2]
-							strings[s_key] = raw.decode('utf-16-le').rstrip('\x00')
-							s_pos = self._align4(s_pos + s_length)
-						self.string_tables.append(MnModule._StringTable(lang_key, strings))
-						st_pos = self._align4(st_pos + st_length)
-				pos = self._align4(pos + c_length)
-
-		@classmethod
-		def from_memory(cls, modbase):
-			"""Parse VS_VERSION_INFO from the loaded module in debuggee memory."""
-			def _read(addr, size):
-				return bytes(bytearray(dbg.readMemory(addr, size)))
-			def _dword(addr): return struct.unpack("<I", _read(addr, 4))[0]
-			def _word(addr):  return struct.unpack("<H", _read(addr, 2))[0]
-
-			nt_off = _dword(modbase + 0x3C)
-			nt_base = modbase + nt_off
-			if _read(nt_base, 4) != b"PE\x00\x00":
-				raise ValueError("Not a valid PE in memory at 0x%x" % modbase)
-			num_sections = _word(nt_base + 6)
-			size_opt_hdr = _word(nt_base + 20)
-			magic = _word(nt_base + 24)
-			if magic == 0x10b:
-				dd_off = nt_base + 24 + 96
-			elif magic == 0x20b:
-				dd_off = nt_base + 24 + 112
-			else:
-				raise ValueError("Unknown Optional Header magic: %s" % hex(magic))
-			res_rva  = _dword(dd_off + 2 * 8)
-			if res_rva == 0:
-				raise ValueError("No resource directory")
-			sect_base = nt_base + 4 + 20 + size_opt_hdr
-			res_sec = None
-			for i in range(num_sections):
-				sd = _read(sect_base + i * 40, 40)
-				v_sz, v_addr = struct.unpack_from("<II", sd, 8)
-				if v_addr <= res_rva < v_addr + v_sz:
-					res_sec = (v_addr, modbase + v_addr)
-					break
-			if res_sec is None:
-				raise ValueError("Resource section not found")
-			_, sec_va = res_sec
-
-			def read_dir_entries(dir_va):
-				hdr = _read(dir_va, 16)
-				num_named, num_id = struct.unpack("<HH", hdr[12:16])
-				raw = _read(dir_va + 16, (num_named + num_id) * 8)
-				return [struct.unpack_from("<II", raw, i * 8) for i in range(num_named + num_id)]
-
-			res_va = modbase + res_rva
-			RT_VERSION = 16
-			type_off = next((off for id_, off in read_dir_entries(res_va)
-			                 if not (id_ & 0x80000000) and id_ == RT_VERSION), None)
-			if type_off is None:
-				raise ValueError("RT_VERSION not found")
-			name_entries = read_dir_entries(res_va + (type_off & 0x7FFFFFFF))
-			if not name_entries: raise ValueError("RT_VERSION: no name entries")
-			_, lang_off = name_entries[0]
-			lang_entries = read_dir_entries(res_va + (lang_off & 0x7FFFFFFF))
-			if not lang_entries: raise ValueError("RT_VERSION: no language entries")
-			_, data_entry_off = lang_entries[0]
-			data_entry = _read(res_va + data_entry_off, 8)
-			data_rva, data_size = struct.unpack("<II", data_entry)
-			data = _read(modbase + data_rva, data_size)
-			return cls(data)
-
-		@classmethod
-		def from_file(cls, path):
-			"""Parse VS_VERSION_INFO from a PE file on disk."""
-			with open(path, 'rb') as f:
-				data = f.read()
-			if len(data) < 0x40:
-				raise ValueError("File too small")
-			nt_off = struct.unpack("<I", data[0x3C:0x40])[0]
-			if data[nt_off:nt_off + 4] != b"PE\x00\x00":
-				raise ValueError("Not a valid PE file")
-			magic = struct.unpack("<H", data[nt_off + 0x18:nt_off + 0x1a])[0]
-			if magic == 0x10b:
-				dd_off = nt_off + 0x18 + 0x60
-			elif magic == 0x20b:
-				dd_off = nt_off + 0x18 + 0x70
-			else:
-				raise ValueError("Unknown Optional Header magic")
-			res_rva, _ = struct.unpack("<II", data[dd_off + 2 * 8:dd_off + 2 * 8 + 8])
-			if res_rva == 0:
-				raise ValueError("No resource directory")
-			num_sections = struct.unpack("<H", data[nt_off + 6:nt_off + 8])[0]
-			opt_hdr_size = struct.unpack("<H", data[nt_off + 0x14:nt_off + 0x16])[0]
-			secs_off = nt_off + 0x18 + opt_hdr_size
-			res_sec = None
-			for i in range(num_sections):
-				sec = secs_off + i * 40
-				v_addr, v_sz = struct.unpack("<II", data[sec + 12:sec + 20])
-				raw_ptr       = struct.unpack("<I",  data[sec + 20:sec + 24])[0]
-				if v_addr <= res_rva < v_addr + v_sz:
-					res_sec = (v_addr, raw_ptr)
-					break
-			if res_sec is None:
-				raise ValueError("Resource section not found")
-			sec_va, sec_raw = res_sec
-
-			def rva2off(rva):
-				return rva - sec_va + sec_raw
-
-			def read_dir_entries(dir_rva):
-				off = rva2off(dir_rva)
-				num_named, num_id = struct.unpack("<HH", data[off + 12:off + 16])
-				count = num_named + num_id
-				return [struct.unpack_from("<II", data, off + 16 + i * 8) for i in range(count)]
-
-			RT_VERSION = 16
-			type_off = next((off for id_, off in read_dir_entries(res_rva)
-			                 if not (id_ & 0x80000000) and id_ == RT_VERSION), None)
-			if type_off is None:
-				raise ValueError("RT_VERSION not found")
-			name_entries = read_dir_entries(res_rva + (type_off & 0x7FFFFFFF))
-			if not name_entries: raise ValueError("RT_VERSION: no name entries")
-			_, lang_off = name_entries[0]
-			lang_entries = read_dir_entries(res_rva + (lang_off & 0x7FFFFFFF))
-			if not lang_entries: raise ValueError("RT_VERSION: no language entries")
-			_, data_entry_off = lang_entries[0]
-			data_rva, data_size = struct.unpack("<II", data[rva2off(res_rva + data_entry_off):rva2off(res_rva + data_entry_off) + 8])
-			blob = data[rva2off(data_rva):rva2off(data_rva) + data_size]
-			return cls(blob)
-
-	# ------------------------------------------------------------------
-
-	@staticmethod
-	def _peb_walk():
-		return peb_walk()
-
-	@staticmethod
-	def _base_from_peb(modulename):
-		"""
-		Return the load address (DllBase) for *modulename* by walking the PEB.
-		Returns 0 if not found.
-
-		Handles deduplicated keys of the form "<stem>_<hexaddr>" that are
-		generated by getAllModules() when two modules share the same stem
-		(e.g. msedge.exe and msedge.dll both strip to "msedge", so the second
-		becomes "msedge_7ff9af680000").  The hex suffix IS the load address, so
-		we parse it directly instead of doing a failed name-match walk.
-		"""
-		try:
-			name_lower = os.path.splitext(modulename.lower())[0]
-			for dll_base, base_name, _ in MnModule._peb_walk():
-				if os.path.splitext(base_name.lower())[0] == name_lower:
-					return dll_base
-			# No direct match — check for deduplicated key: <stem>_<hexaddr>
-			# Real load addresses are always >= 0x10000 (64 KB allocation minimum).
-			# Version suffixes like _2, _26, _14 parse to tiny values and are ignored.
-			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
-			if m:
-				try:
-					candidate = int(m.group(2), 16)
-					if candidate >= 0x10000:
-						return candidate
-				except ValueError:
-					pass
-			return 0
-		except Exception:
-			return 0
-
-	@staticmethod
-	def _path_from_peb(mzbase):
-		"""
-		Return the full filesystem path for the module loaded at *mzbase*.
-		Returns "" if not found.
-		"""
-		try:
-			for dll_base, _, full_path in MnModule._peb_walk():
-				if dll_base == mzbase:
-					return full_path
-			return ""
-		except Exception:
-			return ""
-
 	def __init__(self, modulename):
 		#if DEBUG_MODE:
 		if DEBUG_MODE:
@@ -3780,6 +3519,270 @@ class MnModule:
 		self.moduleSEHTable = msehtable
 
 		self.moduleSEHCount = msehcount
+
+
+
+	# ------------------------------------------------------------------
+	# VS_VERSION_INFO parsing — inlined from windbglib so MnModule has
+	# no dbglib dependency for OS-module detection.
+	# ------------------------------------------------------------------
+
+	class _FixedFileInfo:
+		"""Mirrors VS_FIXEDFILEINFO (winver.h). Signature must be 0xFEEF04BD."""
+		SIGNATURE = 0xFEEF04BD
+
+		def __init__(self, data, offset):
+			(self.dw_signature, dw_struc_version,
+			 dw_file_version_ms, dw_file_version_ls,
+			 dw_product_version_ms, dw_product_version_ls,
+			 self.dw_file_flags_mask, self.dw_file_flags,
+			 self.dw_file_os, self.dw_file_type, self.dw_file_subtype,
+			 self.dw_file_date_ms, self.dw_file_date_ls) = struct.unpack_from("<13I", data, offset)
+			if self.dw_signature != self.SIGNATURE:
+				raise ValueError("Invalid VS_FIXEDFILEINFO signature: %s" % hex(self.dw_signature))
+			self.file_version = (dw_file_version_ms >> 16, dw_file_version_ms & 0xFFFF,
+			                     dw_file_version_ls >> 16, dw_file_version_ls & 0xFFFF)
+
+		@property
+		def file_version_str(self):
+			return "%d.%d.%d.%d" % self.file_version
+
+
+	class _StringTable:
+		"""One language/codepage block inside StringFileInfo."""
+		def __init__(self, lang_id, strings):
+			self.lang_id = lang_id
+			self.strings = strings
+
+		def get(self, key, default=None):
+			return self.strings.get(key, default)
+
+
+	class VSVersionInfo:
+		"""
+		Parse a VS_VERSION_INFO resource blob.
+		Use from_memory(modbase) or from_file(path) to construct.
+		"""
+
+		@staticmethod
+		def _align4(n):
+			return (n + 3) & ~3
+
+		def __init__(self, data):
+			self._data = data
+			self._parse()
+
+		def _read_node_header(self, offset):
+			w_length, w_value_length, w_type = struct.unpack_from("<HHH", self._data, offset)
+			pos = offset + 6
+			end = pos
+			while end + 1 < len(self._data) and self._data[end:end + 2] != b'\x00\x00':
+				end += 2
+			key = self._data[pos:end].decode('utf-16-le')
+			value_start = self._align4(end + 2)
+			return w_length, w_value_length, w_type, key, value_start
+
+		def _parse(self):
+			data = self._data
+			self.w_length, self.w_value_length, self.w_type, _, pos = self._read_node_header(0)
+			self.fixed = MnModule._FixedFileInfo(data, pos)
+			self.string_tables = []
+			pos = self._align4(pos + self.w_value_length)
+			root_end = self.w_length
+			while pos < root_end:
+				c_length, _, _, c_key, c_pos = self._read_node_header(pos)
+				if c_length == 0:
+					break
+				if c_key == 'StringFileInfo':
+					st_pos = c_pos
+					st_end = pos + c_length
+					while st_pos < st_end:
+						st_length, _, _, lang_key, s_pos = self._read_node_header(st_pos)
+						if st_length == 0:
+							break
+						strings = {}
+						s_end = st_pos + st_length
+						while s_pos < s_end:
+							s_length, s_value_length, _, s_key, s_val_pos = self._read_node_header(s_pos)
+							if s_length == 0:
+								break
+							raw = data[s_val_pos:s_val_pos + s_value_length * 2]
+							strings[s_key] = raw.decode('utf-16-le').rstrip('\x00')
+							s_pos = self._align4(s_pos + s_length)
+						self.string_tables.append(MnModule._StringTable(lang_key, strings))
+						st_pos = self._align4(st_pos + st_length)
+				pos = self._align4(pos + c_length)
+
+		@classmethod
+		def from_memory(cls, modbase):
+			"""Parse VS_VERSION_INFO from the loaded module in debuggee memory."""
+			def _read(addr, size):
+				return bytes(bytearray(dbg.readMemory(addr, size)))
+			def _dword(addr): return struct.unpack("<I", _read(addr, 4))[0]
+			def _word(addr):  return struct.unpack("<H", _read(addr, 2))[0]
+
+			nt_off = _dword(modbase + 0x3C)
+			nt_base = modbase + nt_off
+			if _read(nt_base, 4) != b"PE\x00\x00":
+				raise ValueError("Not a valid PE in memory at 0x%x" % modbase)
+			num_sections = _word(nt_base + 6)
+			size_opt_hdr = _word(nt_base + 20)
+			magic = _word(nt_base + 24)
+			if magic == 0x10b:
+				dd_off = nt_base + 24 + 96
+			elif magic == 0x20b:
+				dd_off = nt_base + 24 + 112
+			else:
+				raise ValueError("Unknown Optional Header magic: %s" % hex(magic))
+			res_rva  = _dword(dd_off + 2 * 8)
+			if res_rva == 0:
+				raise ValueError("No resource directory")
+			sect_base = nt_base + 4 + 20 + size_opt_hdr
+			res_sec = None
+			for i in range(num_sections):
+				sd = _read(sect_base + i * 40, 40)
+				v_sz, v_addr = struct.unpack_from("<II", sd, 8)
+				if v_addr <= res_rva < v_addr + v_sz:
+					res_sec = (v_addr, modbase + v_addr)
+					break
+			if res_sec is None:
+				raise ValueError("Resource section not found")
+			_, sec_va = res_sec
+
+			def read_dir_entries(dir_va):
+				hdr = _read(dir_va, 16)
+				num_named, num_id = struct.unpack("<HH", hdr[12:16])
+				raw = _read(dir_va + 16, (num_named + num_id) * 8)
+				return [struct.unpack_from("<II", raw, i * 8) for i in range(num_named + num_id)]
+
+			res_va = modbase + res_rva
+			RT_VERSION = 16
+			type_off = next((off for id_, off in read_dir_entries(res_va)
+			                 if not (id_ & 0x80000000) and id_ == RT_VERSION), None)
+			if type_off is None:
+				raise ValueError("RT_VERSION not found")
+			name_entries = read_dir_entries(res_va + (type_off & 0x7FFFFFFF))
+			if not name_entries: raise ValueError("RT_VERSION: no name entries")
+			_, lang_off = name_entries[0]
+			lang_entries = read_dir_entries(res_va + (lang_off & 0x7FFFFFFF))
+			if not lang_entries: raise ValueError("RT_VERSION: no language entries")
+			_, data_entry_off = lang_entries[0]
+			data_entry = _read(res_va + data_entry_off, 8)
+			data_rva, data_size = struct.unpack("<II", data_entry)
+			data = _read(modbase + data_rva, data_size)
+			return cls(data)
+
+		@classmethod
+		def from_file(cls, path):
+			"""Parse VS_VERSION_INFO from a PE file on disk."""
+			with open(path, 'rb') as f:
+				data = f.read()
+			if len(data) < 0x40:
+				raise ValueError("File too small")
+			nt_off = struct.unpack("<I", data[0x3C:0x40])[0]
+			if data[nt_off:nt_off + 4] != b"PE\x00\x00":
+				raise ValueError("Not a valid PE file")
+			magic = struct.unpack("<H", data[nt_off + 0x18:nt_off + 0x1a])[0]
+			if magic == 0x10b:
+				dd_off = nt_off + 0x18 + 0x60
+			elif magic == 0x20b:
+				dd_off = nt_off + 0x18 + 0x70
+			else:
+				raise ValueError("Unknown Optional Header magic")
+			res_rva, _ = struct.unpack("<II", data[dd_off + 2 * 8:dd_off + 2 * 8 + 8])
+			if res_rva == 0:
+				raise ValueError("No resource directory")
+			num_sections = struct.unpack("<H", data[nt_off + 6:nt_off + 8])[0]
+			opt_hdr_size = struct.unpack("<H", data[nt_off + 0x14:nt_off + 0x16])[0]
+			secs_off = nt_off + 0x18 + opt_hdr_size
+			res_sec = None
+			for i in range(num_sections):
+				sec = secs_off + i * 40
+				v_addr, v_sz = struct.unpack("<II", data[sec + 12:sec + 20])
+				raw_ptr       = struct.unpack("<I",  data[sec + 20:sec + 24])[0]
+				if v_addr <= res_rva < v_addr + v_sz:
+					res_sec = (v_addr, raw_ptr)
+					break
+			if res_sec is None:
+				raise ValueError("Resource section not found")
+			sec_va, sec_raw = res_sec
+
+			def rva2off(rva):
+				return rva - sec_va + sec_raw
+
+			def read_dir_entries(dir_rva):
+				off = rva2off(dir_rva)
+				num_named, num_id = struct.unpack("<HH", data[off + 12:off + 16])
+				count = num_named + num_id
+				return [struct.unpack_from("<II", data, off + 16 + i * 8) for i in range(count)]
+
+			RT_VERSION = 16
+			type_off = next((off for id_, off in read_dir_entries(res_rva)
+			                 if not (id_ & 0x80000000) and id_ == RT_VERSION), None)
+			if type_off is None:
+				raise ValueError("RT_VERSION not found")
+			name_entries = read_dir_entries(res_rva + (type_off & 0x7FFFFFFF))
+			if not name_entries: raise ValueError("RT_VERSION: no name entries")
+			_, lang_off = name_entries[0]
+			lang_entries = read_dir_entries(res_rva + (lang_off & 0x7FFFFFFF))
+			if not lang_entries: raise ValueError("RT_VERSION: no language entries")
+			_, data_entry_off = lang_entries[0]
+			data_rva, data_size = struct.unpack("<II", data[rva2off(res_rva + data_entry_off):rva2off(res_rva + data_entry_off) + 8])
+			blob = data[rva2off(data_rva):rva2off(data_rva) + data_size]
+			return cls(blob)
+
+	# ------------------------------------------------------------------
+
+	@staticmethod
+	def _peb_walk():
+		return peb_walk()
+
+	@staticmethod
+	def _base_from_peb(modulename):
+		"""
+		Return the load address (DllBase) for *modulename* by walking the PEB.
+		Returns 0 if not found.
+
+		Handles deduplicated keys of the form "<stem>_<hexaddr>" that are
+		generated by getAllModules() when two modules share the same stem
+		(e.g. msedge.exe and msedge.dll both strip to "msedge", so the second
+		becomes "msedge_7ff9af680000").  The hex suffix IS the load address, so
+		we parse it directly instead of doing a failed name-match walk.
+		"""
+		try:
+			name_lower = os.path.splitext(modulename.lower())[0]
+			for dll_base, base_name, _ in MnModule._peb_walk():
+				if os.path.splitext(base_name.lower())[0] == name_lower:
+					return dll_base
+			# No direct match — check for deduplicated key: <stem>_<hexaddr>
+			# Real load addresses are always >= 0x10000 (64 KB allocation minimum).
+			# Version suffixes like _2, _26, _14 parse to tiny values and are ignored.
+			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
+			if m:
+				try:
+					candidate = int(m.group(2), 16)
+					if candidate >= 0x10000:
+						return candidate
+				except ValueError:
+					pass
+			return 0
+		except Exception:
+			return 0
+
+	@staticmethod
+	def _path_from_peb(mzbase):
+		"""
+		Return the full filesystem path for the module loaded at *mzbase*.
+		Returns "" if not found.
+		"""
+		try:
+			for dll_base, _, full_path in MnModule._peb_walk():
+				if dll_base == mzbase:
+					return full_path
+			return ""
+		except Exception:
+			return ""
+
 
 	def __str__(self):
 		#return general info about the module
@@ -4273,6 +4276,8 @@ class MnModule:
 	def getShortName(self):
 		return stripExtension(self.moduleKey)
 
+
+
 def getNtGlobalFlag():
 	flagoffset = 0x68
 	if arch == 64:
@@ -4284,8 +4289,6 @@ def getNtGlobalFlag():
 		except:
 			mnproc.NtGlobalFlag = 0
 	return mnproc.NtGlobalFlag
-
-
 
 
 def getNtGlobalFlagDefinitions():

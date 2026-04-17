@@ -48,7 +48,6 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 
 ## 1. Install dependencies
 
-<br> 
 
 ### 1.1. Windows 10 and later
 
