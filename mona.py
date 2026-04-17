@@ -22489,10 +22489,10 @@ def procAllocMem(args):
 					dbg.writeMemory(addy+loc,_to_bytes(fillbyte))
 					written += 1
 				except Exception as e:
-					dbg.log("    Error writing \\x%s to 0x%08x: %s" % (bin2hex(fillbyte), addy, str(e)))
+					dbg.log("    Error writing \\x%s to %s: %s" % (bin2hex(fillbyte), PTR_PRINT % addy, str(e)))
 					pass
 				loc += 1
-			dbg.log("[+] Wrote %d times \\x%s to chunk at 0x%08x" % (written,bin2hex(fillbyte),addy))
+			dbg.log("[+] Wrote %d times \\x%s to chunk at %s" % (written,bin2hex(fillbyte),PTR_PRINT % addy))
 	return
 
 
