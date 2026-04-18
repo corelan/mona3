@@ -2210,9 +2210,8 @@ class MnTEB:
 		self.Id         = _read_dword(teb_addr + self._offsets["ThreadId"][idx])
 
 		# SEH chain: list of [record_addr, handler_addr]; x64 has no chain
-		self.SEHChain = []
-		self.SEHCount = 0
 		if arch == 32:
+			self.SEHChain = []
 			nextrecord = _read_ptr(teb_addr + self._offsets["ExceptionList"][idx])
 			while nextrecord != 0xFFFFFFFF and nextrecord != 0:
 				try:
@@ -6425,8 +6424,10 @@ class MnProc:
 		if threads:
 			for tid, mteb in threads.items():
 				teb_addr = mteb.TEBAddress
-				seh_count = str(mteb.SEHCount)
-				regions.append((teb_addr, teb_addr + teb_size, "TEB", "TEB (Thread ID: %s | SEH Count: %s)" % (str(mteb.Id), seh_count), static))
+				desc = "TEB (Thread ID: %s)" % str(mteb.Id)
+				if arch == 32:
+					desc = "TEB (Thread ID: %s | SEH Count: %s)" % (str(mteb.Id), str(mteb.SEHCount))
+				regions.append((teb_addr, teb_addr + teb_size, "TEB", desc, static))
 		elif self.teb is not None:
 			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB", static))
 
