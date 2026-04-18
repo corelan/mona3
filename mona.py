@@ -2211,6 +2211,7 @@ class MnTEB:
 
 		# SEH chain: list of [record_addr, handler_addr]; x64 has no chain
 		self.SEHChain = []
+		self.SEHCount = 0
 		if arch == 32:
 			nextrecord = _read_ptr(teb_addr + self._offsets["ExceptionList"][idx])
 			while nextrecord != 0xFFFFFFFF and nextrecord != 0:
@@ -2221,6 +2222,15 @@ class MnTEB:
 					nextrecord = nseh
 				except Exception:
 					break
+			self.SEHCount = len(self.SEHChain)
+
+	@staticmethod
+	def getByAddress(teb_addr):
+		"""Return the MnTEB with the given TEB address from the MnProc cache, or None."""
+		for tid, mteb in mnproc.getThreads().items():
+			if mteb.TEBAddress == teb_addr:
+				return mteb
+		return None
 
 
 def getModuleObj(modname):
@@ -6396,7 +6406,13 @@ class MnProc:
 				peb_size = self._getImmunityStructSizes()[0]
 			if peb_size == 0:
 				peb_size = archValue(0x480, 0x7C8)
-			regions.append((peb_addr, peb_addr + peb_size, "PEB", "PEB", static))
+			# Get process ID from the first available thread's TEB
+			pid = ""
+			threads = self.getThreads()
+			if threads:
+				first_teb = next(iter(threads.values()))
+				pid = str(first_teb.ProcessId)
+			regions.append((peb_addr, peb_addr + peb_size, "PEB", "PEB (Process ID: %s)" % pid, static))
 		if self.teb is not None:
 			teb_size = 0
 			if __DEBUGGERAPP__ == "WinDBG":
@@ -6405,7 +6421,10 @@ class MnProc:
 				teb_size = self._getImmunityStructSizes()[1]
 			if teb_size == 0:
 				teb_size = archValue(0x1000, 0x1838)
-			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB (current thread)", static))
+			mteb = MnTEB.getByAddress(self.teb)
+			teb_tid = str(mteb.Id) if mteb else ""
+			seh_count = str(mteb.SEHCount) if mteb else "0"
+			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB (Thread ID: %s | SEH Count: %s)" % (teb_tid, seh_count), static))
 
 		# Modules
 		for name, props in self.modules.items():
@@ -6430,7 +6449,7 @@ class MnProc:
 
 		# Stacks
 		for tid, sinfo in self.stacks.items():
-			dispname = "Thread ID: %s | TEB: 0x%s | Size: 0x%s" % (
+			dispname = "Stack (Thread ID: %s | TEB: 0x%s | Size: 0x%s)" % (
 				str(tid), toHex(sinfo["teb"]), toHex(sinfo["size"]))
 			regions.append((sinfo["base"], sinfo["limit"], "Stack", dispname))
 
@@ -6439,8 +6458,8 @@ class MnProc:
 		for heapaddr, htype, info in self.getAllHeapsSorted():
 			idx = info.get("index", "?")
 			heapname = "Heap %s" % idx
-			if heapaddr == self.defaultheap:
-				heapname += " [Default]"
+			if heapaddr == self.peb.ProcessHeap:
+				heapname = "[Default] " + heapname
 			fe_label = ""
 			seg_count = 0
 			va_count = 0
