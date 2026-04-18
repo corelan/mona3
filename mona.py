@@ -6388,6 +6388,7 @@ class MnProc:
 		# PEB / TEB
 		static = __DEBUGGERAPP__ == "Immunity Debugger"
 		if self.peb is not None:
+			peb_addr = self.peb.PEBAddress
 			peb_size = 0
 			if __DEBUGGERAPP__ == "WinDBG":
 				peb_size = dbg.getTypeSize("ntdll!_PEB")
@@ -6395,7 +6396,7 @@ class MnProc:
 				peb_size = self._getImmunityStructSizes()[0]
 			if peb_size == 0:
 				peb_size = archValue(0x480, 0x7C8)
-			regions.append((self.peb, self.peb + peb_size, "PEB", "PEB", static))
+			regions.append((peb_addr, peb_addr + peb_size, "PEB", "PEB", static))
 		if self.teb is not None:
 			teb_size = 0
 			if __DEBUGGERAPP__ == "WinDBG":
