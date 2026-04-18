@@ -2795,6 +2795,8 @@ class MnConfig:
 	Class to perform config file operations
 	"""
 	def __init__(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 	
 		self.configfile = "mona.ini"
 		self.currpath = os.path.dirname(os.path.realpath(self.configfile))
@@ -3052,6 +3054,8 @@ class MnLog:
 	Class to perform logfile operations
 	"""
 	def __init__(self, filename):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
 		
 		self.filename = filename
 		
@@ -3214,6 +3218,9 @@ class MnQueue:
 	Simple queue class
 	"""
 	def __init__(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		self.holder = []
 		
 	def enqueue(self,val):
@@ -4650,6 +4657,9 @@ class MnHeap(object):
 		return "Unknown"
 
 	def __init__(self, address):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		self.heapbase = address
 		self.VirtualAllocdBlocks = {}
 		self.LookAsideList = {}
@@ -5722,6 +5732,9 @@ class MnProc:
 	}
 
 	def __init__(self):
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		# --- process-level caches ---
 		self.CritCache = {}
 		self.vtableCache = {}
@@ -6035,7 +6048,10 @@ class MnPointer:
 	Class to access pointer properties
 	"""
 	def __init__(self,address):
-	
+
+		if DEBUG_MODE:
+			dbgp(get_current_function_name())
+
 		# check that the address is an integer
 		if not type(address) == int and not type(address) == long:
 			raise Exception("address should be an integer or long")
@@ -17330,131 +17346,367 @@ def procPrintHeader(args):
 
 def procUpdate(args):
 	"""
-	Function to update mona and optionally windbglib to the latest version
-	
-	Arguments : none
-	
-	Returns : new version of mona/windbglib (if available)
+	Function to update mona.py and optionally windbglib.py to the latest version.
+	Also downloads releasenotes.txt and prints the section that matches the new version/revision.
+
+	Behavior:
+	- WinDBG  : update mona.py + windbglib.py
+	- Immunity: update mona.py only
+	- In both cases, try to download releasenotes.txt
+
+	If "simul" is present in args, then do a simulation only:
+	- detect whether newer versions exist
+	- print release notes
+	- do NOT overwrite existing .py files
 	"""
 
-	updateproto = "https"
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
 
-	#debugger version	
-	imversion = __IMM__
-	#url
+	import socket
+
+	def _dbg(msg):
+		if DEBUG_MODE:
+			dbgp(msg)
+
+	def _safe_int(v):
+		try:
+			return int(str(v).strip().replace("'", "").replace('"', ""))
+		except:
+			return 0
+
+	def _normalize_version(v):
+		if v is None:
+			return ""
+		v = str(v).strip().replace("'", "").replace('"', "")
+		return v
+
+	def _normalize_name_for_notes(filename):
+		base = os.path.basename(str(filename)).lower().strip()
+		if base.endswith(".py"):
+			base = base[:-3]
+		if base.endswith(".txt"):
+			base = base[:-4]
+		return base
+
+	def _version_tuple(v):
+		v = _normalize_version(v)
+		if v == "":
+			return ()
+		parts = []
+		for p in v.split("."):
+			try:
+				parts.append(int(p))
+			except:
+				parts.append(0)
+		return tuple(parts)
+
+	def _is_newer(cur_ver, cur_rev, new_ver, new_rev):
+		cur_vt = _version_tuple(cur_ver)
+		new_vt = _version_tuple(new_ver)
+		cur_r = _safe_int(cur_rev)
+		new_r = _safe_int(new_rev)
+
+		_dbg("Comparing versions: current=%s.%s new=%s.%s" % (str(cur_ver), str(cur_rev), str(new_ver), str(new_rev)))
+
+		if new_vt > cur_vt:
+			_dbg("New version tuple is higher")
+			return True
+		if new_vt < cur_vt:
+			_dbg("New version tuple is lower")
+			return False
+		if new_r > cur_r:
+			_dbg("Version equal, but revision is higher")
+			return True
+		_dbg("No newer version detected")
+		return False
+
+	def _check_connectivity():
+		targets = [("github.com", 443), ("www.corelan.be", 443)]
+		reachable = False
+		_dbg("[+] Checking internet connectivity")
+		for host, port in targets:
+			s = None
+			try:
+				_dbg("Trying TCP connection to %s:%d" % (host, port))
+				s = socket.create_connection((host, port), 5)
+				_dbg("    OK   %s:%d" % (host, port))
+				reachable = True
+			except Exception as e:
+				_dbg("    FAIL %s:%d" % (host, port))
+				_dbg("Connectivity check failed for %s:%d : %s" % (host, port, str(e)))
+			finally:
+				try:
+					if s:
+						s.close()
+				except:
+					pass
+		return reachable
+
+	def _download_with_fallback(main_url, backup_url, destfile, label):
+		for urltype, url in [("main", main_url), ("backup", backup_url)]:
+			try:
+				_dbg("[+] Downloading %s from %s URL" % (label, urltype))
+				_dbg("Downloading %s from %s" % (label, url))
+				tmp = urllib_urlretrieve(url)
+				srcfile = tmp[0]
+				_dbg("Temporary downloaded file for %s is %s" % (label, srcfile))
+				shutil.copyfile(srcfile, destfile)
+				_dbg("Saved %s to %s" % (label, destfile))
+				return True, url
+			except Exception as e:
+				_dbg("Download failed for %s from %s : %s" % (label, url, str(e)))
+		return False, ""
+
+	def _safe_remove(filename):
+		try:
+			if os.path.isfile(filename):
+				_dbg("Removing temporary file %s" % filename)
+				os.remove(filename)
+		except Exception as e:
+			_dbg("Unable to remove %s : %s" % (filename, str(e)))
+
+	def _read_text_file(filename):
+		try:
+			_dbg("Reading text file %s" % filename)
+			fh = open(filename, "rb")
+			data = fh.read()
+			fh.close()
+			if not isinstance(data, str):
+				data = data.decode("utf-8", "ignore")
+			return data
+		except Exception as e:
+			_dbg("Unable to read %s : %s" % (filename, str(e)))
+			return ""
+
+	def _get_release_notes_for_version(notesfile, filename, version, revision):
+		content = _read_text_file(notesfile)
+		if content == "":
+			_dbg("Release notes file %s is empty or unreadable" % notesfile)
+			return "", ""
+
+		notes_name = _normalize_name_for_notes(filename)
+		target_header = "[%s %s.%s]" % (notes_name, _normalize_version(version), str(_safe_int(revision)))
+		_dbg("Looking for release notes header %s in %s" % (target_header, notesfile))
+
+		lines = content.splitlines()
+		found = False
+		out = []
+
+		for line in lines:
+			stripline = line.strip()
+			if not found:
+				if stripline.lower() == target_header.lower():
+					found = True
+					_dbg("Found matching release notes header %s" % target_header)
+				continue
+			else:
+				if stripline.startswith("[") and stripline.endswith("]"):
+					_dbg("Reached next release notes header while parsing %s" % target_header)
+					break
+				out.append(line.rstrip())
+
+		return target_header, "\n".join(out).strip()
+
+	def _locate_windbglib():
+		_dbg("Trying to locate windbglib.py via sys.path")
+		for ppath in sys.path:
+			try:
+				libfile = os.path.abspath(os.path.join(ppath, "windbglib.py"))
+				_dbg("Checking %s" % libfile)
+				if os.path.isfile(libfile):
+					_dbg("Found windbglib.py at %s" % libfile)
+					return libfile
+			except Exception as e:
+				_dbg("Error while checking sys.path entry %s : %s" % (str(ppath), str(e)))
+		return ""
+
+	def _has_arg(arglist, keyword):
+		try:
+			if isinstance(arglist, dict):
+				for k in arglist:
+					if str(k).lower() == keyword.lower():
+						return True
+					try:
+						if str(arglist[k]).lower() == keyword.lower():
+							return True
+					except:
+						pass
+				return False
+
+			for item in arglist:
+				if str(item).lower() == keyword.lower():
+					return True
+		except Exception as e:
+			_dbg("Unable to inspect args for keyword '%s' : %s" % (keyword, str(e)))
+		return False
+
+	simulate_only = _has_arg(args, "simul")
+	_dbg("simulate_only = %s" % str(simulate_only))
+	if simulate_only:
+		dbg.log("[*] Simulation mode: no files will be overwritten, but version checks and release notes display will be performed.")
+	_dbg("__DEBUGGERAPP__ = %s" % __DEBUGGERAPP__)
+
 	dbg.setStatusBar("Running update process...")
 	dbg.updateLog()
-	updateurl = "https://github.com/corelan/mona3/raw/master/mona.py"
-	
-	currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
-	u = ""
-	try:
-		u = urllib_urlretrieve(updateurl)
-		newversion,newrevision = getVersionInfo(u[0])
-		if newversion != "" and newrevision != "":
-			dbg.log("[+] Version compare :")
-			dbg.log("    Current Version : %s, Current Revision : %s" % (currentversion,currentrevision))
-			dbg.log("    Latest Version : %s, Latest Revision : %s" % (newversion,newrevision))
-		else:
-			dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
-			return
-	except Exception as e:
-		dbg.log("[-] Unable to check latest version (download error). Try again later",highlight=1)
-		dbg.log("    Error: %s" % str(e))
-		return
-	#check versions
-	doupdate = False
-	if newversion != "" and newrevision != "":
-		if currentversion != newversion:
-			doupdate = True
-		else:
-			if int(currentrevision) < int(newrevision):
-				doupdate = True
 
-	# TO REVERT
-	# temporarily disabling updates
-	doupdate = False
-	dbg.log("**** UPDATES DISABLED ****")
-		
-	if doupdate:
-		dbg.log("[+] New version available",highlight=1)
-		dbg.log("    Updating to %s r%s" % (newversion,newrevision),highlight=1)
-		try:
-			shutil.copyfile(u[0],inspect.stack()[0][1])
-			dbg.log("    Done")					
-		except Exception as e:
-			dbg.log("    ** Unable to update mona.py",highlight=1)
-			dbg.log("    ** %s" % str(e))
-		currentversion,currentrevision = getVersionInfo(inspect.stack()[0][1])
-		dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
-	else:
-		dbg.log("[+] You are running the latest version")
+	if not _check_connectivity():
+		dbg.log("[-] No internet connectivity detected. Update aborted.", highlight=1)
+		return "Done"
 
-	# update windbglib if needed
+	mona_path = os.path.abspath(inspect.stack()[0][1])
+	mona_dir = os.path.dirname(mona_path)
+
+	_dbg("Resolved mona.py path to %s" % mona_path)
+	_dbg("Resolved mona.py directory to %s" % mona_dir)
+
+	_dbg("Current mona.py path : %s" % mona_path)
+
+	files_to_process = [
+		{
+			"name": "mona.py",
+			"current": mona_path,
+			"download": mona_path + ".download",
+			"main_url": "https://github.com/corelan/mona3/raw/master/mona.py",
+			"backup_url": "https://www.corelan.be/mona3/mona.py"
+		}
+	]
+
 	if __DEBUGGERAPP__ == "WinDBG":
-		dbg.log("[+] Locating windbglib path")
-		paths = sys.path
-		filefound = False
-		libfile = ""
-		for ppath in paths:
-			libfile = ppath + "\\windbglib.py"
-			if os.path.isfile(libfile):
-				filefound=True
-				break
-		if not filefound:
-			dbg.log("    ** Unable to find windbglib.py ! **")
+		windbg_path = _locate_windbglib()
+		if windbg_path == "":
+			_dbg("[!] Unable to locate windbglib.py. Will update mona.py only.")
 		else:
-			dbg.log("[+] Checking if %s needs an update..." % libfile)
-			updateurl = "https://github.com/corelan/mona3/raw/master/windbglib.py"
+			_dbg("[+] Current windbglib.py path : %s" % windbg_path)
+			files_to_process.append(
+				{
+					"name": "windbglib.py",
+					"current": windbg_path,
+					"download": windbg_path + ".download",
+					"main_url": "https://github.com/corelan/mona3/raw/master/windbglib.py",
+					"backup_url": "https://www.corelan.be/mona3/windbglib.py"
+				}
+			)
+	else:
+		_dbg("Debugger app is not WinDBG, so only mona.py will be processed")
 
-			currentversion,currentrevision = getVersionInfo(libfile)
-			u = ""
-			try:
-				u = urllib_urlretrieve(updateurl)
-				newversion,newrevision = getVersionInfo(u[0])
-				if newversion != "" and newrevision != "":
-					dbg.log("[+] Version compare :")
-					dbg.log("    Current Version : %s, Current Revision : %s" % (currentversion,currentrevision))
-					dbg.log("    Latest Version : %s, Latest Revision : %s" % (newversion,newrevision))
-				else:
-					dbg.log("[-] Unable to check latest version (corrupted file ?), try again later",highlight=1)
-					return
-			except Exception as e:
-				dbg.log("[-] Unable to check latest version (download error). Try again later",highlight=1)
-				dbg.log("    %s" % str(e))
-				return
+	releasenotes_path = os.path.abspath(os.path.join(mona_dir, "releasenotes.txt"))
+	releasenotes_main = "https://github.com/corelan/mona3/raw/master/releasenotes.txt"
+	releasenotes_backup = "https://www.corelan.be/mona3/releasenotes.txt"
 
-			#check versions
-			doupdate = False
-			if newversion != "" and newrevision != "":
-				if currentversion != newversion:
-					doupdate = True
-				else:
-					if int(currentrevision) < int(newrevision):
-						doupdate = True
-			
-			# TO REVERT
-			# temporarily disabling updates
-			doupdate = False
-			dbg.log("**** UPDATES DISABLED ****")
+	_dbg("Release notes will be stored at %s" % releasenotes_path)
 
-			if doupdate:
-				dbg.log("[+] New version available",highlight=1)
-				dbg.log("    Updating to %s r%s" % (newversion,newrevision),highlight=1) 
-				try:
-					shutil.copyfile(u[0],libfile)
-					dbg.log("    Done")					
-				except Exception as e:
-					dbg.log("    ** Unable to update windbglib.py",highlight=1)
-					dbg.log("    ** %s" % str(e))
-				currentversion,currentrevision = getVersionInfo(libfile)
-				dbg.log("[+] Current version : %s r%s" % (currentversion,currentrevision))
+	downloaded_release_notes = False
+	ok_notes, notes_url = _download_with_fallback(
+		releasenotes_main,
+		releasenotes_backup,
+		releasenotes_path,
+		"releasenotes.txt"
+	)
+	if ok_notes:
+		downloaded_release_notes = True
+		_dbg("Release notes downloaded successfully from %s" % notes_url)
+	else:
+		_dbg("Release notes could not be downloaded from main or backup URL")
+
+	updated_versions = []
+	seen_release_headers = {}
+
+	for entry in files_to_process:
+		name = entry["name"]
+		current_file = entry["current"]
+		download_file = entry["download"]
+		main_url = entry["main_url"]
+		backup_url = entry["backup_url"]
+
+		dbg.log("[+] Processing %s" % name)
+		_dbg("Current file   : %s" % current_file)
+		_dbg("Download target: %s" % download_file)
+
+		if not os.path.isfile(current_file):
+			_dbg("    [!] Current file not found: %s" % current_file)
+			_dbg("Skipping %s because current file does not exist" % name)
+			continue
+
+		current_version, current_revision = getVersionInfo(current_file)
+		current_version = _normalize_version(current_version)
+		current_revision = str(_safe_int(current_revision))
+
+		_dbg("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
+
+		if current_version == "" and current_revision == "0":
+			_dbg("    [!] Unable to read current version info from %s" % current_file)
+			_dbg("Skipping %s because current version info could not be read" % name)
+			continue
+
+		ok_download, used_url = _download_with_fallback(main_url, backup_url, download_file, name)
+		if not ok_download:
+			dbg.log("    [-] Unable to download %s from main or backup URL" % name, highlight=1)
+			_dbg("Skipping %s because download failed" % name)
+			_safe_remove(download_file)
+			continue
+
+		new_version, new_revision = getVersionInfo(download_file)
+		new_version = _normalize_version(new_version)
+		new_revision = str(_safe_int(new_revision))
+
+		_dbg("Downloaded version info for %s: version=%s revision=%s" % (name, new_version, new_revision))
+
+		if new_version == "" and new_revision == "0":
+			dbg.log("    [-] Downloaded %s but could not read version/revision information" % name, highlight=1)
+			_dbg("Downloaded file for %s does not appear to contain valid version info" % name)
+			_safe_remove(download_file)
+			continue
+
+		dbg.log("    Current : version %s / revision %s" % (current_version, current_revision))
+		dbg.log("    Download: version %s / revision %s" % (new_version, new_revision))
+		_dbg("%s downloaded from %s" % (name, used_url))
+
+		if _is_newer(current_version, current_revision, new_version, new_revision):
+			dbg.log("    [+] Newer version found for %s" % name, highlight=1)
+
+			if simulate_only:
+				dbg.log("    [*] Simulation mode enabled - not updating %s" % name)
+				_dbg("Simulation mode active, not copying %s on top of current file" % name)
+				updated_versions.append((name, new_version, new_revision))
 			else:
-				dbg.log("[+] You are running the latest version")
+				try:
+					_dbg("Copying %s over %s" % (download_file, current_file))
+					shutil.copyfile(download_file, current_file)
+					dbg.log("    [+] Updated %s in place" % name, highlight=1)
+					updated_versions.append((name, new_version, new_revision))
+				except Exception as e:
+					dbg.log("    [-] Unable to update %s" % name, highlight=1)
+					dbg.log("        %s" % str(e))
+					_dbg("Copy failed for %s : %s" % (name, str(e)))
+		else:
+			dbg.log("    [+] You are already running the latest version of %s" % name)
 
-	dbg.setStatusBar("Done.")
-	return
-	
+		_safe_remove(download_file)
+
+	if downloaded_release_notes and len(updated_versions) > 0:
+		dbg.log("[+] Release notes")
+		for fname, ver, rev in updated_versions:
+			header, notes = _get_release_notes_for_version(releasenotes_path, fname, ver, rev)
+			if header in seen_release_headers:
+				_dbg("Skipping duplicate release notes header %s" % header)
+				continue
+			seen_release_headers[header] = True
+
+			if notes != "":
+				dbg.log("    %s" % header, highlight=1)
+				for line in notes.splitlines():
+					dbg.log("    %s" % line)
+			else:
+				_dbg("No release note entry found for %s" % header)
+	elif not downloaded_release_notes:
+		_dbg("Release notes were not downloaded, so nothing will be shown")
+	else:
+		_dbg("No updated versions detected, so no release notes section will be printed")
+
+	return "Done"
+
+
 #----- GetPC -----#
 def procgetPC(args):
 	r32 = ""
@@ -23121,7 +23373,10 @@ Mandatory argument :
 Optional argument:
     -t <type>     : specify type of output. Valid choices are 'ruby' (default) or 'python' """
 	
-	updateUsage = """Update mona to the latest version"""
+	updateUsage = """Update mona to the latest version
+Optional argument:
+     -simul    	  : Check for updates and simulate updating. Will show release notes if available.	
+	"""
 	getpcUsage = """Find getpc routine for specific register
 
 Mandatory argument :
