@@ -15032,11 +15032,15 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 			# get funcs
 			funcs = {}
 			if type == "export":
-				funcs = tmod.getEAT()
+				if not silent:
+					dbg.log("      Step 1: enumerating EAT")	
+				funcs = tmod.getEAT()			
 			else:
+				if not silent:
+					dbg.log("      Step 1: enumerating IAT")
 				funcs = tmod.getIAT()
 			if not silent:
-				dbg.log("      Total nr of %sed functions in %s: %d" % (type, thismodule, len(funcs)))
+				dbg.log("        Total nr of %sed functions in %s: %d" % (type, thismodule, len(funcs)))
 			for func in funcs:
 				if meetsCriteria(MnPointer(func), criteria):
 					funcname = funcs[func].lower()
@@ -15071,16 +15075,21 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 							if ptr > 0:
 								if not ptr in bpfuncs:
 									bpfuncs[ptr] = funcs[func]
+			if not silent:
+				dbg.log("        Number of functions matching criteria so far %d" % (len(bpfuncs)))
 			if __DEBUGGERAPP__ == "WinDBG":
 				# let's do a few searches
 				for crit in namecrit:
 					if crit.find("*") == -1:
 						crit = "*" + crit + "*"
-					dbg.log("      Performing WinDBG Symbol lookup. This may cause symbols to be downloaded first")
+					if not silent:
+						dbg.log("      Step 2: Performing WinDBG Symbol lookup. (This may cause symbols to be downloaded first)")
 					if DEBUG_MODE:
 						dbg.nativeCommand("!sym noisy")
 					modsearch = "x %s!%s" % (shortname,crit)
 					output = dbg.nativeCommand(modsearch)
+					if not silent:
+						dbg.log("        Symbol lookup done. Processing results")
 					if DEBUG_MODE:
 						dbg.nativeCommand("!sym quiet")
 					if DEBUG_MODE:
@@ -15103,7 +15112,8 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 										funcname = funcnamesplit[1]
 								if not ptr in bpfuncs:
 									bpfuncs[ptr] = funcname
-
+					if not silent:
+						dbg.log("        Number of functions to break on so far: %d " % len(bpfuncs))
 		if not silent:
 			dbg.log("")
 			dbg.log("[+] Total nr of breakpoints to process : %d" % len(bpfuncs))
