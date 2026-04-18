@@ -3505,7 +3505,7 @@ class Debugger:
 			if dll_base == 0:
 				if DEBUG_MODE:
 					dbgp("Module '%s' not found via PEB walk" % modulename)
-				pykd.dprintln("I was not able to find '%s' via PEB walk" % modulename)
+				#pykd.dprintln("I was not able to find '%s' via PEB walk" % modulename)
 				return None
 
 			thismod = pykd.module(dll_base)

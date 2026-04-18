@@ -635,29 +635,87 @@ def multiSplit(thisarg,delimchars):
 		splitparts.append(thispart)
 	return splitparts
 
+	
 
 def getAddyArg(argaddy):
 	"""
 	Tries to extract an address from a specified argument
 	addresses and values will be considered hex
 	(unless you specify 0n before a value)
-	registers are allowed too
+	registers, module names, module!function names and
+	WinDBG symbols are allowed too
 	"""
-	findaddy = 0
+	findval = 0
 	addyok = True
 	addyparts = []
 	addypartsint = []
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
 	regs = getRegisters()
 
-	if argaddy.lower() in regs:
+	def _resolve_part(part):
+		partclean = str(part).strip()
+		partlower = partclean.lower()
+
+		if partclean == "":
+			return 0, False
+
+		if partlower in regs:
+			return regs[partlower], True
+
+		if partlower == "heap" or partlower == "processheap":
+			return getDefaultProcessHeap(), True
+
+		if partclean.startswith("[") and partclean.endswith("]"):
+			ptraddy, ptraddyok = getAddyArg(partclean[1:-1])
+			if ptraddyok:
+				try:
+					ptrval = struct.unpack(PTR_FMT,dbg.readMemory(ptraddy,PTR_SIZE))[0]
+					return ptrval, True
+				except:
+					return 0, False
+			return 0, False
+
+		if partlower.startswith("0n"):
+			try:
+				return int(partlower.replace("0n","",1)), True
+			except:
+				pass
+		else:
+			hexpart = partlower.replace("0x","",1)
+			if isAddress(hexpart):
+				return hexStrToInt(hexpart), True
+
+		m = getModuleObj(partclean)
+		if not m == None:
+			return m.moduleBase, True
+
+		if "!" in partclean:
+			modparts = partclean.split("!",1)
+			if len(modparts) > 1:
+				funcaddy = getFunctionAddress(modparts[0],modparts[1])
+				if funcaddy > 0:
+					return funcaddy, True
+
+		if __DEBUGGERAPP__ == "WinDBG":
+			try:
+				symboladdy = dbg.resolveSymbol(partclean)
+				if symboladdy != "":
+					symboladdy = str(symboladdy).strip().replace("`","").replace("0x","",1)
+					if isAddress(symboladdy):
+						return hexStrToInt(symboladdy), True
+			except:
+				pass
+
+		return 0, False
+
+	if str(argaddy).strip().lower() in regs:
 		if DEBUG_MODE:
-			dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[argaddy.lower()]))
-		return regs[argaddy.lower()], True
+			dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[str(argaddy).strip().lower()]))
+		return regs[str(argaddy).strip().lower()], True
 
 	thispart = ""
-	argaddy = argaddy.replace("`","")
-	for c in str(argaddy):
+	argaddy = str(argaddy).strip().replace("`","")
+	for c in argaddy:
 		if c in delimchars:
 			thispart = thispart.replace(" ","")
 			if thispart != "":
@@ -674,23 +732,14 @@ def getAddyArg(argaddy):
 		cleaned = part
 		if not part in delimchars:
 			for x in delimchars:
-				cleaned = cleaned.replace(x,"")	
-			if cleaned.startswith("[") and cleaned.endswith("]"):
-				partval,partok = getIntForPart(cleaned.replace("[","").replace("]",""))
-				if partok:
-					try:
-						partval = struct.unpack(PTR_FMT,dbg.readMemory(partval,PTR_SIZE))[0]
-					except:
-						partval = 0
-						partok = False
-						break
-			else:	
-				partval,partok = getIntForPart(cleaned)
-				if not partok:
-					break
+				cleaned = cleaned.replace(x,"")
+			partval,partok = _resolve_part(cleaned)
+			if not partok:
+				break
 			addypartsint.append(partval)
 		else:
 			addypartsint.append(part)
+			partok = True
 		if not partok:
 			break
 
@@ -16824,64 +16873,22 @@ def procOffset(args):
 		
 # ----- bp: Set a breakpoint on read/write/exe access ----- #
 def procBp(args):
-	isReg_a = False
-	regs = getRegisters()
 	thistype = ""
 	
 	if "a" not in args:
 		dbg.log("Missing mandatory argument -a address", highlight=1)
-		dbg.log("The address can be an absolute address, a register, or a modulename!functionname")
+		dbg.log("The address can be an absolute address, a register, a module, a module!function, a symbol, or an expression with offsets")
 		return
-	a = str(args["a"])
-
-	for reg in regs:
-		if reg.lower() == a.lower():
-			a=toHex(regs[reg])					
-			isReg_a = True
-			break
-	a = a.upper().replace("0X","").replace("`","").lower()
-	
-	if not isAddress(str(a)):
-		# maybe it's a modulename!function
-		if str(a).find("!") > -1:
-			modparts = str(a).split("!")
-			modname = modparts[0]
-			if not modname.lower().endswith(".dll"):
-				modname += ".dll" 
-			themodule = MnModule(modname)											
-			if themodule != None and len(modparts) > 1:
-				eatlist = themodule.getEAT()
-				funcname = modparts[1].lower()
-				addyfound = False
-				for eatentry in eatlist:
-					if eatlist[eatentry].lower() == funcname:
-						a = "%08x" % (eatentry)
-						addyfound = True
-						break
-				if not addyfound:
-					# maybe it's just a symbol, try to resolve
-					if __DEBUGGERAPP__ == "WinDBG":
-						symboladdress = dbg.resolveSymbol(a)
-						if symboladdress != "" :
-							a = symboladdress
-							addyfound = True
-				if not addyfound:
-					dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
-					return								
-			else:
-				dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
-				return						
-		else:
-			dbg.log("Please specify a valid address/register/modulename!functionname (-a)", highlight=1)
-			return
-	
+	a, addyok = getAddyArg(str(args["a"]))
+	if not addyok:
+		dbg.log("Please specify a valid address/register/module/module!function/symbol expression (-a)", highlight=1)
+		return
+		
 	valid_types = ["READ", "WRITE", "EXE", "R", "W", "X"]
 	bpflags = {}
 	bpflags["EXE"] = ["S"]
 	bpflags["READ"] = ["R"]
 	bpflags["WRITE"] = ["W"]
-
-	a = hexStrToInt(a)
 
 	condition = ""
 	extracmd = ""
@@ -23414,7 +23421,7 @@ On Immunity, max 4 hardware breakpoints can be active (DR0-DR3).
 
 Mandatory arguments :
     -a <address> : the address where to set the breakpoint
-                   (absolute address / register / modulename!functionname)
+                   (absolute address / register / module / module!function / symbol / expression with offsets)
 
 Optional arguments :
     -t <type> : type of hardware breakpoint. Can be READ (R), WRITE (W) or EXE (X).
