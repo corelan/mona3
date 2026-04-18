@@ -161,7 +161,6 @@ currentArgs = []
 
 _teb_addr_cache = None
 _peb_addr_cache = None
-_peb_list_cache = None
 MemoryPageACL={}
 
 disasmLowerChecked = False
@@ -1998,17 +1997,194 @@ def get_peb_addr():
 	return int(_peb_addr_cache)
 
 
-def peb_walk():
+class MnPEB:
 	"""
-	Yield (dll_base, base_name, full_path) for every entry in
-	PEB.InLoadOrderModuleList.
-	Results are cached in _peb_list_cache after the first walk.
+	Class representing the Process Environment Block (PEB).
+	Reads fields directly from memory using the cached PEB address.
 	"""
-	global _peb_list_cache
-	if _peb_list_cache is None:
-		_peb_list_cache = list(dbg._peb_walk())
-	for entry in _peb_list_cache:
-		yield entry
+
+	# PEB field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"ImageBaseAddress":     (0x08, 0x10),
+		"Ldr":                  (0x0C, 0x18),
+		"ProcessHeap":          (0x18, 0x30),
+		"NumberOfHeaps":        (0x88, 0xE8),
+		"MaximumNumberOfHeaps": (0x8C, 0xEC),
+		"ProcessHeaps":         (0x90, 0xF0),
+	}
+
+	# PEB_LDR_DATA list head offsets: (x86, x64)
+	_ldr_list_info = {
+		"InLoadOrderModuleList": {
+			"head_offset": (0x0C, 0x10),
+			"link_offset": (0x00, 0x00),
+		},
+		"InMemoryOrderModuleList": {
+			"head_offset": (0x14, 0x20),
+			"link_offset": (0x08, 0x10),
+		},
+		"InInitializationOrderModuleList": {
+			"head_offset": (0x1C, 0x30),
+			"link_offset": (0x10, 0x20),
+		},
+	}
+
+	# LDR_DATA_TABLE_ENTRY field offsets: (x86, x64)
+	_dll_base_off   = (0x18, 0x30)
+	_full_name_off  = (0x24, 0x48)
+	_base_name_off  = (0x2C, 0x58)
+
+	# Class-level cache: list_name -> [(dll_base, base_name, full_path), ...]
+	_raw_cache = {}
+
+	def __init__(self):
+		self.PEBAddress = get_peb_addr()
+		if self.PEBAddress == 0:
+			raise Exception("Unable to determine PEB address")
+
+		ptr_fmt = '<Q' if arch == 64 else '<L'
+		ptr_size = 8 if arch == 64 else 4
+
+		def _read_ptr(addr):
+			return struct.unpack(ptr_fmt, dbg.readMemory(addr, ptr_size))[0]
+
+		def _read_dword(addr):
+			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
+
+		idx = 1 if arch == 64 else 0
+		peb = self.PEBAddress
+
+		self.ImageBaseAddress     = _read_ptr(peb + self._offsets["ImageBaseAddress"][idx])
+		self.Ldr                  = _read_ptr(peb + self._offsets["Ldr"][idx])
+		self.ProcessHeap          = _read_ptr(peb + self._offsets["ProcessHeap"][idx])
+		self.NumberOfHeaps        = _read_dword(peb + self._offsets["NumberOfHeaps"][idx])
+		self.MaximumNumberOfHeaps = _read_dword(peb + self._offsets["MaximumNumberOfHeaps"][idx])
+		self.ProcessHeaps         = _read_ptr(peb + self._offsets["ProcessHeaps"][idx])
+
+		self.LdrList = self.peb_walk()
+
+	@staticmethod
+	def _raw_walk(list_name="InLoadOrderModuleList"):
+		"""
+		Yield (dll_base, base_name, full_path) for every entry in the
+		specified PEB_LDR_DATA linked list.
+
+		No MnPEB instance required.  Results are cached per list_name.
+		"""
+		if list_name in MnPEB._raw_cache:
+			for entry in MnPEB._raw_cache[list_name]:
+				yield entry
+			return
+
+		idx = 1 if arch == 64 else 0
+		ptr_fmt  = '<Q' if arch == 64 else '<L'
+		ptr_size = 8 if arch == 64 else 4
+
+		def _read_ptr(addr):
+			return struct.unpack(ptr_fmt, dbg.readMemory(addr, ptr_size))[0]
+
+		def _wstr(entry, off):
+			length  = struct.unpack('<H', dbg.readMemory(entry + off, 2))[0]
+			buf_ptr = _read_ptr(entry + off + ptr_size + (4 if arch == 64 else 0))
+			if length == 0 or buf_ptr == 0:
+				return ""
+			raw = dbg.readMemory(buf_ptr, length)
+			return raw.decode('utf-16-le', errors='replace')
+
+		peb_addr = get_peb_addr()
+		if peb_addr == 0:
+			return
+		ldr = _read_ptr(peb_addr + MnPEB._offsets["Ldr"][idx])
+
+		info = MnPEB._ldr_list_info[list_name]
+		list_head     = ldr + info["head_offset"][idx]
+		link_off      = info["link_offset"][idx]
+		dll_base_off  = MnPEB._dll_base_off[idx]
+		full_name_off = MnPEB._full_name_off[idx]
+		base_name_off = MnPEB._base_name_off[idx]
+
+		flink = _read_ptr(list_head)
+		results = []
+		while flink != list_head and flink != 0:
+			entry_base = flink - link_off
+			dll_base   = _read_ptr(entry_base + dll_base_off)
+			full_path  = _wstr(entry_base, full_name_off)
+			base_name  = _wstr(entry_base, base_name_off)
+			results.append((dll_base, base_name, full_path))
+			flink = _read_ptr(flink)
+		MnPEB._raw_cache[list_name] = results
+		for entry in results:
+			yield entry
+
+	def peb_walk(self):
+		"""
+		Walk all three PEB_LDR_DATA module lists and return a dict with
+		three keys, each mapping to a list of MnModule objects.
+
+		MnModule objects are created once (during the first list walk) and
+		reused by dll_base for subsequent lists, avoiding redundant PE parsing.
+		"""
+		mod_cache = {}
+
+		result = {}
+		for list_name in self._ldr_list_info:
+			modules = []
+			for dll_base, base_name, _ in MnPEB._raw_walk(list_name):
+				if dll_base in mod_cache:
+					modules.append(mod_cache[dll_base])
+				else:
+					try:
+						imagename = os.path.splitext(base_name)[0]
+						mod = MnModule(imagename)
+						mod_cache[dll_base] = mod
+						modules.append(mod)
+					except Exception:
+						pass
+			result[list_name] = modules
+		return result
+
+	@staticmethod
+	def base_from_peb(modulename):
+		"""
+		Return the load address (DllBase) for *modulename* by walking the PEB.
+		Returns 0 if not found.
+
+		Handles deduplicated keys of the form "<stem>_<hexaddr>" that are
+		generated by getAllModules() when two modules share the same stem
+		(e.g. msedge.exe and msedge.dll both strip to "msedge", so the second
+		becomes "msedge_7ff9af680000").  The hex suffix IS the load address, so
+		we parse it directly instead of doing a failed name-match walk.
+		"""
+		try:
+			name_lower = os.path.splitext(modulename.lower())[0]
+			for dll_base, base_name, _ in MnPEB._raw_walk():
+				if os.path.splitext(base_name.lower())[0] == name_lower:
+					return dll_base
+			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
+			if m:
+				try:
+					candidate = int(m.group(2), 16)
+					if candidate >= 0x10000:
+						return candidate
+				except ValueError:
+					pass
+			return 0
+		except Exception:
+			return 0
+
+	@staticmethod
+	def path_from_peb(mzbase):
+		"""
+		Return the full filesystem path for the module loaded at *mzbase*.
+		Returns "" if not found.
+		"""
+		try:
+			for dll_base, _, full_path in MnPEB._raw_walk():
+				if dll_base == mzbase:
+					return full_path
+			return ""
+		except Exception:
+			return ""
 
 
 def getModuleObj(modname):
@@ -3392,13 +3568,13 @@ class MnModule:
 				modrebased = False
 				modisos = False
 				modiscfg = False
-				mzbase = MnModule._base_from_peb(modulename)
+				mzbase = MnPEB.base_from_peb(modulename)
 				if mzbase == 0:
 					# fall back to pykd if PEB walk fails
 					self.moduleobj = dbg.getModule(modulename)
 					mzbase = self.moduleobj.getBaseAddress() if self.moduleobj else 0
 
-				path = MnModule._path_from_peb(mzbase)
+				path = MnPEB.path_from_peb(mzbase)
 				if not path:
 					if not hasattr(self, 'moduleobj'):
 						self.moduleobj = dbg.getModule(modulename)
@@ -3818,57 +3994,6 @@ class MnModule:
 			return cls(blob)
 
 	# ------------------------------------------------------------------
-
-	@staticmethod
-	def _peb_walk():
-		return peb_walk()
-
-	@staticmethod
-	def _base_from_peb(modulename):
-		"""
-		Return the load address (DllBase) for *modulename* by walking the PEB.
-		Returns 0 if not found.
-
-		Handles deduplicated keys of the form "<stem>_<hexaddr>" that are
-		generated by getAllModules() when two modules share the same stem
-		(e.g. msedge.exe and msedge.dll both strip to "msedge", so the second
-		becomes "msedge_7ff9af680000").  The hex suffix IS the load address, so
-		we parse it directly instead of doing a failed name-match walk.
-		"""
-		try:
-			name_lower = os.path.splitext(modulename.lower())[0]
-			for dll_base, base_name, _ in MnModule._peb_walk():
-				if os.path.splitext(base_name.lower())[0] == name_lower:
-					return dll_base
-			# No direct match — check for deduplicated key: <stem>_<hexaddr>
-			# Real load addresses are always >= 0x10000 (64 KB allocation minimum).
-			# Version suffixes like _2, _26, _14 parse to tiny values and are ignored.
-			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
-			if m:
-				try:
-					candidate = int(m.group(2), 16)
-					if candidate >= 0x10000:
-						return candidate
-				except ValueError:
-					pass
-			return 0
-		except Exception:
-			return 0
-
-	@staticmethod
-	def _path_from_peb(mzbase):
-		"""
-		Return the full filesystem path for the module loaded at *mzbase*.
-		Returns "" if not found.
-		"""
-		try:
-			for dll_base, _, full_path in MnModule._peb_walk():
-				if dll_base == mzbase:
-					return full_path
-			return ""
-		except Exception:
-			return ""
-
 
 	def __str__(self):
 		#return general info about the module
@@ -6001,7 +6126,7 @@ class MnProc:
 		self.g_modulesOrder = None
 
 		# --- populated by populate() ---
-		self.peb = None
+		self.peb = MnPEB()
 		self.teb = None
 		self.modules = {}      # {name: {"base","top","size",...}} from g_modules
 		self.stacks = {}       # {tid: [base, top]}
