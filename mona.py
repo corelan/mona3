@@ -6430,9 +6430,8 @@ class MnProc:
 
 		# Stacks
 		for tid, sinfo in self.stacks.items():
-			dispname = "Thread %s (TEB: 0x%s, Base: 0x%s, Limit: 0x%s, Size: 0x%s)" % (
-				str(tid), toHex(sinfo["teb"]), toHex(sinfo["base"]),
-				toHex(sinfo["limit"]), toHex(sinfo["size"]))
+			dispname = "Thread ID: %s | TEB: 0x%s | Size: 0x%s" % (
+				str(tid), toHex(sinfo["teb"]), toHex(sinfo["size"]))
 			regions.append((sinfo["base"], sinfo["limit"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
@@ -6465,7 +6464,7 @@ class MnProc:
 					if "total_chunks" in seg:
 						chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
 							seg["total_chunks"], seg["busy_chunks"], seg["free_chunks"], seg["max_free"])
-					desc = "%s ( Heap: %s | FLink: %s | BLink: %s%s )" % (segname, heapname, flink, blink, chunk_info)
+					desc = "%s (Heap: %s | FLink: %s | BLink: %s%s)" % (segname, heapname, flink, blink, chunk_info)
 					regions.append((seg["base"], seg["end"], "Heap Segment", desc))
 
 					# Individual chunks within this segment
@@ -6478,7 +6477,7 @@ class MnProc:
 						for ci, (caddr, csize, cflag, cstate) in enumerate(all_seg_chunks):
 							cend = caddr + csize
 							chunkname = "Chunk%04d-%03d-%02d" % (ci, i, hidx)
-							cdesc = "%s ( Heap: %s | %s | Size: 0x%x | Flag: 0x%02x [%s] )" % (
+							cdesc = "%s (Heap: %s | %s | Size: 0x%x | Flag: 0x%02x [%s])" % (
 								chunkname, heapname, segname, csize, cflag, cstate)
 							regions.append((caddr, cend, "Heap Chunk", cdesc))
 
@@ -6488,7 +6487,7 @@ class MnProc:
 					vaend = vaaddr + va["commit_size"]
 					flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
 					blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
-					desc = "VirtualAllocdBlock%02d-%02d ( Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x )" % (hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
+					desc = "VirtualAllocdBlock%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
 					regions.append((vaaddr, vaend, "Heap VA Block", desc))
 
 		regions.sort(key=lambda x: x[0])
@@ -19169,11 +19168,10 @@ def procStacks(args):
 		for threadid in stacks:
 			s = stacks[threadid]
 			if isinstance(s, dict):
-				dbg.log("Thread %s : TEB: 0x%s, Base: 0x%s, Limit: 0x%s, Size: 0x%s" % (
-					str(threadid), toHex(s["teb"]), toHex(s["base"]),
-					toHex(s["limit"]), toHex(s["size"])))
+				dbg.log("Thread ID: %s | TEB: 0x%s | Size: 0x%s" % (
+					str(threadid), toHex(s["teb"]), toHex(s["size"])))
 			else:
-				dbg.log("Thread %s : Stack : 0x%s - 0x%s (size : 0x%s)" % (str(threadid),toHex(s[0]),toHex(s[1]),toHex(s[1]-s[0])))
+				dbg.log("Thread ID: %s | Size: 0x%s" % (str(threadid), toHex(s[1]-s[0])))
 	else:
 		dbg.log("No threads/stacks found !",highlight=1)
 	return
