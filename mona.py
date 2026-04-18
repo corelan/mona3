@@ -2790,215 +2790,241 @@ class MnConditionalHook(LogBpHook):
 #---------------------------------------#
 #   Class to access config file         #
 #---------------------------------------#
+
 class MnConfig:
 	"""
 	Class to perform config file operations
 	"""
 	def __init__(self):
+		global configwarningshown
+
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
-	
+
 		self.configfile = "mona.ini"
-		self.currpath = os.path.dirname(os.path.realpath(self.configfile))
-		# first check if we will be saving the file into Immunity folder
+
+		# Folder where mona.py resides
+		try:
+			if "__file__" in globals():
+				self.currpath = os.path.dirname(os.path.abspath(__file__))
+			else:
+				self.currpath = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+		except:
+			self.currpath = os.getcwd()
+
+		self.fullpath = os.path.join(self.currpath, self.configfile)
+
+		# Legacy/current-working-folder location
+		self.legacyfullpath = os.path.join(os.getcwd(), self.configfile)
+
+		# Migrate old mona.ini from current working folder to mona.py folder
+		# only if target does not exist yet
+		try:
+			if (not os.path.exists(self.fullpath)) and os.path.exists(self.legacyfullpath):
+				# avoid trying to move onto itself
+				if os.path.abspath(self.fullpath).lower() != os.path.abspath(self.legacyfullpath).lower():
+					shutil.move(self.legacyfullpath, self.fullpath)
+					dbg.log("[+] Migrated mona.ini from %s to %s" % (self.legacyfullpath, self.fullpath))
+		except Exception as e:
+			dbg.log(" ** Warning: unable to migrate mona.ini from %s to %s : %s" % (self.legacyfullpath, self.fullpath, str(e)), highlight=1)
+
+		if DEBUG_MODE:
+			dbgp("MnConfig using config file: %s" % self.fullpath)
+
 		if __DEBUGGERAPP__ == "Immunity Debugger":
-			if not os.path.exists(os.path.join(self.currpath,"immunitydebugger.exe")):
+			try:
+				immunity_path = dbg.getImmunityPath()
+				expected_path = os.path.join(immunity_path, "PyCommands")
+			except:
+				expected_path = None
+
+			# Only warn if we know the expected path and we're not using it
+			if expected_path and os.path.abspath(self.currpath).lower() != os.path.abspath(expected_path).lower():
 				if not configwarningshown:
-					dbg.log(" ** Warning: using mona.ini file from %s" % self.currpath, highlight=True)
+					dbg.log(" ** Warning: mona.ini is expected in %s but is currently in %s" % (expected_path, self.currpath), highlight=True)
 					configwarningshown = True
-	
+
+
 	def getFileName(self):
-		return os.path.join(self.currpath, self.configfile)
+		return self.fullpath
 
 	def list(self):
+		global configFileCache
+
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
-		# while listing, populate configFileCache at the same time
-		# clear cache first
+
 		configFileCache = {}
 		headers = ["Parameter", "Value"]
 		types   = ["string", "string"]
 
-		if os.path.exists(self.configfile):
+		if os.path.exists(self.fullpath):
 			try:
-				configfileobj = open(self.configfile,"rb")
+				configfileobj = open(self.fullpath, "rb")
 				content = configfileobj.readlines()
 				configfileobj.close()
+
 				if DEBUG_MODE:
 					dbgp("    Reading config content line by line")
+
 				for thisLine in content:
 					thisLine = thisLine.decode("latin-1").strip()
 					if DEBUG_MODE:
 						dbgp("    Line: %s" % thisLine)
-					if not thisLine.startswith("#"):
 
-						thisparam, thisvalue = thisLine.split('=', 1)
-						# strip spaces around both
+					if thisLine and not thisLine.startswith("#") and "=" in thisLine:
+						thisparam, thisvalue = thisLine.split("=", 1)
 						thisparam = thisparam.strip().lower()
-						thisvalue = thisvalue.strip().lower().replace("\n","").replace("\r","")
+						thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
 						configFileCache[thisparam] = thisvalue
-						
+
 						if DEBUG_MODE:
 							dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
 
-				print_dict_table(configFileCache, headers, types, padding = "      ", itemsequence = [])
-	
+				print_dict_table(configFileCache, headers, types, padding="      ", itemsequence=[])
+
 			except Exception as e:
 				if DEBUG_MODE:
-					dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
-				toreturn=""
+					dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
 
-
-	def get(self,parameter):
+	def get(self, parameter):
 		"""
 		Retrieves the contents of a given parameter from the config file
 		or from memory if the config file has been read already
 		(configFileCache)
+
 		Arguments:
-		parameter - the name of the parameter 
+		parameter - the name of the parameter
 
 		Return:
 		A string, containing the contents of that parameter
-		"""	
-		#read config file
-		#format :  parameter=value
+		"""
+		global configFileCache
+
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
 		toreturn = ""
-		curparam=[]
-		#first check if parameter already exists in global cache
-		#if DEBUG_MODE:
-		#	dbgp("Check if parameter %s is in configCache %s" % (parameter, configFileCache))
+		paramkey = parameter.strip().lower()
 
-		# if it's not, and configFileCache is not empty, don't read the file.
+		if paramkey in configFileCache:
+			return configFileCache[paramkey]
 
-		if parameter.strip().lower() in configFileCache:
-			toreturn = configFileCache[parameter.strip().lower()]
-			#if DEBUG_MODE:
-			#	dbgp("    Yes: Result: %s" % toreturn)			
-			#dbg.log("Found parameter %s in cache: %s" % (parameter, toreturn))
-		else:
-			#if DEBUG_MODE:
-			#	dbgp("    Not in cache.")
-			if len(configFileCache) == 0:
-				if os.path.exists(self.configfile):
-					try:
-						configfileobj = open(self.configfile,"rb")
-						content = configfileobj.readlines()
-						configfileobj.close()
-						if DEBUG_MODE:
-							dbgp("    Reading config content line by line")
-						for thisLine in content:
-							thisLine = thisLine.decode("latin-1").strip()
-							if DEBUG_MODE:
-								dbgp("    Line: %s" % thisLine)
-							if not thisLine.startswith("#"):
+		if len(configFileCache) == 0:
+			if os.path.exists(self.fullpath):
+				try:
+					configfileobj = open(self.fullpath, "rb")
+					content = configfileobj.readlines()
+					configfileobj.close()
 
-								thisparam, thisvalue = thisLine.split('=', 1)
-								# strip spaces around both
-								thisparam = thisparam.strip().lower()
-								thisvalue = thisvalue.strip().lower().replace("\n","").replace("\r","")
-
-								if DEBUG_MODE:
-									dbgp("          Found parameter: %s" % thisparam)
-									dbgp("          Looking for parameter: %s" % parameter.strip().lower())
-
-								if not thisparam in configFileCache:
-									configFileCache[thisparam] = thisvalue
-									if DEBUG_MODE:
-										dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
-
-								if thisparam == parameter.strip().lower():
-									#get value
-									if DEBUG_MODE:
-										dbgp("          Parameter found!")
-									toreturn = thisvalue
-								else:
-									if DEBUG_MODE:
-										dbgp("          Skip, not the right parameter")
-							
-					except Exception as e:
-						if DEBUG_MODE:
-							dbgp("Error processing config file %s: %s" % (self.configfile, str(e)))
-						toreturn=""
-				else:
 					if DEBUG_MODE:
-						dbgp("Config file %s does not seem to exist" % self.configfile)
-	
+						dbgp("    Reading config content line by line")
+
+					for thisLine in content:
+						thisLine = thisLine.decode("latin-1").strip()
+
+						if DEBUG_MODE:
+							dbgp("    Line: %s" % thisLine)
+
+						if thisLine and not thisLine.startswith("#") and "=" in thisLine:
+							thisparam, thisvalue = thisLine.split("=", 1)
+							thisparam = thisparam.strip().lower()
+							thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
+
+							if thisparam not in configFileCache:
+								configFileCache[thisparam] = thisvalue
+
+							if thisparam == paramkey:
+								toreturn = thisvalue
+
+				except Exception as e:
+					if DEBUG_MODE:
+						dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
+					toreturn = ""
+			else:
+				if DEBUG_MODE:
+					dbgp("Config file %s does not seem to exist" % self.fullpath)
+
 		return toreturn
-	
-	def set(self,parameter,paramvalue):
+
+	def set(self, parameter, paramvalue):
 		"""
 		Sets/Overwrites the contents of a given parameter in the config file
 
 		Arguments:
-		parameter - the name of the parameter 
+		parameter - the name of the parameter
 		paramvalue - the new value of the parameter
 
 		Return:
 		nothing
 		"""
+		global configFileCache
+
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
+		paramkey = parameter.strip().lower()
+		paramvalue = str(paramvalue).strip()
+
 		if len(configFileCache) > 0:
-			configFileCache[parameter.strip().lower()] = paramvalue
-		if os.path.exists(self.configfile):
-			paramvalue.strip()
+			configFileCache[paramkey] = paramvalue
+
+		if os.path.exists(self.fullpath):
 			if DEBUG_MODE:
-				dbgp("Editing existing config file %s" % self.configfile)
-				dbgp("Setting parameter %s to %s" % (parameter, paramvalue))			
-			#modify file
+				dbgp("Editing existing config file %s" % self.fullpath)
+				dbgp("Setting parameter %s to %s" % (parameter, paramvalue))
+
 			try:
-				configfileobj = open(self.configfile,"r")
+				configfileobj = open(self.fullpath, "r")
 				content = configfileobj.readlines()
 				configfileobj.close()
+
 				newcontent = []
 				paramfound = False
+
 				for thisLine in content:
-					thisLine = thisLine.replace('\n','').replace('\r','')
-					if not thisLine[0] == "#":
-						currparam = thisLine.split('=')
-						if currparam[0].strip().lower() == parameter.strip().lower():
-							newcontent.append(parameter+"="+paramvalue+"\n")
+					thisLine = thisLine.replace("\n", "").replace("\r", "")
+					if thisLine and not thisLine.startswith("#"):
+						currparam = thisLine.split("=", 1)
+						if currparam[0].strip().lower() == paramkey:
+							newcontent.append(parameter + "=" + paramvalue + "\n")
 							paramfound = True
 						else:
-							newcontent.append(thisLine+"\n")
+							newcontent.append(thisLine + "\n")
 					else:
-						newcontent.append(thisLine+"\n")
+						newcontent.append(thisLine + "\n")
+
 				if not paramfound:
-					newcontent.append(parameter+"="+paramvalue+"\n")
-				#save new config file (rewrite)
+					newcontent.append(parameter + "=" + paramvalue + "\n")
+
 				dbg.log("[+] Saving config file, modified parameter %s" % parameter)
-				FILE=open(self.configfile,"w")
+				FILE = open(self.fullpath, "w")
 				FILE.writelines(newcontent)
 				FILE.close()
 				dbg.log("    mona.ini saved under %s" % self.currpath)
 			except:
-				dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
+				dbg.log("Error writing config file : %s : %s" % (sys.exc_type, sys.exc_value), highlight=1)
 				return ""
 		else:
-			#create new file
 			try:
 				dbg.log("[+] Creating config file, setting parameter %s" % parameter)
-				paramvalue.strip()
-				if DEBUG_MODE:
-					dbgp("Creating config file %s" % self.configfile)
-					dbgp("Setting parameter %s to %s" % (parameter, paramvalue))
-				FILE=open(self.configfile,"w")
+
+				FILE = open(self.fullpath, "w")
 				FILE.write("# -----------------------------------------------#\n")
-				FILE.write("# mona.py configuration file                    #\n")
-				FILE.write("# Corelan Consulting bv - https://www.corelan.be          #\n") 
+				FILE.write("# mona.py configuration file                      #\n")
+				FILE.write("# Corelan Consulting bv - https://www.corelan.be #\n")
 				FILE.write("# -----------------------------------------------#\n")
-				FILE.write(parameter+"="+paramvalue+"\n")
+				FILE.write(parameter + "=" + paramvalue + "\n")
 				FILE.close()
+
+				dbg.log("    mona.ini saved under %s" % self.currpath)
 			except:
 				dbg.log(" ** Error writing config file", highlight=1)
 				return ""
+
 		return ""
 
-	def clear(self,parameter):
+	def clear(self, parameter):
 		"""
 		Removes/Clears a parameter from the config file
 
@@ -3008,43 +3034,47 @@ class MnConfig:
 		Return:
 		nothing
 		"""
+		global configFileCache
+
 		if DEBUG_MODE:
 			dbgp(get_current_function_name())
 
 		paramdel = parameter.lower().strip()
 		if paramdel in configFileCache:
-			del configFileCache[paramdel] 
+			del configFileCache[paramdel]
 
-		if os.path.exists(self.configfile):
+		if os.path.exists(self.fullpath):
 			if DEBUG_MODE:
-				dbgp("Editing existing config file %s" % self.configfile)
-				dbgp("Removing / clearing parameter %s " % (parameter))			
-			#modify file
+				dbgp("Editing existing config file %s" % self.fullpath)
+				dbgp("Removing / clearing parameter %s " % parameter)
+
 			try:
-				configfileobj = open(self.configfile,"r")
+				configfileobj = open(self.fullpath, "r")
 				content = configfileobj.readlines()
 				configfileobj.close()
+
 				newcontent = []
-				paramfound = False
 				for thisLine in content:
-					thisLine = thisLine.replace('\n','').replace('\r','')
-					if not thisLine[0] == "#":
-						currparam = thisLine.split('=')
-						if currparam[0].strip().lower() != parameter.strip().lower():
-							newcontent.append(thisLine+"\n")
+					thisLine = thisLine.replace("\n", "").replace("\r", "")
+					if thisLine and not thisLine.startswith("#"):
+						currparam = thisLine.split("=", 1)
+						if currparam[0].strip().lower() != paramdel:
+							newcontent.append(thisLine + "\n")
 					else:
-						newcontent.append(thisLine+"\n")
-				#save new config file (rewrite)
+						newcontent.append(thisLine + "\n")
+
 				dbg.log("[+] Saving config file, removed parameter %s" % parameter)
-				FILE=open(self.configfile,"w")
+				FILE = open(self.fullpath, "w")
 				FILE.writelines(newcontent)
 				FILE.close()
 				dbg.log("    mona.ini saved under %s" % self.currpath)
 			except:
-				dbg.log("Error writing config file : %s : %s" % (sys.exc_type,sys.exc_value),highlight=1)
+				dbg.log("Error writing config file : %s : %s" % (sys.exc_type, sys.exc_value), highlight=1)
 				return ""
+
 		return ""
-	
+
+
 	
 #---------------------------------------#
 #   Class to log entries to file        #
