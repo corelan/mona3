@@ -154,6 +154,8 @@ PTR_SIZE_DIRECTIVE = "dword ptr" if arch == 32 else "qword ptr"
 PTR_SIZE = 4 if arch == 32 else 8
 PTR_FMT = '<L' if arch == 32 else '<Q'
 PTR_PRINT = "0x%08x" if arch == 32 else "0x%016x"
+PTR_PRINT_ADDRESSONLY = "%08x" if arch == 32 else "%016x"
+
 _teb_addr_cache = None
 _peb_addr_cache = None
 _peb_list_cache = None
@@ -4295,8 +4297,10 @@ class MnModule:
 									eatAddress = self.moduleBase + func_rva
 									eatlist[eatAddress] = eatName
 
-									if DEBUG_MODE:
-										dbgp("EAT[0x%x] = %s (ordinal index %d)" % (eatAddress, eatName, ordinal_index))
+									#if DEBUG_MODE:
+									#	dbgp("EAT[0x%x] = %s (ordinal index %d)" % (eatAddress, eatName, ordinal_index))
+							if DEBUG_MODE:
+								dbgp("EAT List has %d elements so far" % len(eatlist))
 
 				self.EAT = eatlist
 			except Exception as e:
@@ -6078,9 +6082,6 @@ class MnPointer:
 	Class to access pointer properties
 	"""
 	def __init__(self,address):
-
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
 
 		# check that the address is an integer
 		if not type(address) == int and not type(address) == long:
@@ -14996,7 +14997,7 @@ def args2criteria(args,modulecriteria,criteria):
 				
 	
 #manage breakpoint on selected exported/imported functions from selected modules
-def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"):	
+def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="export",extracmd=""):	
 	"""
 	Sets a breakpoint on selected exported/imported functions from selected modules
 	
@@ -15012,26 +15013,34 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
 	
-	type = type.lower()
+	query_type = query_type.lower()
+	if query_type == "export" or query_type == "eat":
+		query_type = "export"
+	else:
+		query_type = "import"
+
 	
 	namecrit = funcfilter.strip('"').strip("'").split(",")
 	
 	if mode == "add" or mode == "del" or mode == "list":
 		if not silent:
-			dbg.log("[+] Enumerating %sed functions" % type)
+			dbg.log("[+] Enumerating %sed functions" % query_type)
 		modulestosearch = getModulesToQuery(modulecriteria)
 		
 		bpfuncs = {}
 		
 		for thismodule in modulestosearch:
-			if not silent:
-				dbg.log("    Querying module %s" % thismodule)
+			deltastart = len(bpfuncs)
 			tmod = MnModule(thismodule)
 			shortname = tmod.getShortName()
+			fullname = tmod.moduleFilename
+			if not silent:
+				dbg.log("")
+				dbg.log("    Querying module '%s' (%s)" % (fullname,shortname))
 			#syms = themod.getSymbols()
 			# get funcs
 			funcs = {}
-			if type == "export":
+			if query_type == "export":
 				if not silent:
 					dbg.log("      Step 1: enumerating EAT")	
 				funcs = tmod.getEAT()			
@@ -15040,7 +15049,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 					dbg.log("      Step 1: enumerating IAT")
 				funcs = tmod.getIAT()
 			if not silent:
-				dbg.log("        Total nr of %sed functions in %s: %d" % (type, thismodule, len(funcs)))
+				dbg.log("        Total nr of %sed functions in %s: %d" % (query_type, thismodule, len(funcs)))
 			for func in funcs:
 				if meetsCriteria(MnPointer(func), criteria):
 					funcname = funcs[func].lower()
@@ -15062,21 +15071,22 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 									setbp = True
 					
 					if setbp:
-						if type == "export":
+						if query_type == "export":
 							if not func in bpfuncs:
 								bpfuncs[func] = funcs[func]
 						else:
 							ptr = 0
 							try:
 								#read pointer of imported function
-								ptr=struct.unpack('<L',dbg.readMemory(func,4))[0]
-							except:
+								ptr=struct.unpack(PTR_FMT,dbg.readMemory(func,PTR_SIZE))[0]
+							except Exception as e:
+								if DEBUG_MODE:
+									dbgp("Unable to read IAT entry at %s" % (PTR_PRINT % func))
 								pass
 							if ptr > 0:
 								if not ptr in bpfuncs:
 									bpfuncs[ptr] = funcs[func]
-			if not silent:
-				dbg.log("        Number of functions matching criteria so far %d" % (len(bpfuncs)))
+
 			if __DEBUGGERAPP__ == "WinDBG":
 				# let's do a few searches
 				for crit in namecrit:
@@ -15084,36 +15094,54 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 						crit = "*" + crit + "*"
 					if not silent:
 						dbg.log("      Step 2: Performing WinDBG Symbol lookup. (This may cause symbols to be downloaded first)")
-					if DEBUG_MODE:
-						dbg.nativeCommand("!sym noisy")
-					modsearch = "x %s!%s" % (shortname,crit)
-					output = dbg.nativeCommand(modsearch)
-					if not silent:
-						dbg.log("        Symbol lookup done. Processing results")
-					if DEBUG_MODE:
-						dbg.nativeCommand("!sym quiet")
-					if DEBUG_MODE:
-						dbgp("output: %s" % output)
-					outputlines = output.split("\n")
-					for line in outputlines:
-						if line.replace(" ","") != "":
-							linefields = line.split(" ")
-							if len(linefields) > 1:
-								ptr = hexStrToInt(linefields[0].replace("`",""))
-								cnt = 1
-								while cnt < len(linefields)-1:
-									if linefields[cnt] != "":
-										funcname = linefields[cnt]
-										break
-									cnt += 1
-								if "!" in funcname:
-									funcnamesplit = funcname.split("!")
-									if len(funcnamesplit) > 1:
-										funcname = funcnamesplit[1]
-								if not ptr in bpfuncs:
-									bpfuncs[ptr] = funcname
-					if not silent:
-						dbg.log("        Number of functions to break on so far: %d " % len(bpfuncs))
+					# try with fullname first
+					# if no results, do shortname (but may cause results from IAT, which we don't need)
+					runcnt = 0
+					nrfound = 0
+					#runfields = [fullname, shortname]
+					runfields = [fullname]
+					while (runcnt < len(runfields)) and (nrfound == 0):
+						if (runcnt > 0):
+							dbg.log("        No results yet, expanding symbol search")
+						dbg.log("        Launching symbol query, run %d" % (runcnt+1))
+						if DEBUG_MODE:
+							dbg.nativeCommand("!sym noisy")
+						modsearch = "x %s!%s" % (runfields[runcnt],crit)
+						output = dbg.nativeCommand(modsearch)
+						if not silent:
+							dbg.log("        Symbol lookup, run %d done. Processing results" % (runcnt+1))
+						if DEBUG_MODE:
+							dbg.nativeCommand("!sym quiet")
+						if DEBUG_MODE:
+							dbgp("output: %s" % output)
+						outputlines = output.split("\n")
+						for line in outputlines:
+							if line.replace(" ","") != "":
+								linefields = line.split(" ")
+								if len(linefields) > 1:
+									ptr = hexStrToInt(linefields[0].replace("`",""))
+									cnt = 1
+									while cnt < len(linefields)-1:
+										if linefields[cnt] != "":
+											funcname = linefields[cnt]
+											break
+										cnt += 1
+									if "!" in funcname:
+										funcnamesplit = funcname.split("!")
+										if len(funcnamesplit) > 1:
+											funcname = funcnamesplit[1]
+									if not ptr in bpfuncs:
+										bpfuncs[ptr] = funcname
+										nrfound += 1
+						dbg.log("        Symbol search yielded %d functions" % nrfound)
+						runcnt += 1
+						
+
+			if not silent:
+				deltacurrent = len(bpfuncs) - deltastart
+				if deltacurrent > 0:
+					dbg.log("        Identified %d functions in module '%s'" % (deltacurrent, fullname))
+				dbg.log("        Number of functions to break on so far: %d " % len(bpfuncs))
 		if not silent:
 			dbg.log("")
 			dbg.log("[+] Total nr of breakpoints to process : %d" % len(bpfuncs))
@@ -15125,9 +15153,8 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 		if len(bpfuncs) > 0:
 			for funcptr in bpfuncs:
 				if mode == "add":
-					#dbg.log("Set bp at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
 					try:
-						dbg.setBreakpoint(funcptr)
+						dbg.setBreakpoint(funcptr, extracmd=extracmd)
 						bp_table[funcptr] = ["add: OK", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
 					except Exception as e:
 						#dbg.log("Failed setting bp at 0x%s" % toHex(funcptr))
@@ -15143,6 +15170,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",type="export"
 				elif mode == "list":
 					#dbg.log("Match found at 0x%s (%s in %s)" % (toHex(funcptr),bpfuncs[funcptr],MnPointer(funcptr).belongsTo()))
 					bp_table[funcptr] = ["list", bpfuncs[funcptr], MnPointer(funcptr).belongsTo()]
+					
 			print_dict_table(bp_table, headers, types, padding = "    ",itemsequence = [])
 
 	return
@@ -17050,7 +17078,9 @@ def procBf(args):
 	
 	mode = ""
 	
-	type = "export"
+	func_type = "export"
+
+	extracmd = ""
 	
 	modes = ["add","del","list"]
 	types = ["import","export","iat","eat"]
@@ -17070,6 +17100,11 @@ def procBf(args):
 		dbg.log("No functions selected. (-s)",highlight=1)
 		return
 
+	if "c" in args:
+		if type(args["c"]).__name__.lower() != "bool":
+			if __DEBUGGERAPP__ == "WinDBG":
+				extracmd = args["c"]
+
 	if "t" in args:
 		try:
 			mode = args["t"].lower()
@@ -17078,18 +17113,18 @@ def procBf(args):
 
 	if "f" in args:
 		try:
-			type = args["f"].lower()
+			func_type = args["f"].lower()
 		except:
 			pass
 
-	if not type in types:
+	if not func_type in types:
 		dbg.log("No valid function type selected (-f <import|export>)",highlight=1)
 		return
 
 	if not mode in modes or mode=="":
 		dbg.log("No valid action defined. (-t add|del|list)")
 
-	doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode,type)
+	doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode,func_type,extracmd)
 	
 	return
 
@@ -23390,7 +23425,12 @@ Mandatory argument :
 Optional arguments:
     -f <function type> : set to 'import' or 'export' to read IAT or EAT. Default : export
     -s <func,func,func> : specify function names. 
-                          If you want a bp on all functions, set -s to *"""	
+                          If you want a bp on all functions, set -s to *
+    WinDBG only:
+    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit	.
+        the commands must be in between double quotes, and separated by a semicolon. 
+        Example: -c ".printf \"Breakpoint hit\\n\";u @$ip L 1;r;.echo;gc" to show current instruction, the registers and then continue execution when the bp is hit					  
+"""	
 	
 	findmspUsage = """Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern
 or points into a cyclic pattern. findmsp will also look if a SEH record is overwritten and finally, 

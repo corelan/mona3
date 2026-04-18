@@ -93,6 +93,7 @@ TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 PTR_SIZE = 4 if arch == 32 else 8
 PTR_FMT = '<L' if arch == 32 else '<Q'
 PTR_PRINT = "0x%08x" if arch == 32 else "0x%016x"
+PTR_PRINT_ADDRESSONLY = "%08x" if arch == 32 else "%016x"
 # Utility functions
 
 DEBUG_MODE = False
@@ -3837,41 +3838,51 @@ class Debugger:
 			pass
 		return count
 
-	def setBreakpoint(self,address,condition=""):
+	def setBreakpoint(self,address,condition="",extracmd=""):
+		if DEBUG_MODE:
+			dbgp("Creating breakpoint at %s" % (PTR_PRINT % address))
+		cmd2run = ""
+		if extracmd != "":
+			extracmd = ' "%s"' % extracmd
 		try:
 			if condition:
-				cmd2run = 'bp 0x%x "%s"' % (address, condition)
+				cmd2run = 'bp 0x%x "%s" %s' % (address, condition, extracmd)
 			else:
-				cmd2run = "bp 0x%x" % address
+				cmd2run = 'bp 0x%x %s' % (address, extracmd)
 			self.nativeCommand(cmd2run)
-		except:
+		except Exception as e:
+			if DEBUG_MODE:
+				dbgp("Error setting breakpoint: %s " % str(e))
+				dbgp("   bp command: %s" % cmd2run)
 			return False
 		return True
 
 	def deleteBreakpoint(self,address):
+		if DEBUG_MODE:
+			dbgp("Attempting to delete breakpoint at %s" % (PTR_PRINT % address))		
 		getallbps = "bl"
+		searchaddress = "%s" % (PTR_PRINT_ADDRESSONLY % address).lower()
 		allbps = self.nativeCommand(getallbps)
 		bplines = allbps.split("\n")
 		for line in bplines:
 			fieldcnt = 0
 			if line.replace(" ","") != "":
+				line = line.replace("`","")
+				# check if address is in this line
 				lineparts = line.split(" ")
 				id = ""
-				type = ""
-				bpaddress = ""
 				for part in lineparts:
 					if part != "":
 						fieldcnt += 1
 					if fieldcnt == 1:
 						id = part
-					if fieldcnt == 2:
-						type = part
-					if fieldcnt == 3:
-						bpaddress = part
 						break
-				if hexStrToInt(bpaddress) == address and id != "":
-					rmbp = "bc %s" % id
-					self.nativeCommand(rmbp)
+				if id != "":
+					if searchaddress in line.lower():
+						if DEBUG_MODE:
+							dbgp("Found it, clear breakpoint id %s" % id)
+						rmbp = "bc %s" % id
+						self.nativeCommand(rmbp)
 
 	def setMemBreakpoint(self,address,memType,condition=""):
 		validtype = False
