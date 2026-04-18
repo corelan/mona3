@@ -17358,6 +17358,10 @@ def procUpdate(args):
 	- detect whether newer versions exist
 	- print release notes
 	- do NOT overwrite existing .py files
+
+	In simulation mode:
+	- if a newer version is found, show release notes for that newer version
+	- if no newer version is found (or download failed), show release notes for the current version
 	"""
 
 	if DEBUG_MODE:
@@ -17609,7 +17613,7 @@ def procUpdate(args):
 	else:
 		_dbg("Release notes could not be downloaded from main or backup URL")
 
-	updated_versions = []
+	release_notes_targets = []
 	seen_release_headers = {}
 
 	for entry in files_to_process:
@@ -17643,6 +17647,11 @@ def procUpdate(args):
 		if not ok_download:
 			dbg.log("    [-] Unable to download %s from main or backup URL" % name, highlight=1)
 			_dbg("Skipping %s because download failed" % name)
+
+			if simulate_only:
+				_dbg("Simulation mode: using current version release notes for %s because download failed" % name)
+				release_notes_targets.append((name, current_version, current_revision))
+
 			_safe_remove(download_file)
 			continue
 
@@ -17655,6 +17664,11 @@ def procUpdate(args):
 		if new_version == "" and new_revision == "0":
 			dbg.log("    [-] Downloaded %s but could not read version/revision information" % name, highlight=1)
 			_dbg("Downloaded file for %s does not appear to contain valid version info" % name)
+
+			if simulate_only:
+				_dbg("Simulation mode: using current version release notes for %s because downloaded file had invalid version info" % name)
+				release_notes_targets.append((name, current_version, current_revision))
+
 			_safe_remove(download_file)
 			continue
 
@@ -17668,25 +17682,28 @@ def procUpdate(args):
 			if simulate_only:
 				dbg.log("    [*] Simulation mode enabled - not updating %s" % name)
 				_dbg("Simulation mode active, not copying %s on top of current file" % name)
-				updated_versions.append((name, new_version, new_revision))
+				release_notes_targets.append((name, new_version, new_revision))
 			else:
 				try:
 					_dbg("Copying %s over %s" % (download_file, current_file))
 					shutil.copyfile(download_file, current_file)
 					dbg.log("    [+] Updated %s in place" % name, highlight=1)
-					updated_versions.append((name, new_version, new_revision))
+					release_notes_targets.append((name, new_version, new_revision))
 				except Exception as e:
 					dbg.log("    [-] Unable to update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
 					_dbg("Copy failed for %s : %s" % (name, str(e)))
 		else:
 			dbg.log("    [+] You are already running the latest version of %s" % name)
+			if simulate_only:
+				_dbg("Simulation mode: using current version release notes for %s because no newer version was found" % name)
+				release_notes_targets.append((name, current_version, current_revision))
 
 		_safe_remove(download_file)
 
-	if downloaded_release_notes and len(updated_versions) > 0:
+	if downloaded_release_notes and len(release_notes_targets) > 0:
 		dbg.log("[+] Release notes")
-		for fname, ver, rev in updated_versions:
+		for fname, ver, rev in release_notes_targets:
 			header, notes = _get_release_notes_for_version(releasenotes_path, fname, ver, rev)
 			if header in seen_release_headers:
 				_dbg("Skipping duplicate release notes header %s" % header)
@@ -17702,7 +17719,7 @@ def procUpdate(args):
 	elif not downloaded_release_notes:
 		_dbg("Release notes were not downloaded, so nothing will be shown")
 	else:
-		_dbg("No updated versions detected, so no release notes section will be printed")
+		_dbg("No release notes targets were collected, so no release notes section will be printed")
 
 	return "Done"
 
