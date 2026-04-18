@@ -16839,7 +16839,7 @@ def procBp(args):
 			a=toHex(regs[reg])					
 			isReg_a = True
 			break
-	a = a.upper().replace("0X","").lower()
+	a = a.upper().replace("0X","").replace("`","").lower()
 	
 	if not isAddress(str(a)):
 		# maybe it's a modulename!function
@@ -16884,14 +16884,23 @@ def procBp(args):
 	a = hexStrToInt(a)
 
 	condition = ""
+	extracmd = ""
+	if "if" in args:
+		if type(args["if"]).__name__.lower() != "bool":
+			condition = args["if"]
+
 	if "c" in args:
-		condition = args["c"]
+		if type(args["c"]).__name__.lower() != "bool":
+			if __DEBUGGERAPP__ == "WinDBG":
+				extracmd = args["c"]
 
 	if "t" not in args:
 		# No -t: set software breakpoint (INT 3)
 		dbg.log("[*] Setting software breakpoint at 0x%s" % toHex(a))
 		if condition:
 			dbg.log("[*] Condition: %s" % condition)
+		if extracmd:
+			dbg.log("[*] Extra command on hit: %s" % extracmd)
 		try:
 			if __DEBUGGERAPP__ == "Immunity Debugger":
 				dbg.setBreakpoint(a)
@@ -16901,9 +16910,9 @@ def procBp(args):
 					dbg.setComment(a, "Cond: %s" % condition)
 			else:
 				if condition:
-					dbg.setBreakpoint(a, condition)
+					dbg.setBreakpoint(a, condition, extracmd=extracmd)
 				else:
-					dbg.setBreakpoint(a)
+					dbg.setBreakpoint(a, extracmd=extracmd)
 			dbg.log("[+] Software breakpoint set at 0x%s" % toHex(a))
 		except Exception as e:
 			dbg.log("[!] Failed to set software breakpoint: %s" % str(e), highlight=1)
@@ -16963,7 +16972,9 @@ def procBp(args):
 		dbg.log("[*] Setting hardware breakpoint at 0x%s, type: %s" % (toHex(a), type_desc[bpflag]))
 		if condition:
 			dbg.log("[*] Condition: %s" % condition)
-		dbg.setMemBreakpoint(a, bpflag, condition)
+		if extracmd:
+			dbg.log("[*] Extra command on hit: %s" % extracmd)
+		dbg.setMemBreakpoint(a, bpflag, condition, extracmd=extracmd)
 		dbg.log("[+] Hardware breakpoint set on %s of 0x%s" % (thistype, toHex(a)))
 
 
@@ -23411,10 +23422,18 @@ Optional arguments :
                 WRITE/W : triggers on write only.
                 EXE/X   : triggers on execute only.
                 If omitted, a software breakpoint is set instead.
-    -c <condition> : condition expression for the breakpoint.
-                     WinDBG example: -c "eax==0"
-                     Immunity example: -c "EAX==0" (evaluated via LogBpHook,
-                     register names: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, EIP)."""
+    -if <condition> : condition expression for the breakpoint.
+                     WinDBG example: -if "eax==0"
+                     Immunity example: -if "EAX==0" (evaluated via LogBpHook)
+ WinDBG only:
+    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit
+		The commands must be in between double quotes, and separated by semi-colons.
+		
+		If a command needs double quotes, please replace them with #, 
+		and I will convert them back to double quotes when setting the breakpoint.
+		
+		Example: -c ".printf #-----Breakpoint hit at 0x%p\\n#,@$ip;u @$ip L 1;r;.echo -----;gc"					 
+ """
 	
 	bfUsage = """Set a breakpoint on exported or imported function(s) of the selected modules. 
 
@@ -23433,7 +23452,6 @@ Optional arguments:
 		and I will convert them back to double quotes when setting the breakpoint.
 		
 		Example: -c ".printf #-----Breakpoint hit at 0x%p\\n#,@$ip;u @$ip L 1;r;.echo -----;gc"
-
 """	
 	
 	findmspUsage = """Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern

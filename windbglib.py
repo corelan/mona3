@@ -3838,13 +3838,16 @@ class Debugger:
 			pass
 		return count
 
+	def sanitizeExtraCommand(self, extracmd):
+		if extracmd != "":
+			return ('"%s"' % extracmd.replace("#",'\\"').replace("\\n",'\\\\n'))
+		return ""
+
 	def setBreakpoint(self,address,condition="",extracmd=""):
 		if DEBUG_MODE:
 			dbgp("Creating breakpoint at %s" % (PTR_PRINT % address))
 		cmd2run = ""
-		if extracmd != "":
-			extracmd = '"%s"' %extracmd.replace("#",'\\"').replace("\\n",'\\\\n')
-			dbgp(extracmd)
+		extracmd = self.sanitizeExtraCommand(extracmd)
 		try:
 			if condition:
 				cmd2run = 'bp 0x%x "%s" %s' % (address, condition, extracmd)
@@ -3885,7 +3888,11 @@ class Debugger:
 						rmbp = "bc %s" % id
 						self.nativeCommand(rmbp)
 
-	def setMemBreakpoint(self,address,memType,condition=""):
+
+	def setMemBreakpoint(self,address,memType,condition="",extracmd=""):
+
+		extracmd = self.sanitizeExtraCommand(extracmd)
+
 		validtype = False
 		bpcommand = ""
 		addrfmt = "0x%x" % address
@@ -3918,6 +3925,8 @@ class Debugger:
 		if validtype:
 			if condition:
 				bpcommand = '%s "%s"' % (bpcommand, condition)
+			if extracmd:
+				bpcommand = '%s %s' % (bpcommand, extracmd)
 			output = ""
 			try:
 				output = pykd.dbgCommand(bpcommand)
@@ -3926,6 +3935,8 @@ class Debugger:
 					bpcommand = "bp %s" % addrfmt
 					if condition:
 						bpcommand = '%s "%s"' % (bpcommand, condition)
+					if extracmd:
+						bpcommand = '%s %s' % (bpcommand, extracmd)
 					output = pykd.dbgCommand(bpcommand)
 				else:
 					self.log("** Unable to set memory breakpoint. Check alignment,")
