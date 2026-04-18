@@ -6413,18 +6413,22 @@ class MnProc:
 				first_teb = next(iter(threads.values()))
 				pid = str(first_teb.ProcessId)
 			regions.append((peb_addr, peb_addr + peb_size, "PEB", "PEB (Process ID: %s)" % pid, static))
-		if self.teb is not None:
-			teb_size = 0
-			if __DEBUGGERAPP__ == "WinDBG":
-				teb_size = dbg.getTypeSize("ntdll!_TEB")
-			elif static:
-				teb_size = self._getImmunityStructSizes()[1]
-			if teb_size == 0:
-				teb_size = archValue(0x1000, 0x1838)
-			mteb = MnTEB.getByAddress(self.teb)
-			teb_tid = str(mteb.Id) if mteb else ""
-			seh_count = str(mteb.SEHCount) if mteb else "0"
-			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB (Thread ID: %s | SEH Count: %s)" % (teb_tid, seh_count), static))
+		# TEBs for all threads
+		teb_size = 0
+		if __DEBUGGERAPP__ == "WinDBG":
+			teb_size = dbg.getTypeSize("ntdll!_TEB")
+		elif static:
+			teb_size = self._getImmunityStructSizes()[1]
+		if teb_size == 0:
+			teb_size = archValue(0x1000, 0x1838)
+		threads = self.getThreads()
+		if threads:
+			for tid, mteb in threads.items():
+				teb_addr = mteb.TEBAddress
+				seh_count = str(mteb.SEHCount)
+				regions.append((teb_addr, teb_addr + teb_size, "TEB", "TEB (Thread ID: %s | SEH Count: %s)" % (str(mteb.Id), seh_count), static))
+		elif self.teb is not None:
+			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB", static))
 
 		# Modules
 		for name, props in self.modules.items():
