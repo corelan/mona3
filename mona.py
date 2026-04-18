@@ -652,6 +652,32 @@ def getAddyArg(argaddy):
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
 	regs = getRegisters()
 
+	def _tokenize_addy_expression(expr):
+		parts = []
+		thispart = ""
+		bracketlevel = 0
+		for c in str(expr):
+			if c == "[":
+				bracketlevel += 1
+				thispart += c
+				continue
+			if c == "]":
+				if bracketlevel > 0:
+					bracketlevel -= 1
+				thispart += c
+				continue
+			if c in delimchars and bracketlevel == 0:
+				thispart = thispart.replace(" ","")
+				if thispart != "":
+					parts.append(thispart)
+				parts.append(c)
+				thispart = ""
+			else:
+				thispart += c
+		if thispart != "":
+			parts.append(thispart)
+		return parts
+
 	def _resolve_part(part):
 		partclean = str(part).strip()
 		partlower = partclean.lower()
@@ -713,26 +739,13 @@ def getAddyArg(argaddy):
 			dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[str(argaddy).strip().lower()]))
 		return regs[str(argaddy).strip().lower()], True
 
-	thispart = ""
 	argaddy = str(argaddy).strip().replace("`","")
-	for c in argaddy:
-		if c in delimchars:
-			thispart = thispart.replace(" ","")
-			if thispart != "":
-				addyparts.append(thispart)
-			addyparts.append(c)
-			thispart = ""
-		else:
-			thispart += c
-	if thispart != "":
-		addyparts.append(thispart)
+	addyparts = _tokenize_addy_expression(argaddy)
 
 	partok = False
 	for part in addyparts:
-		cleaned = part
 		if not part in delimchars:
-			for x in delimchars:
-				cleaned = cleaned.replace(x,"")
+			cleaned = str(part).strip()
 			partval,partok = _resolve_part(cleaned)
 			if not partok:
 				break
@@ -20389,7 +20402,7 @@ def procFillChunk(args):
 	origreference = ""
 
 	deref = False
-	refreg = ""
+	refvalue = 0
 	offset = 0
 	signstuff = 1
 	customsize = 0
@@ -20403,76 +20416,14 @@ def procFillChunk(args):
 			else:
 				customsize = int(sizearg)
 
-	if "r" in args:
-		if type(args["r"]).__name__.lower() != "bool":
-			# break into pieces
-			reference = args["r"].upper()
-			origreference = reference
-			if reference.find("[") > -1 and reference.find("]") > -1:
-				refregtmp = reference.replace("[","").replace("]","").replace(" ","")
-				if reference.find("+") > -1 or reference.find("-") > -1:
-					# deref with offset
-					refregtmpparts = []
-					if reference.find("+") > -1:
-						refregtmpparts = refregtmp.split("+")
-						signstuff = 1
-					if reference.find("-") > -1:
-						refregtmpparts = refregtmp.split("-")
-						signstuff = -1
-					if len(refregtmpparts) > 1:
-						offset = int(refregtmpparts[1].replace("0X",""),16) * signstuff
-						deref = True
-						refreg = refregtmpparts[0]
-						if not refreg in allregs:
-							dbg.log("** Please provide a valid reference using -r reg/reference **")
-							return
-					else:
-						dbg.log("** Please provide a valid reference using -r reg/reference **")
-						return																
-				else:
-					# only deref
-					refreg = refregtmp
-					deref = True
-			else:
-				# no deref, maybe offset
-				if reference.find("+") > -1 or reference.find("-") > -1:
-					# deref with offset
-					refregtmpparts = []
-					refregtmp = reference.replace(" ","")
-					if reference.find("+") > -1:
-						refregtmpparts = refregtmp.split("+")
-						signstuff = 1
-					if reference.find("-") > -1:
-						refregtmpparts = refregtmp.split("-")
-						signstuff = -1
-					if len(refregtmpparts) > 1:
-						offset = int(refregtmpparts[1].replace("0X",""),16) * signstuff
-						refreg = refregtmpparts[0]
-						if not refreg in allregs:
-							dbg.log("** Please provide a valid reference using -r reg/reference **")
-							return
-					else:
-						dbg.log("** Please provide a valid reference using -r reg/reference **")
-						return																
-				else:
-					# only deref
-					refregtmp = reference.replace(" ","")
-					refreg = refregtmp
-					deref = False
-		else:
-			dbg.log("** Please provide a valid reference using -r reg/reference **")
-			return
-	else:
-		dbg.log("** Please provide a valid reference using -r reg/reference **")
-		return
+	if "a" in args:
+		if type(args["a"]).__name__.lower() != "bool":
+			refvalue,addyok = getAddyArg(args["a"])
+			if not addyok:
+				dbg.log("%s is an invalid address" % args["a"], highlight=1)
+				return
 
-	if not refreg in allregs:
-		dbg.log("** Please provide a valid reference using -r reg/reference **")
-		return				
-
-	dbg.log("Ref : %s" % refreg)
-	dbg.log("Offset : %d (0x%s)" % (offset,toHex(int(str(offset).replace("-","")))))
-	dbg.log("Deref ? : %s" % deref)
+	dbg.log("Reference value: %s" % refvalue)
 
 	if "b" in args:
 		if type(args["b"]).__name__.lower() != "bool":
@@ -20481,29 +20432,9 @@ def procFillChunk(args):
 			else:
 				fillchar = args["b"][0]
 
-	# see if we can read the reference
-	refvalue = 0
-	if deref:
-		refref = 0
-		try:
-			refref = allregs[refreg]+offset
-		except:
-			dbg.log("** Unable to read from %s (0x%08x)" % (origreference,allregs[refreg]+offset))
-		try:
-			refvalue = struct.unpack('<L',dbg.readMemory(refref,4))[0]
-		except:
-			dbg.log("** Unable to read from %s (0x%08x) -> 0x%08x" % (origreference,allregs[reference]+offset,refref))
-			return
-	else:
-		try:
-			refvalue = allregs[refreg]+offset
-		except:
-			dbg.log("** Unable to read from %s (0x%08x)" % (reference,allregs[refreg]+offset))
-
-	dbg.log("Reference : %s: 0x%08x" % (origreference,refvalue))
 	dbg.log("Fill char : \\x%s" % bin2hex(fillchar))
 
-	cmd2run = "!heap -p -a 0x%08x" % refvalue
+	cmd2run = "!heap -x 0x%08x" % refvalue
 	output = dbg.nativeCommand(cmd2run)
 	outputlines = output.split("\n")
 	heapinfo = ""
@@ -23404,8 +23335,8 @@ Optional argument :
     Available formats:
     'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'"""
 
-	offsetUsage = """Calculate the number of bytes between two addresses. You can use 
-registers instead of addresses. 
+	offsetUsage = """Calculate the number of bytes between two addresses. 
+In addition to plain addresses, you can also specify registers, modules, module!functionnames, etc.
 
 Mandatory arguments :
     -a1 <address> : the first address/register
@@ -23598,15 +23529,15 @@ Optional arguments:
 
 Mandatory arguments :
     -a <target>,<target>,... 
-    target can be an address, a modulename.functionname or module.dll+offset (hex value)
-    Warning, modulename.functionname is case sensitive !
+    target can be an address, a modulename!functionname or module.dll+offset (hex value)
+    Warning, modulename!functionname is case sensitive !
 	""" 
 	
 
 	fillchunkUsage = """Fills a heap chunk, referenced by a register, with A's (or another character)
 
 Mandatory arguments :
-    -r <reg/reference> : reference to heap chunk to fill
+    -a <address> : reference to heap chunk to fill (address, register, offset from register, etc)
 
 Optional arguments:
     -b <character or byte to use to fill up chunk>
