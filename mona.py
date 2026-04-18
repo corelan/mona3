@@ -15019,7 +15019,6 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 	else:
 		query_type = "import"
 
-	
 	namecrit = funcfilter.strip('"').strip("'").split(",")
 	
 	if mode == "add" or mode == "del" or mode == "list":
@@ -23427,9 +23426,14 @@ Optional arguments:
     -s <func,func,func> : specify function names. 
                           If you want a bp on all functions, set -s to *
     WinDBG only:
-    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit	.
-        the commands must be in between double quotes, and separated by a semicolon. 
-        Example: -c ".printf \"Breakpoint hit\\n\";u @$ip L 1;r;.echo;gc" to show current instruction, the registers and then continue execution when the bp is hit					  
+    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit
+		The commands must be in between double quotes, and separated by semi-colons.
+		
+		If a command needs double quotes, please replace them with #, 
+		and I will convert them back to double quotes when setting the breakpoint.
+		
+		Example: -c ".printf #-----Breakpoint hit at 0x%p\\n#,@$ip;u @$ip L 1;r;.echo -----;gc"
+
 """	
 	
 	findmspUsage = """Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern

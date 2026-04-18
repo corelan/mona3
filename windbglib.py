@@ -3843,7 +3843,8 @@ class Debugger:
 			dbgp("Creating breakpoint at %s" % (PTR_PRINT % address))
 		cmd2run = ""
 		if extracmd != "":
-			extracmd = ' "%s"' % extracmd
+			extracmd = '"%s"' %extracmd.replace("#",'\\"').replace("\\n",'\\\\n')
+			dbgp(extracmd)
 		try:
 			if condition:
 				cmd2run = 'bp 0x%x "%s" %s' % (address, condition, extracmd)
