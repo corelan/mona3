@@ -1814,25 +1814,13 @@ def getStacks():
 	Return:
 	a dictionary, with key = threadID. Each entry contains an array with base and top of the stack
 	"""
-	stacks = {}
 	if len(mnproc.stacklistCache) > 0:
 		return mnproc.stacklistCache
-	else:
-		threads = dbg.getAllThreads() 
-		for thread in threads:
-			teb = thread.getTEB()
-			tid = thread.getId()
-			topStack = 0
-			baseStack = 0
-			if arch == 32:
-				topStack = struct.unpack('<L',dbg.readMemory(teb+4,4))[0]
-				baseStack = struct.unpack('<L',dbg.readMemory(teb+8,4))[0]
-			if arch == 64:
-				topStack = struct.unpack('<Q',dbg.readMemory(teb+8,8))[0]
-				baseStack = struct.unpack('<Q',dbg.readMemory(teb+16,8))[0]
-			stacks[tid] = [baseStack,topStack]
-		mnproc.stacklistCache = stacks
-		return stacks
+	stacks = {}
+	for tid, teb in mnproc.getThreads().items():
+		stacks[tid] = [teb.StackBase, teb.StackLimit]
+	mnproc.stacklistCache = stacks
+	return stacks
 
 def meetsAccessLevel(page,accessLevel):
 	"""
@@ -2037,21 +2025,21 @@ class MnPEB:
 	# Class-level cache: list_name -> [(dll_base, base_name, full_path), ...]
 	_raw_cache = {}
 
+	# Architecture index: 0 for x86, 1 for x64
+	_idx = 1 if arch == 64 else 0
+
 	def __init__(self):
 		self.PEBAddress = get_peb_addr()
 		if self.PEBAddress == 0:
 			raise Exception("Unable to determine PEB address")
 
-		ptr_fmt = '<Q' if arch == 64 else '<L'
-		ptr_size = 8 if arch == 64 else 4
-
 		def _read_ptr(addr):
-			return struct.unpack(ptr_fmt, dbg.readMemory(addr, ptr_size))[0]
+			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
 
 		def _read_dword(addr):
 			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
 
-		idx = 1 if arch == 64 else 0
+		idx = self._idx
 		peb = self.PEBAddress
 
 		self.ImageBaseAddress     = _read_ptr(peb + self._offsets["ImageBaseAddress"][idx])
@@ -2076,16 +2064,14 @@ class MnPEB:
 				yield entry
 			return
 
-		idx = 1 if arch == 64 else 0
-		ptr_fmt  = '<Q' if arch == 64 else '<L'
-		ptr_size = 8 if arch == 64 else 4
+		idx = MnPEB._idx
 
 		def _read_ptr(addr):
-			return struct.unpack(ptr_fmt, dbg.readMemory(addr, ptr_size))[0]
+			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
 
 		def _wstr(entry, off):
 			length  = struct.unpack('<H', dbg.readMemory(entry + off, 2))[0]
-			buf_ptr = _read_ptr(entry + off + ptr_size + (4 if arch == 64 else 0))
+			buf_ptr = _read_ptr(entry + off + PTR_SIZE)
 			if length == 0 or buf_ptr == 0:
 				return ""
 			raw = dbg.readMemory(buf_ptr, length)
@@ -2185,6 +2171,56 @@ class MnPEB:
 			return ""
 		except Exception:
 			return ""
+
+
+class MnTEB:
+	"""
+	Class representing a Thread Environment Block (TEB).
+	Reads fields directly from memory given a TEB address.
+	"""
+
+	# TEB / NT_TIB field offsets: (x86, x64)
+	_offsets = {
+		"ExceptionList": (0x00, 0x00),
+		"StackBase":     (0x04, 0x08),
+		"StackLimit":    (0x08, 0x10),
+		"ProcessId":     (0x20, 0x40),  # ClientId.UniqueProcess
+		"ThreadId":      (0x24, 0x48),  # ClientId.UniqueThread
+	}
+
+	_idx = 1 if arch == 64 else 0
+
+	def __init__(self, teb_addr, peb=None):
+		self.TEBAddress = teb_addr
+
+		# Reference to the shared MnPEB (from MnProc), not a new instance
+		self.PEB = peb
+
+		idx = self._idx
+
+		def _read_ptr(addr):
+			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
+
+		def _read_dword(addr):
+			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
+
+		self.StackBase  = _read_ptr(teb_addr + self._offsets["StackBase"][idx])
+		self.StackLimit = _read_ptr(teb_addr + self._offsets["StackLimit"][idx])
+		self.ProcessId  = _read_dword(teb_addr + self._offsets["ProcessId"][idx])
+		self.Id         = _read_dword(teb_addr + self._offsets["ThreadId"][idx])
+
+		# SEH chain: list of [record_addr, handler_addr]; x64 has no chain
+		self.SEHChain = []
+		if arch == 32:
+			nextrecord = _read_ptr(teb_addr + self._offsets["ExceptionList"][idx])
+			while nextrecord != 0xFFFFFFFF and nextrecord != 0:
+				try:
+					nseh = _read_ptr(nextrecord)
+					seh  = _read_ptr(nextrecord + 4)
+					self.SEHChain.append([nextrecord, seh])
+					nextrecord = nseh
+				except Exception:
+					break
 
 
 def getModuleObj(modname):
@@ -6128,11 +6164,49 @@ class MnProc:
 		# --- populated by populate() ---
 		self.peb = MnPEB()
 		self.teb = None
+		self.threads = {}      # {tid: MnTEB} — populated by getThreads()
 		self.modules = {}      # {name: {"base","top","size",...}} from g_modules
-		self.stacks = {}       # {tid: [base, top]}
+		self.stacks = {}       # {tid: {"base", "limit", "size", "teb"}} — populated by getStacks()
 		self.heapinfo = {}     # from getProcessHeapsInfo(): {"NT":{}, "Segment":{}, "Unknown":{}}
 		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
 		self.defaultheap = 0   # default process heap address
+
+	def getThreads(self):
+		"""
+		Return the cached {tid: MnTEB} dict.
+		Populates on first call using dbg.getAllThreads().
+		"""
+		if not self.threads:
+			for thread in dbg.getAllThreads():
+				teb_addr = thread.getTEB()
+				tid = thread.getId()
+				self.threads[tid] = MnTEB(teb_addr, peb=self.peb)
+		return self.threads
+
+	def getStacks(self):
+		"""
+		Return the cached {tid: {"base", "limit", "size", "teb"}} dict.
+		Built from the thread cache on first call.
+		"""
+		if not self.stacks:
+			for tid, teb in self.getThreads().items():
+				self.stacks[tid] = {
+					"base":  teb.StackBase,
+					"limit": teb.StackLimit,
+					"size":  teb.StackBase - teb.StackLimit,
+					"teb":   teb.TEBAddress,
+				}
+		return self.stacks
+		return self.threads
+
+	def getTEBForStackAddress(self, addr):
+		"""
+		Return the MnTEB whose stack contains *addr*, or None.
+		"""
+		for tid, teb in self.getThreads().items():
+			if teb.StackLimit <= addr <= teb.StackBase:
+				return teb
+		return None
 
 	def getModuleForAddress(self, addr):
 		"""Return the MnModule containing *addr*, or None."""
@@ -6200,7 +6274,7 @@ class MnProc:
 
 		# Stacks
 		if len(self.stacks) == 0:
-			self.stacks = getStacks()
+			self.getStacks()
 
 		# Heaps (type detection + encoding info)
 		if len(self.heapinfo) == 0:
@@ -6354,8 +6428,11 @@ class MnProc:
 			regions.append((props["base"], props["top"], "Module", dispname))
 
 		# Stacks
-		for tid, (sbase, stop) in self.stacks.items():
-			regions.append((sbase, stop, "Stack", "Thread %s" % str(tid)))
+		for tid, sinfo in self.stacks.items():
+			dispname = "Thread %s (TEB: 0x%s, Base: 0x%s, Limit: 0x%s, Size: 0x%s)" % (
+				str(tid), toHex(sinfo["teb"]), toHex(sinfo["base"]),
+				toHex(sinfo["limit"]), toHex(sinfo["size"]))
+			regions.append((sinfo["base"], sinfo["limit"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
 		fe_names = {0: "None", 1: "LAL", 2: "LFH"}
@@ -19089,7 +19166,13 @@ def procStacks(args):
 		dbg.log("Stacks :")
 		dbg.log("--------")
 		for threadid in stacks:
-			dbg.log("Thread %s : Stack : 0x%s - 0x%s (size : 0x%s)" % (str(threadid),toHex(stacks[threadid][0]),toHex(stacks[threadid][1]),toHex(stacks[threadid][1]-stacks[threadid][0])))
+			s = stacks[threadid]
+			if isinstance(s, dict):
+				dbg.log("Thread %s : TEB: 0x%s, Base: 0x%s, Limit: 0x%s, Size: 0x%s" % (
+					str(threadid), toHex(s["teb"]), toHex(s["base"]),
+					toHex(s["limit"]), toHex(s["size"])))
+			else:
+				dbg.log("Thread %s : Stack : 0x%s - 0x%s (size : 0x%s)" % (str(threadid),toHex(s[0]),toHex(s[1]),toHex(s[1]-s[0])))
 	else:
 		dbg.log("No threads/stacks found !",highlight=1)
 	return
