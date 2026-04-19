@@ -337,8 +337,6 @@ def isAddress(address):
 	return set(address.upper()) <= set("ABCDEF1234567890")
 
 def intToHex(address):
-	#if DEBUG_MODE:
-	#	dbgp(get_current_function_name())
 
 	if arch == 32:
 		return "0x%08x" % address
@@ -346,8 +344,6 @@ def intToHex(address):
 		return "0x%016x" % address
 
 def intToHexWinDbgFormat(address):
-	#if DEBUG_MODE:
-	#	dbgp(get_current_function_name())
 
 	if arch == 32:
 		return "%08x" % address
@@ -3181,8 +3177,6 @@ class Debugger:
 	"""
 
 	def readMemory(self, location, size):
-		#if DEBUG_MODE:
-		#	dbgp(get_current_function_name())
 		try:
 			data = bytes(bytearray(pykd.loadBytes(location, size)))
 			return ensure_bytes(data)
@@ -3266,8 +3260,7 @@ class Debugger:
 				pageprotect = m.group(6).strip()
 				pageusage = m.group(7).strip()
 
-				#if DEBUG_MODE:
-				#	dbgp("      OK - Including page: 0x%08x, size 0x%08x, protect: %s, usage: %s" % (
+				#dbgp("      OK - Including page: 0x%08x, size 0x%08x, protect: %s, usage: %s" % (
 				#		starting_address, size, pageprotect, pageusage))
 
 				page_obj = wpage(starting_address, size, pageusage)
@@ -3278,8 +3271,6 @@ class Debugger:
 
 
 	def getMemoryPageByAddress(self,address):
-		#if DEBUG_MODE:
-		#	dbgp(get_current_function_name())
 
 		if len(self.MemoryPages) == 0:
 			# may never get hit
@@ -3293,9 +3284,6 @@ class Debugger:
 			return page
 
 	def getPageContains(self,address):
-		#if DEBUG_MODE:
-		#	dbgp(get_current_function_name())
-
 		if len(self.MemoryPages) == 0:
 			self.MemoryPages = self.getMemoryPages()
 		for pagestart in self.MemoryPages:
