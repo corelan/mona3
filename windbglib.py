@@ -94,6 +94,31 @@ PTR_SIZE = 4 if arch == 32 else 8
 PTR_FMT = '<L' if arch == 32 else '<Q'
 PTR_PRINT = "0x%08x" if arch == 32 else "0x%016x"
 PTR_PRINT_ADDRESSONLY = "%08x" if arch == 32 else "%016x"
+
+# Architecture index: 0 = x86, 1 = x64
+_arch_idx = 0 if arch == 32 else 1
+
+# TEB field offsets: (x86, x64)
+TEB_PEB               = (0x30, 0x60)
+TEB_CLIENT_ID_PROCESS = (0x20, 0x40)
+
+# PEB field offsets: (x86, x64)
+PEB_LDR               = (0x0C, 0x18)
+PEB_PROCESS_PARAMETERS = (0x10, 0x20)
+PEB_NUMBER_OF_HEAPS   = (0x88, 0xE8)
+PEB_PROCESS_HEAPS     = (0x90, 0xF0)
+PEB_OS_MAJOR_VERSION  = (0xA4, 0x118)
+PEB_OS_MINOR_VERSION  = (0xA8, 0x11C)
+PEB_OS_BUILD_NUMBER   = (0xAC, 0x120)
+
+# PEB_LDR_DATA list head offsets: (x86, x64)
+LDR_IN_LOAD_ORDER     = (0x0C, 0x10)
+
+# LDR_DATA_TABLE_ENTRY field offsets: (x86, x64)
+LDR_DLL_BASE          = (0x18, 0x30)
+LDR_FULL_DLL_NAME     = (0x24, 0x48)
+LDR_BASE_DLL_NAME     = (0x2C, 0x58)
+
 # Utility functions
 
 DEBUG_MODE = False
@@ -169,9 +194,9 @@ def getOSVersion():
 	osversions["6.2"] = "win8"
 	osversions["6.3"] = "win8.1"
 	osversions["10.0"] = "win10"
-	peb = getPEBInfo()
-	majorversion = int(peb.OSMajorVersion)
-	minorversion = int(peb.OSMinorVersion)
+	peb = getPEBAddress()
+	majorversion = int(pykd.ptrDWord(peb + PEB_OS_MAJOR_VERSION[_arch_idx]))
+	minorversion = int(pykd.ptrDWord(peb + PEB_OS_MINOR_VERSION[_arch_idx]))
 	thisversion = str(majorversion)+"." + str(minorversion)
 	if thisversion in osversions:
 		return osversions[thisversion]
@@ -184,6 +209,253 @@ def getArchitecture():
 		return 32
 	else:
 		return 64
+
+def getSymbolPath():
+	"""Return the current symbol path string."""
+	return pykd.getSymbolPath()
+
+def setSymbolPath(path):
+	"""Set the symbol path."""
+	pykd.dbgCommand(".sympath %s" % path)
+
+def getSymPaths():
+	"""Parse the WinDBG symbol path and return (cache_dirs, servers, entries).
+
+	cache_dirs : list of str   -- unique local directories where symbols are stored
+	servers    : list of str   -- unique symbol server URLs
+	entries    : list of dict  -- per-entry detail, each with keys:
+	               "cache"  : str or "" -- local cache directory
+	               "server" : str or "" -- symbol server URL
+	               "raw"    : str       -- original .sympath entry
+
+	Handles formats:
+		srv*<cache>*<url>       -> cache + url
+		cache*<cache>*<url>     -> cache + url
+		symsrv*handler*<url>*<cache> -> cache + url
+		srv*<url>               -> url only (no local cache)
+		<plain_path>            -> cache only (no server)
+	"""
+	dbgp(get_current_function_name())
+
+	raw = pykd.getSymbolPath()
+	cache_dirs = []
+	servers = []
+	entries = []
+	seen_dirs = set()
+	seen_srvs = set()
+
+	for entry in raw.split(";"):
+		entry = entry.strip()
+		if not entry:
+			continue
+
+		parts = entry.split("*")
+		tag = parts[0].strip().lower()
+
+		e_cache = ""
+		e_server = ""
+
+		if tag in ("srv", "cache") and len(parts) >= 3:
+			# srv*<local_cache>*<url>[*<url2>...]
+			local = parts[1].strip().strip('"')
+			if local:
+				e_cache = local
+				if local.lower() not in seen_dirs:
+					seen_dirs.add(local.lower())
+					cache_dirs.append(local)
+			for p in parts[2:]:
+				url = p.strip().strip('"')
+				if url:
+					if not e_server:
+						e_server = url
+					if url.lower() not in seen_srvs:
+						seen_srvs.add(url.lower())
+						servers.append(url)
+
+		elif tag == "symsrv" and len(parts) >= 4:
+			# symsrv*symsrv.dll*<url>*<cache>
+			for p in parts[2:]:
+				v = p.strip().strip('"')
+				if not v:
+					continue
+				if v.lower().startswith("http://") or v.lower().startswith("https://"):
+					if not e_server:
+						e_server = v
+					if v.lower() not in seen_srvs:
+						seen_srvs.add(v.lower())
+						servers.append(v)
+				else:
+					if not e_cache:
+						e_cache = v
+					if v.lower() not in seen_dirs:
+						seen_dirs.add(v.lower())
+						cache_dirs.append(v)
+
+		elif tag == "srv" and len(parts) == 2:
+			# srv*<url>  (no local cache, default downstream store)
+			url = parts[1].strip().strip('"')
+			if url:
+				e_server = url
+				if url.lower() not in seen_srvs:
+					seen_srvs.add(url.lower())
+					servers.append(url)
+
+		else:
+			# plain directory path
+			path = entry.strip().strip('"')
+			if path:
+				e_cache = path
+				if path.lower() not in seen_dirs:
+					seen_dirs.add(path.lower())
+					cache_dirs.append(path)
+
+		entries.append({"cache": e_cache, "server": e_server, "raw": entry})
+
+	return cache_dirs, servers, entries
+
+
+def fetchSymbol(module_name, pdbname="", guidage="", cache_dir=None):
+	"""Force WinDBG to download symbols for a loaded module.
+
+	Uses '.reload /f <module>' which triggers WinDBG's built-in symbol
+	server client.  This handles compression, authentication, retries,
+	and all configured symbol servers automatically.
+
+	Parameters:
+		module_name : str -- module name as known to WinDBG (e.g. 'ntdll')
+		pdbname     : str -- PDB filename, used only to verify the download
+		guidage     : str -- GUID+Age string, used only to verify the download
+		cache_dir   : str or None -- cache dir to check for the PDB after
+		              download.  If None, uses the first from getSymPaths().
+
+	Returns:
+		(success, local_path, message) tuple.
+		success    : bool
+		local_path : str -- path to the cached PDB (or expected path on failure)
+		message    : str -- status/error description
+	"""
+	dbgp(get_current_function_name())
+
+	if not module_name:
+		return False, "", "module_name is required"
+
+	# Resolve cache dir for verification
+	if cache_dir is None and pdbname and guidage:
+		_dirs, _srvs, _ = getSymPaths()
+		if _dirs:
+			cache_dir = _dirs[0]
+
+	# Expected PDB path for pre/post check
+	local_path = ""
+	if cache_dir and pdbname and guidage:
+		local_path = os.path.join(cache_dir, pdbname, guidage, pdbname)
+		if os.path.isfile(local_path):
+			return True, local_path, "Already cached"
+
+	# Force WinDBG to download symbols
+	try:
+		output = pykd.dbgCommand(".reload /f %s" % module_name)
+		dbgp("fetchSymbol .reload output: %s" % output)
+	except Exception as e:
+		return False, local_path, ".reload failed: %s" % str(e)
+
+	# Verify download by checking cache or asking WinDBG for symbol status
+	if local_path and os.path.isfile(local_path):
+		return True, local_path, "Downloaded via .reload /f"
+
+	# Also scan all cache dirs in case it landed in a different one
+	if pdbname and guidage:
+		_dirs, _, _ = getSymPaths()
+		for cdir in _dirs:
+			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+			if os.path.isfile(candidate):
+				return True, candidate, "Downloaded via .reload /f"
+
+	# Check via lm if WinDBG loaded symbols at all
+	found, sym_path = _lmCheckSymbols(module_name)
+	if found:
+		if sym_path and os.path.isfile(sym_path):
+			return True, sym_path, "Downloaded via .reload /f"
+		return True, local_path, "Loaded (confirmed by lm)"
+
+	# Retry with .dll extension — some WinDBG versions require it
+	try:
+		output = pykd.dbgCommand(".reload /f %s.dll" % module_name)
+		dbgp("fetchSymbol .reload /f %s.dll output: %s" % (module_name, output))
+	except:
+		pass
+
+	# Re-check cache
+	if pdbname and guidage:
+		_dirs, _, _ = getSymPaths()
+		for cdir in _dirs:
+			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+			if os.path.isfile(candidate):
+				return True, candidate, "Downloaded via .reload /f"
+
+	# Re-check lm
+	found, sym_path = _lmCheckSymbols(module_name)
+	if found:
+		if sym_path and os.path.isfile(sym_path):
+			return True, sym_path, "Downloaded via .reload /f"
+		return True, local_path, "Loaded (confirmed by lm)"
+
+	return False, local_path, "Symbol download failed for %s" % module_name
+
+
+def _lmCheckSymbols(module_name):
+	"""Parse 'lm vm <module>' to check if PDB symbols are loaded.
+
+	Returns (found, sym_path) where found is True if PDB symbols are
+	confirmed, and sym_path is the extracted path (or empty string).
+	"""
+	try:
+		lm_out = pykd.dbgCommand("lm vm %s" % module_name)
+		dbgp("_lmCheckSymbols lm vm output:\n%s" % (lm_out or "(None)"))
+	except Exception:
+		return False, ""
+
+	if not lm_out:
+		return False, ""
+
+	lm_lower = lm_out.lower()
+	pdb_markers = ["(pdb symbols)", "(private pdb symbols)"]
+
+	# Check if any PDB marker is present
+	has_pdb = False
+	for marker in pdb_markers:
+		if marker in lm_lower:
+			has_pdb = True
+			break
+	if not has_pdb:
+		return False, ""
+
+	# Try to extract path from summary line: "... (pdb symbols)   <path>"
+	for line in lm_out.splitlines():
+		ll = line.lower()
+		for marker in pdb_markers:
+			idx = ll.find(marker)
+			if idx >= 0:
+				after = line[idx + len(marker):].strip()
+				if after:
+					dbgp("_lmCheckSymbols summary path: %s" % after)
+					return True, after
+
+	# Fallback: extract from "Mapped_file name:" or "Symbol file name:" lines
+	for line in lm_out.splitlines():
+		stripped = line.strip()
+		ll = stripped.lower()
+		for prefix in ["symbol file name:", "mapped_file name:"]:
+			if ll.startswith(prefix):
+				# Handle Windows paths with drive letter (C:\...)
+				# split on first ":" gives ["Symbol file name", " C:\..."]
+				# but we need "C:\..." — so split on prefix instead
+				path = stripped[len(prefix):].strip()
+				if path:
+					dbgp("_lmCheckSymbols file line path: %s" % path)
+					return True, path
+
+	return True, ""
 
 def getNtHeaders(modulebase):
 	dbgp(get_current_function_name())
@@ -226,23 +498,6 @@ def clearvars():
 	return
 
 
-def getPEBInfo(peb_addr=None):
-	dbgp(get_current_function_name())
-	dbgp("Current process: %s" % pykd.getCurrentProcess())
-	if peb_addr is None:
-		peb_addr = pykd.getCurrentProcess()
-	try:
-		return pykd.typedVar("ntdll!_PEB", peb_addr)
-	except:
-		currversion = getPyKDVersion()
-		print("")
-		print(" Oops - It seems that PyKD was unable problem to get the PEB object.")
-		print(" This usually means that")
-		print("  1. msdiaxxx.dll has not been registered correctly    and/or")
-		print("  2. symbols are missing for ntdll.dll")
-		print("")
-		exit(1)
-
 def getTEBInfo():
 	dbgp(get_current_function_name())
 	return pykd.typedVar("_TEB", pykd.getImplicitThread())
@@ -262,8 +517,8 @@ def getPEBAddress():
 
 	global cpebaddress
 	if cpebaddress == 0:
-		peb = getPEBInfo()
-		cpebaddress = peb.getAddress()
+		teb = getTEBAddress()
+		cpebaddress = pykd.ptrPtr(teb + TEB_PEB[_arch_idx])
 	return cpebaddress
 
 
@@ -443,6 +698,57 @@ def checkVersion():
 	return
 
 
+def getModulesFromDebugger():
+	"""Enumerate loaded modules via the debug engine (lm command).
+
+	Returns a list of (dll_base, base_name, full_path) tuples, matching
+	the format of PEB-based module walks.  This works even when the PEB
+	loader list is corrupted (e.g. ntdll overwritten).
+	"""
+	dbgp(get_current_function_name())
+
+	results = []
+	try:
+		lm_out = pykd.dbgCommand("lm")
+	except Exception:
+		return results
+
+	for line in lm_out.splitlines():
+		line = line.strip()
+		if not line:
+			continue
+		# lm output format:
+		#   x86: <start> <end>   <name>    (deferred)
+		#   x64: <start>`<high> <end>`<high>   <name>    (deferred)
+		# Skip header/separator lines
+		parts = line.split()
+		if len(parts) < 3:
+			continue
+		try:
+			base_addr = int(parts[0].replace('`', ''), 16)
+		except (ValueError, IndexError):
+			continue
+		modname = parts[2]
+		# Get the full path from lm vm <module>
+		full_path = ""
+		try:
+			vm_out = pykd.dbgCommand("lm vm %s" % modname)
+			for vm_line in vm_out.splitlines():
+				vm_line = vm_line.strip()
+				if vm_line.lower().startswith("image path:"):
+					full_path = vm_line.split(":", 1)[1].strip()
+					break
+				elif vm_line.lower().startswith("mapped memory image path:"):
+					full_path = vm_line.split(":", 1)[1].strip()
+					break
+		except Exception:
+			pass
+		base_name = os.path.basename(full_path) if full_path else modname
+		results.append((base_addr, base_name, full_path))
+
+	return results
+
+
 def getModuleFromAddress(address):
 	dbgp(get_current_function_name())
 
@@ -487,7 +793,6 @@ class Debugger:
 		self._peb_list = None
 		self._teb_addr = None
 		self._peb_addr = None
-		self._peb_info = None
 		self.fillAsmCache()
 		self.knowledgedb = "windbglib.db"
 
@@ -3040,13 +3345,10 @@ class Debugger:
 
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/RTL_USER_PROCESS_PARAMETERS.html
-		peb = self.get_peb_info()
-		ProcessParameters = peb.ProcessParameters
-		offset = 0x38
-		if arch == 64:
-			offset = 0x60
-		# ProcessParameters + offset = _RTL_USER_PROCESS_PARAMETERS.ImagePathName(_UNICODE_STRING)
-		# sImageFile = pykd.loadUnicodeString(ProcessParameters + offset)
+		peb = self.get_peb_addr()
+		ProcessParameters = pykd.ptrPtr(peb + PEB_PROCESS_PARAMETERS[_arch_idx])
+		# _RTL_USER_PROCESS_PARAMETERS.ImagePathName(_UNICODE_STRING)
+		offset = 0x60 if arch == 64 else 0x38
 		sImageFile = ensure_text(pykd.loadUnicodeString(int(ProcessParameters) + offset))
 		sImageFilepieces = sImageFile.split("\\")
 		return sImageFilepieces[len(sImageFilepieces)-1]
@@ -3057,14 +3359,8 @@ class Debugger:
 		global currentPID
 
 		if currentPID == 0:
-			# http://www.nirsoft.net/kernel_struct/vista/TEB.html
-			# http://www.nirsoft.net/kernel_struct/vista/CLIENT_ID.html
 			teb = self.get_teb_addr()
-			offset = 0x20
-			if arch == 64:
-				offset = 0x40
-			# _TEB.ClientId(CLIENT_ID).UniqueProcess(PVOID)
-			currentPID = pykd.ptrDWord(teb+offset)
+			currentPID = pykd.ptrDWord(teb + TEB_CLIENT_ID_PROCESS[_arch_idx])
 
 		return currentPID
 
@@ -3075,10 +3371,10 @@ class Debugger:
 	def getOsRelease(self):
 		dbgp(get_current_function_name())
 
-		peb = self.get_peb_info()
-		majorversion = int(peb.OSMajorVersion)
-		minorversion = int(peb.OSMinorVersion)
-		buildversion = int(peb.OSBuildNumber)
+		peb = self.get_peb_addr()
+		majorversion = int(pykd.ptrDWord(peb + PEB_OS_MAJOR_VERSION[_arch_idx]))
+		minorversion = int(pykd.ptrDWord(peb + PEB_OS_MINOR_VERSION[_arch_idx]))
+		buildversion = int(pykd.ptrWord(peb + PEB_OS_BUILD_NUMBER[_arch_idx]))
 		osversion = str(majorversion)+"."+str(minorversion)+"."+str(buildversion)
 		return osversion
 	
@@ -3235,6 +3531,8 @@ class Debugger:
 
 		if not self.MemoryPages:
 			address_output = pykd.dbgCommand("!address")
+			if address_output is None:
+				address_output = ""
 			address_output_lines = address_output.splitlines()
 
 			row_regex = re.compile(
@@ -3259,13 +3557,76 @@ class Debugger:
 				pageprotect = m.group(6).strip()
 				pageusage = m.group(7).strip()
 
-				#dbgp("      OK - Including page: 0x%08x, size 0x%08x, protect: %s, usage: %s" % (
-				#		starting_address, size, pageprotect, pageusage))
-
 				page_obj = wpage(starting_address, size, pageusage)
 				self.MemoryPages[starting_address] = page_obj
 
+			# Fallback: VirtualQueryEx if !address returned nothing
+			if not self.MemoryPages:
+				self.MemoryPages = self._getMemoryPagesVQE()
+
 		return self.MemoryPages
+
+	def _getMemoryPagesVQE(self):
+		"""Enumerate memory pages via VirtualQueryEx (ctypes).
+
+		Fallback for when !address fails (e.g. ntdll corrupted).
+		"""
+		dbgp(get_current_function_name())
+
+		pages = {}
+		kernel32 = ctypes.windll.kernel32
+
+		PROCESS_QUERY_INFORMATION = 0x0400
+		PROCESS_VM_READ = 0x0010
+		pid = self.getDebuggedPid()
+		hprocess = kernel32.OpenProcess(
+			PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+		if not hprocess:
+			return pages
+
+		class MEMORY_BASIC_INFORMATION(ctypes.Structure):
+			_fields_ = [
+				("BaseAddress",       ctypes.c_void_p),
+				("AllocationBase",    ctypes.c_void_p),
+				("AllocationProtect", ctypes.c_ulong),
+				("RegionSize",        ctypes.c_size_t),
+				("State",             ctypes.c_ulong),
+				("Protect",           ctypes.c_ulong),
+				("Type",              ctypes.c_ulong),
+			]
+
+		MEM_COMMIT = 0x1000
+		mbi = MEMORY_BASIC_INFORMATION()
+		mbi_size = ctypes.sizeof(mbi)
+		address = 0
+
+		kernel32.VirtualQueryEx.argtypes = [
+			ctypes.c_void_p, ctypes.c_void_p,
+			ctypes.POINTER(MEMORY_BASIC_INFORMATION), ctypes.c_size_t]
+		kernel32.VirtualQueryEx.restype = ctypes.c_size_t
+
+		try:
+			while True:
+				result = kernel32.VirtualQueryEx(
+					ctypes.c_void_p(hprocess),
+					ctypes.c_void_p(address),
+					ctypes.byref(mbi), mbi_size)
+				if result == 0:
+					break
+
+				if mbi.State == MEM_COMMIT and mbi.RegionSize > 0:
+					base = mbi.BaseAddress if mbi.BaseAddress else 0
+					page_obj = wpage(base, mbi.RegionSize, "")
+					page_obj.protect = mbi.Protect
+					pages[base] = page_obj
+
+				address += mbi.RegionSize
+				if address > TOP_USERLAND:
+					break
+		finally:
+			kernel32.CloseHandle(ctypes.c_void_p(hprocess))
+
+		return pages
 
 
 
@@ -3297,14 +3658,23 @@ class Debugger:
 
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		allheaps = []
-		peb = self.get_peb_info()
-		offset = 0x88
-		if arch == 64:
-			offset = 0xe8
-		# _PEB.NumberOfHeaps(ULONG)
-		nrofheaps = int(pykd.ptrDWord(peb+offset))
-		# _PEB.ProcessHeaps(VOID**)
-		processheaps = int(peb.ProcessHeaps)
+		peb = self.get_peb_addr()
+		try:
+			nrofheaps = int(pykd.ptrDWord(peb + PEB_NUMBER_OF_HEAPS[_arch_idx]))
+			processheaps = int(pykd.ptrPtr(peb + PEB_PROCESS_HEAPS[_arch_idx]))
+		except:
+			return allheaps
+
+		# PEB.ProcessHeaps points into ntdll .data (RtlpProcessHeaps).
+		# If ntdll is corrupted, nrofheaps or processheaps may be garbage.
+		MAX_HEAPS = 1000
+		if nrofheaps > MAX_HEAPS or nrofheaps < 0:
+			dbgp("NumberOfHeaps looks corrupted (%d), capping at %d" % (nrofheaps, MAX_HEAPS))
+			nrofheaps = MAX_HEAPS
+		if processheaps == 0 or processheaps > TOP_USERLAND:
+			dbgp("ProcessHeaps pointer looks corrupted (0x%x)" % processheaps)
+			return allheaps
+
 		try:
    			# Python 2
 			xrange
@@ -3312,11 +3682,19 @@ class Debugger:
 			# Python 3, xrange is now named range
 			xrange = range
 
+		ptr_size = arch // 8
 		for i in xrange(nrofheaps):
 			# _PEB.ProcessHeaps[i](VOID*)
-			nextheap = pykd.ptrPtr(processheaps + (i*(arch//8)))
+			try:
+				nextheap = pykd.ptrPtr(processheaps + (i * ptr_size))
+			except:
+				break
 			if nextheap == 0x00000000:
 				break
+			# Validate: must be in userland and page-aligned (heaps are)
+			if nextheap > TOP_USERLAND or (nextheap & 0xFFF) != 0:
+				dbgp("Skipping corrupted heap pointer at index %d: 0x%x" % (i, nextheap))
+				continue
 			if not nextheap in allheaps:
 				allheaps.append(nextheap)
 		return allheaps
@@ -3360,15 +3738,6 @@ class Debugger:
 		self._peb_addr = getPEBAddress()
 		return self._peb_addr
 
-	def get_peb_info(self):
-		"""
-		Return a pykd.typedVar("ntdll!_PEB") using the cached PEB address.
-		Result is cached in self._peb_info.
-		"""
-		if self._peb_info is None:
-			self._peb_info = getPEBInfo(self.get_peb_addr())
-		return self._peb_info
-
 	def _peb_walk(self):
 		"""
 		Yield (dll_base, base_name, full_path) for every entry in
@@ -3389,12 +3758,18 @@ class Debugger:
 		fmt_ptr  = '<Q' if arch == 64 else '<L'
 
 		def _ptr(addr):
-			return struct.unpack(fmt_ptr, bytes(bytearray(self.readMemory(addr, ptr_size))))[0]
+			data = bytes(bytearray(self.readMemory(addr, ptr_size)))
+			if len(data) < ptr_size:
+				return None
+			return struct.unpack(fmt_ptr, data)[0]
 
 		def _wstr(entry, off):
-			length  = struct.unpack('<H', bytes(bytearray(self.readMemory(entry + off, 2))))[0]
-			buf_ptr = _ptr(entry + off + (8 if arch == 64 else 4))
-			if length == 0 or buf_ptr == 0:
+			data = bytes(bytearray(self.readMemory(entry + off, 2)))
+			if len(data) < 2:
+				return ""
+			length  = struct.unpack('<H', data)[0]
+			buf_ptr = _ptr(entry + off + ptr_size)
+			if not buf_ptr or length == 0:
 				return ""
 			raw = bytes(bytearray(self.readMemory(buf_ptr, length)))
 			return raw.decode('utf-16-le', errors='replace')
@@ -3402,21 +3777,36 @@ class Debugger:
 		peb_addr = self.get_peb_addr()
 		if peb_addr == 0:
 			return
-		ldr_addr  = _ptr(peb_addr + (0x18 if arch == 64 else 0x0C))
-		list_head = ldr_addr + (0x10 if arch == 64 else 0x0C)
+		ldr_addr = _ptr(peb_addr + PEB_LDR[_arch_idx])
+		if not ldr_addr:
+			results = getModulesFromDebugger()
+			self._peb_list = results
+			for entry in results:
+				yield entry
+			return
+		list_head = ldr_addr + LDR_IN_LOAD_ORDER[_arch_idx]
 
-		dll_base_off  = 0x30 if arch == 64 else 0x18
-		full_name_off = 0x48 if arch == 64 else 0x24
-		base_name_off = 0x58 if arch == 64 else 0x2C
+		dll_base_off  = LDR_DLL_BASE[_arch_idx]
+		full_name_off = LDR_FULL_DLL_NAME[_arch_idx]
+		base_name_off = LDR_BASE_DLL_NAME[_arch_idx]
 
 		flink = _ptr(list_head)
 		results = []
-		while flink != list_head and flink != 0:
+		while flink and flink != list_head:
 			dll_base  = _ptr(flink + dll_base_off)
+			if dll_base is None:
+				break
 			full_path = _wstr(flink, full_name_off)
 			base_name = _wstr(flink, base_name_off)
 			results.append((dll_base, base_name, full_path))
 			flink = _ptr(flink)
+			if flink is None:
+				break
+
+		# Fallback: if PEB walk failed (e.g. ntdll corrupted), use debug engine
+		if not results:
+			results = getModulesFromDebugger()
+
 		self._peb_list = results
 		for entry in self._peb_list:
 			yield entry
