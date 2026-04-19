@@ -9855,18 +9855,20 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 	
 	for jreg in jopregs:
 		search.append("jmp " + jreg)
-		search.append("jmp [" + jreg + "]")
-		for offsetval in range(0, 40+1, 2):
-			search.append("jmp [" + jreg + "+0x" + toHexByte(offsetval)+"]")
+		if arch == 32:
+			search.append("jmp [" + jreg + "]")
+			for offsetval in range(0, 40+1, 2):
+				search.append("jmp [" + jreg + "+0x" + toHexByte(offsetval)+"]")
 
-	stackreg = "esp"
-	if arch == 64:
-		stackreg = "rsp"
-	search.append("jmp [%s]" % stackreg)
-		
-	for offsetval in range(0, 40+1, 2):
-		search.append("jmp [" + stackreg + "+0x" + toHexByte(offsetval) + "]")
+	if arch == 32:
+		stackreg = "esp"
 	
+		search.append("jmp [%s]" % stackreg)
+			
+		for offsetval in range(0, 40+1, 2):
+			search.append("jmp [" + stackreg + "+0x" + toHexByte(offsetval) + "]")
+
+
 	dbg.log("[+] Enumerating %d endings in %d module(s)..." % (len(search),len(modulestosearch)))
 	for thismodule in modulestosearch:
 		dbg.log("    - Querying module %s" % thismodule)
