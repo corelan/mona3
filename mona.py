@@ -176,6 +176,44 @@ noheader = False
 
 dbg = dbglib.Debugger()
 
+def _ensureSymbolCache(auto_fix=False):
+	"""Check that WinDBG has a valid local symbol cache configured.
+
+	Returns a list of valid local filesystem cache directories.
+	If none are found and auto_fix is True, sets a default symbol path.
+	If none are found and auto_fix is False, logs a warning and returns [].
+	"""
+	if __DEBUGGERAPP__ != "WinDBG":
+		return []
+
+	raw = dbglib.getSymbolPath().replace(" ", "")
+	if raw == "":
+		if auto_fix:
+			dbg.log("")
+			dbg.log("** Warning, no symbol path set ! ** ", highlight=1)
+			sympath = "srv*c:\\symbols*https://msdl.microsoft.com/download/symbols"
+			dbg.log("   I'll set the symbol path to %s" % sympath)
+			dbglib.setSymbolPath(sympath)
+			dbg.log("   Symbol path set, now reloading symbols...")
+			dbg.nativeCommand(".reload")
+			dbg.log("   All set. Please restart WinDBG.")
+			dbg.log("")
+		else:
+			dbg.log("[!] No symbol path configured", highlight=1)
+			dbg.log("    Configure a symbol path first, e.g.:")
+			dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+			return []
+
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+
+	if not cache_dirs and not auto_fix:
+		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
+		dbg.log("    Configure a symbol path with a local cache, e.g.:")
+		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+
+	return cache_dirs
+
 commands = {}
 
 if __DEBUGGERAPP__ == "WinDBG":
@@ -303,45 +341,6 @@ def _ensure_mnproc():
 	if mnproc is None:
 		mnproc = MnProc()
 	return mnproc
-
-
-def _ensureSymbolCache(auto_fix=False):
-	"""Check that WinDBG has a valid local symbol cache configured.
-
-	Returns a list of valid local filesystem cache directories.
-	If none are found and auto_fix is True, sets a default symbol path.
-	If none are found and auto_fix is False, logs a warning and returns [].
-	"""
-	if __DEBUGGERAPP__ != "WinDBG":
-		return []
-
-	raw = dbglib.getSymbolPath().replace(" ", "")
-	if raw == "":
-		if auto_fix:
-			dbg.log("")
-			dbg.log("** Warning, no symbol path set ! ** ", highlight=1)
-			sympath = "srv*c:\\symbols*https://msdl.microsoft.com/download/symbols"
-			dbg.log("   I'll set the symbol path to %s" % sympath)
-			dbglib.setSymbolPath(sympath)
-			dbg.log("   Symbol path set, now reloading symbols...")
-			dbg.nativeCommand(".reload")
-			dbg.log("   All set. Please restart WinDBG.")
-			dbg.log("")
-		else:
-			dbg.log("[!] No symbol path configured", highlight=1)
-			dbg.log("    Configure a symbol path first, e.g.:")
-			dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
-			return []
-
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
-	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
-
-	if not cache_dirs and not auto_fix:
-		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
-		dbg.log("    Configure a symbol path with a local cache, e.g.:")
-		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
-
-	return cache_dirs
 
 
 def getRegisters():
