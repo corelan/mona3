@@ -23885,6 +23885,19 @@ def _parse_mona_args_with_argparse(raw_args):
 	# Work on a copy
 	argv = _strip_launcher_and_script(raw_args)
 
+	# Common typo: -cbp instead of -cpb
+	normalized_argv = []
+	cbp_warned = False
+	for token in argv:
+		if token == "-cbp":
+			if not cbp_warned:
+				dbg.log("[!] Parameter '-cbp' detected. I believe you meant to use '-cpb', so I fixed that for you", highlight=1)
+				cbp_warned = True
+			normalized_argv.append("-cpb")
+		else:
+			normalized_argv.append(token)
+	argv = normalized_argv
+
 	# First remaining token is the command/alias, not an argument
 	command = ""
 	if len(argv) > 0:
