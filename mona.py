@@ -167,10 +167,11 @@ disasmLowerChecked = False
 disasmIsLower = False
 configFileCache = {}
 configwarningshown = False
+_excluded_modules_list = None
 ptr_counter = 0
 ptr_to_get = -1
 silent = False
-ignoremodules = True
+g_omitModuleTableInOutpuFile = False
 noheader = False
 
 dbg = dbglib.Debugger()
@@ -295,10 +296,12 @@ def resetGlobals():
 	global currentArgs
 	global disasmLowerChecked
 	global mnproc
+	global _excluded_modules_list
 
 	mnproc = MnProc()
 	currentArgs = None
 	disasmLowerChecked = False
+	_excluded_modules_list = None
 	return
 
 
@@ -317,18 +320,7 @@ def getAllRegisters():
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		return getRegisters()
 	else:
-		allregs = getAllRegs()
-		allregvals = {}
-		# construct a dict with the actual values
-		for thisreg in allregs:
-			try:
-				regval = pykd.reg(thisreg)
-				allregvals[thisreg] = regval
-			except Exception as e:
-				dbgp("Unable to access register %s: %s" % (thisreg, str(e)))
-				continue
-		dbgp("Returning %s" % allregvals)
-		return allregvals
+		return dbg.getRegs()
 
 
 def _safe_int(v):
@@ -2003,10 +1995,14 @@ class MnPEB:
 	_offsets = {
 		"ImageBaseAddress":     (0x08, 0x10),
 		"Ldr":                  (0x0C, 0x18),
+		"ProcessParameters":    (0x10, 0x20),
 		"ProcessHeap":          (0x18, 0x30),
 		"NumberOfHeaps":        (0x88, 0xE8),
 		"MaximumNumberOfHeaps": (0x8C, 0xEC),
 		"ProcessHeaps":         (0x90, 0xF0),
+		"OSMajorVersion":       (0xA4, 0x118),
+		"OSMinorVersion":       (0xA8, 0x11C),
+		"OSBuildNumber":        (0xAC, 0x120),
 	}
 
 	# PEB_LDR_DATA list head offsets: (x86, x64)
@@ -2034,7 +2030,7 @@ class MnPEB:
 	_raw_cache = {}
 
 	# Architecture index: 0 for x86, 1 for x64
-	_idx = 1 if arch == 64 else 0
+	_arch_index = 1 if arch == 64 else 0
 
 	def __init__(self):
 		self.PEBAddress = get_peb_addr()
@@ -2047,15 +2043,18 @@ class MnPEB:
 		def _read_dword(addr):
 			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
 
-		idx = self._idx
 		peb = self.PEBAddress
 
-		self.ImageBaseAddress     = _read_ptr(peb + self._offsets["ImageBaseAddress"][idx])
-		self.Ldr                  = _read_ptr(peb + self._offsets["Ldr"][idx])
-		self.ProcessHeap          = _read_ptr(peb + self._offsets["ProcessHeap"][idx])
-		self.NumberOfHeaps        = _read_dword(peb + self._offsets["NumberOfHeaps"][idx])
-		self.MaximumNumberOfHeaps = _read_dword(peb + self._offsets["MaximumNumberOfHeaps"][idx])
-		self.ProcessHeaps         = _read_ptr(peb + self._offsets["ProcessHeaps"][idx])
+		self.ImageBaseAddress     = _read_ptr(peb + self._offsets["ImageBaseAddress"][self._arch_index])
+		self.Ldr                  = _read_ptr(peb + self._offsets["Ldr"][self._arch_index])
+		self.ProcessParameters    = _read_ptr(peb + self._offsets["ProcessParameters"][self._arch_index])
+		self.ProcessHeap          = _read_ptr(peb + self._offsets["ProcessHeap"][self._arch_index])
+		self.NumberOfHeaps        = _read_dword(peb + self._offsets["NumberOfHeaps"][self._arch_index])
+		self.MaximumNumberOfHeaps = _read_dword(peb + self._offsets["MaximumNumberOfHeaps"][self._arch_index])
+		self.ProcessHeaps         = _read_ptr(peb + self._offsets["ProcessHeaps"][self._arch_index])
+		self.OSMajorVersion       = _read_dword(peb + self._offsets["OSMajorVersion"][self._arch_index])
+		self.OSMinorVersion       = _read_dword(peb + self._offsets["OSMinorVersion"][self._arch_index])
+		self.OSBuildNumber        = struct.unpack('<H', dbg.readMemory(peb + self._offsets["OSBuildNumber"][self._arch_index], 2))[0]
 
 		self.LdrList = self.peb_walk()
 
@@ -2072,15 +2071,19 @@ class MnPEB:
 				yield entry
 			return
 
-		idx = MnPEB._idx
-
 		def _read_ptr(addr):
-			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
+			data = dbg.readMemory(addr, PTR_SIZE)
+			if len(data) < PTR_SIZE:
+				return None
+			return struct.unpack(PTR_FMT, data)[0]
 
 		def _wstr(entry, off):
-			length  = struct.unpack('<H', dbg.readMemory(entry + off, 2))[0]
+			data = dbg.readMemory(entry + off, 2)
+			if len(data) < 2:
+				return ""
+			length  = struct.unpack('<H', data)[0]
 			buf_ptr = _read_ptr(entry + off + PTR_SIZE)
-			if length == 0 or buf_ptr == 0:
+			if not buf_ptr or length == 0:
 				return ""
 			raw = dbg.readMemory(buf_ptr, length)
 			return raw.decode('utf-16-le', errors='replace')
@@ -2088,24 +2091,35 @@ class MnPEB:
 		peb_addr = get_peb_addr()
 		if peb_addr == 0:
 			return
-		ldr = _read_ptr(peb_addr + MnPEB._offsets["Ldr"][idx])
+		ldr = _read_ptr(peb_addr + MnPEB._offsets["Ldr"][MnPEB._arch_index])
+		if not ldr:
+			return
 
 		info = MnPEB._ldr_list_info[list_name]
-		list_head     = ldr + info["head_offset"][idx]
-		link_off      = info["link_offset"][idx]
-		dll_base_off  = MnPEB._dll_base_off[idx]
-		full_name_off = MnPEB._full_name_off[idx]
-		base_name_off = MnPEB._base_name_off[idx]
+		list_head     = ldr + info["head_offset"][MnPEB._arch_index]
+		link_off      = info["link_offset"][MnPEB._arch_index]
+		dll_base_off  = MnPEB._dll_base_off[MnPEB._arch_index]
+		full_name_off = MnPEB._full_name_off[MnPEB._arch_index]
+		base_name_off = MnPEB._base_name_off[MnPEB._arch_index]
 
 		flink = _read_ptr(list_head)
 		results = []
-		while flink != list_head and flink != 0:
+		while flink and flink != list_head:
 			entry_base = flink - link_off
 			dll_base   = _read_ptr(entry_base + dll_base_off)
+			if dll_base is None:
+				break
 			full_path  = _wstr(entry_base, full_name_off)
 			base_name  = _wstr(entry_base, base_name_off)
 			results.append((dll_base, base_name, full_path))
 			flink = _read_ptr(flink)
+			if flink is None:
+				break
+
+		# Fallback: if PEB walk failed (e.g. ntdll corrupted), use debug engine
+		if not results and __DEBUGGERAPP__ == "WinDBG":
+			results = dbglib.getModulesFromDebugger()
+
 		MnPEB._raw_cache[list_name] = results
 		for entry in results:
 			yield entry
@@ -2196,7 +2210,7 @@ class MnTEB:
 		"ThreadId":      (0x24, 0x48),  # ClientId.UniqueThread
 	}
 
-	_idx = 1 if arch == 64 else 0
+	_arch_index = 1 if arch == 64 else 0
 
 	def __init__(self, teb_addr, peb=None):
 		self.TEBAddress = teb_addr
@@ -2204,23 +2218,21 @@ class MnTEB:
 		# Reference to the shared MnPEB (from MnProc), not a new instance
 		self.PEB = peb
 
-		idx = self._idx
-
 		def _read_ptr(addr):
 			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
 
 		def _read_dword(addr):
 			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
 
-		self.StackBase  = _read_ptr(teb_addr + self._offsets["StackBase"][idx])
-		self.StackLimit = _read_ptr(teb_addr + self._offsets["StackLimit"][idx])
-		self.ProcessId  = _read_dword(teb_addr + self._offsets["ProcessId"][idx])
-		self.Id         = _read_dword(teb_addr + self._offsets["ThreadId"][idx])
+		self.StackBase  = _read_ptr(teb_addr + self._offsets["StackBase"][self._arch_index])
+		self.StackLimit = _read_ptr(teb_addr + self._offsets["StackLimit"][self._arch_index])
+		self.ProcessId  = _read_dword(teb_addr + self._offsets["ProcessId"][self._arch_index])
+		self.Id         = _read_dword(teb_addr + self._offsets["ThreadId"][self._arch_index])
 
 		# SEH chain: list of [record_addr, handler_addr]; x64 has no chain
 		if arch == 32:
 			self.SEHChain = []
-			nextrecord = _read_ptr(teb_addr + self._offsets["ExceptionList"][idx])
+			nextrecord = _read_ptr(teb_addr + self._offsets["ExceptionList"][self._arch_index])
 			while nextrecord != 0xFFFFFFFF and nextrecord != 0:
 				try:
 					nseh = _read_ptr(nextrecord)
@@ -3374,7 +3386,7 @@ class MnLog:
 		self.filename = filename
 		
 			
-	def reset(self,clear=True,showheader=True):
+	def reset(self,clear=True,showheader=True,skipModuleTable=False):
 		"""
 		Optionally clears a log file, write a header to the log file and return filename
 
@@ -3382,6 +3394,7 @@ class MnLog:
 		clear = Boolean. When set to false, the logfile won't be cleared. This method can be
 		used to retrieve the full path to the logfile name of the current MnLog class object
 		Logfiles are written to the debugger program folder, unless a config value 'workingfolder' is set.
+		skipModuleTable = Boolean. When True, don't write the module table to the output file.
 
 		Return:
 		full path to the logfile name.
@@ -3468,11 +3481,13 @@ class MnLog:
 				except:
 					pass
 			#write module table
+			dbgp("reset: g_omitModuleTableInOutpuFile=%s, skipModuleTable=%s, logfile=%s" % (g_omitModuleTableInOutpuFile, skipModuleTable, logfile))
 			try:
-				if not ignoremodules:
+				if not g_omitModuleTableInOutpuFile and not skipModuleTable:
 					showModuleTable(logfile)
-			except:
-				pass
+			except Exception as e:
+				dbgp("showModuleTable failed: %s" % str(e))
+				dbgp(traceback.format_exc())
 		return logfile
 		
 	def write(self,entry,logfile):
@@ -3564,6 +3579,40 @@ class MnModule:
 	Class to access module properties
 	"""
 
+	# PE offsets: (PE32, PE32+) unless noted
+	_pe_offsets = {
+		# IMAGE_DOS_HEADER
+		"e_lfanew":              0x3c,           # same for both
+		# IMAGE_FILE_HEADER (relative to PE signature)
+		"NumberOfSections":      0x06,
+		"SizeOfOptionalHeader":  0x14,
+		# IMAGE_OPTIONAL_HEADER (relative to PE signature)
+		"Magic":                 0x18,
+		"AddressOfEntryPoint":   0x28,
+		"ImageBase":             (0x34, 0x30),
+		"SizeOfImage":           0x50,
+		"DllCharacteristics":    0x5e,
+		"NumberOfRvaAndSizes":   (0x74, 0x84),
+		"DataDirectory":         (0x78, 0x88),
+		# IMAGE_SECTION_HEADER (relative to section start)
+		"Sec_VirtualSize":       0x08,
+		"Sec_VirtualAddress":    0x0c,
+		"Sec_Characteristics":   0x24,
+		"Sec_Size":              40,             # sizeof(IMAGE_SECTION_HEADER)
+		# IMAGE_LOAD_CONFIG_DIRECTORY32
+		"SEHandlerTable":        0x40,
+		"SEHandlerCount":        0x44,
+		# IMAGE_DEBUG_DIRECTORY
+		"DbgDir_Size":           28,             # sizeof(IMAGE_DEBUG_DIRECTORY)
+		"DbgDir_Type":           12,
+		"DbgDir_SizeOfData":     16,
+		"DbgDir_AddressOfRawData": 20,
+	}
+
+	# Data directory entry indices
+	_DD_DEBUG       = 6
+	_DD_LOAD_CONFIG = 10
+
 	def __init__(self, modulename):
 		#if DEBUG_MODE:
 		dbgp(get_current_function_name())
@@ -3589,6 +3638,8 @@ class MnModule:
 		mversion = ""
 		msehtable = 0
 		msehcount = 0
+		mpdbname = ""
+		mpdbguidage = ""
 		self.internalname = modulename
 		if modulename != "":
 			# if info is cached, retrieve from cache
@@ -3613,6 +3664,8 @@ class MnModule:
 				mdllcharacteristics = getModuleProperty(modulename, "dllcharacteristics")
 				msehtable = getModuleProperty(modulename, "sehtable") or 0
 				msehcount = getModuleProperty(modulename, "sehcount") or 0
+				mpdbname = getModuleProperty(modulename, "pdbname") or ""
+				mpdbguidage = getModuleProperty(modulename, "pdbguidage") or ""
 			else:
 				#gather info manually - this code should only get called from populateModuleInfo()
 				modissafeseh = True
@@ -3662,47 +3715,48 @@ class MnModule:
 				mcodesize = 0
 
 				if mzbase > 0:
-					peoffset = struct.unpack('<L', dbg.readMemory(mzbase + 0x3c, 4))[0]
+					peoffset = struct.unpack('<L', dbg.readMemory(mzbase + MnModule._pe_offsets["e_lfanew"], 4))[0]
 					pebase = mzbase + peoffset
 
 					pesig = struct.unpack('<I', dbg.readMemory(pebase, 4))[0]
 					if pesig == 0x4550:
-						optional_magic = struct.unpack('<H', dbg.readMemory(pebase + 0x18, 2))[0]
+						optional_magic = struct.unpack('<H', dbg.readMemory(pebase + MnModule._pe_offsets["Magic"], 2))[0]
 						is_pe64 = (optional_magic == 0x20b)
+						_arch_index = 1 if is_pe64 else 0
 
 						# SizeOfImage — same offset in PE32 and PE32+
-						mzsize = struct.unpack('<L', dbg.readMemory(pebase + 0x50, 4))[0]
+						mzsize = struct.unpack('<L', dbg.readMemory(pebase + MnModule._pe_offsets["SizeOfImage"], 4))[0]
 
 						# ImageBase: read from disk file — loader patches in-memory ImageBase to actual load address
 						if path:
 							try:
 								with open(path, 'rb') as _f:
-									_f.seek(0x3c)
+									_f.seek(MnModule._pe_offsets["e_lfanew"])
 									_peo = struct.unpack('<L', _f.read(4))[0]
-									_f.seek(_peo + 0x18)
+									_f.seek(_peo + MnModule._pe_offsets["Magic"])
 									if struct.unpack('<H', _f.read(2))[0] == 0x20b:
-										_f.seek(_peo + 0x30)
+										_f.seek(_peo + MnModule._pe_offsets["ImageBase"][1])
 										mzrebase = struct.unpack('<Q', _f.read(8))[0]
 									else:
-										_f.seek(_peo + 0x34)
+										_f.seek(_peo + MnModule._pe_offsets["ImageBase"][0])
 										mzrebase = struct.unpack('<L', _f.read(4))[0]
 							except Exception:
 								if is_pe64:
-									mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + 0x30, 8))[0]
+									mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + MnModule._pe_offsets["ImageBase"][1], 8))[0]
 								else:
-									mzrebase = struct.unpack('<L', dbg.readMemory(pebase + 0x34, 4))[0]
+									mzrebase = struct.unpack('<L', dbg.readMemory(pebase + MnModule._pe_offsets["ImageBase"][0], 4))[0]
 						else:
 							if is_pe64:
-								mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + 0x30, 8))[0]
+								mzrebase = struct.unpack('<Q', dbg.readMemory(pebase + MnModule._pe_offsets["ImageBase"][1], 8))[0]
 							else:
-								mzrebase = struct.unpack('<L', dbg.readMemory(pebase + 0x34, 4))[0]
+								mzrebase = struct.unpack('<L', dbg.readMemory(pebase + MnModule._pe_offsets["ImageBase"][0], 4))[0]
 
 						# AddressOfEntryPoint RVA — same offset in PE32 and PE32+
-						aoe_rva = struct.unpack('<L', dbg.readMemory(pebase + 0x28, 4))[0]
+						aoe_rva = struct.unpack('<L', dbg.readMemory(pebase + MnModule._pe_offsets["AddressOfEntryPoint"], 4))[0]
 						mentry  = mzbase + aoe_rva if aoe_rva != 0 else 0
 
 						# DllCharacteristics — same offset in both
-						dll_characteristics_flags = struct.unpack('<H', dbg.readMemory(pebase + 0x5e, 2))[0]
+						dll_characteristics_flags = struct.unpack('<H', dbg.readMemory(pebase + MnModule._pe_offsets["DllCharacteristics"], 2))[0]
 						mdllcharacteristics = dll_characteristics_flags
 						modisaslr = ((dll_characteristics_flags & 0x0040) != 0)
 						modisnx   = ((dll_characteristics_flags & 0x0100) != 0)
@@ -3710,14 +3764,14 @@ class MnModule:
 						modissafeseh = False
 
 						# Walk section headers for first code section (IMAGE_SCN_CNT_CODE = 0x20)
-						num_sections = struct.unpack('<H', dbg.readMemory(pebase + 0x06, 2))[0]
-						opt_hdr_size = struct.unpack('<H', dbg.readMemory(pebase + 0x14, 2))[0]
-						sections_va  = pebase + 0x18 + opt_hdr_size
+						num_sections = struct.unpack('<H', dbg.readMemory(pebase + MnModule._pe_offsets["NumberOfSections"], 2))[0]
+						opt_hdr_size = struct.unpack('<H', dbg.readMemory(pebase + MnModule._pe_offsets["SizeOfOptionalHeader"], 2))[0]
+						sections_va  = pebase + MnModule._pe_offsets["Magic"] + opt_hdr_size
 						for i in range(num_sections):
-							sec       = sections_va + (i * 40)
-							sec_vsize = struct.unpack('<L', dbg.readMemory(sec + 0x08, 4))[0]
-							sec_vaddr = struct.unpack('<L', dbg.readMemory(sec + 0x0c, 4))[0]
-							sec_chars = struct.unpack('<L', dbg.readMemory(sec + 0x24, 4))[0]
+							sec       = sections_va + (i * MnModule._pe_offsets["Sec_Size"])
+							sec_vsize = struct.unpack('<L', dbg.readMemory(sec + MnModule._pe_offsets["Sec_VirtualSize"], 4))[0]
+							sec_vaddr = struct.unpack('<L', dbg.readMemory(sec + MnModule._pe_offsets["Sec_VirtualAddress"], 4))[0]
+							sec_chars = struct.unpack('<L', dbg.readMemory(sec + MnModule._pe_offsets["Sec_Characteristics"], 4))[0]
 							if sec_chars & 0x00000020:  # IMAGE_SCN_CNT_CODE
 								mcodebase = mzbase + sec_vaddr
 								mcodesize = sec_vsize
@@ -3725,24 +3779,55 @@ class MnModule:
 
 						# SafeSEH: PE32 only (no SEH in 64-bit)
 						if not is_pe64:
-							# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
-							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + 0x74, 4))[0]
-							if numberofentries > 10:
-								loadcfg_rva, loadcfg_size = struct.unpack('<LL', dbg.readMemory(pebase + 0x78 + (8 * 10), 8))[0:2]
+							numberofentries = struct.unpack('<L', dbg.readMemory(pebase + MnModule._pe_offsets["NumberOfRvaAndSizes"][_arch_index], 4))[0]
+							if numberofentries > MnModule._DD_LOAD_CONFIG:
+								loadcfg_rva, loadcfg_size = struct.unpack('<LL', dbg.readMemory(pebase + MnModule._pe_offsets["DataDirectory"][_arch_index] + (8 * MnModule._DD_LOAD_CONFIG), 8))[0:2]
 								if loadcfg_rva != 0 and loadcfg_size != 0:
 									loadcfg = mzbase + loadcfg_rva
 									try:
-										# IMAGE_LOAD_CONFIG_DIRECTORY32
-										# SafeSEH fields:
-										#   SEHandlerTable @ +0x40
-										#   SEHandlerCount @ +0x44
-										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + 0x40, 8))
+										sehtable, sehcount = struct.unpack('<LL', dbg.readMemory(loadcfg + MnModule._pe_offsets["SEHandlerTable"], 8))
 										if sehtable != 0 and sehcount != 0:
 											modissafeseh = True
 											msehtable = sehtable
 											msehcount = sehcount
 									except:
 										modissafeseh = False
+
+						# Parse RSDS CodeView entry to extract PDB GUID+AGE
+						try:
+							numentries = struct.unpack('<L', dbg.readMemory(pebase + MnModule._pe_offsets["NumberOfRvaAndSizes"][_arch_index], 4))[0]
+							if numentries > MnModule._DD_DEBUG:
+								dbg_rva, dbg_sz = struct.unpack('<LL', dbg.readMemory(pebase + MnModule._pe_offsets["DataDirectory"][_arch_index] + (8 * MnModule._DD_DEBUG), 8))
+								if dbg_rva != 0 and dbg_sz != 0:
+									dbg_dir = mzbase + dbg_rva
+									num_dbg = dbg_sz // MnModule._pe_offsets["DbgDir_Size"]
+									for di in range(num_dbg):
+										dbg_entry = dbg_dir + (di * MnModule._pe_offsets["DbgDir_Size"])
+										dbg_type = struct.unpack('<L', dbg.readMemory(dbg_entry + MnModule._pe_offsets["DbgDir_Type"], 4))[0]
+										if dbg_type == 2:  # IMAGE_DEBUG_TYPE_CODEVIEW
+											cv_rva = struct.unpack('<L', dbg.readMemory(dbg_entry + MnModule._pe_offsets["DbgDir_AddressOfRawData"], 4))[0]
+											cv_datasize = struct.unpack('<L', dbg.readMemory(dbg_entry + MnModule._pe_offsets["DbgDir_SizeOfData"], 4))[0]
+											if cv_rva != 0 and cv_datasize >= 24:
+												cv_addr = mzbase + cv_rva
+												cv_sig = dbg.readMemory(cv_addr, 4)
+												if cv_sig == b'RSDS':
+													g = dbg.readMemory(cv_addr + 4, 16)
+													guid = (
+														"%08x%04x%04x%s" % (
+															struct.unpack('<L', g[0:4])[0],
+															struct.unpack('<H', g[4:6])[0],
+															struct.unpack('<H', g[6:8])[0],
+															binascii.hexlify(g[8:16]).decode('ascii'),
+														)
+													).upper()
+													age = struct.unpack('<L', dbg.readMemory(cv_addr + 20, 4))[0]
+													pdb_raw = dbg.readMemory(cv_addr + 24, cv_datasize - 24)
+													mpdbname = pdb_raw.split(b'\x00')[0].decode('utf-8', 'ignore')
+													mpdbname = os.path.basename(mpdbname)
+													mpdbguidage = "%s%X" % (guid, age)
+												break
+						except:
+							pass
 
 					if mzrebase != mzbase:
 						modrebased = True
@@ -3781,16 +3866,20 @@ class MnModule:
 			return None
 
 		#check if module is excluded
-		thisconfig = MnConfig()
-		allexcluded = []
-		excludedlist = thisconfig.get("excluded_modules")
+		global _excluded_modules_list
+		if _excluded_modules_list is None:
+			thisconfig = MnConfig()
+			excludedlist = thisconfig.get("excluded_modules")
+			if excludedlist:
+				_excluded_modules_list = [e.lower().strip() for e in re.split(r"[;,]", excludedlist) if e.strip()]
+			else:
+				_excluded_modules_list = []
 		modfound = False
-		if excludedlist:
-			# allow both ';' and ',' as separators
-			allexcluded = [entry for entry in re.split(r"[;,]", excludedlist) if entry.strip()]
-			for exclentry in allexcluded:
-				if modulename.lower().strip().startswith(exclentry.lower().strip()):
-					modfound = True
+		mod_lower = modulename.lower().strip()
+		for exclentry in _excluded_modules_list:
+			if mod_lower.startswith(exclentry):
+				modfound = True
+				break
 
 		self.isExcluded = modfound
 		
@@ -3834,6 +3923,10 @@ class MnModule:
 		self.moduleSEHTable = msehtable
 
 		self.moduleSEHCount = msehcount
+
+		self.modulePdbName = mpdbname
+
+		self.modulePdbGuidAge = mpdbguidage
 
 
 
@@ -4903,7 +4996,29 @@ class MnHeap(object):
 		self.Encoding = 0
 		self.EncodeFlagMask = 0
 		self.FrontEndHeap = 0
+		self._corrupted = None
 		return None
+
+	def isCorrupted(self):
+		"""Check if the heap signature is valid.
+
+		Return: bool - True if the heap signature does not match
+		the expected NT (0xeeffeeff) or Segment (0xddeeddee) value.
+		"""
+		if self._corrupted is not None:
+			return self._corrupted
+		htype = self.getHeapType()
+		try:
+			if htype == "NT":
+				self._corrupted = self.getSignature() != 0xeeffeeff
+			elif htype == "Segment":
+				self._corrupted = self.getSegmentHeapSignature() != 0xddeeddee
+			else:
+				# Unknown type means neither signature matched
+				self._corrupted = True
+		except:
+			self._corrupted = True
+		return self._corrupted
 
 	def getSignature(self):
 		"""
@@ -6171,8 +6286,7 @@ class MnProc:
 
 	def getModuleForAddress(self, addr):
 		"""Return the MnModule containing *addr*, or None."""
-		if len(self.g_modules) == 0:
-			populateModuleInfo()
+		populateModuleInfo()
 		for modkey, props in self.g_modules.items():
 			if props["base"] <= addr <= props["top"]:
 				return MnModule(modkey)
@@ -6229,8 +6343,7 @@ class MnProc:
 
 		# Modules
 		if len(self.modules) == 0:
-			if len(self.g_modules) == 0:
-				populateModuleInfo()
+			populateModuleInfo()
 			self.modules = dict(self.g_modules)
 
 		# Stacks
@@ -6420,6 +6533,16 @@ class MnProc:
 			fe_label = ""
 			seg_count = 0
 			va_count = 0
+			# Check heap signature validity
+			corrupted = False
+			try:
+				mheap = MnHeap(heapaddr)
+				corrupted = mheap.isCorrupted()
+			except:
+				corrupted = True
+			if corrupted:
+				regions.append((heapaddr, heapaddr, "Heap", "%s (** CORRUPTED **)" % heapname))
+				continue
 			if heapaddr in self.ntheapdetail:
 				fe_type = self.ntheapdetail[heapaddr].get("frontend_type", 0)
 				fe_label = " | FrontEnd: %s" % fe_names.get(fe_type, "0x%x" % fe_type)
@@ -6685,8 +6808,7 @@ class MnPointer:
 		String with the name of the module a pointer belongs to,
 		or empty if pointer does not belong to a module
 		"""		
-		if len(mnproc.g_modules)==0:
-			populateModuleInfo()
+		populateModuleInfo()
 		if self.ownerName == "":
 			# not stack or heap
 			for thismodule,modproperties in mnproc.g_modules.items():
@@ -7825,8 +7947,7 @@ def getRangesOutsideModules():
 	return ranges
 
 def isModuleLoadedInProcess(modulename):
-	if len(mnproc.g_modules) == 0:
-		populateModuleInfo()
+	populateModuleInfo()
 	modulefound = False
 	module = dbg.getModule(modulename)
 	if(not module):
@@ -8169,8 +8290,7 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 	dbgp(get_current_function_name())
 	dbgp("function criteria: %s" % criteria)
 	dbgp("g_modules: %d entries" % len(mnproc.g_modules))
-	if len(mnproc.g_modules) == 0 or mnproc.g_modulesOrder != peb_order:
-		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
+	populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
 
 	# Build exclusion set once from config
@@ -8309,12 +8429,16 @@ def getModuleProperty(modname,parameter):
 
 def populateModuleInfo(from_memory=False, peb_order="load"):
 	"""
-	Populate global dictionary with information about all loaded modules
+	Populate global dictionary with information about all loaded modules.
+	Skips work if the cache is already populated (and peb_order matches).
 	
 	Return:
 	Dictionary
 	"""
 	dbgp(get_current_function_name())
+
+	if len(mnproc.g_modules) > 0 and mnproc.g_modulesOrder == peb_order:
+		return
 
 	if not silent:
 		dbg.setStatusBar("Getting modules info...")
@@ -8357,6 +8481,8 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 				modinfo["dllcharacteristics"]  = thismod.moduleDllCharacteristics
 				modinfo["sehtable"]            = thismod.moduleSEHTable
 				modinfo["sehcount"]            = thismod.moduleSEHCount
+				modinfo["pdbname"]             = thismod.modulePdbName
+				modinfo["pdbguidage"]          = thismod.modulePdbGuidAge
 				mnproc.g_modules[thismod.moduleKey] = modinfo
 			else:
 				if not silent:
@@ -8419,8 +8545,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	sort_keys  - list of (key, reverse) tuples from _parse_sort_spec(), or empty list
 	"""	
 	thistable = ""
-	if len(mnproc.g_modules) == 0:
-		populateModuleInfo()
+	populateModuleInfo()
 
 	filtertext = criteriaToText(modulecriteria, True)
 	excluded_by_configtext = ""
@@ -8487,8 +8612,12 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		for tline in tableinfo:
 			dbg.log(tline)
 	else:
-		with open(logfile,"a") as fh:
-			fh.writelines(thistable)
+		dbgp("showModuleTable: writing %d chars to %s" % (len(thistable), logfile))
+		try:
+			with open(logfile,"a") as fh:
+				fh.write(thistable)
+		except Exception as e:
+			dbgp("showModuleTable: write failed: %s" % str(e))
 		
 #-----------------------------------------------------------------------#
 # This is where the action is
@@ -8555,6 +8684,14 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 			messageshown = False
 			display_order = []
 
+			# Pre-build module lookup from g_modules cache
+			populateModuleInfo()
+			_mod_ranges = []
+			for mkey, mprops in mnproc.g_modules.items():
+				_mod_ranges.append((mprops["base"], mprops["top"], mkey))
+			_mod_obj_cache = {}
+			_mod_str_cache = {}
+
 			# Iterate details in the same length-based order as the summary
 			for optext in sorted_types:
 				pointers = all_opcodes[optext]
@@ -8562,17 +8699,26 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 					ptrinfo = ""
 					modinfo = ""
 					ptrx = MnPointer(ptr)
-					modname = ptrx.belongsTo()
+					# Fast module lookup from cached ranges
+					modname = ""
+					for _mbase, _mtop, _mkey in _mod_ranges:
+						if _mbase <= ptr <= _mtop:
+							modname = _mkey
+							break
 					extrainfo = ""
 					ptrextra = ""
 					if not modname == "":
-						modobj = MnModule(modname)
+						if modname not in _mod_obj_cache:
+							_mod_obj_cache[modname] = MnModule(modname)
+							_mod_str_cache[modname] = str(_mod_obj_cache[modname])
+						modobj = _mod_obj_cache[modname]
+						modstr = _mod_str_cache[modname]
 						rva = 0
 						if (modobj.isRebase or modobj.isAslr):
 							rva = ptr - modobj.moduleBase
 							ptrextra = " (b+0x" + toHex(rva) + ") "
-						ptrinfo = "0x" + toHex(ptr) + ptrextra + " : " + optext + " | " + ptrx.__str__() + " " + modobj.__str__()
-						extrainfo = modobj.__str__()
+						ptrinfo = "0x" + toHex(ptr) + ptrextra + " : " + optext + " | " + ptrx.__str__() + " " + modstr
+						extrainfo = modstr
 					else:
 						ptrinfo = "0x" + toHex(ptr) + " : " + optext + " | " + ptrx.__str__()
 						if ptrx.isOnStack():
@@ -15993,17 +16139,14 @@ def procShowMODULES(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True, peb_order=peb_order)
 	showModuleTable("", modulestosearch, modulecriteria, sort_keys=sort_keys, peb_order=peb_order)
-	global ignoremodules
-	ignoremodules = False
 	logfile = MnLog("modules.txt")
-	thislog = logfile.reset()
-	ignoremodules = True
+	thislog = logfile.reset(skipModuleTable=True)
+	showModuleTable(thislog, modulestosearch, modulecriteria, sort_keys=sort_keys, peb_order=peb_order)
 
 
 def procModuleInfo(args):
 	"""Show detailed information about a single module, looked up by name or base address."""
-	if len(mnproc.g_modules) == 0:
-		populateModuleInfo()
+	populateModuleInfo()
 
 	target_key = None
 
@@ -19334,11 +19477,34 @@ def procHeap(args):
 				defheap = "* Default process heap"
 			if win7mode:
 				iHeap = MnHeap(heap)
+				if iHeap.isCorrupted():
+					nt_sig = None
+					seg_sig = None
+					try:
+						nt_sig = iHeap.getSignature()
+					except:
+						pass
+					try:
+						seg_sig = iHeap.getSegmentHeapSignature()
+					except:
+						pass
+					sigdetail = ""
+					if nt_sig is not None:
+						sigdetail += " NT sig: 0x%08x" % nt_sig
+					if seg_sig is not None:
+						sigdetail += " Seg sig: 0x%08x" % seg_sig
+					dbg.log("0x%08x ** CORRUPTED ** (type: %s,%s) %s" % (heap, iHeap.getHeapType(), sigdetail, defheap), highlight=1)
+					continue
 				if iHeap.usesLFH():
 					lfhheapaddress = iHeap.getLFHAddress()
 					lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
 				if iHeap.getEncodingKey() > 0:
 					keyinfo = "Encoding key: 0x%016x" % iHeap.getEncodingKey()
+			else:
+				iHeap = MnHeap(heap)
+				if iHeap.isCorrupted():
+					dbg.log("0x%08x ** CORRUPTED ** (type: %s) %s" % (heap, iHeap.getHeapType(), defheap), highlight=1)
+					continue
 			dbg.log("%s (%d segment(s)%s) %s %s %s" % ((PTR_PRINT % heap),len(segments),segmentinfo,defheap,lfhheap,keyinfo))
 	else:
 		dbg.log(" ** No heaps found")
@@ -20851,8 +21017,7 @@ def procInfoDump(args):
 	filename = "infodump.xml"
 	xmldata = '<info>\n'
 	xmldata += "<modules>\n"
-	if len(mnproc.g_modules) == 0:
-		populateModuleInfo()
+	populateModuleInfo()
 	modulestoquery=[]
 	for thismodule,modproperties in mnproc.g_modules.items():
 		xmldata += "  <module name='%s'>\n" % thismodule
@@ -20982,8 +21147,7 @@ def procPageACL(args):
 		dbg.log("Showing %d pages" % len(orderedpages))
 	if len(orderedpages) > 0:
 		# Pre-build lookup tables to avoid per-page MnPointer/belongsTo overhead
-		if len(mnproc.g_modules) == 0:
-			populateModuleInfo()
+		populateModuleInfo()
 		mod_ranges = []
 		for modname, modprops in mnproc.g_modules.items():
 			mod_ranges.append((modprops["base"], modprops["top"], modname))
@@ -22769,11 +22933,305 @@ def procDiffHeap(args):
 	return
 
 
-def procSymclean(args):
-	
-	# remove .error files from symbol path folders
-	# if user provided a folder
+def procSym(args):
+	"""Manage symbols: list status, fetch from server, or clean cache. WinDBG only."""
 
+	if __DEBUGGERAPP__ != "WinDBG":
+		dbg.log("*** Sorry, command 'sym' is not supported in %s ***" % __DEBUGGERAPP__, highlight=1)
+		return
+
+	if "l" in args or "list" in args:
+		_sym_list(args)
+	elif "f" in args or "fetch" in args:
+		_sym_load(args)
+	elif "c" in args or "clean" in args:
+		_sym_clean(args)
+	else:
+		dbg.log("[!] Usage: !mona sym -list | -fetch | -clean")
+		dbg.log("    -l / -list   : Show symbol availability for all modules")
+		dbg.log("    -f / -fetch  : Download symbols from symbol server")
+		dbg.log("    -c / -clean  : Remove .error files from symbol cache folders")
+
+
+def _sym_list(args):
+	modulecriteria = {}
+	criteria = {}
+	modulecriteria, criteria = args2criteria(args, modulecriteria, criteria)
+
+	sort_keys = []
+	if "sort" in args and args["sort"]:
+		sort_keys, err = _parse_sort_spec(str(args["sort"]).strip())
+		if err:
+			dbg.log("[!] Invalid -sort value: %s" % err)
+			return
+	if not sort_keys:
+		sort_keys = [("base", False)]
+
+	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
+
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+
+	if not cache_dirs:
+		dbg.log("[!] No symbol cache directories found in .sympath")
+		dbg.log("    Configure a symbol path first, e.g.:")
+		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+		return
+
+	filtertext = criteriaToText(modulecriteria, True)
+	if filtertext:
+		dbg.log("[+] Filter: %s" % filtertext)
+	dbg.log("[+] Total modules: %d | After filters: %d" % (len(mnproc.g_modules), len(modulestosearch)))
+	dbg.log("")
+
+	# Symbol path table
+	sympath_data = {}
+	sympath_order = []
+	for i, e in enumerate(sym_entries):
+		key = i + 1
+		sympath_data[key] = (e["cache"] or "(none)", e["server"] or "(local only)")
+		sympath_order.append(key)
+
+	print_dict_table(
+		sympath_data,
+		["#", "Cache", "Server"],
+		["int", "string", "string"],
+		itemsequence=sympath_order,
+		padding="    ",
+	)
+	dbg.log("")
+
+	# Sort
+	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
+	items = [(k, v) for k, v in mnproc.g_modules.items() if v["name"] in modulestosearch]
+	for key, reverse in reversed(sort_keys):
+		if key in _POST_SORT_FIELDS:
+			items = sorted(items, key=_POST_SORT_FIELDS[key], reverse=reverse)
+
+	# Build data dict for print_dict_table
+	table_data = {}
+	row_order = []
+	found_count = 0
+	missing_count = 0
+
+	for modkey, modprops in items:
+		base = modprops["base"]
+		modname = str(modprops["filename"] or modprops["name"])
+		pdbname = modprops.get("pdbname", "")
+		guidage = modprops.get("pdbguidage", "")
+
+		if not pdbname or not guidage:
+			cached_str = "N/A"
+			pdb_display = "(no PDB info)"
+			pdb_path = ""
+			missing_count += 1
+		else:
+			pdb_display = pdbname
+			cached_str = "No"
+			pdb_path = ""
+			for ci, cdir in enumerate(cache_dirs):
+				candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+				if os.path.isfile(candidate):
+					cached_str = "Yes (#%d)" % (ci + 1)
+					pdb_path = candidate
+					found_count += 1
+					break
+			else:
+				missing_count += 1
+
+		table_data[base] = (modname, pdb_display, cached_str, pdb_path)
+		row_order.append(base)
+
+	print_dict_table(
+		table_data,
+		["Base", "Module", "PDB", "Cached", "Path"],
+		["pointer", "string", "string", "string", "string"],
+		itemsequence=row_order,
+		padding="    ",
+	)
+
+	dbg.log("")
+	dbg.log("[+] Cached: %d | Missing: %d | Total: %d" % (found_count, missing_count, found_count + missing_count))
+
+
+def _http_fetch_symbol(pdbname, guidage, cache_dir, servers):
+	"""Download a PDB from a symbol server via HTTP.
+
+	Tries each server URL with the standard SymSrv path layout:
+	  <server>/<pdbname>/<guidage>/<pdbname>
+
+	Parameters:
+		pdbname   : str -- PDB filename (e.g. 'wkernel32.pdb')
+		guidage   : str -- GUID+Age string
+		cache_dir : str -- local directory to save the PDB into
+		servers   : list of str -- symbol server URLs to try
+
+	Returns:
+		(success, local_path, message) tuple.
+	"""
+	if not pdbname or not guidage or not cache_dir:
+		return False, "", "pdbname, guidage, and cache_dir are all required"
+
+	if PY3:
+		from urllib.request import urlopen, Request
+		from urllib.error import URLError, HTTPError
+	else:
+		from urllib2 import urlopen, Request, URLError, HTTPError
+
+	dest_dir = os.path.join(cache_dir, pdbname, guidage)
+	dest_path = os.path.join(dest_dir, pdbname)
+
+	if os.path.isfile(dest_path):
+		return True, dest_path, "Already cached"
+
+	for server in servers:
+		server = server.rstrip("/")
+		url = "%s/%s/%s/%s" % (server, pdbname, guidage, pdbname)
+		dbg.log("    [*] Trying %s" % url)
+		try:
+			req = Request(url)
+			req.add_header("User-Agent", "Microsoft-Symbol-Server/10.0.0.0")
+			resp = urlopen(req, timeout=15)
+			data = resp.read()
+			if len(data) == 0:
+				continue
+			if not os.path.isdir(dest_dir):
+				os.makedirs(dest_dir)
+			with open(dest_path, "wb") as f:
+				f.write(data)
+			return True, dest_path, "Downloaded from %s" % server
+		except HTTPError as e:
+			dbg.log("    [*] HTTP %d" % e.code)
+			continue
+		except (URLError, Exception) as e:
+			dbg.log("    [*] %s" % str(e))
+			continue
+
+	return False, "", "Not found on any server"
+
+
+def _sym_load(args):
+	modulecriteria = {}
+	criteria = {}
+	modulecriteria, criteria = args2criteria(args, modulecriteria, criteria)
+
+	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
+
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+
+	if not sym_entries:
+		dbg.log("[!] No symbol path configured")
+		dbg.log("    Configure with e.g.:")
+		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+		return
+
+	# Parse -s for specific server/cache index
+	server_idx = None
+	if "s" in args:
+		try:
+			server_idx = int(args["s"])
+			if server_idx < 1 or server_idx > len(sym_entries):
+				dbg.log("[!] Invalid server index %d. Valid range: 1-%d" % (server_idx, len(sym_entries)))
+				return
+		except (ValueError, TypeError):
+			dbg.log("[!] -s requires a numeric server index (1-%d)" % len(sym_entries))
+			return
+
+	# Determine which servers and cache dir to use for HTTP download
+	use_http = "force" in args
+	if server_idx is not None:
+		entry = sym_entries[server_idx - 1]
+		http_servers = [entry["server"]] if entry["server"] else []
+		http_cache = entry["cache"] if entry["cache"] else (cache_dirs[0] if cache_dirs else None)
+	else:
+		http_servers = list(servers)
+		http_cache = cache_dirs[0] if cache_dirs else None
+
+	if use_http and not http_servers:
+		dbg.log("[!] No symbol server URLs found in sympath for HTTP download")
+		return
+	if use_http and not http_cache:
+		dbg.log("[!] No cache directory found in sympath to save symbols")
+		return
+
+	if use_http:
+		dbg.log("[+] Using direct HTTP download (-force)")
+
+	filtertext = criteriaToText(modulecriteria, True)
+	if filtertext:
+		dbg.log("[+] Filter: %s" % filtertext)
+
+	# Gather modules that are missing symbols
+	modules_to_load = []
+	for modkey, modprops in mnproc.g_modules.items():
+		if modprops["name"] not in modulestosearch:
+			continue
+		pdbname = modprops.get("pdbname", "")
+		guidage = modprops.get("pdbguidage", "")
+		if not pdbname or not guidage:
+			continue
+		# Check if already cached
+		already_cached = False
+		for cdir in cache_dirs:
+			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+			if os.path.isfile(candidate):
+				already_cached = True
+				break
+		if not already_cached:
+			modules_to_load.append((modkey, modprops))
+
+	if not modules_to_load:
+		dbg.log("[+] All symbols are already cached")
+		return
+
+	dbg.log("[+] Attempting to load symbols for %d module(s)" % len(modules_to_load))
+
+	# If specific server requested, temporarily change sympath for .reload
+	saved_sympath = None
+	if server_idx is not None:
+		entry = sym_entries[server_idx - 1]
+		dbg.log("[+] Using server #%d: %s" % (server_idx, entry["raw"]))
+		saved_sympath = dbglib.getSymbolPath()
+		dbglib.setSymbolPath(entry["raw"])
+
+	loaded = 0
+	failed = 0
+	try:
+		for modkey, modprops in modules_to_load:
+			modname = str(modprops["filename"] or modprops["name"])
+			pdbname = modprops.get("pdbname", "")
+			guidage = modprops.get("pdbguidage", "")
+			reload_name = os.path.splitext(modname)[0]
+
+			dbg.log("[*] Loading symbols for %s (%s)..." % (modname, pdbname))
+
+			if use_http:
+				# Direct HTTP download
+				success, local_path, message = _http_fetch_symbol(
+					pdbname, guidage, http_cache, http_servers)
+			else:
+				# WinDBG .reload /f
+				success, local_path, message = dbglib.fetchSymbol(
+					reload_name, pdbname, guidage)
+
+			if success:
+				loaded += 1
+				dbg.log("    [+] %s" % message)
+				if local_path:
+					dbg.log("    [+] %s" % local_path)
+			else:
+				failed += 1
+				dbg.log("    [-] %s" % message)
+	finally:
+		# Restore sympath if we changed it
+		if saved_sympath is not None:
+			dbglib.setSymbolPath(saved_sympath)
+			dbg.log("[+] Symbol path restored")
+
+	dbg.log("")
+	dbg.log("[+] Loaded: %d | Failed: %d | Total: %d" % (loaded, failed, loaded + failed))
+
+
+def _sym_clean(args):
 	folders_to_clean = []
 	seen_folders = set()
 
@@ -22781,47 +23239,13 @@ def procSymclean(args):
 		if type(args["p"]).__name__.lower() != "bool":
 			folders_to_clean.append(args["p"])
 
-
 	if len(folders_to_clean) == 0:
-		symout = dbg.nativeCommand(".sympath")
-
-		for thisline in symout.splitlines():
-			thisline = thisline.strip()
-			if not thisline:
-				continue
-
-			pathstr = ""
-
-			if thisline.startswith("Symbol search path is:"):
-				pathstr = thisline.split(":", 1)[1].strip()
-			elif thisline.startswith("Expanded Symbol search path is:"):
-				pathstr = thisline.split(":", 1)[1].strip()
-			else:
-				# path validation summary rows, such as:
-				# Deferred                                       srv*c:\symbols*http://msdl.microsoft.com/download/symbols
-				lineparts = thisline.split(None, 2)
-				if len(lineparts) >= 3:
-					maybe_path = lineparts[2].strip()
-					if "*" in maybe_path:
-						pathstr = maybe_path
-
-			if not pathstr:
-				continue
-
-			for thiscfg in pathstr.split(";"):
-				thiscfg = thiscfg.strip()
-				if not thiscfg:
-					continue
-
-				cfgparts = thiscfg.split("*")
-				if len(cfgparts) >= 3:
-					thisfolder = cfgparts[1].strip().strip('"')
-					if thisfolder:
-						folderkey = thisfolder.lower()
-						if folderkey not in seen_folders:
-							seen_folders.add(folderkey)
-							folders_to_clean.append(thisfolder)
-
+		cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+		for cdir in cache_dirs:
+			ckey = cdir.lower()
+			if ckey not in seen_folders:
+				seen_folders.add(ckey)
+				folders_to_clean.append(cdir)
 
 	dbg.log("[+] Found %d unique folder(s) to inspect" % len(folders_to_clean))
 	for thisfolder in folders_to_clean:
@@ -22865,8 +23289,6 @@ def procSymclean(args):
 		dbg.log("[+] Total space recovered: %.2f Mb" % (float(total_recovered) / (1024.0 * 1024.0)))
 	
 	dbg.log("=" * 60)
-
-
 
 
 def procChangeACL(args):
@@ -24060,15 +24482,35 @@ Arguments:
 Optional arguments:
     -e                : Execute breakpoint command right away"""
 
-	symcleanUsage = """This functions removes .error files from symbol folder(s).
-  By default, it will try to obtain the active symbol path and run through the relevant folder.
-  You can also specify a folder yourself (but that's optional)
+	symUsage = """Manage symbols: list status, fetch from server, or clean cache.
 
-Optional argument:
-    -p <path/folder>   :  remove .error files from this folder
+Arguments:
+    -list (-l)   :  Show symbol availability for all modules
+    -fetch (-f)  :  Download missing symbols from symbol server
+    -clean (-c)  :  Remove .error files from symbol cache folders
 
-NOTE: Files will be deleted automatically, without asking for confirmation. 
-	"""
+Optional arguments (for -list):
+    -m <filter>  :  Filter by module name (supports wildcards)
+    -cm <spec>   :  Filter by module criteria (e.g. aslr=true,os=false)
+    -o           :  Exclude OS modules
+    -sort <spec> :  Sort output (%s)
+                    e.g. -sort base+   (ascending base address)
+
+Optional arguments (for -fetch):
+    -m <filter>  :  Filter by module name (supports wildcards)
+    -cm <spec>   :  Filter by module criteria (e.g. aslr=true,os=false)
+    -o           :  Exclude OS modules
+    -s <index>   :  Use only server #N from sympath table (see -list)
+                    Without -s, tries all configured servers
+    -force       :  Download symbols via direct HTTP instead of .reload /f
+                    If .reload /f fails, falls back to direct HTTP download
+
+Optional arguments (for -clean):
+    -p <path/folder>   :  Remove .error files from this specific folder
+                          (default: scan all symbol cache directories)
+
+NOTE: -clean will delete files automatically, without asking for confirmation.
+	""" % ", ".join(MODULE_COLUMNS)
 
 	evalUsage = """Evaluates an expression
 Arguments:
@@ -24159,7 +24601,7 @@ Arguments:
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
 		commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc",[32,64])
 		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
-		commands["symclean"]		= MnCommand("symclean","Remove .error files from all symbol folders", symcleanUsage, procSymclean,"symjunk",[32,64])
+		commands["sym"]				= MnCommand("sym","Manage symbols: list status or clean cache", symUsage, procSym,"",[32,64])
 	return
 
 
@@ -24480,6 +24922,8 @@ def main(args):
 						invokingCommand.parseProc(monaArgs)	
 				else:
 					invokingCommand.parseProc(monaArgs)
+				# Clear process-level caches after every command
+				resetGlobals()
 		else:
 			dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
 			dbg.log("")
