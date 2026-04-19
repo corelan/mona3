@@ -7,6 +7,12 @@ __pycache__/
 *.so
 *.pyd
 
+# other scripts
+*.sh
+*.bat
+*.cmd
+*.zsh
+
 # Distribution / packaging
 .Python
 build/
