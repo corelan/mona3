@@ -19518,61 +19518,64 @@ def procHeap(args):
 				
 			if searchtype == "freelist" or searchtype == "all":
 				dbg.log("[+] BackEnd Allocator : FreeLists")
-				dbg.log("[+] Getting FreeLists for heap 0x%08x" % heapbase)
+				if not isinstance(mHeap, MnNTXPHeap):
+					dbg.log("     ** Not implemented yet **")
+				else:
+					dbg.log("[+] Getting FreeLists for heap 0x%08x" % heapbase)
 
-				# XP-only: show FreeListsInUseBitmap
-				thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()
-				if thisfreelistinusebitmap:
-					bitmapstr = ""
-					for bit in thisfreelistinusebitmap:
-						bitmapstr += str(bit)
-					dbg.log("[+] FreeListsInUseBitmap:")
-					printDataArray(bitmapstr,32,prefix="    ")
+					# XP-only: show FreeListsInUseBitmap
+					thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()
+					if thisfreelistinusebitmap:
+						bitmapstr = ""
+						for bit in thisfreelistinusebitmap:
+							bitmapstr += str(bit)
+						dbg.log("[+] FreeListsInUseBitmap:")
+						printDataArray(bitmapstr,32,prefix="    ")
 
-				# Unified bin display — works on XP, Vista/7, 8/10/11
-				freebins = mHeap.getFreeBins()
-				gran = heapgranularity
-				total_free = 0
+					# Unified bin display — works on XP, Vista/7, 8/10/11
+					freebins = mHeap.getFreeBins()
+					gran = heapgranularity
+					total_free = 0
 
-				# Build segment index-to-address map
-				seglist = mHeap.getHeapSegmentList()
-				seg_sorted = sorted(seglist.keys())
-				def _seg_label(segid):
-					segaddr = seg_sorted[segid] if segid < len(seg_sorted) else 0
-					return "Segment%02d-%02d - 0x%08x" % (segid, heapidx, segaddr)
+					# Build segment index-to-address map
+					seglist = mHeap.getHeapSegmentList()
+					seg_sorted = sorted(seglist.keys())
+					def _seg_label(segid):
+						segaddr = seg_sorted[segid] if segid < len(seg_sorted) else 0
+						return "Segment%02d-%02d - 0x%08x" % (segid, heapidx, segaddr)
 
-				dbg.log("")
-				dbg.log("    Bin  ExpSize                                Chunks")
-				dbg.log("    ---  ------------------------------------   ------")
+					dbg.log("")
+					dbg.log("    Bin  ExpSize                                Chunks")
+					dbg.log("    ---  ------------------------------------   ------")
 
-				for binidx in range(128):
-					chunks = freebins.get(binidx, [])
-					count = len(chunks)
-					total_free += count
-					if binidx == 0:
-						label = "(ExpSize: >0x%x blocks | >0x%x bytes)" % (127, 127 * gran)
-					else:
-						label = "(ExpSize: 0x%x blocks | 0x%x bytes)" % (binidx, binidx * gran)
-					if count > 0:
-						dbg.log("")
-						dbg.log("    ---------------------------------------------------------")
-						dbg.log("    [%3d] %-40s %d" % (binidx, label, count))
-						dbg.log("")
-						for i, chunk in enumerate(chunks):
-							chunksize = chunk.size * gran
-							freesize = chunksize - chunk.headersize
-							if binidx == 0:
-								dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes | UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, freesize // gran, freesize, _seg_label(chunk.segment)))
-							else:
-								userblocks = freesize // gran
-								dbg.log("           0x%08x (UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, userblocks, freesize, _seg_label(chunk.segment)))
-							if i < count - 1:
-								dbg.log("             |")
-								dbg.log("             V")
+					for binidx in range(128):
+						chunks = freebins.get(binidx, [])
+						count = len(chunks)
+						total_free += count
+						if binidx == 0:
+							label = "(ExpSize: >0x%x blocks | >0x%x bytes)" % (127, 127 * gran)
+						else:
+							label = "(ExpSize: 0x%x blocks | 0x%x bytes)" % (binidx, binidx * gran)
+						if count > 0:
+							dbg.log("")
+							dbg.log("    ---------------------------------------------------------")
+							dbg.log("    [%3d] %-40s %d" % (binidx, label, count))
+							dbg.log("")
+							for i, chunk in enumerate(chunks):
+								chunksize = chunk.size * gran
+								freesize = chunksize - chunk.headersize
+								if binidx == 0:
+									dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes | UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, freesize // gran, freesize, _seg_label(chunk.segment)))
+								else:
+									userblocks = freesize // gran
+									dbg.log("           0x%08x (UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, userblocks, freesize, _seg_label(chunk.segment)))
+								if i < count - 1:
+									dbg.log("             |")
+									dbg.log("             V")
 
-				dbg.log("")
-				dbg.log("[+] Total free chunks: %d across %d bins" % (total_free, len(freebins)))
-				dbg.log("")
+					dbg.log("")
+					dbg.log("[+] Total free chunks: %d across %d bins" % (total_free, len(freebins)))
+					dbg.log("")
 
 			if searchtype == "layout" or searchtype == "all":
 				segments = getSegmentsForHeap(heapbase)
