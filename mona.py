@@ -127,6 +127,7 @@ from collections import OrderedDict
 import math
 import argparse
 import time
+import socket
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -269,11 +270,12 @@ offsets = {
 
 def dbgp(s):
 	# print debug information
-	try:
-		print("[MONA DEBUG] %s | %s" % (get_current_datetime(),s))
-	except Exception as e:
-		print("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
-		pass	
+	if DEBUG_MODE:
+		try:
+			dbg.log("[MONA DEBUG] %s | %s" % (get_current_datetime(),s))
+		except Exception as e:
+			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
+			pass	
 
 def resetGlobals():
 	"""
@@ -319,6 +321,13 @@ def getAllRegisters():
 		if DEBUG_MODE:
 			dbgp("Returning %s" % allregvals)
 		return allregvals
+
+
+def _safe_int(v):
+	try:
+		return int(str(v).strip().replace("'", "").replace('"', ""))
+	except:
+		return 0
 
 
 def _ord(x):
@@ -1233,12 +1242,6 @@ def getVersionInfo(filename):
 				version = parts[1].strip()
 
 	# Normalize version and revision
-	def _safe_int(v):
-		try:
-			return int(str(v).strip().replace("'", "").replace('"', ""))
-		except:
-			return 0
-
 	def _normalize_version(v):
 		if v is None:
 			return ""
@@ -17459,12 +17462,12 @@ def procPrintHeader(args):
 def procUpdate(args):
 	"""
 	Function to update mona.py and optionally windbglib.py to the latest version.
-	Also downloads releasenotes.txt and prints the section that matches the new version/revision.
+	Also downloads mona_releasenotes.txt and prints the section that matches the new version/revision.
 
 	Behavior:
 	- WinDBG  : update mona.py + windbglib.py
 	- Immunity: update mona.py only
-	- In both cases, try to download releasenotes.txt
+	- In both cases, try to download mona_releasenotes.txt
 
 	If "simul" is present in args, then do a simulation only:
 	- detect whether newer versions exist
@@ -17478,12 +17481,6 @@ def procUpdate(args):
 
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
-
-	import socket
-
-	def _dbg(msg):
-		if DEBUG_MODE:
-			dbgp(msg)
 
 	def _normalize_version(v):
 		if v is None:
@@ -17517,148 +17514,173 @@ def procUpdate(args):
 		cur_r = _safe_int(cur_rev)
 		new_r = _safe_int(new_rev)
 
-		_dbg("Comparing versions: current=%s.%s new=%s.%s" % (str(cur_ver), str(cur_rev), str(new_ver), str(new_rev)))
+		dbgp("Comparing versions: current=%s.%s new=%s.%s" % (str(cur_ver), str(cur_rev), str(new_ver), str(new_rev)))
 
 		if new_vt > cur_vt:
-			_dbg("New version tuple is higher")
 			return True
 		if new_vt < cur_vt:
-			_dbg("New version tuple is lower")
 			return False
-		if new_r > cur_r:
-			_dbg("Version equal, but revision is higher")
-			return True
-		_dbg("No newer version detected")
-		return False
-
-	def _check_connectivity():
-		targets = [("github.com", 443), ("www.corelan.be", 443)]
-		reachable = False
-		_dbg("[+] Checking internet connectivity")
-		for host, port in targets:
-			s = None
-			try:
-				_dbg("Trying TCP connection to %s:%d" % (host, port))
-				s = socket.create_connection((host, port), 5)
-				_dbg("    OK   %s:%d" % (host, port))
-				reachable = True
-			except Exception as e:
-				_dbg("    FAIL %s:%d" % (host, port))
-				_dbg("Connectivity check failed for %s:%d : %s" % (host, port, str(e)))
-			finally:
-				try:
-					if s:
-						s.close()
-				except:
-					pass
-		return reachable
-
-	def _download_with_fallback(main_url, backup_url, destfile, label):
-		for urltype, url in [("main", main_url), ("backup", backup_url)]:
-			try:
-				_dbg("[+] Downloading %s from %s URL" % (label, urltype))
-				_dbg("Downloading %s from %s" % (label, url))
-				tmp = urllib_urlretrieve(url)
-				srcfile = tmp[0]
-				_dbg("Temporary downloaded file for %s is %s" % (label, srcfile))
-				shutil.copyfile(srcfile, destfile)
-				_dbg("Saved %s to %s" % (label, destfile))
-				return True, url
-			except Exception as e:
-				_dbg("Download failed for %s from %s : %s" % (label, url, str(e)))
-		return False, ""
+		return new_r > cur_r
 
 	def _safe_remove(filename):
 		try:
-			if os.path.isfile(filename):
-				_dbg("Removing temporary file %s" % filename)
+			if filename and os.path.exists(filename):
 				os.remove(filename)
+				dbgp("Removed temporary file %s" % filename)
 		except Exception as e:
-			_dbg("Unable to remove %s : %s" % (filename, str(e)))
+			dbgp("Unable to remove temporary file %s : %s" % (filename, str(e)))
 
-	def _read_text_file(filename):
+	def _check_connectivity():
+		hostnames = [
+			("github.com", 443),
+			("www.corelan.be", 443)
+		]
+
+		for host, port in hostnames:
+			try:
+				dbgp("Checking connectivity to %s:%d" % (host, port))
+				s = socket.create_connection((host, port), 5)
+				s.close()
+				dbgp("Connectivity check succeeded for %s:%d" % (host, port))
+				return True
+			except Exception as e:
+				dbgp("Connectivity check failed for %s:%d : %s" % (host, port, str(e)))
+
+		return False
+
+	def _locate_windbglib():
+		candidates = []
 		try:
-			_dbg("Reading text file %s" % filename)
-			fh = open(filename, "rb")
-			data = fh.read()
-			fh.close()
-			if not isinstance(data, str):
-				data = data.decode("utf-8", "ignore")
-			return data
+			thisdir = os.path.dirname(os.path.abspath(inspect.stack()[0][1]))
+			candidates.append(os.path.join(thisdir, "windbglib.py"))
+		except:
+			pass
+
+		try:
+			import windbglib
+			if hasattr(windbglib, "__file__"):
+				candidates.append(os.path.abspath(windbglib.__file__.replace(".pyc", ".py")))
+		except:
+			pass
+
+		for candidate in candidates:
+			if os.path.isfile(candidate):
+				dbgp("Located windbglib.py at %s" % candidate)
+				return candidate
+
+		return ""
+
+	def _validate_versioned_python_file(filename):
+		version, revision = getVersionInfo(filename)
+		if version == "" and revision == "0":
+			return False, "no version/revision information found"
+		return True, ""
+
+	def _download_with_fallback(main_url, backup_url, destfile, label, validator=None):
+		last_error = ""
+		for urltype, url in [("main", main_url), ("backup", backup_url)]:
+			try:
+				dbgp("[+] Downloading %s from %s URL" % (label, urltype))
+				dbgp("Downloading %s from %s" % (label, url))
+				tmp = urllib_urlretrieve(url)
+				srcfile = tmp[0]
+				dbgp("Temporary downloaded file for %s is %s" % (label, srcfile))
+				shutil.copyfile(srcfile, destfile)
+				dbgp("Saved %s to %s" % (label, destfile))
+
+				if validator is not None:
+					is_valid, validation_msg = validator(destfile)
+					if is_valid:
+						dbgp("%s downloaded from %s URL passed validation" % (label, urltype))
+						return True, url
+					last_error = validation_msg
+					dbgp("%s downloaded from %s URL failed validation: %s" % (label, urltype, validation_msg))
+					_safe_remove(destfile)
+					continue
+
+				return True, url
+			except Exception as e:
+				last_error = str(e)
+				dbgp("Download failed for %s from %s : %s" % (label, url, str(e)))
+				_safe_remove(destfile)
+
+		if last_error != "":
+			dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
+		return False, ""
+
+	def _get_release_notes_for_version(releasenotes_file, filename, version, revision):
+		normalized_name = _normalize_name_for_notes(filename)
+		normalized_version = _normalize_version(version)
+		normalized_revision = str(_safe_int(revision))
+		header_to_find = "[%s %s.%s]" % (normalized_name, normalized_version, normalized_revision)
+
+		dbgp("Looking for release notes header %s in %s" % (header_to_find, releasenotes_file))
+
+		if not os.path.isfile(releasenotes_file):
+			dbgp("Release notes file %s does not exist" % releasenotes_file)
+			return header_to_find, ""
+
+		try:
+			with open(releasenotes_file, "rb") as fh:
+				lines = fh.readlines()
 		except Exception as e:
-			_dbg("Unable to read %s : %s" % (filename, str(e)))
-			return ""
+			dbgp("Unable to read release notes file %s : %s" % (releasenotes_file, str(e)))
+			return header_to_find, ""
 
-	def _get_release_notes_for_version(notesfile, filename, version, revision):
-		content = _read_text_file(notesfile)
-		if content == "":
-			_dbg("Release notes file %s is empty or unreadable" % notesfile)
-			return "", ""
-
-		notes_name = _normalize_name_for_notes(filename)
-		target_header = "[%s %s.%s]" % (notes_name, _normalize_version(version), str(_safe_int(revision)))
-		_dbg("Looking for release notes header %s in %s" % (target_header, notesfile))
-
-		lines = content.splitlines()
 		found = False
 		out = []
 
-		for line in lines:
-			stripline = line.strip()
-			if not found:
-				if stripline.lower() == target_header.lower():
-					found = True
-					_dbg("Found matching release notes header %s" % target_header)
-				continue
-			else:
-				if stripline.startswith("[") and stripline.endswith("]"):
-					_dbg("Reached next release notes header while parsing %s" % target_header)
-					break
-				out.append(line.rstrip())
-
-		return target_header, "\n".join(out).strip()
-
-	def _locate_windbglib():
-		_dbg("Trying to locate windbglib.py via sys.path")
-		for ppath in sys.path:
+		for rawline in lines:
 			try:
-				libfile = os.path.abspath(os.path.join(ppath, "windbglib.py"))
-				_dbg("Checking %s" % libfile)
-				if os.path.isfile(libfile):
-					_dbg("Found windbglib.py at %s" % libfile)
-					return libfile
-			except Exception as e:
-				_dbg("Error while checking sys.path entry %s : %s" % (str(ppath), str(e)))
-		return ""
+				line = rawline.decode("utf-8", "ignore")
+			except:
+				line = str(rawline)
 
-	def _has_arg(arglist, keyword):
+			stripped = line.strip()
+
+			if stripped.lower() == header_to_find.lower():
+				found = True
+				dbgp("Found matching release notes header %s" % header_to_find)
+				continue
+
+			if found:
+				if stripped.startswith("[") and stripped.endswith("]"):
+					break
+				out.append(line.rstrip("\r\n"))
+
+		return header_to_find, "\n".join(out).strip()
+
+	def _get_release_notes_with_retry(releasenotes_file, releasenotes_backup, filename, version, revision):
+		header, notes = _get_release_notes_for_version(releasenotes_file, filename, version, revision)
+		if notes != "":
+			return header, notes
+
+		dbgp("Header %s not found in current release notes file, retrying from backup URL" % header)
+
+		ok_notes, notes_url = _download_with_fallback(
+			releasenotes_backup,
+			releasenotes_backup,
+			releasenotes_file,
+			"mona_releasenotes.txt"
+		)
+
+		if ok_notes:
+			dbgp("Re-downloaded release notes from backup URL %s" % notes_url)
+			header, notes = _get_release_notes_for_version(releasenotes_file, filename, version, revision)
+		else:
+			dbgp("Unable to re-download release notes from backup URL")
+
+		return header, notes
+
+	simulate_only = False
+	if "simul" in args:
 		try:
-			if isinstance(arglist, dict):
-				for k in arglist:
-					if str(k).lower() == keyword.lower():
-						return True
-					try:
-						if str(arglist[k]).lower() == keyword.lower():
-							return True
-					except:
-						pass
-				return False
+			simulate_only = str_to_bool(args["simul"])
+		except:
+			simulate_only = True
 
-			for item in arglist:
-				if str(item).lower() == keyword.lower():
-					return True
-		except Exception as e:
-			_dbg("Unable to inspect args for keyword '%s' : %s" % (keyword, str(e)))
-		return False
-
-	simulate_only = _has_arg(args, "simul")
-	_dbg("simulate_only = %s" % str(simulate_only))
 	if simulate_only:
-		dbg.log("[*] Simulation mode: no files will be overwritten, but version checks and release notes display will be performed.")
-	_dbg("__DEBUGGERAPP__ = %s" % __DEBUGGERAPP__)
-
-	dbg.setStatusBar("Running update process...")
-	dbg.updateLog()
+		dbg.log("[+] Simulation mode enabled", highlight=1)
 
 	if not _check_connectivity():
 		dbg.log("[-] No internet connectivity detected. Update aborted.", highlight=1)
@@ -17667,10 +17689,10 @@ def procUpdate(args):
 	mona_path = os.path.abspath(inspect.stack()[0][1])
 	mona_dir = os.path.dirname(mona_path)
 
-	_dbg("Resolved mona.py path to %s" % mona_path)
-	_dbg("Resolved mona.py directory to %s" % mona_dir)
+	dbgp("Resolved mona.py path to %s" % mona_path)
+	dbgp("Resolved mona.py directory to %s" % mona_dir)
 
-	_dbg("Current mona.py path : %s" % mona_path)
+	dbgp("Current mona.py path : %s" % mona_path)
 
 	files_to_process = [
 		{
@@ -17685,9 +17707,9 @@ def procUpdate(args):
 	if __DEBUGGERAPP__ == "WinDBG":
 		windbg_path = _locate_windbglib()
 		if windbg_path == "":
-			_dbg("[!] Unable to locate windbglib.py. Will update mona.py only.")
+			dbgp("[!] Unable to locate windbglib.py. Will update mona.py only.")
 		else:
-			_dbg("[+] Current windbglib.py path : %s" % windbg_path)
+			dbgp("[+] Current windbglib.py path : %s" % windbg_path)
 			files_to_process.append(
 				{
 					"name": "windbglib.py",
@@ -17698,26 +17720,26 @@ def procUpdate(args):
 				}
 			)
 	else:
-		_dbg("Debugger app is not WinDBG, so only mona.py will be processed")
+		dbgp("Debugger app is not WinDBG, so only mona.py will be processed")
 
-	releasenotes_path = os.path.abspath(os.path.join(mona_dir, "releasenotes.txt"))
-	releasenotes_main = "https://github.com/corelan/mona3/raw/master/releasenotes.txt"
-	releasenotes_backup = "https://www.corelan.be/mona3/releasenotes.txt"
+	releasenotes_path = os.path.abspath(os.path.join(mona_dir, "mona_releasenotes.txt"))
+	releasenotes_main = "https://github.com/corelan/mona3/raw/master/mona_releasenotes.txt"
+	releasenotes_backup = "https://www.corelan.be/mona3/mona_releasenotes.txt"
 
-	_dbg("Release notes will be stored at %s" % releasenotes_path)
+	dbgp("Release notes will be stored at %s" % releasenotes_path)
 
 	downloaded_release_notes = False
 	ok_notes, notes_url = _download_with_fallback(
 		releasenotes_main,
 		releasenotes_backup,
 		releasenotes_path,
-		"releasenotes.txt"
+		"mona_releasenotes.txt"
 	)
 	if ok_notes:
 		downloaded_release_notes = True
-		_dbg("Release notes downloaded successfully from %s" % notes_url)
+		dbgp("Release notes downloaded successfully from %s" % notes_url)
 	else:
-		_dbg("Release notes could not be downloaded from main or backup URL")
+		dbgp("Release notes could not be downloaded from main or backup URL")
 
 	release_notes_targets = []
 	seen_release_headers = {}
@@ -17730,30 +17752,36 @@ def procUpdate(args):
 		backup_url = entry["backup_url"]
 
 		dbg.log("[+] Processing %s" % name)
-		_dbg("Current file   : %s" % current_file)
-		_dbg("Download target: %s" % download_file)
+		dbgp("Current file   : %s" % current_file)
+		dbgp("Download target: %s" % download_file)
 
 		if not os.path.isfile(current_file):
-			_dbg("    [!] Current file not found: %s" % current_file)
-			_dbg("Skipping %s because current file does not exist" % name)
+			dbgp("    [!] Current file not found: %s" % current_file)
+			dbgp("Skipping %s because current file does not exist" % name)
 			continue
 
 		current_version, current_revision = getVersionInfo(current_file)
 
-		_dbg("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
+		dbgp("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
 
 		if current_version == "" and current_revision == "0":
-			_dbg("    [!] Unable to read current version info from %s" % current_file)
-			_dbg("Skipping %s because current version info could not be read" % name)
+			dbgp("    [!] Unable to read current version info from %s" % current_file)
+			dbgp("Skipping %s because current version info could not be read" % name)
 			continue
 
-		ok_download, used_url = _download_with_fallback(main_url, backup_url, download_file, name)
+		ok_download, used_url = _download_with_fallback(
+			main_url,
+			backup_url,
+			download_file,
+			name,
+			validator=_validate_versioned_python_file
+		)
 		if not ok_download:
 			dbg.log("    [-] Unable to download %s from main or backup URL" % name, highlight=1)
-			_dbg("Skipping %s because download failed" % name)
+			dbgp("Skipping %s because download failed or returned invalid content" % name)
 
 			if simulate_only:
-				_dbg("Simulation mode: using current version release notes for %s because download failed" % name)
+				dbgp("Simulation mode: using current version release notes for %s because download failed" % name)
 				release_notes_targets.append((name, current_version, current_revision))
 
 			_safe_remove(download_file)
@@ -17761,44 +17789,45 @@ def procUpdate(args):
 
 		new_version, new_revision = getVersionInfo(download_file)
 
-		_dbg("Downloaded version info for %s: version=%s revision=%s" % (name, new_version, new_revision))
+		dbgp("Downloaded version info for %s: version=%s revision=%s" % (name, new_version, new_revision))
 
 		if new_version == "" and new_revision == "0":
 			dbg.log("    [-] Downloaded %s but could not read version/revision information" % name, highlight=1)
-			_dbg("Downloaded file for %s does not appear to contain valid version info" % name)
+			dbgp("Downloaded file for %s does not appear to contain valid version info" % name)
 
 			if simulate_only:
-				_dbg("Simulation mode: using current version release notes for %s because downloaded file had invalid version info" % name)
+				dbgp("Simulation mode: using current version release notes for %s because downloaded file had invalid version info" % name)
 				release_notes_targets.append((name, current_version, current_revision))
-
-			_safe_remove(download_file)
+				dbgp("Not removing downloaded file so you can inspect what went wrong")
+			else:
+				_safe_remove(download_file)
 			continue
 
 		dbg.log("    Current : version %s / revision %s" % (current_version, current_revision))
 		dbg.log("    Download: version %s / revision %s" % (new_version, new_revision))
-		_dbg("%s downloaded from %s" % (name, used_url))
+		dbgp("%s downloaded from %s" % (name, used_url))
 
 		if _is_newer(current_version, current_revision, new_version, new_revision):
 			dbg.log("    [+] Newer version found for %s" % name, highlight=1)
 
 			if simulate_only:
 				dbg.log("    [*] Simulation mode enabled - not updating %s" % name)
-				_dbg("Simulation mode active, not copying %s on top of current file" % name)
+				dbgp("Simulation mode active, not copying %s on top of current file" % name)
 				release_notes_targets.append((name, new_version, new_revision))
 			else:
 				try:
-					_dbg("Copying %s over %s" % (download_file, current_file))
+					dbgp("Copying %s over %s" % (download_file, current_file))
 					shutil.copyfile(download_file, current_file)
 					dbg.log("    [+] Updated %s in place" % name, highlight=1)
 					release_notes_targets.append((name, new_version, new_revision))
 				except Exception as e:
 					dbg.log("    [-] Unable to update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
-					_dbg("Copy failed for %s : %s" % (name, str(e)))
+					dbgp("Copy failed for %s : %s" % (name, str(e)))
 		else:
 			dbg.log("    [+] You are already running the latest version of %s" % name)
 			if simulate_only:
-				_dbg("Simulation mode: using current version release notes for %s because no newer version was found" % name)
+				dbgp("Simulation mode: using current version release notes for %s because no newer version was found" % name)
 				release_notes_targets.append((name, current_version, current_revision))
 
 		_safe_remove(download_file)
@@ -17806,9 +17835,15 @@ def procUpdate(args):
 	if downloaded_release_notes and len(release_notes_targets) > 0:
 		dbg.log("[+] Release notes")
 		for fname, ver, rev in release_notes_targets:
-			header, notes = _get_release_notes_for_version(releasenotes_path, fname, ver, rev)
+			header, notes = _get_release_notes_with_retry(
+				releasenotes_path,
+				releasenotes_backup,
+				fname,
+				ver,
+				rev
+			)
 			if header in seen_release_headers:
-				_dbg("Skipping duplicate release notes header %s" % header)
+				dbgp("Skipping duplicate release notes header %s" % header)
 				continue
 			seen_release_headers[header] = True
 
@@ -17817,11 +17852,11 @@ def procUpdate(args):
 				for line in notes.splitlines():
 					dbg.log("    %s" % line)
 			else:
-				_dbg("No release note entry found for %s" % header)
+				dbgp("No release note entry found for %s, even after retrying backup server" % header)
 	elif not downloaded_release_notes:
-		_dbg("Release notes were not downloaded, so nothing will be shown")
+		dbgp("Release notes were not downloaded, so nothing will be shown")
 	else:
-		_dbg("No release notes targets were collected, so no release notes section will be printed")
+		dbgp("No release notes targets were collected, so no release notes section will be printed")
 
 	return "Done"
 
@@ -23026,7 +23061,7 @@ def procHelp(args, helpForCommand=None):
 		pykdversion = dbg.getPyKDVersionNr()
 		dbg.log("     PyKD version %s" % pykdversion)
 	dbg.log("     Written by Corelan - https://www.corelan.be")
-	dbg.log("     Project page : https://github.com/corelan/mona")
+	dbg.log("     Project page : https://github.com/corelan/mona3")
 	dbg.logLines(getBanner(),highlight=1)
 
 	if helpForCommand == None:
@@ -24034,8 +24069,7 @@ def main(args):
 		# fill up the commands dict
 		populateCommands(args)
 
-		if DEBUG_MODE:
-			dbgp("Initialized %d commands" % len(commands))
+		dbgp("Initialized %d commands" % len(commands))
 		
 		# get the options
 		last = ""
@@ -24053,6 +24087,9 @@ def main(args):
 			scriptname = "mona"
 			aline = "!mona " + aline
 			dbg.log("[+] Command used: %s" % aline)
+
+		if DEBUG_MODE:
+			dbg.log("[+] Debug mode on")
 
 		# in case we're not using Immunity
 		if "-showargs" in args:
