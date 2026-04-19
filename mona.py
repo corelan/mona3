@@ -291,18 +291,27 @@ def dbgp(s):
 
 def resetGlobals():
 	"""
-	Clears all process-level caches on MnProc and resets mona globals
+	Clears all process-level caches and resets mona globals.
+	Sets mnproc to None so it will be re-created lazily on next access.
 	"""
 	global currentArgs
 	global disasmLowerChecked
 	global mnproc
 	global _excluded_modules_list
 
-	mnproc = MnProc()
+	mnproc = None
 	currentArgs = None
 	disasmLowerChecked = False
 	_excluded_modules_list = None
 	return
+
+
+def _ensure_mnproc():
+	"""Lazily create the MnProc instance on first access."""
+	global mnproc
+	if mnproc is None:
+		mnproc = MnProc()
+	return mnproc
 
 
 def getRegisters():
@@ -1806,6 +1815,7 @@ def getStacks():
 	Return:
 	a dictionary, with key = threadID. Each entry contains an array with base and top of the stack
 	"""
+	_ensure_mnproc()
 	if len(mnproc.stacklistCache) > 0:
 		return mnproc.stacklistCache
 	stacks = {}
@@ -4623,6 +4633,7 @@ class MnModule:
 
 
 def getNtGlobalFlag():
+	_ensure_mnproc()
 	flagoffset = 0x68
 	if arch == 64:
 		flagoffset = 0xBC
@@ -6592,7 +6603,7 @@ class MnProc:
 		regions.sort(key=lambda x: x[0])
 		return regions
 
-mnproc = MnProc()
+mnproc = None
 
 #---------------------------------------#
 #  Class to access pointer properties   #
@@ -7600,6 +7611,7 @@ def getSegmentsForHeap(heapbase):
 
 	Return: dict {segaddr: [base, end, firstentry, lastentry]}
 	"""
+	_ensure_mnproc()
 	dbgp(get_current_function_name())
 	if heapbase in mnproc.segmentlistCache:
 		return mnproc.segmentlistCache[heapbase]
@@ -8436,6 +8448,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 	Dictionary
 	"""
 	dbgp(get_current_function_name())
+	_ensure_mnproc()
 
 	if len(mnproc.g_modules) > 0 and mnproc.g_modulesOrder == peb_order:
 		return
@@ -14257,6 +14270,7 @@ def readGadgetsFromFile(filename):
 def isGoodGadgetPtr(gadget,criteria):
 	#if DEBUG_MODE:
 	#	dbgp(get_current_function_name())
+	_ensure_mnproc()
 	if gadget in mnproc.CritCache:
 		return mnproc.CritCache[gadget]
 	else:
@@ -19355,15 +19369,10 @@ def procLayout(args):
 
 	# Flush cache if -walk is specified
 	if "walk" in args:
-		mnproc.peb = None
-		mnproc.teb = None
-		mnproc.modules = {}
-		mnproc.stacks = {}
-		mnproc.heapinfo = {}
-		mnproc.ntheapdetail = {}
-		mnproc.defaultheap = None
+		resetGlobals()
 		dbg.log("Cache flushed, re-walking process...")
 
+	_ensure_mnproc()
 	dbg.log("Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
 	mnproc.populate(include_chunks=include_chunks)
 	regions = mnproc.getAllSorted()
@@ -24922,8 +24931,6 @@ def main(args):
 						invokingCommand.parseProc(monaArgs)	
 				else:
 					invokingCommand.parseProc(monaArgs)
-				# Clear process-level caches after every command
-				resetGlobals()
 		else:
 			dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
 			dbg.log("")
