@@ -766,7 +766,7 @@ def getAddyArg(argaddy):
 
 	if str(argaddy).strip().lower() in regs:
 		thisreg = str(argaddy).strip().lower()
-		dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[sthisreg]))
+		dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[thisreg]))
 		return regs[thisreg], True
 
 	argaddy = str(argaddy).strip().replace("`","")
@@ -21672,7 +21672,9 @@ def procCopy(args):
 		dbg.log("*** Please specify a valid number of bytes to argument -n ***",highlight=1)
 
 	if not errorsfound:
-		dbg.log("[+] Attempting to copy 0x%08x bytes from %s to %s" % (nrbytes, PTR_PRINT % src, PTR_PRINT % dst))
+		dbg.log("[+] Attempting to copy 0x%x (%d) bytes" % (nrbytes, nrbytes))
+		dbg.log("    Source      : %s : %s" % (args["src"], PTR_PRINT % src))
+		dbg.log("    Destination : %s : %s" % (args["dst"], PTR_PRINT % dst))
 		sourcebytes = dbg.readMemory(src,nrbytes)
 		try:
 			dbg.writeMemory(dst,sourcebytes)
