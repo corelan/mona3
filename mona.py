@@ -778,7 +778,7 @@ def getAddyArg(argaddy):
 
 	if str(argaddy).strip().lower() in regs:
 		thisreg = str(argaddy).strip().lower()
-		dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[thisreg]))
+		dbgp("Argument %s is a register, value: %s" % (argaddy, PTR_PRINT % regs[thisreg]))
 		return regs[thisreg], True
 
 	argaddy = str(argaddy).strip().replace("`","")
@@ -863,7 +863,7 @@ def getFunctionName(addy):
 	"""
 	fname = ""
 	foffset = ""
-	cmd2run = "ln 0x%08x" % addy
+	cmd2run = "ln %s" % (PTR_PRINT % addy)
 	output = dbg.nativeCommand(cmd2run)
 	for line in output.split("\n"):
 		if "|" in line:
@@ -5549,7 +5549,6 @@ class MnNTXPHeap(MnNTHeap):
 			while cnt < 4:
 				fldword = dbg.readLong(self.heapbase+0x158 + (4 * cnt))
 				bitmapbits = DwordToBits(fldword)
-				#print "0x%08x : %s (%d)" % (fldword,bitmapbits,len(bitmapbits))
 				for thisbit in bitmapbits:
 					FreeListBitmapHeap.append(thisbit)
 				cnt += 1
@@ -7244,7 +7243,7 @@ class MnPointer:
 			stacktrace_startstamp = 0xabcdaaaa
 			if thischunk.hasust and stacktrace_address > 0:
 				if stacktrace_startstamp == thischunk.dph_block_information_startstamp:
-					cmd2run = "dds 0x%08x L 24" % (stacktrace_address)
+					cmd2run = "dps %s L 24" % (PTR_PRINT % stacktrace_address)
 					output = dbg.nativeCommand(cmd2run)
 					outputlines = output.split("\n")
 					if "!" in output:
@@ -9016,7 +9015,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 				ptr=struct.unpack('<L',dbg.readMemory(fn,4))[0]
 			except Exception as e:
 				if not silent:
-					dbg.log("Error reading memory at 0x%x in findROPFunc: %s" % (fn, str(e)))
+					dbg.log("Error reading memory at %s in findROPFunc: %s" % (PTR_PRINT % fn, str(e)))
 				pass
 			if ptr != 0:
 				# get offset to one of the offset functions
@@ -9406,7 +9405,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											msfchain.append(["raw",thisopcodebytes])
 											if isInterestingGadget(fullchain):
 												interestinggadgets[startptr] = fullchain
-												dbgp("Added 0x%08x to interestinggadgets" % startptr)
+												dbgp("Added %s to interestinggadgets" % (PTR_PRINT % startptr))
 												#this may be a good stackpivot too
 												stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
 												if stackpivotdistance > 0:
@@ -9421,10 +9420,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 															stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
 														else:
 															stackpivots[stackpivotdistance] += [[startptr,fullchain]]
-													dbgp("Added 0x%08x to interesting gadgets" % startptr)
+													dbgp("Added %s to interesting gadgets" % (PTR_PRINT % startptr))
 								
 											ropgadgets[startptr] = fullchain
-											dbgp("Added 0x%08x to ropgadgets " % startptr)
+											dbgp("Added %s to ropgadgets " % (PTR_PRINT % startptr))
 
 							startptr = startptr+1
 						except Exception as ropex:
@@ -9535,7 +9534,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				dbg.log("    - Looking for IAT entries to %s" % routine)
 				funcptr,functext = getRopFuncPtr(routine,modulecriteria,criteria,"iat", objprogressfile, progressfile)
 				if funcptr > 0:
-					updatetext = "   0x%x : 0x%s" % (funcptr, functext)
+					updatetext = "   0x%s : 0x%s" % (PTR_PRINT % funcptr, functext)
 					dbg.log(updatetext)
 					objprogressfile.write(updatetext.strip(),progressfile)
 
@@ -9813,8 +9812,16 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 	
 	search = []
 	
-	jopregs = ["EAX","EBX","ECX","EDX","ESI","EDI","EBP"]
-	
+
+	# Make a copy: we don't want to mutate the global register order lists.
+	jopregs = Registers32BitsOrder[:]
+	if "esp" in jopregs:
+		jopregs.remove("esp")
+	if arch == 64:
+		jopregs = Registers64BitsOrder[:]
+		if "rsp" in jopregs:
+			jopregs.remove("rsp")
+		
 	offsetval = 0
 	
 	for jreg in jopregs:
@@ -9931,7 +9938,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 					ptrx = MnPointer(gadget)
 					modname = ptrx.belongsTo()
 					modinfo = MnModule(modname)
-					ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
+					ptrinfo = "%s" % (PTR_PRINT % gadget) + " : " + interestinggadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 					arrtowrite += ptrinfo
 			objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
 			fh.writelines(arrtowrite)
@@ -24567,7 +24574,7 @@ Arguments:
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
 	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC)
 	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP chain and perhaps do some ROP magic with them",ropUsage,procROP,"",[32,64])
-	commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP chain",jopUsage,procJOP)		
+	commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP chain",jopUsage,procJOP,"",[32,64])		
 	commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
 	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
 	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod", [32,64])
