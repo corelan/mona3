@@ -104,11 +104,12 @@ def set_debug_mode(enabled):
 
 def dbgp(s):
 	# print debug information
-	try:
-		print("[WINDBGLIB DEBUG] %s | %s" % (get_current_datetime(),s))
-	except Exception as e:
-		print("[WINDBGLIB DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
-		pass
+	if DEBUG_MODE:
+		try:
+			print("[WINDBGLIB DEBUG] %s | %s" % (get_current_datetime(),s))
+		except Exception as e:
+			print("[WINDBGLIB DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
+			pass
 
 def get_current_datetime():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -157,8 +158,7 @@ def rstrip_nulls(s):
 	return s.rstrip('\x00')
 
 def getOSVersion():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	osversions = {}
 	osversions["5.0"] = "2000"
@@ -179,16 +179,14 @@ def getOSVersion():
 		return "unknown"
 
 def getArchitecture():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	if not pykd.is64bitSystem():
 		return 32
 	else:
 		return 64
 
 def getNtHeaders(modulebase):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_DOS_HEADER.html
 	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_NT_HEADERS.html
@@ -202,14 +200,12 @@ def getNtHeaders(modulebase):
 	try:
 		nth = pykd.module("ntdll").typedVar(ntheaders, modulebase + pykd.ptrDWord(modulebase + 0x3c))
 	except Exception as e:
-		if DEBUG_MODE:
-			dbgp("ERROR: %s" % str(e))
+		dbgp("ERROR: %s" % str(e))
 	return nth
 
 
 def clearvars():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 		
 
 	global MemoryPages
@@ -232,9 +228,8 @@ def clearvars():
 
 
 def getPEBInfo(peb_addr=None):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-		dbgp("Current process: %s" % pykd.getCurrentProcess())
+	dbgp(get_current_function_name())
+	dbgp("Current process: %s" % pykd.getCurrentProcess())
 	if peb_addr is None:
 		peb_addr = pykd.getCurrentProcess()
 	try:
@@ -250,14 +245,12 @@ def getPEBInfo(peb_addr=None):
 		exit(1)
 
 def getTEBInfo():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	return pykd.typedVar("_TEB", pykd.getImplicitThread())
 
 
 def getTEBAddress():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	global currentTEBAddress
 	if currentTEBAddress == 0:
@@ -266,8 +259,7 @@ def getTEBAddress():
 
 
 def getPEBAddress():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	global cpebaddress
 	if cpebaddress == 0:
@@ -277,8 +269,7 @@ def getPEBAddress():
 
 
 def bin2hex(binbytes):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	"""
 	Converts a binary string to a string of space-separated hexadecimal bytes.
@@ -286,8 +277,7 @@ def bin2hex(binbytes):
 	return ' '.join('%02x' % b for b in iter_byte_values(binbytes))
 
 def hexptr2bin(hexptr):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	"""
 	Input must be a int
@@ -329,8 +319,7 @@ def addrToInt(address):
 	return hexStrToInt(address)
 
 def isAddress(address):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	"""
 	Check if a string is an address / consists of hex chars only
@@ -368,8 +357,7 @@ def intToHexWinDbgFormat(address):
 		return formatted_hex
 
 def toHexByte(n):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	"""
 	Converts a numeric value to a hex byte
@@ -383,8 +371,7 @@ def toHexByte(n):
 	return "%02X" % n
 
 def hex2bin(pattern):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	"""
 	Converts a hex string (\\x??\\x??\\x??\\x??) to real hex bytes
@@ -405,8 +392,7 @@ def hex2bin(pattern):
 
 
 def getPyKDVersion():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	currentversion = pykd.version
 	currversion = ""
@@ -420,8 +406,7 @@ def getPyKDVersion():
 	return currversion
 
 def isPyKDVersionCompatible(currentversion,requiredversion):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	# current version should be at least requiredversion
 	if currentversion == requiredversion:
@@ -446,8 +431,7 @@ def isPyKDVersionCompatible(currentversion,requiredversion):
 		return True
 		
 def checkVersion():
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	pykdversion_needed = "0.2.0.29"
 	if arch == 64:
 		pykdversion_needed = "0.2.0.29"
@@ -465,8 +449,7 @@ def checkVersion():
 
 
 def getModuleFromAddress(address):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	global ModuleCache
 	try:
@@ -521,8 +504,7 @@ class Debugger:
 		return self.knowledgedb
 
 	def remoteVirtualAlloc(self, size=0x10000,interactive=False):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		PAGE_EXECUTE_READWRITE = 0x40
 		VIRTUAL_MEM = ( 0x1000 | 0x2000 )
@@ -530,8 +512,7 @@ class Debugger:
 		return vaddr
 
 	def rVirtualAlloc(self, lpAddress, dwSize, flAllocationType, flProtect):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		PROCESS_VM_OPERATION = 0x0008
 		kernel32 = ctypes.windll.kernel32
@@ -562,8 +543,7 @@ class Debugger:
 		return 0
 
 	def rVirtualProtect(self, lpAddress, dwSize, flNewProtect, lpflOldProtect=0):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		PROCESS_VM_OPERATION = 0x0008
 		kernel32 = ctypes.windll.kernel32
@@ -581,8 +561,7 @@ class Debugger:
 
 		oldprotect = ctypes.c_ulong(0)
 
-		if DEBUG_MODE:
-			dbgp("Calling VirtualProtectEx for PID %d with args (lpAddress: 0x%08x, dwSize: 0x%x, flNewProtect: 0x%x)" % (pid, lpAddress, dwSize, flNewProtect))
+		dbgp("Calling VirtualProtectEx for PID %d with args (lpAddress: 0x%08x, dwSize: 0x%x, flNewProtect: 0x%x)" % (pid, lpAddress, dwSize, flNewProtect))
 
 		returnval = kernel32.VirtualProtectEx(
 			ctypes.c_void_p(hprocess),
@@ -597,8 +576,7 @@ class Debugger:
 
 
 	def getAddress(self, functionname):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 	
 		functionparts = functionname.split(".")
 		if len(functionparts) > 1:
@@ -624,8 +602,7 @@ class Debugger:
 	"""
 
 	def fillAsmCache(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		# 32bit
 
@@ -2929,8 +2906,7 @@ class Debugger:
 	Knowledge
 	"""
 	def addKnowledge(self, id, object, force_add = 0):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 		
 		allk = self.readKnowledgeDB()
 		if not id in allk:	
@@ -2944,8 +2920,7 @@ class Debugger:
 		return
 
 	def getKnowledge(self,id):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		allk = self.readKnowledgeDB()
 		if id in allk:
@@ -2954,8 +2929,7 @@ class Debugger:
 			return None
 
 	def readKnowledgeDB(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		allk = {}
 		try:
@@ -2966,8 +2940,7 @@ class Debugger:
 		return allk
 
 	def listKnowledge(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		allk = self.readKnowledgeDB()
 		allid = []
@@ -2976,8 +2949,7 @@ class Debugger:
 		return allid
 
 	def cleanKnowledge(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		try:
 			os.remove(self.knowledgedb)
@@ -2991,8 +2963,7 @@ class Debugger:
 		return
 
 	def forgetKnowledge(self,id,entry=""):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		allk = self.readKnowledgeDB()
 		if entry == "":
@@ -3024,8 +2995,7 @@ class Debugger:
 		return "".join(newchar)
 
 	def createLogWindow(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		return
 	
@@ -3071,8 +3041,7 @@ class Debugger:
 	"""
 	
 	def getDebuggedName(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/RTL_USER_PROCESS_PARAMETERS.html
@@ -3088,8 +3057,7 @@ class Debugger:
 		return sImageFilepieces[len(sImageFilepieces)-1]
 		
 	def getDebuggedPid(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		global currentPID
 
@@ -3110,8 +3078,7 @@ class Debugger:
 	OS stuff
 	"""
 	def getOsRelease(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		peb = self.get_peb_info()
 		majorversion = int(peb.OSMajorVersion)
@@ -3145,8 +3112,7 @@ class Debugger:
 	"""
 	
 	def getRegs(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		regs = []
 		if arch == 32:
@@ -3165,24 +3131,19 @@ class Debugger:
 	Commands
 	"""
 	def nativeCommand(self,cmd2run):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		try:
-			if DEBUG_MODE:
-				dbgp("nativeCommand: %s" % cmd2run)
+			dbgp("nativeCommand: %s" % cmd2run)
 			output = pykd.dbgCommand(cmd2run)
-			if DEBUG_MODE:
-				dbgp("command output: %s" % output)
+			dbgp("command output: %s" % output)
 			if output is None:
 				output = ""
-			if DEBUG_MODE:
-				dbgp("returning '%s'" % output)
+			dbgp("returning '%s'" % output)
 			return output
 		except Exception as e:
-			if DEBUG_MODE:
-				dbgp("Error executing command '%s': %s" % (cmd2run, str(e)))
-				dbgp("%s" % traceback.format_exc())
+			dbgp("Error executing command '%s': %s" % (cmd2run, str(e)))
+			dbgp("%s" % traceback.format_exc())
 			return ""
 
 	"""
@@ -3190,8 +3151,7 @@ class Debugger:
 	"""
 
 	def getSehChain(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 	
 		# http://www.nirsoft.net/kernel_struct/vista/TEB.html
 		# http://www.nirsoft.net/kernel_struct/vista/NT_TIB.html
@@ -3264,8 +3224,7 @@ class Debugger:
 
 
 	def writeMemory(self, location, data):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		data = ensure_bytes(data)
 
@@ -3279,8 +3238,7 @@ class Debugger:
 
 
 	def getMemoryPages(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		if not self.MemoryPages:
 			address_output = pykd.dbgCommand("!address")
@@ -3348,8 +3306,7 @@ class Debugger:
 		return 0
 
 	def getHeapsAddress(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		# http://www.nirsoft.net/kernel_struct/vista/PEB.html
 		allheaps = []
@@ -3379,14 +3336,12 @@ class Debugger:
 
 
 	def getHeap(self,address):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		return wheap(address)
 
 	def getAllThreads(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		allthreads = []
 		for thisthread in pykd.getProcessThreads():
@@ -3480,10 +3435,9 @@ class Debugger:
 			yield entry
 
 	def getModule(self, modulename, from_memory=False):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-			dbgp("------")
-			dbgp("Transform '%s' into Module object" % modulename)
+		dbgp(get_current_function_name())
+		dbgp("------")
+		dbgp("Transform '%s' into Module object" % modulename)
 
 		wmod = None
 		self.origmodname = modulename
@@ -3503,8 +3457,7 @@ class Debugger:
 				return self._allmodules_lower[fname]
 
 			if dll_base == 0:
-				if DEBUG_MODE:
-					dbgp("Module '%s' not found via PEB walk" % modulename)
+				dbgp("Module '%s' not found via PEB walk" % modulename)
 				#pykd.dprintln("I was not able to find '%s' via PEB walk" % modulename)
 				return None
 
@@ -3517,12 +3470,11 @@ class Debugger:
 			thismodbase   = thismod.begin()
 			thismodsize   = thismod.size()
 
-			if DEBUG_MODE:
-				dbgp("       image: %s" % thisimagename)
-				dbgp("       name: %s"  % thismodname)
-				dbgp("       begin: 0x%08x" % thismodbase)
-				dbgp("       size: 0x%08x"  % thismodsize)
-				dbgp("    Building wmodule for %s. Base: 0x%08x" % (thisimagename, thismodbase))
+			dbgp("       image: %s" % thisimagename)
+			dbgp("       name: %s"  % thismodname)
+			dbgp("       begin: 0x%08x" % thismodbase)
+			dbgp("       size: 0x%08x"  % thismodsize)
+			dbgp("    Building wmodule for %s. Base: 0x%08x" % (thisimagename, thismodbase))
 
 			wmod = wmodule(thismodname)
 			wmod.setBaseAddress(thismodbase)
@@ -3537,8 +3489,7 @@ class Debugger:
 		
 
 	def getAllModules(self, from_memory=False, peb_order="load"):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		if len(self.allmodules) == 0:
 			seen_names = []
@@ -3565,8 +3516,7 @@ class Debugger:
 
 
 	def getImageNameForModule(self, modulename):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		fname = os.path.splitext(modulename)[0].lower()
 		try:
@@ -3613,9 +3563,8 @@ class Debugger:
 		except Exception as e:
 			# probably invalid instruction, so fake by returning itself
 			# caller should check if address is different than what was provided
-			if DEBUG_MODE:
-				dbgp("Error disasmForward for 0x%x: %s" % (address, str(e)))
-				dbgp(traceback.format_exc())
+			dbgp("Error disasmForward for 0x%x: %s" % (address, str(e)))
+			dbgp(traceback.format_exc())
 			return self.getOpcode(address)
 
 
@@ -3626,8 +3575,7 @@ class Debugger:
 	def disasmBackward(self,address,depth):
 		while True:
 			cmd2run = "ub 0x%08x L%d" % (address,depth)
-			if DEBUG_MODE:
-				dbgp("cmd2run: %s" % cmd2run)
+			dbgp("cmd2run: %s" % cmd2run)
 			try:
 				disasmlist = pykd.dbgCommand(cmd2run)
 				disasmLinesTmp = disasmlist.split("\n")
@@ -3643,15 +3591,13 @@ class Debugger:
 				else:
 					return self.getOpcode(address)
 			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Error disassembling backwards, %s" % str(e))
-					dbgp(traceback.format_exc())
-					dbgp("Depth: %d" % depth)
+				dbgp("Error disassembling backwards, %s" % str(e))
+				dbgp(traceback.format_exc())
+				dbgp("Depth: %d" % depth)
 				# probably invalid instruction, so fake by returning itself
 				# caller should check if address is different than what was provided
 				if depth == 1:
-					if DEBUG_MODE:
-						dbgp("Depth 1, returning opcode at 0x%x" % address)
+					dbgp("Depth 1, returning opcode at 0x%x" % address)
 					return self.getOpcode(address)
 			depth -= 1
 
@@ -3673,15 +3619,13 @@ class Debugger:
 		origbytes = b""
 		read_success = True
 		
-		if DEBUG_MODE:
-			dbgp("instructions: %s" % instructions)
-			dbgp("Using address to assemble if needed: %s" % intToHex(address))
+		dbgp("instructions: %s" % instructions)
+		dbgp("Using address to assemble if needed: %s" % intToHex(address))
 
 		allinstructions = instructions.lower().split("\n")
 		
-		if DEBUG_MODE:
-			dbgp("allinstructions: %s" % allinstructions)
-			dbgp("origbytes: %s" % bin2hex(origbytes))
+		dbgp("allinstructions: %s" % allinstructions)
+		dbgp("origbytes: %s" % bin2hex(origbytes))
 
 		# in most cases, we just need to assemble one instruction.  if it's cached, we don't even need to check for an address
 
@@ -3691,10 +3635,9 @@ class Debugger:
 			# Ensure thisinstruction is ASCII for PyKD compatibility
 			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
 			if ascii_instruction in self.AsmCache:
-				if DEBUG_MODE:
-					dbgp("Single instruction '%s' found in cache, returning cached bytes" % ascii_instruction)
-					dbgp("return bytes from cache")
-					dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
+				dbgp("Single instruction '%s' found in cache, returning cached bytes" % ascii_instruction)
+				dbgp("return bytes from cache")
+				dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
 				return self.AsmCache[ascii_instruction]
 
 
@@ -3706,11 +3649,9 @@ class Debugger:
 		if pykd.isValid(address):
 			try:
 				origbytes = self.readMemory(address, read_size)
-				if DEBUG_MODE:
-					dbgp("Successfully read from valid address %s" % intToHex(address))
+				dbgp("Successfully read from valid address %s" % intToHex(address))
 			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Failed to read from valid address %s: %s" % (intToHex(address), str(e)))
+				dbgp("Failed to read from valid address %s: %s" % (intToHex(address), str(e)))
 				# If read fails, use fallback address
 				read_success = False
 		else:
@@ -3718,8 +3659,7 @@ class Debugger:
 		
 		# If address was invalid or read failed, use fallback address
 		if not pykd.isValid(address) or (read_success == False and origbytes == b""):
-			if DEBUG_MODE:
-				dbgp("Using fallback address (original was invalid or unreadable): %s" % intToHex(address))
+			dbgp("Using fallback address (original was invalid or unreadable): %s" % intToHex(address))
 			thismod = pykd.module("ntdll")
 			thismodbase = thismod.begin()
 			ntHeader = getNtHeaders(thismodbase)
@@ -3728,28 +3668,23 @@ class Debugger:
 			# Only add 0x1000 if entrypoint is 0
 			if entrypoint == 0:
 				address = thismodbase + 0x1000
-				if DEBUG_MODE:
-					dbgp("Fallback address set to: %s (module base: %s + 0x1000, entrypoint was 0)" % (intToHex(address), intToHex(thismodbase)))
+				dbgp("Fallback address set to: %s (module base: %s + 0x1000, entrypoint was 0)" % (intToHex(address), intToHex(thismodbase)))
 			else:
 				address = thismodbase + entrypoint
-				if DEBUG_MODE:
-					dbgp("Fallback address set to: %s (module base: %s + entrypoint: %s)" % (intToHex(address), intToHex(thismodbase), intToHex(entrypoint)))
+				dbgp("Fallback address set to: %s (module base: %s + entrypoint: %s)" % (intToHex(address), intToHex(thismodbase), intToHex(entrypoint)))
 			
 			try:
 				origbytes = self.readMemory(address, read_size)
-				if DEBUG_MODE:
-					dbgp("Successfully read from fallback address %s" % intToHex(address))
+				dbgp("Successfully read from fallback address %s" % intToHex(address))
 			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Failed to read from fallback address %s: %s" % (intToHex(address), str(e)))
+				dbgp("Failed to read from fallback address %s: %s" % (intToHex(address), str(e)))
 				origbytes = b""
 		
 
 		
 		cached = True
 		for thisinstruction in allinstructions:	
-			if DEBUG_MODE:
-				dbgp("current instruction : %s" % thisinstruction)
+			dbgp("current instruction : %s" % thisinstruction)
 			thisinstruction = self.cleanInstruction(thisinstruction)
 
 			# Ensure thisinstruction is ASCII for PyKD compatibility
@@ -3758,17 +3693,15 @@ class Debugger:
 			if not ascii_instruction in self.AsmCache:
 				objdisasm = pykd.disasm(address)
 
-				if DEBUG_MODE:
-					dbgp("instruction '%s' not in cache, assembling" % thisinstruction)
+				dbgp("instruction '%s' not in cache, assembling" % thisinstruction)
 				try:
 					# Ensure thisinstruction is ASCII for PyKD compatibility
 					ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
 					objdisasm.asm(ascii_instruction)
 				except Exception as e:
 					print(str(e))
-					if DEBUG_MODE:
-						dbgp("unable to assemble instruction '%s'" % ascii_instruction)
-						dbgp("error: %s" % str(e))
+					dbgp("unable to assemble instruction '%s'" % ascii_instruction)
+					dbgp("error: %s" % str(e))
 					return ""
 
 				# assembled at a temporary scratch address; invalidate any cached
@@ -3784,16 +3717,14 @@ class Debugger:
 
 				opc = opcode(address)	
 				thesebytes = opc.getBytes()
-				if DEBUG_MODE:
-					dbgp("bytes: %s " % thesebytes)
+				dbgp("bytes: %s " % thesebytes)
 				allbytes += thesebytes
 				self.AsmCache[ascii_instruction] = thesebytes
 				cached = False
 			else:
 			# return from cache
-				if DEBUG_MODE:
-					dbgp("return bytes from cache")
-					dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
+				dbgp("return bytes from cache")
+				dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
 				allbytes += self.AsmCache[ascii_instruction]
 		if not cached:
 			putback = "eb 0x%08x " % address
@@ -3801,10 +3732,8 @@ class Debugger:
 			restorebytes = ["%02x" % (b if isinstance(b, int) else ord(b)) for b in origbytes]
 			putback += ' '.join(restorebytes)
 			pykd.dbgCommand(putback)
-			if DEBUG_MODE:
-				dbgp("putback command: %s" % putback)
-		if DEBUG_MODE:
-			dbgp("returning %s" % bin2hex(allbytes))
+			dbgp("putback command: %s" % putback)
+		dbgp("returning %s" % bin2hex(allbytes))
 		return allbytes
 
 	def getOpcode(self,address):
@@ -3844,8 +3773,7 @@ class Debugger:
 		return ""
 
 	def setBreakpoint(self,address,condition="",extracmd=""):
-		if DEBUG_MODE:
-			dbgp("Creating breakpoint at %s" % (PTR_PRINT % address))
+		dbgp("Creating breakpoint at %s" % (PTR_PRINT % address))
 		cmd2run = ""
 		extracmd = self.sanitizeExtraCommand(extracmd)
 		try:
@@ -3855,15 +3783,13 @@ class Debugger:
 				cmd2run = 'bp 0x%x %s' % (address, extracmd)
 			self.nativeCommand(cmd2run)
 		except Exception as e:
-			if DEBUG_MODE:
-				dbgp("Error setting breakpoint: %s " % str(e))
-				dbgp("   bp command: %s" % cmd2run)
+			dbgp("Error setting breakpoint: %s " % str(e))
+			dbgp("   bp command: %s" % cmd2run)
 			return False
 		return True
 
 	def deleteBreakpoint(self,address):
-		if DEBUG_MODE:
-			dbgp("Attempting to delete breakpoint at %s" % (PTR_PRINT % address))		
+		dbgp("Attempting to delete breakpoint at %s" % (PTR_PRINT % address))		
 		getallbps = "bl"
 		searchaddress = "%s" % (PTR_PRINT_ADDRESSONLY % address).lower()
 		allbps = self.nativeCommand(getallbps)
@@ -3883,8 +3809,7 @@ class Debugger:
 						break
 				if id != "":
 					if searchaddress in line.lower():
-						if DEBUG_MODE:
-							dbgp("Found it, clear breakpoint id %s" % id)
+						dbgp("Found it, clear breakpoint id %s" % id)
 						rmbp = "bc %s" % id
 						self.nativeCommand(rmbp)
 
@@ -4030,8 +3955,7 @@ class wmodule:
 
 		if address in FuncCache:
 			if FuncCache[address] != "":
-				if DEBUG_MODE:
-					dbgp("Returning symbol from cache. 0x%x = %s" % (address, FuncCache[address]))
+				dbgp("Returning symbol from cache. 0x%x = %s" % (address, FuncCache[address]))
 				return FuncCache[address]
 		else:
 			if DEBUG_MODE:
@@ -4040,8 +3964,7 @@ class wmodule:
 
 			cmd2run = '.printf "%y", 0x{0:x}'.format(address)
 
-			if DEBUG_MODE:
-				dbgp("Running %s" % cmd2run)
+			dbgp("Running %s" % cmd2run)
 			output = pykd.dbgCommand(cmd2run)
 
 			if DEBUG_MODE:
@@ -4070,9 +3993,8 @@ class wmodule:
 
 	def getSymbols(self):
 		# enumerate IAT and EAT and put into a symbol object
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())		
-			dbgp("Getting symbols for module: %s" % self.modname)		
+		dbgp(get_current_function_name())		
+		dbgp("Getting symbols for module: %s" % self.modname)		
 		ntHeader = getNtHeaders(self.modbase)
 		pSize = 4
 		if arch == 64:
@@ -4080,8 +4002,7 @@ class wmodule:
 		
 		iatlist = self.getIATList(ntHeader,pSize)
 
-		if DEBUG_MODE:
-			dbgp("iatlist has %d elements" % len(iatlist))
+		dbgp("iatlist has %d elements" % len(iatlist))
 
 		symbollist = {}
 		for iatEntry in iatlist:
@@ -4091,8 +4012,7 @@ class wmodule:
 			symbollist[iatEntryAddress] = sym 
 
 		eatlist = self.getEATList(ntHeader,pSize)
-		if DEBUG_MODE:
-			dbgp("eatlist has %d elements" % len(eatlist))
+		dbgp("eatlist has %d elements" % len(eatlist))
 
 		for eatEntry in eatlist:
 			eatEntryName = eatEntry
@@ -4100,58 +4020,49 @@ class wmodule:
 			sym = wsymbol("Export", eatEntryAddress, eatEntryName)
 			symbollist[eatEntryAddress] = sym
 
-		if DEBUG_MODE:
-			dbgp("returning symbollist, %d elements" % len(symbollist))
+		dbgp("returning symbollist, %d elements" % len(symbollist))
 		
 		return symbollist
 
 	def getIATList(self,ntHeader, pSize):
 		# If Import Address Table Directory (DataDirectory[12]) is set this will work.
 		# The fallback case of Import Directory (DataDirectory[1]) will produce garbage.
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-			dbgp("Current module: %s" % self.modname)		
+		dbgp(get_current_function_name())
+		dbgp("Current module: %s" % self.modname)		
 		iatlist = {}
 		iatdir = ntHeader.OptionalHeader.DataDirectory[12]
 		if iatdir.Size == 0:
 			iatdir = ntHeader.OptionalHeader.DataDirectory[1]
-		if DEBUG_MODE:
-			dbgp("iatdir size: %d" % iatdir.Size)
+		dbgp("iatdir size: %d" % iatdir.Size)
 		if iatdir.Size > 0:
 			iatAddr = self.modbase + iatdir.VirtualAddress
-			if DEBUG_MODE:
-				dbgp("iatAddr: 0x%x" % iatAddr)
-				dbgp("  iat processing range: 0 - %d " % (iatdir.Size // pSize))
+			dbgp("iatAddr: 0x%x" % iatAddr)
+			dbgp("  iat processing range: 0 - %d " % (iatdir.Size // pSize))
 
 			maxnr = iatdir.Size // pSize
 			for i in range(0, maxnr):
 				try:
 					iatEntry = pykd.ptrPtr(iatAddr + i*pSize)
 					if iatEntry != None and iatEntry != 0:
-						if DEBUG_MODE:
-							dbgp("Symbol lookup via printf, for 0x%x (%d / %d)" % (iatEntry, i, maxnr))
+						dbgp("Symbol lookup via printf, for 0x%x (%d / %d)" % (iatEntry, i, maxnr))
 						symbolName = self.addressToSymbol(iatEntry)
 						if symbolName == "":
-							if DEBUG_MODE:
-								dbgp("pykd.findSymbol for 0x%x (%d / %d)" % (iatEntry, i, maxnr))
+							dbgp("pykd.findSymbol for 0x%x (%d / %d)" % (iatEntry, i, maxnr))
 							symbolName = pykd.findSymbol(iatEntry)
-						if DEBUG_MODE:
-							dbgp("Symbol: %s" % symbolName)
+						dbgp("Symbol: %s" % symbolName)
 						if "!" in symbolName:
 							iatlist[iatAddr + i*pSize] = symbolName
 				except Exception as e:
-					if DEBUG_MODE:
-						dbgp("Error while getting IAT: %s" % str(e))
-						dbgp(traceback.format_exc())
+					dbgp("Error while getting IAT: %s" % str(e))
+					dbgp(traceback.format_exc())
 					continue
 		return iatlist
 
 
 	def getEATList(self,ntHeader, pSize):
 		# http://www.pinvoke.net/default.aspx/Structures.IMAGE_EXPORT_DIRECTORY
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-			dbgp("Current module: %s" % self.modname)		
+		dbgp(get_current_function_name())
+		dbgp("Current module: %s" % self.modname)		
 		eatlist = {}
 		if ntHeader.OptionalHeader.DataDirectory[0].Size > 0:
 			eatAddr = self.modbase + ntHeader.OptionalHeader.DataDirectory[0].VirtualAddress
@@ -4167,8 +4078,7 @@ class wmodule:
 				# IMAGE_EXPORT_DIRECTORY.AddressOfFunctions[i](DWORD)
 				eatAddress = self.modbase + pykd.ptrDWord(address_of_functions + 4*i)
 				eatlist[eatName] = eatAddress
-				if DEBUG_MODE:
-					dbgp("Added to EATList: %s!%s at 0x%08x" % (self.modname, eatName, eatAddress))
+				dbgp("Added to EATList: %s!%s at 0x%08x" % (self.modname, eatName, eatAddress))
 		return eatlist
 	
 
@@ -4211,8 +4121,7 @@ class wpage():
 				data = bytes(bytearray(pykd.loadBytes(self.begin, self.size)))
 				return data
 			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Error accessing memory: %s" % str(e))
+				dbgp("Error accessing memory: %s" % str(e))
 				return None
 		else:
 			return None
@@ -4323,13 +4232,11 @@ class Function:
 		self.obj = obj
 
 	def getName(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 		modname = "unknown"
 		funcname = "unknown"
 		symname = self.addressToSymbol()
-		if DEBUG_MODE:
-			dbgp("Symname: %s" % symname)
+		dbgp("Symname: %s" % symname)
 		if symname == "":
 			# get module this address belongs to
 			self.function_allmodules = self.obj.getAllModules()
@@ -4348,18 +4255,15 @@ class Function:
 								funcname = eatsym.getName()
 								break
 		else:
-			if DEBUG_MODE:
-				dbgp("Splitting module & symbol name %s" % symname)
+			dbgp("Splitting module & symbol name %s" % symname)
 			if "!" in symname:
 				symnameparts = symname.split("!")
 				if len(symnameparts) > 1:
 					modname = symnameparts[0]
 					funcname = symnameparts[1]
-			if DEBUG_MODE:
-				dbgp("Function name: %s" % funcname)
+			dbgp("Function name: %s" % funcname)
 		thename = "%s!%s" % (modname,funcname)
-		if DEBUG_MODE:
-			dbgp("Full name for 0x%x = %s" % (self.address, thename))
+		dbgp("Full name for 0x%x = %s" % (self.address, thename))
 		return thename
 
 	def hasAddress(self):
@@ -4370,15 +4274,13 @@ class Function:
 
 		if self.address in FuncCache:
 			if FuncCache[self.address] != "":
-				if DEBUG_MODE:
-					dbgp("Returning symbol from cache. 0x%x = %s" % (self.address, FuncCache[self.address]))
+				dbgp("Returning symbol from cache. 0x%x = %s" % (self.address, FuncCache[self.address]))
 				return FuncCache[self.address]
 		else:
 
 			cmd2run = '.printf "%y", 0x{0:x}'.format(self.address)
 
-			if DEBUG_MODE:
-				dbgp("Running %s" % cmd2run)
+			dbgp("Running %s" % cmd2run)
 			output = pykd.dbgCommand(cmd2run)
 			if not output:
 					return ""
