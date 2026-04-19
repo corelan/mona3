@@ -1876,37 +1876,45 @@ def splitToPtrInstr(input):
 	thispointer = -1
 	thisinstruction = ""
 	
+	# Some mona output lines may be indented; don't require the pointer to be at column 0.
 	thisline = input.lower()
+	thisline_stripped = thisline.lstrip()
+	input_stripped = input.lstrip()
 	is_bytes = isinstance(thisline, bytes)
 	
 	# Create appropriate patterns based on input type
 	if is_bytes:
 		split1 = re.compile(b" ")
 		split2 = re.compile(b":")
-		split3 = re.compile(b"\*\*")
+		split3 = re.compile(br"\*\*")
 		startswith_arg = b"0x"
 		newline_arg = b"\n"
 		carriage_arg = b"\r"
 		colon_arg = b":"
+		ptr_re = re.compile(br"^0x[0-9a-f]{8,16}$")
 	else:
 		split1 = re.compile(" ")
 		split2 = re.compile(":")
-		split3 = re.compile("\*\*")
+		split3 = re.compile(r"\*\*")
 		startswith_arg = "0x"
 		newline_arg = "\n"
 		carriage_arg = "\r"
 		colon_arg = ":"
+		ptr_re = re.compile(r"^0x[0-9a-f]{8,16}$")
 	
-	if thisline.startswith(startswith_arg):
+	if thisline_stripped.startswith(startswith_arg):
 		#get the pointer
-		parts = split1.split(input)
+		parts = split1.split(input_stripped)
+		dbgp("Parts: %s" % parts)
 		part1 = parts[0].replace(newline_arg, b"" if is_bytes else "").replace(carriage_arg, b"" if is_bytes else "")
-		if len(part1) != 10:
+		part1_lc = part1.lower()
+		# Accept both 32-bit (8 hex digits) and 64-bit (up to 16 hex digits) pointers.
+		if not ptr_re.match(part1_lc):
 			return thispointer, thisinstruction
 		else:
 			thispointer = hexStrToInt(part1)
 			if len(parts) > 1:
-				subparts = split2.split(input)
+				subparts = split2.split(input_stripped)
 				subpartsall = b"" if is_bytes else ""
 				if len(subparts) > 1:
 					cnt = 1
@@ -8609,6 +8617,9 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 					types   = ["pointer", "string", "string", "string"]
 					print_dict_table(results_dict_details, headers, types, padding = "      ", itemsequence = display_order)
 
+				dbg.log("")
+				dbg.log("[+] Done. All results have been written to %s" % thislog)
+
 		dbg.log("")
 		dbg.log("    Found a total of %d pointers" % ptrcnt)
 	else:
@@ -9782,7 +9793,7 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 		fname = allfiles[fcnt]
 		fname = fname.strip()
 		if os.path.exists(fname):
-			dbg.log("     - %d. %s" % (fcnt, allfiles[fcnt]))
+			dbg.log("     - %s" % (allfiles[fcnt]))
 		else:
 			dbg.log("     ** %s : Does not exist !" % allfiles[fcnt], highlight=1)
 			filenotfound = True
@@ -9794,8 +9805,8 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 	comparefilenot = objcomparefilenot.reset()
 	objcomparefilenot.write("Source files:",comparefilenot)
 	for fcnt in xrange(len(allfiles)):
-		objcomparefile.write(" - " + str(fcnt)+". "+allfiles[fcnt],comparefile)
-		objcomparefilenot.write(" - " + str(fcnt)+". "+allfiles[fcnt],comparefilenot)
+		objcomparefile.write(" - " + str(fcnt+1)+". "+allfiles[fcnt],comparefile)
+		objcomparefilenot.write(" - " + str(fcnt+1)+". "+allfiles[fcnt],comparefilenot)
 	objcomparefile.write("",comparefile)
 	objcomparefile.write("Pointers found :",comparefile)
 	objcomparefile.write("----------------",comparefile)
@@ -9816,6 +9827,7 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 		pointerlist = []
 		for thisLine in content:
 			refpointer,instr = splitToPtrInstr(thisLine)
+			dbgp("Read line with pointer %s and instruction %s" % (PTR_PRINT % refpointer,instr))
 			# Handle both bytes and string types
 			if isinstance(instr, bytes):
 				instr = instr.replace(b'\n', b'').replace(b'\r', b'').strip(b":")
@@ -9906,7 +9918,7 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 	remaining.sort()
 	for remptr in remaining:
 		if fast:
-			outputlines += "0x%08x\n" % remptr
+			outputlines += "%s\n" % (PTR_PRINT % remptr)
 		else:
 			thisinstr = all_input_files[shortestarray][remptr]
 			include = True
@@ -9920,11 +9932,11 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 			else:
 				include = True
 			if include and (tomatch == "" or tomatch in thisinstr):
-				outputlines += "0x%08x : %s\n" % (remptr,thisinstr)
+				outputlines += "%s : %s\n" % (PTR_PRINT % remptr,thisinstr)
 
 	for nonptr in nonmatching:
 		if fast:
-			outputlines_not += "0x%08x\n" % nonptr
+			outputlines_not += "%s\n" % (PTR_PRINT % nonptr)
 		else:
 			thisinstr = ""
 			if nonptr in all_input_files[shortestarray]:
@@ -24096,7 +24108,7 @@ Arguments:
 	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
 	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod", [32,64])
 	commands["moduleinfo"]		= MnCommand("moduleinfo","Show detailed info about a specific module",moduleInfoUsage,procModuleInfo,"modinfo", [32,64])
-	commands["filecompare"]		= MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc")
+	commands["filecompare"]		= MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc",[32,64])
 	commands["pattern_create"]	= MnCommand("pattern_create","Create a cyclic pattern of a given size",patcreateUsage,procCreatePATTERN,"pc",[32,64])
 	commands["pattern_offset"]	= MnCommand("pattern_offset","Find location of 4 bytes in a cyclic pattern",patoffsetUsage,procOffsetPATTERN,"po",[32,64])
 	commands["find"] 			= MnCommand("find", "Find bytes in memory", findUsage, procFind,"f", [32,64])
