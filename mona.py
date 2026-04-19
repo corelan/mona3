@@ -19299,7 +19299,7 @@ def procHeap(args):
 		allheaps = dbg.getHeapsAddress()
 	except:
 		allheaps = []
-	dbg.log("Peb : 0x%08x, NtGlobalFlag : 0x%08x" % (get_peb_addr(),getNtGlobalFlag()))
+	dbg.log("Peb : %s, NtGlobalFlag : 0x%08x" % (PTR_PRINT % get_peb_addr(),getNtGlobalFlag()))
 	dbg.log("Heaps:")
 	dbg.log("------")
 	if len(allheaps) > 0:
@@ -19312,7 +19312,7 @@ def procHeap(args):
 				segmentlist.sort()
 			segmentinfo = ""
 			for segment in segmentlist:
-				segmentinfo = segmentinfo + "0x%08x" % segment + ","
+				segmentinfo = segmentinfo + "%s" % (PTR_PRINT % segment) + ","
 			segmentinfo = segmentinfo.strip(",")
 			segmentinfo = " : " + segmentinfo
 			defheap = ""
@@ -19327,7 +19327,7 @@ def procHeap(args):
 					lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
 				if iHeap.getEncodingKey() > 0:
 					keyinfo = "Encoding key: 0x%016x" % iHeap.getEncodingKey()
-			dbg.log("0x%08x (%d segment(s)%s) %s %s %s" % (heap,len(segments),segmentinfo,defheap,lfhheap,keyinfo))
+			dbg.log("%s (%d segment(s)%s) %s %s %s" % ((PTR_PRINT % heap),len(segments),segmentinfo,defheap,lfhheap,keyinfo))
 	else:
 		dbg.log(" ** No heaps found")
 	dbg.log("")
@@ -19943,8 +19943,9 @@ def procHeap(args):
 
 			if searchtype in ["segments","all","chunks"] or "stat" in args:
 				segments = getSegmentsForHeap(heapbase)
-				dbg.log("Segment List for heap 0x%08x:" % (heapbase))
-				dbg.log("---------------------------------")
+				hline = "Segment List for heap %s:" % (PTR_PRINT % heapbase)
+				dbg.log(hline)
+				dbg.log("-" * len(hline))
 				sortedsegments = []
 				for seg in segments:
 					sortedsegments.append(seg)
@@ -19973,15 +19974,15 @@ def procHeap(args):
 							segsize = segend-segstart
 							FirstEntry = segments[seg][2]
 							LastValidEntry = segments[seg][3]
-							tolog = "Segment 0x%08x - 0x%08x (FirstEntry: 0x%08x - LastValidEntry: 0x%08x): 0x%08x bytes" % (segstart,segend,FirstEntry,LastValidEntry, segsize)
+							tolog = "Segment %s - %s (FirstEntry: %s - LastValidEntry: %s): %s bytes" % (PTR_PRINT % segstart, PTR_PRINT % segend, PTR_PRINT % FirstEntry, PTR_PRINT % LastValidEntry, PTR_PRINT % segsize)
 						if infotype == "virtualallocdblocks":
 							vablocks = heapdata
-							tolog = "Heap : 0x%08x%s : VirtualAllocdBlocks : %d " % (heapbase,heapbase_extra,len(vachunks))
+							tolog = "Heap : %s%s : VirtualAllocdBlocks : %d " % (PTR_PRINT % heapbase, heapbase_extra, len(vachunks))
 						#dbg.log("")
 						dbg.log(tolog)
 						if searchtype == "chunks" or "stat" in args:
 							try:
-								logfile_b.write("Heap: 0x%08x%s" % (heapbase,heapbase_extra),thislog_b)
+								logfile_b.write("Heap: %s%s" % (PTR_PRINT % heapbase, heapbase_extra),thislog_b)
 								#logfile_b.write("",thislog_b)
 								logfile_b.write(tolog,thislog_b)
 							except:
@@ -23291,7 +23292,7 @@ def getBanner():
 	bannertext = ""
 	bannertext += "    #----------------------------------------------------------------- #\n"
 	bannertext += "    |                                                                  |\n"
-	bannertext += "    |   	____ ___  ____  ____  ____ _                                  |\n"
+	bannertext += "    |      ____ ___  ____  ____  ____ _                                |\n"
 	bannertext += "    |   / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be          |\n"
 	bannertext += "    |  / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com |\n"
 	bannertext += "    | /_/ /_/ /_/\____/_/ /_/\__,_/  https://www.corelan-certified.com |\n"
@@ -23322,7 +23323,6 @@ def getBanner():
 	bannertext += "   └───────────────────────────────────────┘\n"
 	banners[4] = bannertext
 
-
 	bannertext = """
     ___  ________ _   _   ___          _____ 
     |  \/  |  _  | \ | | / _ \        |____ |
@@ -23334,8 +23334,8 @@ def getBanner():
     www.corelan.be 
     www.corelan-training.com  
     www.corelan-certified.com
-                                         	
-	"""
+                                         
+"""
 	banners[5] = bannertext
 
 
@@ -23351,14 +23351,14 @@ def getBanner():
 def procHelp(args, helpForCommand=None):
 	global commands
 	global scriptname
-	dbg.log("     'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
-	dbg.log("     Plugin version : %s r%s" % (__VERSION__,__REV__))
-	dbg.log("     Python version : %s" % (getPythonVersion()))
+	dbg.log("    'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
+	dbg.log("    Plugin version : %s r%s" % (__VERSION__,__REV__))
+	dbg.log("    Python version : %s" % (getPythonVersion()))
 	if __DEBUGGERAPP__ == "WinDBG":
 		pykdversion = dbg.getPyKDVersionNr()
-		dbg.log("     PyKD version %s" % pykdversion)
-	dbg.log("     Written by Corelan - https://www.corelan.be")
-	dbg.log("     Project page : https://github.com/corelan/mona3")
+		dbg.log("    PyKD version %s" % pykdversion)
+	dbg.log("    Written by Corelan - https://www.corelan.be")
+	dbg.log("    Project page : https://github.com/corelan/mona3")
 	dbg.logLines(getBanner(),highlight=1)
 
 	if helpForCommand == None:
@@ -24119,7 +24119,7 @@ Arguments:
 	commands["proclayout"]		= MnCommand("proclayout","Show unified process memory layout map",proclayoutUsage,procLayout,"pl",[32,64])
 	commands["skeleton"]		= MnCommand("skeleton","Create a Metasploit module skeleton with a cyclic pattern for a given type of exploit",skeletonUsage,procSkeleton)
 	commands["breakfunc"]		= MnCommand("breakfunc","Set a breakpoint on an exported function in on or more dll's",bfUsage,procBf,"bf", [32,64])
-	commands["heap"]			= MnCommand("heap","Show heap related information",heapUsage,procHeap)
+	commands["heap"]			= MnCommand("heap","Show heap related information",heapUsage,procHeap,"hp", [32,64])
 	commands["getiat"]			= MnCommand("getiat","Show IAT of selected module(s)",getiatUsage,procGetIAT,"iat", [32,64])
 	commands["geteat"]          = MnCommand("geteat","Show EAT of selected module(s)",geteatUsage,procGetEAT,"eat", [32,64])
 	commands["pageacl"]         = MnCommand("pageacl","Show ACL associated with mapped pages",getpageACLUsage,procPageACL,"pacl",[32,64] )
