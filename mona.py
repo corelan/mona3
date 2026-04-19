@@ -60,7 +60,6 @@ except ImportError:
 	from urllib.request import urlretrieve as urllib_urlretrieve
 
 
-
 if PY3:
 	text_type = str
 	bytes_type = bytes
@@ -73,11 +72,6 @@ __IMM__ = '1.8'
 __DEBUGGERAPP__ = ''
 arch = 32
 win7mode = False
-
-
-Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
-Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
-						"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
 
 
 try:
@@ -156,12 +150,19 @@ PTR_FMT = '<L' if arch == 32 else '<Q'
 PTR_PRINT = "0x%08x" if arch == 32 else "0x%016x"
 PTR_PRINT_ADDRESSONLY = "%08x" if arch == 32 else "%016x"
 
+
+Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
+Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+						"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+
+global scriptname
+currentArgs = []
+
 _teb_addr_cache = None
 _peb_addr_cache = None
 _peb_list_cache = None
 MemoryPageACL={}
-global scriptname
-currentArgs = []
+
 disasmLowerChecked = False
 disasmIsLower = False
 configFileCache = {}
@@ -171,6 +172,7 @@ ptr_to_get = -1
 silent = False
 ignoremodules = True
 noheader = False
+
 dbg = dbglib.Debugger()
 
 commands = {}
@@ -259,9 +261,6 @@ offsets = {
 	}
 }
 
-#---------------------------------------#
-#  Populate constants                   #
-#---------------------------------------#	
 
 
 #---------------------------------------#
@@ -298,6 +297,9 @@ def getRegisters():
 
 
 def getAllRegisters():
+	"""
+	Makes a dict of all valid registers and their values on the current architecture
+	"""
 	if DEBUG_MODE:
 		dbgp(get_current_function_name())
 	if __DEBUGGERAPP__ == "Immunity Debugger":
@@ -344,7 +346,6 @@ def _to_bytes(value):
 	if isinstance(value, text_type):
 		return value.encode('latin1')
 	return text_type(value).encode('latin1')
-
 
 
 def str_to_bool(value):
@@ -469,7 +470,6 @@ def DwordToBits(srcDword):
 	"""
 	Converts a dword into an array of 32 bits
 	"""
-
 	bit_array = []
 	h_str = "%08x" % srcDword
 	h_size = len(h_str) * 4
@@ -477,6 +477,7 @@ def DwordToBits(srcDword):
 	for bit in bits:
 		bit_array.append(int(bit))
 	return bit_array
+
 
 
 def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None):
@@ -759,9 +760,10 @@ def getAddyArg(argaddy):
 		return 0, False
 
 	if str(argaddy).strip().lower() in regs:
+		thisreg = str(argaddy).strip().lower()
 		if DEBUG_MODE:
-			dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[str(argaddy).strip().lower()]))
-		return regs[str(argaddy).strip().lower()], True
+			dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[sthisreg]))
+		return regs[thisreg], True
 
 	argaddy = str(argaddy).strip().replace("`","")
 	addyparts = _tokenize_addy_expression(argaddy)
@@ -804,52 +806,6 @@ def getAddyArg(argaddy):
 	
 
 
-def getIntForPart(part):
-	"""
-	Returns the int value associated with an input string
-	The input string can be a hex value, decimal value, register, modulename, or modulee!functionname
-	"""
-	partclean = part
-	partclean = partclean.lower()
-	addyok = True
-	partval = 0
-	regs = getRegisters()
-	if partclean.lower() in regs:
-		partval = regs[partclean.lower()]
-	elif partclean.lower() == "heap" or partclean.lower() == "processheap":
-		partval = getDefaultProcessHeap()
-	else:
-		if partclean.lower().startswith("0n"):
-			partclean = partclean.lower().replace("0n","")
-			try:
-				partval = int(partclean)
-			except:
-				addyok = False
-				partval = 0
-		else:
-			try:
-				if not "0x" in partclean.lower():
-					partclean = "0x" + partclean
-				partval = int(partclean,16)
-			except:
-				addyok = False
-				partval = 0
-	if not addyok:
-		if not "!" in part:
-			m = getModuleObj(part)
-			if not m == None:
-				partval = m.moduleBase
-				addyok = True
-		else:
-			modparts = part.split("!")
-			modname = modparts[0]
-			funcname = modparts[1]
-			m = getFunctionAddress(modname,funcname)
-			if m > 0:
-				partval = m
-				addyok = True
-	return partval,addyok
-
 
 def getHeapAllocSize(requested_size, granularity = 8):
 	"""
@@ -886,6 +842,7 @@ def getFunctionAddress(modname,funcname):
 				return f
 	return funcaddy
 
+
 def getFunctionName(addy):
 	"""
 	Returns symbol name closest to the specified address
@@ -911,6 +868,7 @@ def getFunctionName(addy):
 		if len(fnameparts) > 1:
 			return fnameparts[0],fnameparts[1]
 	return fname,foffset
+
 
 
 def printDataArray(data,charsperline=16,prefix=b""):
@@ -1250,8 +1208,8 @@ def getVersionInfo(filename):
 	Arguments : filename
 	
 	Return :
-	version - string with version (or empty if not found)
-	revision - string with revision (or empty if not found)
+	version - string with version (normalized)
+	revision - string with revision (normalized as int string)
 	"""
 
 	file = open(filename,"rb")
@@ -1273,6 +1231,23 @@ def getVersionInfo(filename):
 			parts = line.split("=")
 			if len(parts) > 1:
 				version = parts[1].strip()
+
+	# Normalize version and revision
+	def _safe_int(v):
+		try:
+			return int(str(v).strip().replace("'", "").replace('"', ""))
+		except:
+			return 0
+
+	def _normalize_version(v):
+		if v is None:
+			return ""
+		v = str(v).strip().replace("'", "").replace('"', "")
+		return v
+
+	version = _normalize_version(version)
+	revision = str(_safe_int(revision))
+
 	return version,revision
 
 	
@@ -17510,12 +17485,6 @@ def procUpdate(args):
 		if DEBUG_MODE:
 			dbgp(msg)
 
-	def _safe_int(v):
-		try:
-			return int(str(v).strip().replace("'", "").replace('"', ""))
-		except:
-			return 0
-
 	def _normalize_version(v):
 		if v is None:
 			return ""
@@ -17770,8 +17739,6 @@ def procUpdate(args):
 			continue
 
 		current_version, current_revision = getVersionInfo(current_file)
-		current_version = _normalize_version(current_version)
-		current_revision = str(_safe_int(current_revision))
 
 		_dbg("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
 
@@ -17793,8 +17760,6 @@ def procUpdate(args):
 			continue
 
 		new_version, new_revision = getVersionInfo(download_file)
-		new_version = _normalize_version(new_version)
-		new_revision = str(_safe_int(new_revision))
 
 		_dbg("Downloaded version info for %s: version=%s revision=%s" % (name, new_version, new_revision))
 
@@ -20329,38 +20294,46 @@ def procSkeleton(args):
 	
 	return
 
+
+
 def procLoad(args):
+	"""
+	Loads the content of a file into memory at a specified location (default: EIP/RIP)
+	"""
 
 	# checks the args
 	# file ok?
 	inputfile = ""
-	argspresent = False
-	stopnow = False
+	targetloc = ""
+	if arch == 32:
+		targetloc = "eip"
+	if arch == 64:
+		targetloc = "rip"
+
+	if "a" in args:
+		if type(args["a"]).__name__.lower() != "bool":
+			targetloc = args["a"]
+	elif "dst" in args:
+		if type(args["dst"]).__name__.lower() != "bool":
+			targetloc = args["dst"]
+	elif "r" in args:
+		if type(args["r"]).__name__.lower() != "bool":
+			targetloc = args["r"]
+
+	# convert argument to address
+	addr, addrok = getAddyArg(targetloc)
+
+	if not addrok:
+		dbg.log("Invalid target location provided with -a", highlight=1)
+		dbg.log("   Unable to resolve %s" % targetloc)
+		return
+
 	if "f" in args:
-		argspresent = True
-
-	if argspresent:
-		# target is an address or a register?
-		targetloc = "0x0"
-		if "a" in args:
-			if type(args["a"]).__name__.lower() != "bool":
-				targetloc = args["a"]
-		else:
-			targetloc = "EIP"
-		
-		regs = getRegisters()
-		targetloclower = targetloc.lower()	
-		if targetloclower in regs:
-			targetloc = "0x" + toHex(regs[targetloclower])
-
 		if type(args["f"]).__name__.lower() != "bool":
 			inputfile = args["f"]
 
-		if inputfile == "":
-			dbg.log("Missing argument -f <source filename>",highlight=1)
-			stopnow = True
-
-	if stopnow:
+	if inputfile == "":
+		dbg.log("Missing argument -f <source filename>",highlight=1)
 		return
 
 	inputfile = inputfile.replace("'","").replace('"',"")
@@ -20374,14 +20347,7 @@ def procLoad(args):
 		return
 
 	dbg.log("[+] Read %d bytes from %s" % (len(content),inputfile))	
-	dbg.log("[+] Attempting to write contents of file to %s" % targetloc)
-
-	batch_size = 16
-
-	#dbg.writeMemory doesn't work reliably
-	# so let's do it the dirty way
-
-	addr = int(targetloc, 0)
+	dbg.log("[+] Attempting to write contents of file to %s (%s)" % (targetloc, (PTR_PRINT % addr)))
 
 	if sys.version_info[0] < 3:
 		bytes_list = [_ord(c) for c in content]
@@ -20389,40 +20355,61 @@ def procLoad(args):
 		bytes_list = list(content)
 
 	total_len = len(content)
-	log_every = True
-	num_batches = int(math.ceil(float(total_len) / batch_size))
+	
+	# Use appropriate method based on debugger type
+	if __DEBUGGERAPP__ == "WinDBG":
+		# WinDBG: use nativeCommand with eb (edit byte) command
+		batch_size = 16
+		log_every = True
+		num_batches = int(math.ceil(float(total_len) / batch_size))
 
-	for batch_idx in range(num_batches):
-		start = batch_idx * batch_size
-		end = min(start + batch_size, total_len)
-		slice_bytes = bytes_list[start:end]
+		for batch_idx in range(num_batches):
+			start = batch_idx * batch_size
+			end = min(start + batch_size, total_len)
+			slice_bytes = bytes_list[start:end]
 
-		cur_addr = addr + start
-		addr_hex = "0x%X" % cur_addr
+			cur_addr = addr + start
+			addr_hex = "0x%X" % cur_addr
 
-		# format bytes as two-digit hex without 0x, separated by spaces
-		byte_tokens = " ".join("%02X" % (b & 0xFF) for b in slice_bytes)
+			# format bytes as two-digit hex without 0x, separated by spaces
+			byte_tokens = " ".join("%02X" % (b & 0xFF) for b in slice_bytes)
 
-		# build command: eb 0xADDR <b1> <b2> ...
-		cmd = "eb %s %s" % (addr_hex, byte_tokens)
+			# build command: eb 0xADDR <b1> <b2> ...
+			cmd = "eb %s %s" % (addr_hex, byte_tokens)
 
+			try:
+				dbg.nativeCommand(cmd)
+			except Exception as e:
+				dbg.log("Failed to run: %s  (error: %s)" % (cmd, e), highlight=1)
+				return False
+
+			# optional progress logging
+			if log_every and ((batch_idx + 1) % log_every == 0 or batch_idx == num_batches - 1):
+				written = end
+				dbg.log("[+] Progress: wrote %d / %d bytes" % (written, total_len))
+
+	else:
+		# Immunity Debugger: use writeMemory directly
 		try:
-			dbg.nativeCommand(cmd)
+			# Convert bytes_list back to binary data for writeMemory
+			if sys.version_info[0] < 3:
+				data_to_write = "".join(chr(b) for b in bytes_list)
+			else:
+				data_to_write = bytes(bytes_list)
+			
+			dbg.writeMemory(addr, data_to_write)
+			dbg.log("[+] Progress: wrote %d / %d bytes" % (total_len, total_len))
 		except Exception as e:
-			dbg.log("Failed to run: %s  (error: %s)" % (cmd, e), highlight=1)
+			dbg.log("Failed to write memory at 0x%X: %s" % (addr, str(e)), highlight=1)
 			return False
 
-		# optional progress logging
-		if log_every and ((batch_idx + 1) % log_every == 0 or batch_idx == num_batches - 1):
-			written = end
-			dbg.log("[+] Progress: wrote %d / %d bytes" % (written, total_len))
-
-	dbg.log("[+] Finished writing %d bytes to 0x%X" % (total_len, addr))
+	dbg.log("[+] Finished writing %d bytes to %s" % (total_len, (PTR_PRINT % addr)))
 
 	# let's make that location RWX to be sure
-	dbg.rVirtualProtect(addr,1,0x40)
-	dbg.log("[+] Changed ACL to RWX")
-	dbg.log("[+] Done.")
+	if __DEBUGGERAPP__ == "WinDBG":
+		dbg.rVirtualProtect(addr,1,0x40)
+		dbg.log("[+] Changed ACL to RWX")
+		dbg.log("[+] Done.")
 	return
 
 
@@ -20455,7 +20442,7 @@ def procFillChunk(args):
 				dbg.log("%s is an invalid address" % args["a"], highlight=1)
 				return
 
-	dbg.log("Reference value: %s" % refvalue)
+	dbg.log("Location: %s" % (PTR_PRINT % refvalue))
 
 	if "b" in args:
 		if type(args["b"]).__name__.lower() != "bool":
@@ -23808,18 +23795,7 @@ Arguments:
 	commands["kb"]				= MnCommand("kb","Manage Knowledgebase data",kbUsage,procKb,"kb")
 	commands["encode"]			= MnCommand("encode","Encode a series of bytes",encUsage,procEnc,"enc")
 	commands["unicodealign"]	= MnCommand("unicodealign","Generate venetian alignment code for unicode stack buffer overflow",unicodealignUsage,procUnicodeAlign,"ua")
-	#commands["heapcookie"]      = MnCommand("heapcookie","Looks for writeable pointers that can help avoiding cookie check during arbitrary free",heapCookieUsage,procHeapCookie,"hc")
-	if __DEBUGGERAPP__ == "Immunity Debugger":
-		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
-	if __DEBUGGERAPP__ == "WinDBG":
-		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk",[32,64])
-		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
-		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
-		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
-		commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc",[32,64])
-		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
-		commands["load"]		= MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
-		commands["symclean"]		= MnCommand("symclean","Remove .error files from all symbol folders", symcleanUsage, procSymclean,"symjunk",[32,64])
+	commands["load"]		= MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
 	commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
 	commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain",[32])
 	commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd",[32,64])
@@ -23829,9 +23805,17 @@ Arguments:
 	commands["teb"]				= MnCommand("teb","Show TEB related information",tebUsage,procTEB,"teb",[32,64])
 	commands["string"]			= MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str",[32,64])
 	commands["copy"]			= MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp",[32,64])
-	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])
-
-
+	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])	
+	if __DEBUGGERAPP__ == "Immunity Debugger":
+		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
+	if __DEBUGGERAPP__ == "WinDBG":
+		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk",[32,64])
+		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
+		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
+		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
+		commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc",[32,64])
+		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
+		commands["symclean"]		= MnCommand("symclean","Remove .error files from all symbol folders", symcleanUsage, procSymclean,"symjunk",[32,64])
 	return
 
 
