@@ -161,7 +161,6 @@ currentArgs = []
 
 _teb_addr_cache = None
 _peb_addr_cache = None
-_peb_list_cache = None
 MemoryPageACL={}
 
 disasmLowerChecked = False
@@ -259,7 +258,19 @@ offsets = {
 	"SegmentList" : {
 		"vista" : [0x0a8,0x128],
 		"win8" : [0x0a4,0x120],
-	}
+	},
+	"FreeLists" : {
+		"xp" : [0x178,0x178],
+		"vista" : [0x0c4,0x138],
+		"win8" : [0x0c0,0x130],
+	},
+	"BlocksIndex" : {
+		"vista" : [0x0b8,0x120],
+		"win8" : [0x0b4,0x118],
+	},
+	"FrontEndHeapUsageData" : {
+		"vista" : [0x0d8,0x180],
+	},
 }
 
 
@@ -1803,25 +1814,13 @@ def getStacks():
 	Return:
 	a dictionary, with key = threadID. Each entry contains an array with base and top of the stack
 	"""
-	stacks = {}
 	if len(mnproc.stacklistCache) > 0:
 		return mnproc.stacklistCache
-	else:
-		threads = dbg.getAllThreads() 
-		for thread in threads:
-			teb = thread.getTEB()
-			tid = thread.getId()
-			topStack = 0
-			baseStack = 0
-			if arch == 32:
-				topStack = struct.unpack('<L',dbg.readMemory(teb+4,4))[0]
-				baseStack = struct.unpack('<L',dbg.readMemory(teb+8,4))[0]
-			if arch == 64:
-				topStack = struct.unpack('<Q',dbg.readMemory(teb+8,8))[0]
-				baseStack = struct.unpack('<Q',dbg.readMemory(teb+16,8))[0]
-			stacks[tid] = [baseStack,topStack]
-		mnproc.stacklistCache = stacks
-		return stacks
+	stacks = {}
+	for tid, teb in mnproc.getThreads().items():
+		stacks[tid] = [teb.StackBase, teb.StackLimit]
+	mnproc.stacklistCache = stacks
+	return stacks
 
 def meetsAccessLevel(page,accessLevel):
 	"""
@@ -1986,17 +1985,251 @@ def get_peb_addr():
 	return int(_peb_addr_cache)
 
 
-def peb_walk():
+class MnPEB:
 	"""
-	Yield (dll_base, base_name, full_path) for every entry in
-	PEB.InLoadOrderModuleList.
-	Results are cached in _peb_list_cache after the first walk.
+	Class representing the Process Environment Block (PEB).
+	Reads fields directly from memory using the cached PEB address.
 	"""
-	global _peb_list_cache
-	if _peb_list_cache is None:
-		_peb_list_cache = list(dbg._peb_walk())
-	for entry in _peb_list_cache:
-		yield entry
+
+	# PEB field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"ImageBaseAddress":     (0x08, 0x10),
+		"Ldr":                  (0x0C, 0x18),
+		"ProcessHeap":          (0x18, 0x30),
+		"NumberOfHeaps":        (0x88, 0xE8),
+		"MaximumNumberOfHeaps": (0x8C, 0xEC),
+		"ProcessHeaps":         (0x90, 0xF0),
+	}
+
+	# PEB_LDR_DATA list head offsets: (x86, x64)
+	_ldr_list_info = {
+		"InLoadOrderModuleList": {
+			"head_offset": (0x0C, 0x10),
+			"link_offset": (0x00, 0x00),
+		},
+		"InMemoryOrderModuleList": {
+			"head_offset": (0x14, 0x20),
+			"link_offset": (0x08, 0x10),
+		},
+		"InInitializationOrderModuleList": {
+			"head_offset": (0x1C, 0x30),
+			"link_offset": (0x10, 0x20),
+		},
+	}
+
+	# LDR_DATA_TABLE_ENTRY field offsets: (x86, x64)
+	_dll_base_off   = (0x18, 0x30)
+	_full_name_off  = (0x24, 0x48)
+	_base_name_off  = (0x2C, 0x58)
+
+	# Class-level cache: list_name -> [(dll_base, base_name, full_path), ...]
+	_raw_cache = {}
+
+	# Architecture index: 0 for x86, 1 for x64
+	_idx = 1 if arch == 64 else 0
+
+	def __init__(self):
+		self.PEBAddress = get_peb_addr()
+		if self.PEBAddress == 0:
+			raise Exception("Unable to determine PEB address")
+
+		def _read_ptr(addr):
+			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
+
+		def _read_dword(addr):
+			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
+
+		idx = self._idx
+		peb = self.PEBAddress
+
+		self.ImageBaseAddress     = _read_ptr(peb + self._offsets["ImageBaseAddress"][idx])
+		self.Ldr                  = _read_ptr(peb + self._offsets["Ldr"][idx])
+		self.ProcessHeap          = _read_ptr(peb + self._offsets["ProcessHeap"][idx])
+		self.NumberOfHeaps        = _read_dword(peb + self._offsets["NumberOfHeaps"][idx])
+		self.MaximumNumberOfHeaps = _read_dword(peb + self._offsets["MaximumNumberOfHeaps"][idx])
+		self.ProcessHeaps         = _read_ptr(peb + self._offsets["ProcessHeaps"][idx])
+
+		self.LdrList = self.peb_walk()
+
+	@staticmethod
+	def _raw_walk(list_name="InLoadOrderModuleList"):
+		"""
+		Yield (dll_base, base_name, full_path) for every entry in the
+		specified PEB_LDR_DATA linked list.
+
+		No MnPEB instance required.  Results are cached per list_name.
+		"""
+		if list_name in MnPEB._raw_cache:
+			for entry in MnPEB._raw_cache[list_name]:
+				yield entry
+			return
+
+		idx = MnPEB._idx
+
+		def _read_ptr(addr):
+			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
+
+		def _wstr(entry, off):
+			length  = struct.unpack('<H', dbg.readMemory(entry + off, 2))[0]
+			buf_ptr = _read_ptr(entry + off + PTR_SIZE)
+			if length == 0 or buf_ptr == 0:
+				return ""
+			raw = dbg.readMemory(buf_ptr, length)
+			return raw.decode('utf-16-le', errors='replace')
+
+		peb_addr = get_peb_addr()
+		if peb_addr == 0:
+			return
+		ldr = _read_ptr(peb_addr + MnPEB._offsets["Ldr"][idx])
+
+		info = MnPEB._ldr_list_info[list_name]
+		list_head     = ldr + info["head_offset"][idx]
+		link_off      = info["link_offset"][idx]
+		dll_base_off  = MnPEB._dll_base_off[idx]
+		full_name_off = MnPEB._full_name_off[idx]
+		base_name_off = MnPEB._base_name_off[idx]
+
+		flink = _read_ptr(list_head)
+		results = []
+		while flink != list_head and flink != 0:
+			entry_base = flink - link_off
+			dll_base   = _read_ptr(entry_base + dll_base_off)
+			full_path  = _wstr(entry_base, full_name_off)
+			base_name  = _wstr(entry_base, base_name_off)
+			results.append((dll_base, base_name, full_path))
+			flink = _read_ptr(flink)
+		MnPEB._raw_cache[list_name] = results
+		for entry in results:
+			yield entry
+
+	def peb_walk(self):
+		"""
+		Walk all three PEB_LDR_DATA module lists and return a dict with
+		three keys, each mapping to a list of MnModule objects.
+
+		MnModule objects are created once (during the first list walk) and
+		reused by dll_base for subsequent lists, avoiding redundant PE parsing.
+		"""
+		mod_cache = {}
+
+		result = {}
+		for list_name in self._ldr_list_info:
+			modules = []
+			for dll_base, base_name, _ in MnPEB._raw_walk(list_name):
+				if dll_base in mod_cache:
+					modules.append(mod_cache[dll_base])
+				else:
+					try:
+						imagename = os.path.splitext(base_name)[0]
+						mod = MnModule(imagename)
+						mod_cache[dll_base] = mod
+						modules.append(mod)
+					except Exception:
+						pass
+			result[list_name] = modules
+		return result
+
+	@staticmethod
+	def base_from_peb(modulename):
+		"""
+		Return the load address (DllBase) for *modulename* by walking the PEB.
+		Returns 0 if not found.
+
+		Handles deduplicated keys of the form "<stem>_<hexaddr>" that are
+		generated by getAllModules() when two modules share the same stem
+		(e.g. msedge.exe and msedge.dll both strip to "msedge", so the second
+		becomes "msedge_7ff9af680000").  The hex suffix IS the load address, so
+		we parse it directly instead of doing a failed name-match walk.
+		"""
+		try:
+			name_lower = os.path.splitext(modulename.lower())[0]
+			for dll_base, base_name, _ in MnPEB._raw_walk():
+				if os.path.splitext(base_name.lower())[0] == name_lower:
+					return dll_base
+			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
+			if m:
+				try:
+					candidate = int(m.group(2), 16)
+					if candidate >= 0x10000:
+						return candidate
+				except ValueError:
+					pass
+			return 0
+		except Exception:
+			return 0
+
+	@staticmethod
+	def path_from_peb(mzbase):
+		"""
+		Return the full filesystem path for the module loaded at *mzbase*.
+		Returns "" if not found.
+		"""
+		try:
+			for dll_base, _, full_path in MnPEB._raw_walk():
+				if dll_base == mzbase:
+					return full_path
+			return ""
+		except Exception:
+			return ""
+
+
+class MnTEB:
+	"""
+	Class representing a Thread Environment Block (TEB).
+	Reads fields directly from memory given a TEB address.
+	"""
+
+	# TEB / NT_TIB field offsets: (x86, x64)
+	_offsets = {
+		"ExceptionList": (0x00, 0x00),
+		"StackBase":     (0x04, 0x08),
+		"StackLimit":    (0x08, 0x10),
+		"ProcessId":     (0x20, 0x40),  # ClientId.UniqueProcess
+		"ThreadId":      (0x24, 0x48),  # ClientId.UniqueThread
+	}
+
+	_idx = 1 if arch == 64 else 0
+
+	def __init__(self, teb_addr, peb=None):
+		self.TEBAddress = teb_addr
+
+		# Reference to the shared MnPEB (from MnProc), not a new instance
+		self.PEB = peb
+
+		idx = self._idx
+
+		def _read_ptr(addr):
+			return struct.unpack(PTR_FMT, dbg.readMemory(addr, PTR_SIZE))[0]
+
+		def _read_dword(addr):
+			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
+
+		self.StackBase  = _read_ptr(teb_addr + self._offsets["StackBase"][idx])
+		self.StackLimit = _read_ptr(teb_addr + self._offsets["StackLimit"][idx])
+		self.ProcessId  = _read_dword(teb_addr + self._offsets["ProcessId"][idx])
+		self.Id         = _read_dword(teb_addr + self._offsets["ThreadId"][idx])
+
+		# SEH chain: list of [record_addr, handler_addr]; x64 has no chain
+		if arch == 32:
+			self.SEHChain = []
+			nextrecord = _read_ptr(teb_addr + self._offsets["ExceptionList"][idx])
+			while nextrecord != 0xFFFFFFFF and nextrecord != 0:
+				try:
+					nseh = _read_ptr(nextrecord)
+					seh  = _read_ptr(nextrecord + 4)
+					self.SEHChain.append([nextrecord, seh])
+					nextrecord = nseh
+				except Exception:
+					break
+			self.SEHCount = len(self.SEHChain)
+
+	@staticmethod
+	def getByAddress(teb_addr):
+		"""Return the MnTEB with the given TEB address from the MnProc cache, or None."""
+		for tid, mteb in mnproc.getThreads().items():
+			if mteb.TEBAddress == teb_addr:
+				return mteb
+		return None
 
 
 def getModuleObj(modname):
@@ -3380,13 +3613,13 @@ class MnModule:
 				modrebased = False
 				modisos = False
 				modiscfg = False
-				mzbase = MnModule._base_from_peb(modulename)
+				mzbase = MnPEB.base_from_peb(modulename)
 				if mzbase == 0:
 					# fall back to pykd if PEB walk fails
 					self.moduleobj = dbg.getModule(modulename)
 					mzbase = self.moduleobj.getBaseAddress() if self.moduleobj else 0
 
-				path = MnModule._path_from_peb(mzbase)
+				path = MnPEB.path_from_peb(mzbase)
 				if not path:
 					if not hasattr(self, 'moduleobj'):
 						self.moduleobj = dbg.getModule(modulename)
@@ -3806,57 +4039,6 @@ class MnModule:
 			return cls(blob)
 
 	# ------------------------------------------------------------------
-
-	@staticmethod
-	def _peb_walk():
-		return peb_walk()
-
-	@staticmethod
-	def _base_from_peb(modulename):
-		"""
-		Return the load address (DllBase) for *modulename* by walking the PEB.
-		Returns 0 if not found.
-
-		Handles deduplicated keys of the form "<stem>_<hexaddr>" that are
-		generated by getAllModules() when two modules share the same stem
-		(e.g. msedge.exe and msedge.dll both strip to "msedge", so the second
-		becomes "msedge_7ff9af680000").  The hex suffix IS the load address, so
-		we parse it directly instead of doing a failed name-match walk.
-		"""
-		try:
-			name_lower = os.path.splitext(modulename.lower())[0]
-			for dll_base, base_name, _ in MnModule._peb_walk():
-				if os.path.splitext(base_name.lower())[0] == name_lower:
-					return dll_base
-			# No direct match — check for deduplicated key: <stem>_<hexaddr>
-			# Real load addresses are always >= 0x10000 (64 KB allocation minimum).
-			# Version suffixes like _2, _26, _14 parse to tiny values and are ignored.
-			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
-			if m:
-				try:
-					candidate = int(m.group(2), 16)
-					if candidate >= 0x10000:
-						return candidate
-				except ValueError:
-					pass
-			return 0
-		except Exception:
-			return 0
-
-	@staticmethod
-	def _path_from_peb(mzbase):
-		"""
-		Return the full filesystem path for the module loaded at *mzbase*.
-		Returns "" if not found.
-		"""
-		try:
-			for dll_base, _, full_path in MnModule._peb_walk():
-				if dll_base == mzbase:
-					return full_path
-			return ""
-		except Exception:
-			return ""
-
 
 	def __str__(self):
 		#return general info about the module
@@ -4814,6 +4996,17 @@ class MnHeap(object):
 		"""
 		return {}
 
+	def getFreeBins(self):
+		"""Return free chunks organized by size bin (0-127).
+
+		Bin index maps to allocation size: bin N = N * heapgranularity bytes.
+		Bin 0 holds chunks > 127 * heapgranularity (the overflow bin).
+
+		Return: dict {bin_index: [MnChunk, ...]}
+		        Only populated bins are included.
+		"""
+		return {}
+
 
 	def getVirtualAllocdBlocks(self):
 		"""
@@ -4966,8 +5159,36 @@ class MnNTHeap(MnHeap):
 	# +0x0dc Counters         : _HEAP_COUNTERS
 	# +0x130 TuningParameters : _HEAP_TUNING_PARAMETERS	
 
+	# Signature (0xeeffeeff) probe offsets per era: (class, x86, x64)
+	#   Era 3 "Hardened" (8/10/11):  0x060, 0x098
+	#   Era 2 "Encoded"  (Vista/7):  0x064, 0x0a0
+	#   Era 1 "Raw"      (XP):       0x008, 0x008
+	_SIGNATURE_PROBES = None  # built lazily after subclasses exist
+
+	@classmethod
+	def _getSignatureProbes(cls):
+		if cls._SIGNATURE_PROBES is None:
+			cls._SIGNATURE_PROBES = [
+				(MnNT8Heap,   archValue(0x060, 0x098)),
+				(MnNT7Heap,   archValue(0x064, 0x0a0)),
+				(MnNTXPHeap,  archValue(0x008, 0x008)),
+			]
+		return cls._SIGNATURE_PROBES
+
 	def __new__(cls, address):
 		if cls is MnNTHeap:
+			# Probe-based detection: find 0xeeffeeff at known Signature
+			# offsets to identify the _HEAP struct layout from raw memory,
+			# without relying on OS version strings.
+			_SIG = 0xeeffeeff
+			try:
+				for target_cls, sig_offset in cls._getSignatureProbes():
+					sig = struct.unpack('<I', dbg.readMemory(address + sig_offset, 4))[0]
+					if sig == _SIG:
+						return object.__new__(target_cls)
+			except:
+				pass
+			# Fallback to win7mode boolean
 			if win7mode:
 				return object.__new__(MnNT7Heap)
 			else:
@@ -5223,6 +5444,21 @@ class MnNTXPHeap(MnNTHeap):
 			flindex += 1
 		return freelists
 
+	def getFreeBins(self):
+		"""Return free chunks organized by size bin (0-127).
+
+		XP has a natural 1:1 mapping from FreeLists[0..127] to bins.
+
+		Return: dict {bin_index: [MnChunk, ...]}
+		"""
+		bins = {}
+		freelists = self.getFreeList()
+		for flindex, entries in freelists.items():
+			chunks = [entries[k] for k in sorted(entries.keys())]
+			if chunks:
+				bins[flindex] = chunks
+		return bins
+
 	def getHeapSegmentList(self):
 		"""Walk the XP _HEAP.Segments[64] pointer array.
 
@@ -5395,6 +5631,93 @@ class MnNT7Heap(MnNTHeap):
 		"""
 		frontendheaptype = self.getFrontEndHeapType()
 		return frontendheaptype == 0x2
+
+	def getFrontEndHeapUsageData(self):
+		"""Read the FrontEndHeapUsageData array (Vista/Win7).
+
+		This array contains per-bucket activation counters that track
+		how many allocations of each size class have been made.  When a
+		counter exceeds a threshold the LFH is activated for that bucket.
+
+		Return: list of 128 int counters, or empty list on failure.
+		"""
+		counters = []
+		try:
+			offset = getOsOffset("FrontEndHeapUsageData")
+			data = dbg.readMemory(self.heapbase + offset, 128 * 2)
+			for i in range(128):
+				val = struct.unpack('<H', data[i*2:(i+1)*2])[0]
+				counters.append(val)
+		except:
+			pass
+		return counters
+
+
+class MnNT8Heap(MnNT7Heap):
+	"""
+	NT Heap implementation for Windows 8 / 8.1.
+
+	Inherits Win7 behaviour (XOR encoding, SegmentList, LFH).
+	Offset differences are handled by getOsOffset().
+
+	_HEAP (Windows 8 x86 selected fields)
+	+0x000 Entry            : _HEAP_ENTRY
+	+0x008 SegmentSignature : Uint4B
+	+0x00c SegmentFlags     : Uint4B
+	+0x010 SegmentListEntry : _LIST_ENTRY
+	+0x018 Heap             : Ptr32 _HEAP
+	+0x01c BaseAddress      : Ptr32 Void
+	+0x020 NumberOfPages    : Uint4B
+	+0x024 FirstEntry       : Ptr32 _HEAP_ENTRY
+	+0x028 LastValidEntry   : Ptr32 _HEAP_ENTRY
+	+0x040 Flags            : Uint4B
+	+0x044 ForceFlags       : Uint4B
+	+0x048 CompatibilityFlags : Uint4B
+	+0x04c EncodeFlagMask   : Uint4B
+	+0x050 Encoding         : _HEAP_ENTRY
+	+0x060 Signature        : Uint4B
+	+0x09c VirtualAllocdBlocks : _LIST_ENTRY
+	+0x0a4 SegmentList      : _LIST_ENTRY
+	+0x0c8 FreeLists        : _LIST_ENTRY
+	+0x0d0 FrontEndHeap     : Ptr32 Void
+	+0x0d6 FrontEndHeapType : UChar
+	"""
+	pass
+
+
+class MnNT10Heap(MnNT7Heap):
+	"""
+	NT Heap implementation for Windows 10 / 11.
+
+	Inherits Win7 behaviour (XOR encoding, SegmentList, LFH).
+	Offset differences are handled by getOsOffset() with build-based
+	resolution for fields like FrontEndHeap and FrontEndHeapType.
+
+	_HEAP (Windows 10 x86 selected fields)
+	+0x000 Entry            : _HEAP_ENTRY
+	+0x008 SegmentSignature : Uint4B
+	+0x00c SegmentFlags     : Uint4B
+	+0x010 SegmentListEntry : _LIST_ENTRY
+	+0x018 Heap             : Ptr32 _HEAP
+	+0x01c BaseAddress      : Ptr32 Void
+	+0x020 NumberOfPages    : Uint4B
+	+0x024 FirstEntry       : Ptr32 _HEAP_ENTRY
+	+0x028 LastValidEntry   : Ptr32 _HEAP_ENTRY
+	+0x040 Flags            : Uint4B
+	+0x044 ForceFlags       : Uint4B
+	+0x048 CompatibilityFlags : Uint4B
+	+0x04c EncodeFlagMask   : Uint4B
+	+0x050 Encoding         : _HEAP_ENTRY
+	+0x060 Signature        : Uint4B
+	+0x09c VirtualAllocdBlocks : _LIST_ENTRY
+	+0x0a4 SegmentList      : _LIST_ENTRY
+	+0x0c8 FreeLists        : _LIST_ENTRY
+	+0x0d4 FrontEndHeap     : Ptr32 Void  (build < 17763)
+	+0x0e4 FrontEndHeap     : Ptr32 Void  (build >= 17763)
+	+0x0da FrontEndHeapType : UChar       (build < 17763)
+	+0x0ea FrontEndHeapType : UChar       (build >= 17763)
+	"""
+	pass
 
 
 class MnSegmentHeap(MnHeap):
@@ -5792,13 +6115,51 @@ class MnProc:
 		self.g_modulesOrder = None
 
 		# --- populated by populate() ---
-		self.peb = None
+		self.peb = MnPEB()
 		self.teb = None
+		self.threads = {}      # {tid: MnTEB} — populated by getThreads()
 		self.modules = {}      # {name: {"base","top","size",...}} from g_modules
-		self.stacks = {}       # {tid: [base, top]}
+		self.stacks = {}       # {tid: {"base", "limit", "size", "teb"}} — populated by getStacks()
 		self.heapinfo = {}     # from getProcessHeapsInfo(): {"NT":{}, "Segment":{}, "Unknown":{}}
 		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
 		self.defaultheap = 0   # default process heap address
+
+	def getThreads(self):
+		"""
+		Return the cached {tid: MnTEB} dict.
+		Populates on first call using dbg.getAllThreads().
+		"""
+		if not self.threads:
+			for thread in dbg.getAllThreads():
+				teb_addr = thread.getTEB()
+				tid = thread.getId()
+				self.threads[tid] = MnTEB(teb_addr, peb=self.peb)
+		return self.threads
+
+	def getStacks(self):
+		"""
+		Return the cached {tid: {"base", "limit", "size", "teb"}} dict.
+		Built from the thread cache on first call.
+		"""
+		if not self.stacks:
+			for tid, teb in self.getThreads().items():
+				self.stacks[tid] = {
+					"base":  teb.StackBase,
+					"limit": teb.StackLimit,
+					"size":  teb.StackBase - teb.StackLimit,
+					"teb":   teb.TEBAddress,
+				}
+		return self.stacks
+		return self.threads
+
+	def getTEBForStackAddress(self, addr):
+		"""
+		Return the MnTEB whose stack contains *addr*, or None.
+		"""
+		for tid, teb in self.getThreads().items():
+			if teb.StackLimit <= addr <= teb.StackBase:
+				return teb
+		return None
 
 	def getModuleForAddress(self, addr):
 		"""Return the MnModule containing *addr*, or None."""
@@ -5866,7 +6227,7 @@ class MnProc:
 
 		# Stacks
 		if len(self.stacks) == 0:
-			self.stacks = getStacks()
+			self.getStacks()
 
 		# Heaps (type detection + encoding info)
 		if len(self.heapinfo) == 0:
@@ -5980,6 +6341,7 @@ class MnProc:
 		# PEB / TEB
 		static = __DEBUGGERAPP__ == "Immunity Debugger"
 		if self.peb is not None:
+			peb_addr = self.peb.PEBAddress
 			peb_size = 0
 			if __DEBUGGERAPP__ == "WinDBG":
 				peb_size = dbg.getTypeSize("ntdll!_PEB")
@@ -5987,16 +6349,31 @@ class MnProc:
 				peb_size = self._getImmunityStructSizes()[0]
 			if peb_size == 0:
 				peb_size = archValue(0x480, 0x7C8)
-			regions.append((self.peb, self.peb + peb_size, "PEB", "PEB", static))
-		if self.teb is not None:
-			teb_size = 0
-			if __DEBUGGERAPP__ == "WinDBG":
-				teb_size = dbg.getTypeSize("ntdll!_TEB")
-			elif static:
-				teb_size = self._getImmunityStructSizes()[1]
-			if teb_size == 0:
-				teb_size = archValue(0x1000, 0x1838)
-			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB (current thread)", static))
+			# Get process ID from the first available thread's TEB
+			pid = ""
+			threads = self.getThreads()
+			if threads:
+				first_teb = next(iter(threads.values()))
+				pid = str(first_teb.ProcessId)
+			regions.append((peb_addr, peb_addr + peb_size, "PEB", "PEB (Process ID: %s)" % pid, static))
+		# TEBs for all threads
+		teb_size = 0
+		if __DEBUGGERAPP__ == "WinDBG":
+			teb_size = dbg.getTypeSize("ntdll!_TEB")
+		elif static:
+			teb_size = self._getImmunityStructSizes()[1]
+		if teb_size == 0:
+			teb_size = archValue(0x1000, 0x1838)
+		threads = self.getThreads()
+		if threads:
+			for tid, mteb in threads.items():
+				teb_addr = mteb.TEBAddress
+				desc = "TEB (Thread ID: %s)" % str(mteb.Id)
+				if arch == 32:
+					desc = "TEB (Thread ID: %s | SEH Count: %s)" % (str(mteb.Id), str(mteb.SEHCount))
+				regions.append((teb_addr, teb_addr + teb_size, "TEB", desc, static))
+		elif self.teb is not None:
+			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB", static))
 
 		# Modules
 		for name, props in self.modules.items():
@@ -6020,16 +6397,18 @@ class MnProc:
 			regions.append((props["base"], props["top"], "Module", dispname))
 
 		# Stacks
-		for tid, (sbase, stop) in self.stacks.items():
-			regions.append((sbase, stop, "Stack", "Thread %s" % str(tid)))
+		for tid, sinfo in self.stacks.items():
+			dispname = "Stack (Thread ID: %s | TEB: 0x%s | Size: 0x%s)" % (
+				str(tid), toHex(sinfo["teb"]), toHex(sinfo["size"]))
+			regions.append((sinfo["base"], sinfo["limit"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
 		fe_names = {0: "None", 1: "LAL", 2: "LFH"}
 		for heapaddr, htype, info in self.getAllHeapsSorted():
 			idx = info.get("index", "?")
 			heapname = "Heap %s" % idx
-			if heapaddr == self.defaultheap:
-				heapname += " [Default]"
+			if heapaddr == self.peb.ProcessHeap:
+				heapname = "[Default] " + heapname
 			fe_label = ""
 			seg_count = 0
 			va_count = 0
@@ -6053,7 +6432,7 @@ class MnProc:
 					if "total_chunks" in seg:
 						chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
 							seg["total_chunks"], seg["busy_chunks"], seg["free_chunks"], seg["max_free"])
-					desc = "%s ( Heap: %s | FLink: %s | BLink: %s%s )" % (segname, heapname, flink, blink, chunk_info)
+					desc = "%s (Heap: %s | FLink: %s | BLink: %s%s)" % (segname, heapname, flink, blink, chunk_info)
 					regions.append((seg["base"], seg["end"], "Heap Segment", desc))
 
 					# Individual chunks within this segment
@@ -6066,7 +6445,7 @@ class MnProc:
 						for ci, (caddr, csize, cflag, cstate) in enumerate(all_seg_chunks):
 							cend = caddr + csize
 							chunkname = "Chunk%04d-%03d-%02d" % (ci, i, hidx)
-							cdesc = "%s ( Heap: %s | %s | Size: 0x%x | Flag: 0x%02x [%s] )" % (
+							cdesc = "%s (Heap: %s | %s | Size: 0x%x | Flag: 0x%02x [%s])" % (
 								chunkname, heapname, segname, csize, cflag, cstate)
 							regions.append((caddr, cend, "Heap Chunk", cdesc))
 
@@ -6076,7 +6455,7 @@ class MnProc:
 					vaend = vaaddr + va["commit_size"]
 					flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
 					blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
-					desc = "VirtualAllocdBlock%02d-%02d ( Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x )" % (hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
+					desc = "VirtualAllocdBlock%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
 					regions.append((vaaddr, vaend, "Heap VA Block", desc))
 
 		regions.sort(key=lambda x: x[0])
@@ -18755,7 +19134,12 @@ def procStacks(args):
 		dbg.log("Stacks :")
 		dbg.log("--------")
 		for threadid in stacks:
-			dbg.log("Thread %s : Stack : 0x%s - 0x%s (size : 0x%s)" % (str(threadid),toHex(stacks[threadid][0]),toHex(stacks[threadid][1]),toHex(stacks[threadid][1]-stacks[threadid][0])))
+			s = stacks[threadid]
+			if isinstance(s, dict):
+				dbg.log("Thread ID: %s | TEB: 0x%s | Size: 0x%s" % (
+					str(threadid), toHex(s["teb"]), toHex(s["size"])))
+			else:
+				dbg.log("Thread ID: %s | Size: 0x%s" % (str(threadid), toHex(s[1]-s[0])))
 	else:
 		dbg.log("No threads/stacks found !",highlight=1)
 	return
@@ -19065,6 +19449,10 @@ def procHeap(args):
 		for heapbase in heap_to_query:
 			mHeap = MnHeap(heapbase)
 			heapbase_extra = ""
+			heapidx = allheaps.index(heapbase) if heapbase in allheaps else 0
+			heapname = "Heap %d" % heapidx
+			if heapbase == getDefaultProcessHeap():
+				heapname += " [Default]"
 			frontendinfo = []
 			frontendheapptr = 0
 			frontendheaptype = 0
@@ -19077,7 +19465,7 @@ def procHeap(args):
 			frontendinfo = [frontendheaptype,frontendheapptr]
 				
 			dbg.log("")
-			dbg.log("[+] Processing heap 0x%08x%s" % (heapbase,heapbase_extra))
+			dbg.log("[+] Processing heap 0x%08x - %s%s" % (heapbase, heapname, heapbase_extra))
 
 			if searchtype == "fea":
 				if win7mode:
@@ -19128,39 +19516,66 @@ def procHeap(args):
 				dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
 				dbg.log("     ** Not implemented yet **")
 				
-			if searchtype == "freelist" or (searchtype == "all" and not win7mode):
-				flindex = 0
+			if searchtype == "freelist" or searchtype == "all":
 				dbg.log("[+] BackEnd Allocator : FreeLists")
-				dbg.log("[+] Getting FreeLists for heap 0x%08x" % heapbase)
-				thisfreelist = mHeap.getFreeList()
-				thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()
-				bitmapstr = ""
-				for bit in thisfreelistinusebitmap:
-					bitmapstr += str(bit)
-				dbg.log("[+] FreeListsInUseBitmap:")
-				printDataArray(bitmapstr,32,prefix="    ")
-				# make sure the freelist is printed in the correct order
-				flindex = 0
-				while flindex < 128:
-					if flindex in thisfreelist:
-						freelist_addy = heapbase + 0x178 + (8 * flindex)
-						expectedsize = ">1016"
-						expectedsize2 = ">0x%x" % 1016
-						if flindex != 0:
-							expectedsize2 = str(8 * flindex)
-							expectedsize = "0x%x" % (8 * flindex)			
-						dbg.log("[+] FreeList[%02d] at 0x%08x, Expected size: %s (%s)" % (flindex,freelist_addy,expectedsize,expectedsize2))
-						flindicator = 0
-						for flentry in thisfreelist[flindex]:
-							freelist_chunk = thisfreelist[flindex][flentry]
-							chunksize = freelist_chunk.size * 8
-							dbg.log("     ChunkPtr: 0x%08x, Header: 0x%x bytes, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d) " % (freelist_chunk.chunkptr, freelist_chunk.headersize, freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
-							if flindex != 0 and chunksize != (8*flindex):
-								dbg.log("     ** Header may be corrupted! **", highlight = True)
-							flindicator = 1
-						if flindex > 1 and int(bitmapstr[flindex]) != flindicator:
-							dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
-					flindex += 1
+				if not isinstance(mHeap, MnNTXPHeap):
+					dbg.log("     ** Not implemented yet **")
+				else:
+					dbg.log("[+] Getting FreeLists for heap 0x%08x" % heapbase)
+
+					# XP-only: show FreeListsInUseBitmap
+					thisfreelistinusebitmap = mHeap.getFreeListInUseBitmap()
+					if thisfreelistinusebitmap:
+						bitmapstr = ""
+						for bit in thisfreelistinusebitmap:
+							bitmapstr += str(bit)
+						dbg.log("[+] FreeListsInUseBitmap:")
+						printDataArray(bitmapstr,32,prefix="    ")
+
+					# Unified bin display — works on XP, Vista/7, 8/10/11
+					freebins = mHeap.getFreeBins()
+					gran = heapgranularity
+					total_free = 0
+
+					# Build segment index-to-address map
+					seglist = mHeap.getHeapSegmentList()
+					seg_sorted = sorted(seglist.keys())
+					def _seg_label(segid):
+						segaddr = seg_sorted[segid] if segid < len(seg_sorted) else 0
+						return "Segment%02d-%02d - 0x%08x" % (segid, heapidx, segaddr)
+
+					dbg.log("")
+					dbg.log("    Bin  ExpSize                                Chunks")
+					dbg.log("    ---  ------------------------------------   ------")
+
+					for binidx in range(128):
+						chunks = freebins.get(binidx, [])
+						count = len(chunks)
+						total_free += count
+						if binidx == 0:
+							label = "(ExpSize: >0x%x blocks | >0x%x bytes)" % (127, 127 * gran)
+						else:
+							label = "(ExpSize: 0x%x blocks | 0x%x bytes)" % (binidx, binidx * gran)
+						if count > 0:
+							dbg.log("")
+							dbg.log("    ---------------------------------------------------------")
+							dbg.log("    [%3d] %-40s %d" % (binidx, label, count))
+							dbg.log("")
+							for i, chunk in enumerate(chunks):
+								chunksize = chunk.size * gran
+								freesize = chunksize - chunk.headersize
+								if binidx == 0:
+									dbg.log("           0x%08x (Size: 0x%x blocks | 0x%x bytes | UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, chunk.size, chunksize, freesize // gran, freesize, _seg_label(chunk.segment)))
+								else:
+									userblocks = freesize // gran
+									dbg.log("           0x%08x (UserSize: 0x%x blocks | 0x%x bytes) [Segment: %s]" % (chunk.chunkptr, userblocks, freesize, _seg_label(chunk.segment)))
+								if i < count - 1:
+									dbg.log("             |")
+									dbg.log("             V")
+
+					dbg.log("")
+					dbg.log("[+] Total free chunks: %d across %d bins" % (total_free, len(freebins)))
+					dbg.log("")
 
 			if searchtype == "layout" or searchtype == "all":
 				segments = getSegmentsForHeap(heapbase)
