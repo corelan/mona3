@@ -22851,7 +22851,7 @@ def procHideDebug(args):
 def getBanner():
 	banners = {}
 	bannertext = ""
-	bannertext += "    |------------------------------------------------------------------|\n"
+	bannertext += "    +------------------------------------------------------------------+\n"
 	bannertext += "    |                         __               __                      |\n"
 	bannertext += "    |   _________  ________  / /___ _____     / /____  ____ _____ ___  |\n"
 	bannertext += "    |  / ___/ __ \/ ___/ _ \/ / __ `/ __ \   / __/ _ \/ __ `/ __ `__ \ |\n"
@@ -22860,29 +22860,28 @@ def getBanner():
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    |     https://www.corelan.be | https://www.corelan-training.com    |\n"
 	bannertext += "    |                 https://www.corelan-certified.com                |\n"
-	bannertext += "    |------------------------------------------------------------------|\n"
+	bannertext += "    +------------------------------------------------------------------+\n"
 	banners[0] = bannertext
 
 	bannertext = ""
-	bannertext += "    |------------------------------------------------------------------|\n"			
+	bannertext += "    /------------------------------------------------------------------\\\n"			
 	bannertext += "    |        _ __ ___    ___   _ __    __ _     _ __   _   _           |\n"
 	bannertext += "    |       | '_ ` _ \  / _ \ | '_ \  / _` |   | '_ \ | | | |          |\n"
 	bannertext += "    |       | | | | | || (_) || | | || (_| | _ | |_) || |_| |          |\n"
 	bannertext += "    |       |_| |_| |_| \___/ |_| |_| \__,_|(_)| .__/  \__, |          |\n"
 	bannertext += "    |                                          |_|     |___/           |\n"
-	bannertext += "    |                                                                  |\n"
-	bannertext += "    |------------------------------------------------------------------|\n"	
+	bannertext += "    \------------------------------------------------------------------/\n"	
 	banners[1] = bannertext
 
 	bannertext = ""
-	bannertext += "    |----------------------------------------------------------------- |\n"
+	bannertext += "    #----------------------------------------------------------------- #\n"
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    |   	____ ___  ____  ____  ____ _                                  |\n"
 	bannertext += "    |   / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be          |\n"
 	bannertext += "    |  / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com |\n"
 	bannertext += "    | /_/ /_/ /_/\____/_/ /_/\__,_/  https://www.corelan-certified.com |\n"
 	bannertext += "    |                                                                  |\n"
-	bannertext += "    |------------------------------------------------------------------|\n"
+	bannertext += "    #------------------------------------------------------------------#\n"
 	banners[2] = bannertext
 
 	bannertext = ""
@@ -22896,7 +22895,7 @@ def getBanner():
 	banners[3] = bannertext
 
 	bannertext = ""
-	bannertext += "\n   ┌───────────────────────────────────────┐\n"
+	bannertext += "   ┌───────────────────────────────────────┐\n"
 	bannertext += "   │                                       │\n"
 	bannertext += "   │    ____               _               │\n"
 	bannertext += "   │   / ___|___  _ __ ___| | __ _ _ __    │\n"
@@ -22910,16 +22909,16 @@ def getBanner():
 
 
 	bannertext = """
-  ___  ________ _   _   ___          _____ 
-  |  \/  |  _  | \ | | / _ \        |____ |
-  | .  . | | | |  \| |/ /_\ \ __   __   / /
-  | |\/| | | | | . ` ||  _  | \ \ / /   \ \ 
-  | |  | \ \_/ / |\  || | | |  \ V /.___/ /
-  \_|  |_/\___/\_| \_/\_| |_/   \_/ \____/ 
+    ___  ________ _   _   ___          _____ 
+    |  \/  |  _  | \ | | / _ \        |____ |
+    | .  . | | | |  \| |/ /_\ \ __   __   / /
+    | |\/| | | | | . ` ||  _  | \ \ / /   \ \ 
+    | |  | \ \_/ / |\  || | | |  \ V /.___/ /
+    \_|  |_/\___/\_| \_/\_| |_/   \_/ \____/ 
 
-   www.corelan.be 
-   www.corelan-training.com  
-   www.corelan-certified.com
+    www.corelan.be 
+    www.corelan-training.com  
+    www.corelan-certified.com
                                          	
 	"""
 	banners[5] = bannertext
