@@ -218,6 +218,48 @@ def setSymbolPath(path):
 	"""Set the symbol path."""
 	pykd.dbgCommand(".sympath %s" % path)
 
+
+_default_downstream_store = None
+
+def _get_default_downstream_store():
+	"""Resolve WinDBG's default downstream symbol store.
+
+	When a sympath entry is 'srv*<url>' with no explicit cache,
+	WinDBG uses a default downstream store.  WinDBGX typically uses
+	C:\\ProgramData\\Dbg\\sym, classic WinDBG uses the 'sym' subfolder
+	of the debugger install directory.
+
+	We detect it by running '.symfix' and parsing the resulting .sympath.
+	"""
+	global _default_downstream_store
+	if _default_downstream_store is not None:
+		return _default_downstream_store
+
+	try:
+		# Save current sympath, run .symfix to get default, then restore
+		original = pykd.getSymbolPath()
+		pykd.dbgCommand(".symfix")
+		fixed = pykd.getSymbolPath()
+		# Restore original
+		pykd.dbgCommand(".sympath %s" % original)
+
+		# .symfix sets path to srv*<default_cache>*<ms_server>
+		for part in fixed.split(";"):
+			part = part.strip()
+			pieces = part.split("*")
+			tag = pieces[0].strip().lower()
+			if tag in ("srv", "cache") and len(pieces) >= 3:
+				candidate = pieces[1].strip().strip('"')
+				if candidate and not candidate.lower().startswith("http"):
+					_default_downstream_store = candidate
+					return _default_downstream_store
+	except Exception:
+		pass
+
+	_default_downstream_store = ""
+	return _default_downstream_store
+
+
 def getSymPaths():
 	"""Parse the WinDBG symbol path and return (cache_dirs, servers, entries).
 
@@ -299,6 +341,13 @@ def getSymPaths():
 				if url.lower() not in seen_srvs:
 					seen_srvs.add(url.lower())
 					servers.append(url)
+				# Resolve WinDBG's default downstream store
+				ds = _get_default_downstream_store()
+				if ds:
+					e_cache = ds
+					if ds.lower() not in seen_dirs:
+						seen_dirs.add(ds.lower())
+						cache_dirs.append(ds)
 
 		else:
 			# plain directory path
