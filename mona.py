@@ -297,6 +297,28 @@ def getRegisters():
     return {reg.lower(): val for reg, val in regs.items()}
 
 
+def getAllRegisters():
+	if DEBUG_MODE:
+		dbgp(get_current_function_name())
+	if __DEBUGGERAPP__ == "Immunity Debugger":
+		return getRegisters()
+	else:
+		allregs = getAllRegs()
+		allregvals = {}
+		# construct a dict with the actual values
+		for thisreg in allregs:
+			try:
+				regval = pykd.reg(thisreg)
+				allregvals[thisreg] = regval
+			except Exception as e:
+				if DEBUG_MODE:
+					dbgp("Unable to access register %s" % thisreg)
+				continue
+		if DEBUG_MODE:
+			dbgp("Returning %s" % allregvals)
+		return allregvals
+
+
 def _ord(x):
     if isinstance(x, int):
         return x
@@ -650,7 +672,7 @@ def getAddyArg(argaddy):
 	addyparts = []
 	addypartsint = []
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
-	regs = getRegisters()
+	regs = getAllRegisters()
 
 	def _tokenize_addy_expression(expr):
 		parts = []
@@ -697,7 +719,9 @@ def getAddyArg(argaddy):
 				try:
 					ptrval = struct.unpack(PTR_FMT,dbg.readMemory(ptraddy,PTR_SIZE))[0]
 					return ptrval, True
-				except:
+				except Exception as e:
+					if DEBUG_MODE:
+						dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE))
 					return 0, False
 			return 0, False
 
@@ -741,12 +765,18 @@ def getAddyArg(argaddy):
 
 	argaddy = str(argaddy).strip().replace("`","")
 	addyparts = _tokenize_addy_expression(argaddy)
+	if DEBUG_MODE:
+		dbgp("Tokenized addy expression: %s" % addyparts)
 
 	partok = False
 	for part in addyparts:
 		if not part in delimchars:
 			cleaned = str(part).strip()
+			if DEBUG_MODE:
+				dbgp("Trying to resolve part %s" % cleaned)
 			partval,partok = _resolve_part(cleaned)
+			if DEBUG_MODE:
+				dbgp("  Resolved %s into %s, Success: %s" % (cleaned, PTR_PRINT % partval, partok))
 			if not partok:
 				break
 			addypartsint.append(partval)
@@ -755,6 +785,8 @@ def getAddyArg(argaddy):
 			partok = True
 		if not partok:
 			break
+
+	
 
 	if not partok:
 		addyok = False
