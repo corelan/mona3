@@ -1874,6 +1874,18 @@ def splitToPtrInstr(input):
 	input_stripped = input.lstrip()
 	is_bytes = isinstance(thisline, bytes)
 	
+	# Skip comment lines and lines without instruction separator
+	if is_bytes:
+		if thisline_stripped.startswith(b"#"):
+			return thispointer, thisinstruction
+		if b":" not in input_stripped:
+			return thispointer, thisinstruction
+	else:
+		if thisline_stripped.startswith("#"):
+			return thispointer, thisinstruction
+		if ":" not in input_stripped:
+			return thispointer, thisinstruction
+	
 	# Create appropriate patterns based on input type
 	if is_bytes:
 		split1 = re.compile(b" ")
