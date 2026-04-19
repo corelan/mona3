@@ -1477,7 +1477,7 @@ def getAllRegs():
 
 	regs = []
 	if arch == 64:
-		regs = Registers64BitsOrder + Registers32BitsOrder
+		regs = Registers64BitsOrder[:] + Registers32BitsOrder[:]
 		regs.append("r8d")
 		regs.append("r9d")
 		regs.append("r10d")
@@ -1488,7 +1488,7 @@ def getAllRegs():
 		regs.append("r15d")
 
 	if arch == 32:
-		regs = Registers32BitsOrder 
+		regs = Registers32BitsOrder[:] 
 	
 	regs.append("ax")
 	regs.append("bx")
@@ -8102,10 +8102,10 @@ def getSearchSequences(searchtype,searchcriteria="",type="",criteria={}):
 	offsets = [ "", "0x04","0x08","0x0c","0x10","0x12","0x1C","0x20","0x24"]
 	archregs = []
 	if arch == 32:
-		regs = dbglib.Registers32BitsOrder
-		archregs = dbglib.Registers32BitsOrder
+		regs = dbglib.Registers32BitsOrder[:]
+		archregs = dbglib.Registers32BitsOrder[:]
 	if arch == 64:
-		regs = dbglib.Registers32BitsOrder + dbglib.Registers64BitsOrder
+		regs = dbglib.Registers32BitsOrder[:] + dbglib.Registers64BitsOrder[:]
 		archregs = dbglib.Registers64BitsOrder
 	search=[]
 	
@@ -10120,7 +10120,7 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 			thisinstr = ""
 			if nonptr in all_input_files[shortestarray]:
 				thisinstr = all_input_files[shortestarray][nonptr]
-			outputlines_not += "File(%d) 0x%08x : %s\n" % (shortestarray,nonptr,thisinstr)
+			outputlines_not += "File(%d) %s : %s\n" % (shortestarray,(PTR_PRINT % nonptr),thisinstr)
 			for fileindex in all_input_files:
 				if fileindex != shortestarray:
 					these_entries = all_input_files[fileindex]
@@ -10215,6 +10215,8 @@ def createPattern(size,args={}):
 
 	pattern = "".join(pattern)
 	return pattern
+
+
 
 def findOffsetInPattern(searchpat,size=20280,args = {}):
 	"""
@@ -14201,8 +14203,6 @@ def isInterestingJopGadget(instructions):
 	
 	jmp = lastinstruction.split(' ')[1].strip().lower().replace(" ","")
 	
-	#regs = Registers32BitsOrder
-
 	dbgp("jmp instruction : %s" % jmp)
 	if jmp in regs:
 		regs.remove(jmp)
@@ -15988,9 +15988,9 @@ def procFindJMP(args, procUsage=""):
 			#valid register ?
 			thisreg = args["r"].lower().strip()
 			if arch == 32:
-				validregs = dbglib.Registers32BitsOrder
+				validregs = dbglib.Registers32BitsOrder[:]
 			if arch == 64:
-				validregs = dbglib.Registers32BitsOrder + dbglib.Registers64BitsOrder
+				validregs = dbglib.Registers32BitsOrder[:] + dbglib.Registers64BitsOrder[:]
 			if not thisreg in validregs:
 				dbg.log("Invalid register '%s'." % args["r"].strip(), highlight=1)
 				dbg.log("Valid registers: %s" % ", ".join(validregs))
@@ -23387,10 +23387,10 @@ def procToBp(args):
 	instructionparts = []
 	global silent
 	oldsilent = silent
-	regnames = Registers32BitsOrder
+	regnames = Registers32BitsOrder[:]
 	if arch == 64:
 		# add 64bit regs as well
-		regnames = Registers64BitsOrder + Registers32BitsOrder
+		regnames = Registers64BitsOrder[:] + Registers32BitsOrder[:]
 	dbgp("Regs used: %s" % regnames)
 	regs = getRegisters()
 	silent = True
