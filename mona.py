@@ -1878,12 +1878,14 @@ def splitToPtrInstr(input):
 	if is_bytes:
 		if thisline_stripped.startswith(b"#"):
 			return thispointer, thisinstruction
-		if b":" not in input_stripped:
+		# Gadget/instruction lines use " : " (space-colon-space) as separator.
+		if b" : " not in input_stripped:
 			return thispointer, thisinstruction
 	else:
 		if thisline_stripped.startswith("#"):
 			return thispointer, thisinstruction
-		if ":" not in input_stripped:
+		# Gadget/instruction lines use " : " (space-colon-space) as separator.
+		if " : " not in input_stripped:
 			return thispointer, thisinstruction
 	
 	# Create appropriate patterns based on input type
