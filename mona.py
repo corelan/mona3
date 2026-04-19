@@ -8301,8 +8301,8 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 
 	dbgp(get_current_function_name())
 	dbgp("function criteria: %s" % criteria)
-	dbgp("g_modules: %d entries" % len(mnproc.g_modules))
 	populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
+	dbgp("g_modules: %d entries" % len(mnproc.g_modules))
 	modulestoquery=[]
 
 	# Build exclusion set once from config
