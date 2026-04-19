@@ -8,6 +8,7 @@
   - [1. Install dependencies](#1-install-dependencies)
     - [1.1. Windows 10 and later](#11-windows-10-and-later)
     - [1.2. Windows 7](#12-windows-7)
+    - [1.3. A note on 64bit](#13-a-note-on-64bit)
   - [2. Install mona & windbglib](#2-install-mona--windbglib)
     - [2.1. Distributed installation](#21-distributed-installation)
     - [2.2. Centralized installation (recommended)](#22-centralized-installation-recommended)
@@ -48,9 +49,11 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 The script will automatically:
 
 * ***Install*** **Python 3.9.13** (both 32-bit and 64-bit)
-* ***Install*** **PyKD** library for both Python versions
+* ***Install*** **PyKD** library for both Python architectures
+* ***Install*** **Capstone** library for Python3.9 64bit architectures 
 * ***Install*** **PyKD-ext** bootstrapper WinDBG extension
 * ***Install*** **Visual Studio runtime** and register required DLLs
+
 
 If you prefer to install those components by yourself, please verify (after installation) the desired Python3/PyKD behavior:
 
@@ -67,9 +70,12 @@ Type "help", "copyright", "credits" or "license" for more information.
 >>>
 ```
 
-Type `import pykd` (there should be no warnings or errors)
+Type the following commands and verify there are no warnings or errors:
 
-Type `quit()`to exit the interactive shell.
+```python
+import pykd
+quit()
+```
 
 
 Next, run `py -3.9-64`
@@ -83,9 +89,13 @@ Type "help", "copyright", "credits" or "license" for more information.
 >>>
 ```
 
-Type `import pykd` (there should be no warnings or errors)
+Type the following commands and verify there are no warnings or errors:
 
-Type `quit()`to exit the interactive shell.
+```python
+import pykd
+import keystone
+quit()
+```
 
 <br> 
 
@@ -99,6 +109,13 @@ Next, download a copy of the `CorelanWin7VMinstall.py` python script from [the C
 
 This will install all required components to run `mona` on Windows 7.
 
+
+### 1.3. A note on 64bit
+
+The 64bit versions of WinDBG(X) don't actually support assembling 64bit mnemonics into opcode. 
+We've hardcoded a few common instructions in an assembly "cache" inside windbglib.py, but we're also checking if your machine has the `keystone-engine` library installed for Python 3.9 64bit.  
+If it is the case, windbglib will use it as needed to assemble.
+If not, support for 64bit assembly will be limited, and some commands that take arbitrary assemby statements might fail.
 
 ---
 

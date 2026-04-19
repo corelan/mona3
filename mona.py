@@ -24626,7 +24626,7 @@ Arguments:
 	commands["pattern_create"]	= MnCommand("pattern_create","Create a cyclic pattern of a given size",patcreateUsage,procCreatePATTERN,"pc",[32,64])
 	commands["pattern_offset"]	= MnCommand("pattern_offset","Find location of 4 bytes in a cyclic pattern",patoffsetUsage,procOffsetPATTERN,"po",[32,64])
 	commands["find"] 			= MnCommand("find", "Find bytes in memory", findUsage, procFind,"f", [32,64])
-	commands["findwild"]		= MnCommand("findwild", "Find instructions in memory, accepts wildcards", findwildUsage, procFindWild,"fw")
+	commands["findwild"]		= MnCommand("findwild", "Find instructions in memory, accepts wildcards", findwildUsage, procFindWild,"fw", [32,64])
 	commands["assemble"] 		= MnCommand("assemble", "Convert instructions to opcode. Separate multiple instructions with #",assembleUsage,procAssemble,"asm", [32,64])
 	commands["info"] 			= MnCommand("info", "Show information about a given address in the context of the loaded application",infoUsage,procInfo,"", [32,64])
 	commands["dump"] 			= MnCommand("dump", "Dump the specified range of memory to a file", dumpUsage,procDump,"dmp", [32,64])
@@ -24637,7 +24637,7 @@ Arguments:
 	commands["findmsp"]			= MnCommand("findmsp","Find cyclic pattern in memory", findmspUsage,procFindMSP,"findmsf", [32,64])
 	commands["suggest"]			= MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest)
 	commands["bytearray"]		= MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba", [32,64])
-	commands["header"]			= MnCommand("header","Read a binary file and convert content to a nice 'header' string",headerUsage,procPrintHeader)
+	commands["header"]			= MnCommand("header","Read a binary file and convert content to a nice 'header' string",headerUsage,procPrintHeader,"",[32,64])
 	commands["update"]			= MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up", [32, 64])
 	commands["getpc"]			= MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC)	
 	commands["egghunter"]		= MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
@@ -24867,8 +24867,7 @@ def main(args):
 			dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
 		if __DEBUGGERAPP__ == "WinDBG":
-			objlogopenfile = MnLog("%s-windbg_debug.log" % get_current_datetime_flat())
-			logopenfile = objlogopenfile.reset()
+			logopenfile = "%s-windbg_debug.log" % get_current_datetime_flat()
 			dbg.nativeCommand(".logclose")
 			dbg.nativeCommand(".logopen \"%s\"" % logopenfile)
 	else:

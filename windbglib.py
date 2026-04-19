@@ -71,6 +71,9 @@ global currentPID
 global currentTEBAddress
 global cpebaddress
 
+global keystoneLoaded
+keystoneLoaded = False
+
 arch = 32
 
 currentPID = 0
@@ -88,6 +91,13 @@ Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
 
 if pykd.is64bitSystem():
 	arch = 64
+
+try:
+	import keystone
+	keystoneLoaded = True
+except:
+	keystoneLoaded = False
+
 
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 PTR_SIZE = 4 if arch == 32 else 8
@@ -1566,45 +1576,30 @@ class Debugger:
 		# push reg; ret  = 50+reg, C3
 		#
 		# For r8-r15, a REX.B prefix (0x41) is needed.
+
+		regEnc64 = {}
+		regIndex = 0
+		for regName in Registers64BitsOrder:
+			regEnc64[regName] = regIndex
+			regIndex += 1
+
 		# ------------------------------------------------------------
 		# JMP reg
 		# ------------------------------------------------------------
-		self.AsmCache["jmp rax"] = b"\xff\xe0"
-		self.AsmCache["jmp rcx"] = b"\xff\xe1"
-		self.AsmCache["jmp rdx"] = b"\xff\xe2"
-		self.AsmCache["jmp rbx"] = b"\xff\xe3"
-		self.AsmCache["jmp rsp"] = b"\xff\xe4"
-		self.AsmCache["jmp rbp"] = b"\xff\xe5"
-		self.AsmCache["jmp rsi"] = b"\xff\xe6"
-		self.AsmCache["jmp rdi"] = b"\xff\xe7"
-		self.AsmCache["jmp r8"]  = b"\x41\xff\xe0"
-		self.AsmCache["jmp r9"]  = b"\x41\xff\xe1"
-		self.AsmCache["jmp r10"] = b"\x41\xff\xe2"
-		self.AsmCache["jmp r11"] = b"\x41\xff\xe3"
-		self.AsmCache["jmp r12"] = b"\x41\xff\xe4"
-		self.AsmCache["jmp r13"] = b"\x41\xff\xe5"
-		self.AsmCache["jmp r14"] = b"\x41\xff\xe6"
-		self.AsmCache["jmp r15"] = b"\x41\xff\xe7"
+		for regName in Registers64BitsOrder:
+			regIndex = regEnc64[regName]
+			prefix = b"" if regIndex < 8 else b"\x41"
+			modrm = 0xE0 | (regIndex & 7)  # /4, mod=11
+			self.AsmCache["jmp %s" % regName] = prefix + struct.pack("BB", 0xFF, modrm)
 
 		# ------------------------------------------------------------
 		# CALL reg
 		# ------------------------------------------------------------
-		self.AsmCache["call rax"] = b"\xff\xd0"
-		self.AsmCache["call rcx"] = b"\xff\xd1"
-		self.AsmCache["call rdx"] = b"\xff\xd2"
-		self.AsmCache["call rbx"] = b"\xff\xd3"
-		self.AsmCache["call rsp"] = b"\xff\xd4"
-		self.AsmCache["call rbp"] = b"\xff\xd5"
-		self.AsmCache["call rsi"] = b"\xff\xd6"
-		self.AsmCache["call rdi"] = b"\xff\xd7"
-		self.AsmCache["call r8"]  = b"\x41\xff\xd0"
-		self.AsmCache["call r9"]  = b"\x41\xff\xd1"
-		self.AsmCache["call r10"] = b"\x41\xff\xd2"
-		self.AsmCache["call r11"] = b"\x41\xff\xd3"
-		self.AsmCache["call r12"] = b"\x41\xff\xd4"
-		self.AsmCache["call r13"] = b"\x41\xff\xd5"
-		self.AsmCache["call r14"] = b"\x41\xff\xd6"
-		self.AsmCache["call r15"] = b"\x41\xff\xd7"
+		for regName in Registers64BitsOrder:
+			regIndex = regEnc64[regName]
+			prefix = b"" if regIndex < 8 else b"\x41"
+			modrm = 0xD0 | (regIndex & 7)  # /2, mod=11
+			self.AsmCache["call %s" % regName] = prefix + struct.pack("BB", 0xFF, modrm)
 
 		# ------------------------------------------------------------
 		# JMP [reg]
@@ -1613,85 +1608,53 @@ class Debugger:
 		# Note: [rbp] and [r13] with mod=00 do not encode plain [rbp]/[r13],
 		#       so use mod=01 with disp8=00 instead.
 		# ------------------------------------------------------------
-		self.AsmCache["jmp [rax]"] = b"\xff\x20"
-		self.AsmCache["jmp [rcx]"] = b"\xff\x21"
-		self.AsmCache["jmp [rdx]"] = b"\xff\x22"
-		self.AsmCache["jmp [rbx]"] = b"\xff\x23"
-		self.AsmCache["jmp [rsp]"] = b"\xff\x24\x24"
-		self.AsmCache["jmp [rbp]"] = b"\xff\x65\x00"
-		self.AsmCache["jmp [rsi]"] = b"\xff\x26"
-		self.AsmCache["jmp [rdi]"] = b"\xff\x27"
-		self.AsmCache["jmp [r8]"]  = b"\x41\xff\x20"
-		self.AsmCache["jmp [r9]"]  = b"\x41\xff\x21"
-		self.AsmCache["jmp [r10]"] = b"\x41\xff\x22"
-		self.AsmCache["jmp [r11]"] = b"\x41\xff\x23"
-		self.AsmCache["jmp [r12]"] = b"\x41\xff\x24\x24"
-		self.AsmCache["jmp [r13]"] = b"\x41\xff\x65\x00"
-		self.AsmCache["jmp [r14]"] = b"\x41\xff\x26"
-		self.AsmCache["jmp [r15]"] = b"\x41\xff\x27"
+		for regName in Registers64BitsOrder:
+			regIndex = regEnc64[regName]
+			prefix = b"" if regIndex < 8 else b"\x41"
+			rm = regIndex & 7
+			if rm == 4:
+				# [rsp] and [r12] require a SIB byte 0x24
+				self.AsmCache["jmp [%s]" % regName] = prefix + struct.pack("BBB", 0xFF, 0x24, 0x24)
+			elif rm == 5:
+				# [rbp] and [r13] require disp8=00 with mod=01
+				self.AsmCache["jmp [%s]" % regName] = prefix + struct.pack("BBB", 0xFF, 0x65, 0x00)
+			else:
+				modrm = 0x20 | rm
+				self.AsmCache["jmp [%s]" % regName] = prefix + struct.pack("BB", 0xFF, modrm)
 
 		# ------------------------------------------------------------
 		# CALL [reg]
 		# FF /2 with modrm selecting memory operand [reg]
 		# Same encoding caveats as above for rsp/r12 and rbp/r13
 		# ------------------------------------------------------------
-		self.AsmCache["call [rax]"] = b"\xff\x10"
-		self.AsmCache["call [rcx]"] = b"\xff\x11"
-		self.AsmCache["call [rdx]"] = b"\xff\x12"
-		self.AsmCache["call [rbx]"] = b"\xff\x13"
-		self.AsmCache["call [rsp]"] = b"\xff\x14\x24"
-		self.AsmCache["call [rbp]"] = b"\xff\x55\x00"
-		self.AsmCache["call [rsi]"] = b"\xff\x16"
-		self.AsmCache["call [rdi]"] = b"\xff\x17"
-		self.AsmCache["call [r8]"]  = b"\x41\xff\x10"
-		self.AsmCache["call [r9]"]  = b"\x41\xff\x11"
-		self.AsmCache["call [r10]"] = b"\x41\xff\x12"
-		self.AsmCache["call [r11]"] = b"\x41\xff\x13"
-		self.AsmCache["call [r12]"] = b"\x41\xff\x14\x24"
-		self.AsmCache["call [r13]"] = b"\x41\xff\x55\x00"
-		self.AsmCache["call [r14]"] = b"\x41\xff\x16"
-		self.AsmCache["call [r15]"] = b"\x41\xff\x17"
+		for regName in Registers64BitsOrder:
+			regIndex = regEnc64[regName]
+			prefix = b"" if regIndex < 8 else b"\x41"
+			rm = regIndex & 7
+			if rm == 4:
+				self.AsmCache["call [%s]" % regName] = prefix + struct.pack("BBB", 0xFF, 0x14, 0x24)
+			elif rm == 5:
+				self.AsmCache["call [%s]" % regName] = prefix + struct.pack("BBB", 0xFF, 0x55, 0x00)
+			else:
+				modrm = 0x10 | rm
+				self.AsmCache["call [%s]" % regName] = prefix + struct.pack("BB", 0xFF, modrm)
 
 
 		# ------------------------------------------------------------
 		# PUSH reg (x64)
 		# ------------------------------------------------------------
-		self.AsmCache["push rax"] = b"\x50"
-		self.AsmCache["push rcx"] = b"\x51"
-		self.AsmCache["push rdx"] = b"\x52"
-		self.AsmCache["push rbx"] = b"\x53"
-		self.AsmCache["push rsp"] = b"\x54"
-		self.AsmCache["push rbp"] = b"\x55"
-		self.AsmCache["push rsi"] = b"\x56"
-		self.AsmCache["push rdi"] = b"\x57"
-		self.AsmCache["push r8"]  = b"\x41\x50"
-		self.AsmCache["push r9"]  = b"\x41\x51"
-		self.AsmCache["push r10"] = b"\x41\x52"
-		self.AsmCache["push r11"] = b"\x41\x53"
-		self.AsmCache["push r12"] = b"\x41\x54"
-		self.AsmCache["push r13"] = b"\x41\x55"
-		self.AsmCache["push r14"] = b"\x41\x56"
-		self.AsmCache["push r15"] = b"\x41\x57"
+		for regName in Registers64BitsOrder:
+			regIndex = regEnc64[regName]
+			prefix = b"" if regIndex < 8 else b"\x41"
+			self.AsmCache["push %s" % regName] = prefix + struct.pack("B", 0x50 + (regIndex & 7))
 
 		# ------------------------------------------------------------
 		# POP reg (x64)
 		# ------------------------------------------------------------
-		self.AsmCache["pop rax"] = b"\x58"
-		self.AsmCache["pop rcx"] = b"\x59"
-		self.AsmCache["pop rdx"] = b"\x5a"
-		self.AsmCache["pop rbx"] = b"\x5b"
-		self.AsmCache["pop rsp"] = b"\x5c"
-		self.AsmCache["pop rbp"] = b"\x5d"
-		self.AsmCache["pop rsi"] = b"\x5e"
-		self.AsmCache["pop rdi"] = b"\x5f"
-		self.AsmCache["pop r8"]  = b"\x41\x58"
-		self.AsmCache["pop r9"]  = b"\x41\x59"
-		self.AsmCache["pop r10"] = b"\x41\x5a"
-		self.AsmCache["pop r11"] = b"\x41\x5b"
-		self.AsmCache["pop r12"] = b"\x41\x5c"
-		self.AsmCache["pop r13"] = b"\x41\x5d"
-		self.AsmCache["pop r14"] = b"\x41\x5e"
-		self.AsmCache["pop r15"] = b"\x41\x5f"
+		for regName in Registers64BitsOrder:
+			regIndex = regEnc64[regName]
+			prefix = b"" if regIndex < 8 else b"\x41"
+			self.AsmCache["pop %s" % regName] = prefix + struct.pack("B", 0x58 + (regIndex & 7))
 
 		self.AsmCache["inc rax"] = b"\x40"
 		self.AsmCache["inc rcx"] = b"\x41"
@@ -1979,11 +1942,14 @@ class Debugger:
 		self.AsmCache["mov r15,rsi"] = b"\x49\x89\xf7"
 		self.AsmCache["mov r15,rdi"] = b"\x49\x89\xff"
 
+
+
 		# ------------------------------------------------------------
 		# Core single-byte instructions
 		# ------------------------------------------------------------
 		self.AsmCache["nop"] = b"\x90"
 		self.AsmCache["ret"] = b"\xc3"
+		self.AsmCache["retn"] = b"\xc3"
 		self.AsmCache["leave"] = b"\xc9"
 
 		# ------------------------------------------------------------
@@ -2315,6 +2281,22 @@ class Debugger:
 		self.AsmCache["test r15,r13"] = b"\x4d\x85\xef"
 		self.AsmCache["test r15,r14"] = b"\x4d\x85\xf7"
 		self.AsmCache["test r15,r15"] = b"\x4d\x85\xff"
+
+		# ------------------------------------------------------------
+		# XOR reg,reg (64-bit)
+		# 48 31 /r
+		# ------------------------------------------------------------
+		for dstReg in Registers64BitsOrder:
+			for srcReg in Registers64BitsOrder:
+				dstEnc = regEnc64[dstReg]
+				srcEnc = regEnc64[srcReg]
+				rex = 0x48
+				if (srcEnc & 8) == 8:
+					rex |= 0x04  # REX.R
+				if (dstEnc & 8) == 8:
+					rex |= 0x01  # REX.B
+				modrm = 0xC0 | ((srcEnc & 7) << 3) | (dstEnc & 7)
+				self.AsmCache["xor %s,%s" % (dstReg, srcReg)] = struct.pack("BBB", rex, 0x31, modrm)
 
 		# ------------------------------------------------------------
 		# ADD reg,reg (32-bit)
@@ -3242,6 +3224,21 @@ class Debugger:
 			self.AsmCache["add rsp,%02x" % offset] = thisasm64
 			self.AsmCache["add rsp,%x" % offset] = thisasm64
 
+		# ------------------------------------------------------------
+		# ADD reg,imm8 (64-bit)
+		# 48 83 /0 ib  (imm8 sign-extended)
+		# Build cache for add r64, 4..100 (increment 1)
+		# ------------------------------------------------------------
+		for offset in xrange(4,101,1):
+			for regName in Registers64BitsOrder:
+				regIndex = regEnc64[regName]
+				rex = 0x48 | (0x01 if (regIndex & 8) == 8 else 0x00)  # REX.W (+ REX.B for r8-r15)
+				modrm = 0xC0 | (regIndex & 7)  # /0, mod=11
+				thisasm64 = struct.pack("BBBB", rex, 0x83, modrm, offset)
+				self.AsmCache["add %s,%02x" % (regName, offset)] = thisasm64
+				self.AsmCache["add %s,%x" % (regName, offset)] = thisasm64
+				self.AsmCache["add %s,%d" % (regName, offset)] = thisasm64
+
 		self.AsmCache["retn"] = b"\xc3"
 		self.AsmCache["retf"] = b"\xdb"
 		for offset in xrange(0,80,2):
@@ -4028,6 +4025,19 @@ class Debugger:
 			depth -= 1
 
 
+	def reg64to32(self, thisinstruction):
+		subst = {}
+		for reg in Registers64BitsOrder:
+			if len(reg) > 2:
+				regsubst = reg.replace("r","e")
+				subst[reg] = regsubst
+
+		for reg in subst:
+			thisinstruction = thisinstruction.replace(reg,subst[reg])
+
+		return thisinstruction
+
+
 	def cleanInstruction(self,thisinstruction):
 
 		thisinstruction = thisinstruction.strip(" ").lstrip(" ").lower()
@@ -4046,7 +4056,7 @@ class Debugger:
 		read_success = True
 		
 		dbgp("instructions: %s" % instructions)
-		dbgp("Using address to assemble if needed: %s" % intToHex(address))
+		
 
 		allinstructions = instructions.lower().split("\n")
 		
@@ -4062,105 +4072,133 @@ class Debugger:
 			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
 			if ascii_instruction in self.AsmCache:
 				dbgp("Single instruction '%s' found in cache, returning cached bytes" % ascii_instruction)
-				dbgp("return bytes from cache")
-				dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
+				dbgp("Cached entry: %s" % bin2hex(self.AsmCache[ascii_instruction]))
 				return self.AsmCache[ascii_instruction]
 
 
-		# more than one or need to assemble? then do address check first
-		# Determine read size based on architecture
+		# either not cached or more than one instruction
+		# loop through all instructions
+		
+		ks = None
+		origbytes = b""
+		read_success = False
 		read_size = 20 if arch == 32 else 40
-		
-		# Check if address is valid and try to read from it
-		if pykd.isValid(address):
-			try:
-				origbytes = self.readMemory(address, read_size)
-				dbgp("Successfully read from valid address %s" % intToHex(address))
-			except Exception as e:
-				dbgp("Failed to read from valid address %s: %s" % (intToHex(address), str(e)))
-				# If read fails, use fallback address
-				read_success = False
-		else:
-			read_success = False
-		
-		# If address was invalid or read failed, use fallback address
-		if not pykd.isValid(address) or (read_success == False and origbytes == b""):
-			dbgp("Using fallback address (original was invalid or unreadable): %s" % intToHex(address))
-			thismod = pykd.module("ntdll")
-			thismodbase = thismod.begin()
-			ntHeader = getNtHeaders(thismodbase)
-			entrypoint = ntHeader.OptionalHeader.AddressOfEntryPoint
-			
-			# Only add 0x1000 if entrypoint is 0
-			if entrypoint == 0:
-				address = thismodbase + 0x1000
-				dbgp("Fallback address set to: %s (module base: %s + 0x1000, entrypoint was 0)" % (intToHex(address), intToHex(thismodbase)))
-			else:
-				address = thismodbase + entrypoint
-				dbgp("Fallback address set to: %s (module base: %s + entrypoint: %s)" % (intToHex(address), intToHex(thismodbase), intToHex(entrypoint)))
-			
-			try:
-				origbytes = self.readMemory(address, read_size)
-				dbgp("Successfully read from fallback address %s" % intToHex(address))
-			except Exception as e:
-				dbgp("Failed to read from fallback address %s: %s" % (intToHex(address), str(e)))
-				origbytes = b""
-		
 
-		
-		cached = True
+		if keystoneLoaded:
+			ks = keystone.Ks(keystone.KS_ARCH_X86, keystone.KS_MODE_32)
+			if arch == 64:
+				ks = keystone.Ks(keystone.KS_ARCH_X86, keystone.KS_MODE_64)
+		else:
+			dbgp("Keystone-engine not found, using address to assemble if needed: %s" % (PTR_PRINT % address))
+			dbgp("First, make a backup of the original bytes")
+			attempts = 0
+			while not read_success and attempts < 2:
+				if pykd.isValid(address):
+					try:
+						origbytes = self.readMemory(address, read_size)
+						dbgp("Successfully made a backup of the original bytes at address %s" % (PTR_PRINT % address))
+						read_success = True
+					except Exception as e:
+						dbgp("Failed to read from valid address %s: %s" % (PTR_PRINT % address, str(e)))
+						# If read fails, use fallback address
+						read_success = False
+				else:
+					read_success = False
+
+				if not read_success or origbytes == b"":
+					dbgp("Selecting fallback address. Previous address (%s) didn't work" % (PRT_PRINT % address))
+					thismod = pykd.module("ntdll")
+					thismodbase = thismod.begin()
+					ntHeader = getNtHeaders(thismodbase)
+					entrypoint = ntHeader.OptionalHeader.AddressOfEntryPoint
+					
+					# Only add 0x1000 if entrypoint is 0
+					if entrypoint == 0:
+						address = thismodbase + 0x1000
+						dbgp("Fallback address set to: %s (module base: %s + 0x1000, entrypoint was 0)" % (PRT_PRINT % address, PRT_PRINT % thismodbase))
+					else:
+						address = thismodbase + entrypoint
+						dbgp("Fallback address set to: %s (module base: %s + entrypoint: %s)" % (PRT_PRINT % address, PRT_PRINT % thismodbase, intToHex(entrypoint)))
+					
+					try:
+						origbytes = self.readMemory(address, read_size)
+						dbgp("Successfully read from fallback address %s" % (PRT_PRINT % address))
+						read_success = True
+					except Exception as e:
+						dbgp("Failed to read from fallback address %s: %s" % (PRT_PRINT % address, str(e)))
+						origbytes = b""
+				attempts += 1
+
+			if not read_success and attempts == 2:
+				dbgp("Sorry, failed to read from any of the addresses, won't be able to assemble")
+				return b""
+
+
 		for thisinstruction in allinstructions:	
-			dbgp("current instruction : %s" % thisinstruction)
+
+			# if cached, return from cache first
+			dbgp("Current instruction to assemble : %s" % thisinstruction)
 			thisinstruction = self.cleanInstruction(thisinstruction)
 
-			# Ensure thisinstruction is ASCII for PyKD compatibility
+			# Ensure thisinstruction is ASCII for compatibility
 			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
 
-			if not ascii_instruction in self.AsmCache:
-				objdisasm = pykd.disasm(address)
-
-				dbgp("instruction '%s' not in cache, assembling" % thisinstruction)
-				try:
-					# Ensure thisinstruction is ASCII for PyKD compatibility
-					ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
-					objdisasm.asm(ascii_instruction)
-				except Exception as e:
-					print(str(e))
-					dbgp("unable to assemble instruction '%s'" % ascii_instruction)
-					dbgp("error: %s" % str(e))
-					return ""
-
-				# assembled at a temporary scratch address; invalidate any cached
-				# disassembly/opcode for that address before reading bytes back
-				global disAsmCache
-				if address in disAsmCache:
-					del disAsmCache[address]
-				if address in self.OpcodeCache:
-					del self.OpcodeCache[address]
-
-				opc = opcode(address)
-				thesebytes = opc.getBytes()
-
-				opc = opcode(address)	
-				thesebytes = opc.getBytes()
-				dbgp("bytes: %s " % thesebytes)
-				allbytes += thesebytes
-				self.AsmCache[ascii_instruction] = thesebytes
-				cached = False
-			else:
-			# return from cache
-				dbgp("return bytes from cache")
-				dbgp("cache: %s" % bin2hex(self.AsmCache[ascii_instruction]))
+			if ascii_instruction in self.AsmCache:
+				dbgp("Found instruction '%s' in cache" % ascii_instruction)
+				dbgp("Cached entry: %s" % bin2hex(self.AsmCache[ascii_instruction]))
 				allbytes += self.AsmCache[ascii_instruction]
-		if not cached:
+			else:
+				dbgp("Instruction '%s' not found in cache" % ascii_instruction)
+				# if keystone-engine is installed, use that first
+				if keystoneLoaded:
+					try:
+						encodedinstruction, count = ks.asm(ascii_instruction)
+						thesebytes = bytes(encodedinstruction)
+						dbgp("Keystone: Instruction '%s' assembled to bytes: %s" % (ascii_instruction, thesebytes.hex(" ")))
+						allbytes += thesebytes
+						self.AsmCache[ascii_instruction] = thesebytes
+					except Exception as e:
+						dbgp("Error using keystone to assemble '%s'" % ascii_instruction)
+						dbgp("%s" % str(e))
+						dbgp(traceback.format_exc())
+				else:
+					dbgp("Keystone not installed, fallback to using pykd")
+					objdisasm = pykd.disasm(address)
+					dbgp("Instruction '%s' not in cache, assembling: " % ascii_instruction)
+					try:
+						dbgp("   Running objdisasm.asm('%s')" % ascii_instruction)
+						objdisasm.asm(ascii_instruction)
+						global disAsmCache
+						if address in disAsmCache:
+							del disAsmCache[address]
+						if address in self.OpcodeCache:
+							del self.OpcodeCache[address]
+
+						opc = opcode(address)
+						thesebytes = opc.getBytes()
+
+						opc = opcode(address)	
+						thesebytes = opc.getBytes()
+						dbgp("bytes: %s " % thesebytes)
+						allbytes += thesebytes
+						self.AsmCache[ascii_instruction] = thesebytes
+						dbgp("Added opcode for '%s' to cache" % ascii_instruction)
+
+					except Exception as e:
+						dbgp("Unable to assemble instruction '%s'" % ascii_instruction)
+
+		# restore origbytes if needed 
+		if origbytes != b"":
 			putback = "eb 0x%08x " % address
 			# In Py2, iterating a bytes/str yields 1-char strings; format expects ints.
 			restorebytes = ["%02x" % (b if isinstance(b, int) else ord(b)) for b in origbytes]
 			putback += ' '.join(restorebytes)
 			pykd.dbgCommand(putback)
-			dbgp("putback command: %s" % putback)
-		dbgp("returning %s" % bin2hex(allbytes))
+			dbgp("putback command: %s" % putback)			
+
+		dbgp("Return value of assemble: %s" % bin2hex(allbytes))
 		return allbytes
+
 
 	def getOpcode(self,address):
 		if address in self.OpcodeCache:
