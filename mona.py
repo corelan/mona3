@@ -5632,62 +5632,6 @@ class MnNT7Heap(MnNTHeap):
 		frontendheaptype = self.getFrontEndHeapType()
 		return frontendheaptype == 0x2
 
-	def getFreeList(self):
-		"""Walk the unified FreeLists doubly-linked list (Vista/Win7).
-
-		On Vista/7 the 128-entry FreeList array was replaced by a single
-		doubly-linked list at _HEAP.FreeLists.  Each node points at the
-		_HEAP_FREE_ENTRY whose Flink/Blink sit immediately after the
-		encoded 8-byte chunk header.
-
-		Return: dict keyed by sequential index, each value is a MnChunk.
-		"""
-		freelists = {}
-		ptrsize = archValue(4, 8)
-		headersize = archValue(8, 16)
-		freelist_offset = getOsOffset("FreeLists")
-		listhead = self.heapbase + freelist_offset
-
-		try:
-			flink = readPtrSizeBytes(listhead)
-			index = 0
-			while flink != 0 and flink != listhead:
-				# flink points at the Flink/Blink pair inside the free entry;
-				# the chunk header starts headersize bytes before that.
-				chunk_addr = flink - headersize
-				chunk = self.getHeapChunkHeaderAtAddress(chunk_addr, headersize, "freelist")
-				if chunk is not None:
-					freelists[index] = chunk
-				index += 1
-				# Read next Flink from the list node
-				next_flink = readPtrSizeBytes(flink)
-				if next_flink == flink:
-					break
-				flink = next_flink
-				# Safety valve
-				if index > 0xFFFF:
-					break
-		except:
-			pass
-		return freelists
-
-	def getFreeBins(self):
-		"""Return free chunks organized by size bin (0-127).
-
-		Vista/7 uses a single unified free list.  Each chunk is bucketed
-		by its size field: bin = size if size < 128, else bin 0 (overflow).
-
-		Return: dict {bin_index: [MnChunk, ...]}
-		"""
-		bins = {}
-		freelists = self.getFreeList()
-		for chunk in freelists.values():
-			bin_idx = chunk.size if chunk.size < 128 else 0
-			if bin_idx not in bins:
-				bins[bin_idx] = []
-			bins[bin_idx].append(chunk)
-		return bins
-
 	def getFrontEndHeapUsageData(self):
 		"""Read the FrontEndHeapUsageData array (Vista/Win7).
 
