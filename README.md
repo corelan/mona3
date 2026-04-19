@@ -1,4 +1,4 @@
-[mona v3 banner](mona-banner.png)
+![mona v3 banner](corelan-banner.png)
 
 # MONA v3
 
