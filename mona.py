@@ -302,8 +302,7 @@ def getAllRegisters():
 	"""
 	Makes a dict of all valid registers and their values on the current architecture
 	"""
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		return getRegisters()
 	else:
@@ -315,11 +314,9 @@ def getAllRegisters():
 				regval = pykd.reg(thisreg)
 				allregvals[thisreg] = regval
 			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Unable to access register %s" % thisreg)
+				dbgp("Unable to access register %s: %s" % (thisreg, str(e)))
 				continue
-		if DEBUG_MODE:
-			dbgp("Returning %s" % allregvals)
+		dbgp("Returning %s" % allregvals)
 		return allregvals
 
 
@@ -730,8 +727,7 @@ def getAddyArg(argaddy):
 					ptrval = struct.unpack(PTR_FMT,dbg.readMemory(ptraddy,PTR_SIZE))[0]
 					return ptrval, True
 				except Exception as e:
-					if DEBUG_MODE:
-						dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE))
+					dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE))
 					return 0, False
 			return 0, False
 
@@ -770,24 +766,20 @@ def getAddyArg(argaddy):
 
 	if str(argaddy).strip().lower() in regs:
 		thisreg = str(argaddy).strip().lower()
-		if DEBUG_MODE:
-			dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[sthisreg]))
+		dbgp("Argument %s is a register, value: 0x%08x" % (argaddy, regs[sthisreg]))
 		return regs[thisreg], True
 
 	argaddy = str(argaddy).strip().replace("`","")
 	addyparts = _tokenize_addy_expression(argaddy)
-	if DEBUG_MODE:
-		dbgp("Tokenized addy expression: %s" % addyparts)
+	dbgp("Tokenized addy expression: %s" % addyparts)
 
 	partok = False
 	for part in addyparts:
 		if not part in delimchars:
 			cleaned = str(part).strip()
-			if DEBUG_MODE:
-				dbgp("Trying to resolve part %s" % cleaned)
+			dbgp("Trying to resolve part %s" % cleaned)
 			partval,partok = _resolve_part(cleaned)
-			if DEBUG_MODE:
-				dbgp("  Resolved %s into %s, Success: %s" % (cleaned, PTR_PRINT % partval, partok))
+			dbgp("  Resolved %s into %s, Success: %s" % (cleaned, PTR_PRINT % partval, partok))
 			if not partok:
 				break
 			addypartsint.append(partval)
@@ -797,7 +789,6 @@ def getAddyArg(argaddy):
 		if not partok:
 			break
 
-	
 
 	if not partok:
 		addyok = False
@@ -2389,15 +2380,13 @@ def readPtrSizeBytes(ptr):
 		expected = 8
 		fmt = '<Q'
 	if not data or len(data) < expected:
-		if DEBUG_MODE:
-			dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
+		dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
 		return 0
 	return struct.unpack(fmt, data)[0]
 
 def getOsOffset(name):
 	osrelease = dbg.getOsRelease()
-	if DEBUG_MODE:
-		dbgp("getOsOffset('%s'): osrelease='%s' (type: %s)" % (name, str(osrelease), type(osrelease).__name__))
+	dbgp("getOsOffset('%s'): osrelease='%s' (type: %s)" % (name, str(osrelease), type(osrelease).__name__))
 
 	major = 0
 	minor = 0
@@ -2422,8 +2411,7 @@ def getOsOffset(name):
 			except:
 				pass
 
-	if DEBUG_MODE:
-		dbgp("getOsOffset('%s'): major=%d, minor=%d, build=%d" % (name, major, minor, build))
+	dbgp("getOsOffset('%s'): major=%d, minor=%d, build=%d" % (name, major, minor, build))
 
 	offset_category = "xp"
 	if major == 6 and minor == 0:
@@ -2436,8 +2424,7 @@ def getOsOffset(name):
 		offset_category = "win10"
 
 	offset_category_index = offset_categories.index(offset_category)
-	if DEBUG_MODE:
-		dbgp("getOsOffset('%s'): category='%s' (index=%d)" % (name, offset_category, offset_category_index))
+	dbgp("getOsOffset('%s'): category='%s' (index=%d)" % (name, offset_category, offset_category_index))
 
 	offset = 0
 	curr_category = "xp"
@@ -2458,8 +2445,7 @@ def getOsOffset(name):
 				offset = win10offsets[o]
 
 	result = archValue(offset[0], offset[1])
-	if DEBUG_MODE:
-		dbgp("getOsOffset('%s'): matched category='%s', offset=0x%x" % (name, curr_category, result))
+	dbgp("getOsOffset('%s'): matched category='%s', offset=0x%x" % (name, curr_category, result))
 	return result
 
 #---------------------------------------#
@@ -2872,8 +2858,7 @@ class MnConfig:
 	def __init__(self):
 		global configwarningshown
 
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		self.configfile = "mona.ini"
 
@@ -2902,8 +2887,7 @@ class MnConfig:
 		except Exception as e:
 			dbg.log(" ** Warning: unable to migrate mona.ini from %s to %s : %s" % (self.legacyfullpath, self.fullpath, str(e)), highlight=1)
 
-		if DEBUG_MODE:
-			dbgp("MnConfig using config file: %s" % self.fullpath)
+		dbgp("MnConfig using config file: %s" % self.fullpath)
 
 		if __DEBUGGERAPP__ == "Immunity Debugger":
 			try:
@@ -2925,8 +2909,7 @@ class MnConfig:
 	def list(self):
 		global configFileCache
 
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		configFileCache = {}
 		headers = ["Parameter", "Value"]
@@ -2938,13 +2921,11 @@ class MnConfig:
 				content = configfileobj.readlines()
 				configfileobj.close()
 
-				if DEBUG_MODE:
-					dbgp("    Reading config content line by line")
+				dbgp("    Reading config content line by line")
 
 				for thisLine in content:
 					thisLine = thisLine.decode("latin-1").strip()
-					if DEBUG_MODE:
-						dbgp("    Line: %s" % thisLine)
+					dbgp("    Line: %s" % thisLine)
 
 					if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 						thisparam, thisvalue = thisLine.split("=", 1)
@@ -2952,14 +2933,12 @@ class MnConfig:
 						thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
 						configFileCache[thisparam] = thisvalue
 
-						if DEBUG_MODE:
-							dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
+						dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
 
 				print_dict_table(configFileCache, headers, types, padding="      ", itemsequence=[])
 
 			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
+				dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
 
 	def get(self, parameter):
 		"""
@@ -2975,8 +2954,7 @@ class MnConfig:
 		"""
 		global configFileCache
 
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		toreturn = ""
 		paramkey = parameter.strip().lower()
@@ -2991,14 +2969,12 @@ class MnConfig:
 					content = configfileobj.readlines()
 					configfileobj.close()
 
-					if DEBUG_MODE:
-						dbgp("    Reading config content line by line")
+					dbgp("    Reading config content line by line")
 
 					for thisLine in content:
 						thisLine = thisLine.decode("latin-1").strip()
 
-						if DEBUG_MODE:
-							dbgp("    Line: %s" % thisLine)
+						dbgp("    Line: %s" % thisLine)
 
 						if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 							thisparam, thisvalue = thisLine.split("=", 1)
@@ -3012,12 +2988,10 @@ class MnConfig:
 								toreturn = thisvalue
 
 				except Exception as e:
-					if DEBUG_MODE:
-						dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
+					dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
 					toreturn = ""
 			else:
-				if DEBUG_MODE:
-					dbgp("Config file %s does not seem to exist" % self.fullpath)
+				dbgp("Config file %s does not seem to exist" % self.fullpath)
 
 		return toreturn
 
@@ -3034,8 +3008,7 @@ class MnConfig:
 		"""
 		global configFileCache
 
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		paramkey = parameter.strip().lower()
 		paramvalue = str(paramvalue).strip()
@@ -3044,9 +3017,8 @@ class MnConfig:
 			configFileCache[paramkey] = paramvalue
 
 		if os.path.exists(self.fullpath):
-			if DEBUG_MODE:
-				dbgp("Editing existing config file %s" % self.fullpath)
-				dbgp("Setting parameter %s to %s" % (parameter, paramvalue))
+			dbgp("Editing existing config file %s" % self.fullpath)
+			dbgp("Setting parameter %s to %s" % (parameter, paramvalue))
 
 			try:
 				configfileobj = open(self.fullpath, "r")
@@ -3110,17 +3082,15 @@ class MnConfig:
 		"""
 		global configFileCache
 
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		paramdel = parameter.lower().strip()
 		if paramdel in configFileCache:
 			del configFileCache[paramdel]
 
 		if os.path.exists(self.fullpath):
-			if DEBUG_MODE:
-				dbgp("Editing existing config file %s" % self.fullpath)
-				dbgp("Removing / clearing parameter %s " % parameter)
+			dbgp("Editing existing config file %s" % self.fullpath)
+			dbgp("Removing / clearing parameter %s " % parameter)
 
 			try:
 				configfileobj = open(self.fullpath, "r")
@@ -3158,8 +3128,7 @@ class MnLog:
 	Class to perform logfile operations
 	"""
 	def __init__(self, filename):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 		
 		self.filename = filename
 		
@@ -3176,12 +3145,10 @@ class MnLog:
 		Return:
 		full path to the logfile name.
 		"""	
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 		global noheader
 		if clear:
-			if DEBUG_MODE:
-				dbgp("Filename: %s" % self.filename)
+			dbgp("Filename: %s" % self.filename)
 			if not silent:
 				dbg.log("[+] Preparing output file '" + self.filename +"'")
 		if not showheader:
@@ -3193,8 +3160,7 @@ class MnLog:
 		
 		thisconfig = MnConfig()
 		workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
-		if DEBUG_MODE:
-			dbgp("Workingfolder: %s" % workingfolder)
+		dbgp("Workingfolder: %s" % workingfolder)
 
 		#strip extension from debuggedname
 		parts = debuggedname.split(".")
@@ -3322,8 +3288,7 @@ class MnQueue:
 	Simple queue class
 	"""
 	def __init__(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		self.holder = []
 		
@@ -3360,9 +3325,8 @@ class MnModule:
 
 	def __init__(self, modulename):
 		#if DEBUG_MODE:
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-			dbgp("Creating MnModule object for module '%s'" % modulename)
+		dbgp(get_current_function_name())
+		dbgp("Creating MnModule object for module '%s'" % modulename)
 		modisaslr = True
 		modissafeseh = True
 		modrebased = True
@@ -3388,8 +3352,7 @@ class MnModule:
 		if modulename != "":
 			# if info is cached, retrieve from cache
 			if ModInfoCached(modulename):
-				if DEBUG_MODE:
-					dbgp("Module %s retrieved from cache" % modulename)
+				dbgp("Module %s retrieved from cache" % modulename)
 				modisaslr = getModuleProperty(modulename,"aslr")
 				modissafeseh = getModuleProperty(modulename,"safeseh")
 				modrebased = getModuleProperty(modulename,"rebase")
@@ -3912,10 +3875,9 @@ class MnModule:
 			if arch == 32:
 				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 			else:
-				if DEBUG_MODE:
-					dbgp("Module %s" % self.moduleKey)
-					dbgp(" ModuleCharacteristics: 0x%x" % self.moduleDllCharacteristics)
-					dbgp(" Version: %s" % self.moduleVersion)
+				dbgp("Module %s" % self.moduleKey)
+				dbgp(" ModuleCharacteristics: 0x%x" % self.moduleDllCharacteristics)
+				dbgp(" Version: %s" % self.moduleVersion)
 				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 		else:
 			outstring = "[None]"
@@ -3989,9 +3951,8 @@ class MnModule:
 	def getIAT(self):
 		IAT = {}
 		#dbg.log("")
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
-			dbgp("    Getting IAT for %s." % (self.moduleKey))
+		dbgp(get_current_function_name())
+		dbgp("    Getting IAT for %s." % (self.moduleKey))
 		try:
 			if not self.moduleKey in mnproc.IATCache:  # if len(self.IAT) == 0:
 				
@@ -4035,8 +3996,7 @@ class MnModule:
 
 						if importtable_rva > 0 and importtable_size > 0:
 							importDescAddr = self.moduleBase + importtable_rva
-							if DEBUG_MODE:
-								dbgp("      Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
+							dbgp("      Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
 
 							desc_index = 0
 							while True:
@@ -4068,10 +4028,9 @@ class MnModule:
 								lookup_va = self.moduleBase + lookup_rva
 								iat_va = self.moduleBase + first_thunk
 
-								if DEBUG_MODE:
-									dbgp("      Import descriptor for %s" % dllname)
-									dbgp("        lookup_va : 0x%x" % lookup_va)
-									dbgp("        iat_va    : 0x%x" % iat_va)
+								dbgp("      Import descriptor for %s" % dllname)
+								dbgp("        lookup_va : 0x%x" % lookup_va)
+								dbgp("        iat_va    : 0x%x" % iat_va)
 
 								thunk_index = 0
 								while True:
@@ -4132,15 +4091,13 @@ class MnModule:
 
 									if funcname != "":
 										IAT[iat_entry_va] = funcname
-										if DEBUG_MODE:
-											dbgp("      Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
+										dbgp("      Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
 
 									thunk_index += 1
 
 								desc_index += 1
 				dbg.log("      Extracted %d entries from IAT" % len(IAT))
-				if DEBUG_MODE:
-					dbgp("      -> We have extracted %d names from the IAT of %s" % (len(IAT), self.moduleKey))
+				dbgp("      -> We have extracted %d names from the IAT of %s" % (len(IAT), self.moduleKey))
 
 				# METHOD 2 - Fallback in case we did not get a lot of strings.
 				# Let's say less than 10
@@ -4154,8 +4111,7 @@ class MnModule:
 						syms = themod.getSymbols()
 						thename = ""
 						dbg.log("      %d symbols found, now filtering relevant entries" % len(syms))
-						if DEBUG_MODE:
-							dbgp("      %d symbols found for %s" % (len(syms), self.moduleKey))
+						dbgp("      %d symbols found for %s" % (len(syms), self.moduleKey))
 						for sym in syms:
 							#dbg.log("   - symbol: %s" % sym)
 							if syms[sym].getType().startswith("Import"):
@@ -4170,8 +4126,7 @@ class MnModule:
 						dbg.logLines(traceback.format_exc())
 						pass
 					# merge
-					if DEBUG_MODE:
-						dbgp("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
+					dbgp("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
 
 
 				if len(IAT) == 0:
@@ -4270,17 +4225,14 @@ class MnModule:
 									thisfuncname = thisfuncfullname.split('!')
 									if len(thisfuncname) > 1:
 										IAT[ptr] = thisfuncname[1].strip(">")
-										if DEBUG_MODE:
-											dbgp("      Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
+										dbgp("      Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
 									else:
-										if DEBUG_MODE:
-											dbgp("      Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
-											dbgp("      thisfuncfullname: %s" % thisfuncfullname)
+										dbgp("      Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
+										dbgp("      thisfuncfullname: %s" % thisfuncfullname)
 
 				if len(IAT) == 0:
-					if DEBUG_MODE:
-						dbgp("      No IAT found for module %s" % self.moduleKey)
-						dbgp("      Adding fake IAT entry in cache, to avoid trying again")
+					dbgp("      No IAT found for module %s" % self.moduleKey)
+					dbgp("      Adding fake IAT entry in cache, to avoid trying again")
 					# if we get here, it means we couldn't find anything
 					# avoid doing all of this again
 					# so we'll add an empty entry in the cache
@@ -4300,8 +4252,7 @@ class MnModule:
 		
 	
 	def getEAT(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 		eatlist = {}
 		if len(self.EAT) == 0:
 			try:
@@ -4349,13 +4300,12 @@ class MnModule:
 							rva_of_names = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x20, 4))[0]
 							address_of_name_ordinals = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x24, 4))[0]
 
-							if DEBUG_MODE:
-								dbgp("Export table at 0x%x, size 0x%x" % (eatAddr, exporttable_size))
-								dbgp("NumberOfFunctions: %d" % nr_of_functions)
-								dbgp("NumberOfNames: %d" % nr_of_names)
-								dbgp("AddressOfFunctions: 0x%x" % address_of_functions)
-								dbgp("AddressOfNames: 0x%x" % rva_of_names)
-								dbgp("AddressOfNameOrdinals: 0x%x" % address_of_name_ordinals)
+							dbgp("Export table at 0x%x, size 0x%x" % (eatAddr, exporttable_size))
+							dbgp("NumberOfFunctions: %d" % nr_of_functions)
+							dbgp("NumberOfNames: %d" % nr_of_names)
+							dbgp("AddressOfFunctions: 0x%x" % address_of_functions)
+							dbgp("AddressOfNames: 0x%x" % rva_of_names)
+							dbgp("AddressOfNameOrdinals: 0x%x" % address_of_name_ordinals)
 
 							for i in range(0, nr_of_names):
 								name_rva = struct.unpack('<L', dbg.readMemory(rva_of_names + (4 * i), 4))[0]
@@ -4371,15 +4321,13 @@ class MnModule:
 
 									#if DEBUG_MODE:
 									#	dbgp("EAT[0x%x] = %s (ordinal index %d)" % (eatAddress, eatName, ordinal_index))
-							if DEBUG_MODE:
-								dbgp("EAT List has %d elements so far" % len(eatlist))
+							dbgp("EAT List has %d elements so far" % len(eatlist))
 
 				self.EAT = eatlist
 			except Exception as e:
-				if DEBUG_MODE:
-					dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)))
-					dbgp("%s" % traceback.format_exc())
-					dbgp("eatlist: %s" % eatlist)
+				dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)))
+				dbgp("%s" % traceback.format_exc())
+				dbgp("eatlist: %s" % eatlist)
 				return eatlist
 		else:
 			eatlist = self.EAT
@@ -4730,41 +4678,32 @@ class MnHeap(object):
 
 		Return: str - "NT", "Segment", or "Unknown"
 		"""
-		if DEBUG_MODE:
-			dbgp("_detectHeapType(0x%x)" % address)
+		dbgp("_detectHeapType(0x%x)" % address)
 		try:
 			sig_offset = getOsOffset("Signature")
 		except Exception as e:
-			if DEBUG_MODE:
-				dbgp("_detectHeapType: getOsOffset('Signature') failed: %s" % str(e))
+			dbgp("_detectHeapType: getOsOffset('Signature') failed: %s" % str(e))
 			sig_offset = archValue(0x008, 0x008)
-		if DEBUG_MODE:
-			dbgp("_detectHeapType: sig_offset=0x%x" % sig_offset)
+		dbgp("_detectHeapType: sig_offset=0x%x" % sig_offset)
 		try:
 			sig_val = struct.unpack('<L', dbg.readMemory(address + sig_offset, 4))[0]
-			if DEBUG_MODE:
-				dbgp("_detectHeapType: NT sig at 0x%x = 0x%08x" % (address + sig_offset, sig_val))
+			dbgp("_detectHeapType: NT sig at 0x%x = 0x%08x" % (address + sig_offset, sig_val))
 			if sig_val == 0xeeffeeff:
 				return "NT"
 		except Exception as e:
-			if DEBUG_MODE:
-				dbgp("_detectHeapType: NT sig read failed: %s" % str(e))
+			dbgp("_detectHeapType: NT sig read failed: %s" % str(e))
 		try:
 			seg_val = struct.unpack('<L', dbg.readMemory(address + 0x010, 4))[0]
-			if DEBUG_MODE:
-				dbgp("_detectHeapType: Segment sig at 0x%x = 0x%08x" % (address + 0x010, seg_val))
+			dbgp("_detectHeapType: Segment sig at 0x%x = 0x%08x" % (address + 0x010, seg_val))
 			if seg_val == 0xddeeddee:
 				return "Segment"
 		except Exception as e:
-			if DEBUG_MODE:
-				dbgp("_detectHeapType: Segment sig read failed: %s" % str(e))
-		if DEBUG_MODE:
-			dbgp("_detectHeapType: returning Unknown")
+			dbgp("_detectHeapType: Segment sig read failed: %s" % str(e))
+		dbgp("_detectHeapType: returning Unknown")
 		return "Unknown"
 
 	def __init__(self, address):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		self.heapbase = address
 		self.VirtualAllocdBlocks = {}
@@ -5838,8 +5777,7 @@ class MnProc:
 	}
 
 	def __init__(self):
-		if DEBUG_MODE:
-			dbgp(get_current_function_name())
+		dbgp(get_current_function_name())
 
 		# --- process-level caches ---
 		self.CritCache = {}
@@ -7153,8 +7091,7 @@ def getSegmentsForHeap(heapbase):
 
 	Return: dict {segaddr: [base, end, firstentry, lastentry]}
 	"""
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	if heapbase in mnproc.segmentlistCache:
 		return mnproc.segmentlistCache[heapbase]
 	segmentinfo = {}
@@ -7173,8 +7110,7 @@ def getSegmentsForHeap(heapbase):
 			dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)))
 			import traceback
 			dbgp(traceback.format_exc())
-	if DEBUG_MODE:
-		dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
+	dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
 	mnproc.segmentlistCache[heapbase] = segmentinfo
 	return segmentinfo
 
@@ -7273,8 +7209,7 @@ def search(sequences,criteria=[]):
 	Return:
 	Dictionary (opcode sequence => List of addresses)
 	"""	
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	return searchInRange(sequences,criteria)
 	
 	
@@ -7291,12 +7226,11 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 	Return:
 	Dictionary (opcode sequence => List of addresses)
 	"""
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-		dbgp("    sequences: %s" % sequences)
-		dbgp("    start: 0x%08x" % start)
-		dbgp("    end: 0x%08x" % end )
-		dbgp("    criteria: %s" % criteria)
+	dbgp(get_current_function_name())
+	dbgp("    sequences: %s" % sequences)
+	dbgp("    start: 0x%08x" % start)
+	dbgp("    end: 0x%08x" % end )
+	dbgp("    criteria: %s" % criteria)
 	
 	if not "accesslevel" in criteria:
 		criteria["accesslevel"] = "*"
@@ -7357,15 +7291,12 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 				
 				mem = dbg.MemoryPages[a].getMemory()
-				if DEBUG_MODE:
-					dbgp("      + Page 0x%08x is within scope, loading memory contents" % a)
+				dbgp("      + Page 0x%08x is within scope, loading memory contents" % a)
 				if not mem:
-					if DEBUG_MODE:
-						dbgp("        Failed to load page 0x%08x!!" % a)
+					dbgp("        Failed to load page 0x%08x!!" % a)
 					continue
 				else:
-					if DEBUG_MODE:
-						dbgp("        mem size: 0x%08x" % len(mem))
+					dbgp("        mem size: 0x%08x" % len(mem))
 
 					# loop on each sequence
 					for seq in sequences:
@@ -7848,10 +7779,9 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 
 	"""	
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-		dbgp("function criteria: %s" % criteria)
-		dbgp("g_modules: %d entries" % len(mnproc.g_modules))
+	dbgp(get_current_function_name())
+	dbgp("function criteria: %s" % criteria)
+	dbgp("g_modules: %d entries" % len(mnproc.g_modules))
 	if len(mnproc.g_modules) == 0 or mnproc.g_modulesOrder != peb_order:
 		populateModuleInfo(from_memory=from_memory, peb_order=peb_order)
 	modulestoquery=[]
@@ -7866,9 +7796,8 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 		pass
 
 	for thismodule, modproperties in mnproc.g_modules.items():
-		if DEBUG_MODE:
-			dbgp("Check if module %s should be filtered" % thismodule)
-			dbgp("  Properties: %s" % modproperties)
+		dbgp("Check if module %s should be filtered" % thismodule)
+		dbgp("  Properties: %s" % modproperties)
 
 		is_excluded = any(thismodule.lower().startswith(p) for p in excluded_prefixes)
 		included = True
@@ -7888,24 +7817,20 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 					keep_criteria = str_to_bool(criteria[critkey])
 					module_state = modproperties[propkey]
 
-					if DEBUG_MODE:
-						dbgp("   %s needs to be %s (=%s)" % (dbgname, criteria[critkey], keep_criteria))
-						dbgp("   Module state: %s" % module_state)
+					dbgp("   %s needs to be %s (=%s)" % (dbgname, criteria[critkey], keep_criteria))
+					dbgp("   Module state: %s" % module_state)
 
 					if module_state != keep_criteria:
 						included = False
-						if DEBUG_MODE:
-							dbgp("   -> mismatch! removing from list because of %s" % dbgname)
+						dbgp("   -> mismatch! removing from list because of %s" % dbgname)
 						break
 
 		else:
 			included = False
-			if DEBUG_MODE:
-				dbgp("   Removing from list because it's an excluded module (mona.ini)")
+			dbgp("   Removing from list because it's an excluded module (mona.ini)")
 
 
-		if DEBUG_MODE:
-			dbgp("   After criteria check: included = %s" % included)
+		dbgp("   After criteria check: included = %s" % included)
 		# filter by path regex ?
 		mod_path = modproperties.get("path", "")
 		if included and ("cmp" in criteria) and criteria["cmp"]:
@@ -7928,8 +7853,7 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 				modulename = modulename.strip('"').strip("'").lower()
 				modulenamewithout = modulename.replace("*","")
 
-				if DEBUG_MODE:
-					dbgp("Module criteria. Check %s for %s" % (just_filename,modulenamewithout))
+				dbgp("Module criteria. Check %s for %s" % (just_filename,modulenamewithout))
 		  
 				if len(modulenamewithout) <= len(just_filename):
 					#endswith ?
@@ -8003,8 +7927,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 	Return:
 	Dictionary
 	"""
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	if not silent:
 		dbg.setStatusBar("Getting modules info...")
@@ -8012,24 +7935,20 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 		dbg.log("    - Processing modules")
 		#dbg.updateLog()
 	mnproc.g_modules={}
-	if DEBUG_MODE:
-		dbgp("Enumerating modules via getAllModules")
+	dbgp("Enumerating modules via getAllModules")
 	if __DEBUGGERAPP__ == "WinDBG":
 		allmodules=dbg.getAllModules(from_memory=from_memory, peb_order=peb_order)
 	else:
 		allmodules=dbg.getAllModules()
-	if DEBUG_MODE:
-		dbgp("Number of modules found: %d" % len(allmodules))
-		dbgp("keys: %s" % allmodules.keys())
+	dbgp("Number of modules found: %d" % len(allmodules))
+	dbgp("keys: %s" % allmodules.keys())
 	curmod = ""
 	for key in allmodules.keys():
 		try:    
 			modinfo={}
-			if DEBUG_MODE:
-				dbgp("Transforming %s into a MnModule object" % key)
+			dbgp("Transforming %s into a MnModule object" % key)
 			thismod = MnModule(key)
-			if DEBUG_MODE:
-				dbgp("Result: %s" % thismod)
+			dbgp("Result: %s" % thismod)
 			if not thismod is None:
 				modinfo["path"]		= thismod.modulePath
 				modinfo["filename"] = thismod.moduleFilename
@@ -8280,8 +8199,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 
 					if (ptr_to_get > -1) or (cnt < 20):
 						if not silent:
-							if DEBUG_MODE:
-								dbgp("  %s" % ptrinfo)
+							dbgp("  %s" % ptrinfo)
 
 						if forcelower:
 							results_dict_details[ptr] = [optext.lower(), ptrextra +ptrx.__str__().strip(), extrainfo]
@@ -8458,8 +8376,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	Dictionary (pointers)
 	"""
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	found_opcodes = {}
 	all_opcodes = {}
@@ -8516,8 +8433,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	nrkeys = len(modulestosearch)
 	keycnt = 1
 	for key in modulestosearch:
-		if DEBUG_MODE:
-			dbgp("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
+		dbgp("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
 		keycnt += 1
 		#is this module going to get rebase ?
 		themodule = MnModule(key)
@@ -8620,8 +8536,7 @@ def assemble(instructions,encoder=""):
 			if not silent:
 				dbg.log("   Could not assemble %s " % instruct)
 				dbg.log("   %s" % str(e))
-				if DEBUG_MODE:
-					dbgp(traceback.format_exc())
+				dbgp(traceback.format_exc())
 			pass
 	if not silent:
 		dbg.log(" Full opcode : %s " % allopcodes)
@@ -8707,8 +8622,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 
 
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	
 	found_opcodes = {}
 	all_opcodes = {}
@@ -8837,8 +8751,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	startmoment = time.time()
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:
-			if DEBUG_MODE:
-				dbgp("In loop for endingtype %s in all_opcodes. Len(allopcodes[endingtype]) : %d" % (endingtype, len(all_opcodes[endingtype])))
+			dbgp("In loop for endingtype %s in all_opcodes. Len(allopcodes[endingtype]) : %d" % (endingtype, len(all_opcodes[endingtype])))
 			for endingtypeptr in all_opcodes[endingtype]:
 				adcnt=adcnt+1
 				if usefiles:
@@ -8861,10 +8774,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					dbg.log(updatetext)
 					dbg.log(ropcounttxt)
 					dbg.updateLog()
-					if DEBUG_MODE:
-						dbgp("Number of ropgadgets: %d" % len(ropgadgets))
-						dbgp("Number of stackpivots: %d" % len(stackpivots))
-						dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
+					dbgp("Number of ropgadgets: %d" % len(ropgadgets))
+					dbgp("Number of stackpivots: %d" % len(stackpivots))
+					dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
 					tc += 1				
 				if not usefiles:
 					#first get max backward instruction
@@ -8875,15 +8787,13 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						thisptr = thisopcode.getAddress()
 					except:
 						dbg.log("        ** Unable to backward disassemble at 0x%0x, depth %d, skipping location\n" % (endingtypeptr, depth+1))
-						if DEBUG_MODE:
-							dbgp(traceback.format_exc())
+						dbgp(traceback.format_exc())
 						thisopcode = ""
 						thisptr = 0
 
 					# we now have a range to mine
 					startptr = thisptr
-					if DEBUG_MODE:
-						dbgp("Create & check all possible chains in range between 0x%x and 0x%x" % (startptr, endingtypeptr))
+					dbgp("Create & check all possible chains in range between 0x%x and 0x%x" % (startptr, endingtypeptr))
 					currentmodulename = MnPointer(thisptr).belongsTo()
 					modinfo = MnModule(currentmodulename)
 					issafeseh = modinfo.isSafeSEH
@@ -8924,8 +8834,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 										else:
 											invalidinstr = True
 										avoidunlimitedloop += 1
-									if DEBUG_MODE:
-										dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
+									dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
 											fullchain = thischain + " # " + endingtype.lower()
@@ -8935,8 +8844,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											msfchain.append(["raw",thisopcodebytes])
 											if isInterestingGadget(fullchain):
 												interestinggadgets[startptr] = fullchain
-												if DEBUG_MODE:
-													dbgp("Added 0x%08x to interestinggadgets" % startptr)
+												dbgp("Added 0x%08x to interestinggadgets" % startptr)
 												#this may be a good stackpivot too
 												stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
 												if stackpivotdistance > 0:
@@ -8951,12 +8859,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 															stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
 														else:
 															stackpivots[stackpivotdistance] += [[startptr,fullchain]]
-													if DEBUG_MODE:
-														dbgp("Added 0x%08x to interesting gadgets" % startptr)
+													dbgp("Added 0x%08x to interesting gadgets" % startptr)
 								
 											ropgadgets[startptr] = fullchain
-											if DEBUG_MODE:
-												dbgp("Added 0x%08x to ropgadgets " % startptr)
+											dbgp("Added 0x%08x to ropgadgets " % startptr)
 
 							startptr = startptr+1
 						except Exception as ropex:
@@ -9004,10 +8910,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
 	dbg.updateLog()
-	if DEBUG_MODE:
-		dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
-		dbgp("Final Number of stackpivots: %d" % len(stackpivots))
-		dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
+	dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
+	dbgp("Final Number of stackpivots: %d" % len(stackpivots))
+	dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
 
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
@@ -10781,8 +10686,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 					dbg.log("    Adding page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
 					rangestosearch.append([pagebegin, pageend])
 				else:
-					if DEBUG_MODE:
-						dbgp("    Skipping page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+					dbgp("    Skipping page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
 		#rangestosearch.append([base,top])
 	
 	pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" ,",",").replace("# ","#").replace(" #","#")
@@ -10803,8 +10707,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			instrseq = b""
 			for first_pattern_instruction in first_pattern:
 				buf = dbg.assemble(first_pattern_instruction)
-				if DEBUG_MODE:
-					dbgp("        %s -> %s" % (first_pattern_instruction, bin2hex(buf)))
+				dbgp("        %s -> %s" % (first_pattern_instruction, bin2hex(buf)))
 				instrseq += buf
 			# when providing bytes already,  it expects a desc/bytes tuple
 			first_pattern_flat = ";".join(first_pattern)
@@ -10872,9 +10775,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 				continue
 			allfound = True
 			thisdisam = thisdisam.strip("\n")
-			if DEBUG_MODE:
-				dbgp("Disassembly at 0x%08x: " % thisptr)
-				dbgp("%s" % thisdisam)
+			dbgp("Disassembly at 0x%08x: " % thisptr)
+			dbgp("%s" % thisdisam)
 			ptrcnt += 1
 			flipover += 1
 			if flipover > flipovermax:
@@ -11099,8 +11001,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 		for ranges in rangestosearch:
 			mBase = ranges[0]
 			mTop = ranges[1]
-			if DEBUG_MODE:
-				dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+			dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 			dbg.updateLog()
 			searchPattern = []
 			searchPattern.append([originalPattern, bytes])
@@ -11221,8 +11122,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 				for ranges in p2prangestosearch:
 					mBase = ranges[0]
 					mTop = ranges[1]
-					if DEBUG_MODE:
-						dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+					dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 					dbg.updateLog()
 					oldsilent = silent
 					silent=True
@@ -11240,8 +11140,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 							remainingpointers[ptrtype] = pointers[ptrtype]
 				thislevel += 1
 				if len(remainingpointers) == 0:
-					if DEBUG_MODE:
-						dbgp("[+] No more pointers left, giving up...", highlight=1)
+					dbgp("[+] No more pointers left, giving up...", highlight=1)
 					break
 		allpointers = remainingpointers
 
@@ -11543,8 +11442,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 
 		dbg.log("    Read %d bytes from file" % len(srcdata_normal))
 	except Exception as e:
-		if DEBUG_MODE:
-			dbgp("Error reading file %s: %s" % (filename, str(e)))
+		dbgp("Error reading file %s: %s" % (filename, str(e)))
 		dbg.log("Error while reading file %s" % filename, highlight=1)
 		return
 
@@ -11648,8 +11546,7 @@ class MemoryComparator(object):
 	''' Solve the memory comparison problem with a special dynamic programming
 	algorithm similar to that for the LCS problem '''
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	Chunk = namedtuple('Chunk', 'unmodified i j dx dy xchunk ychunk')
 
@@ -12036,8 +11933,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	Will attempt to produce ROP chains
 	"""
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	
 	global ptr_to_get
 	global ptr_counter
@@ -13020,8 +12916,7 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 	dbg.log("")
 	dbg.log("[+] Querying IATs for %s" % apiname)
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	global silent
 	oldsilent = silent
@@ -13738,14 +13633,12 @@ def isInterestingJopGadget(instructions):
 	
 	#regs = Registers32BitsOrder
 
-	if DEBUG_MODE:
-		dbgp("jmp instruction : %s" % jmp)
+	dbgp("jmp instruction : %s" % jmp)
 	if jmp in regs:
 		regs.remove(jmp)
 	else:
-		if DEBUG_MODE:
-			dbgp("jmp instruction %s not in regs list, something wrong?" % jmp)
-			dbgp("regs list: %s" % regs)
+		dbgp("jmp instruction %s not in regs list, something wrong?" % jmp)
+		dbgp("regs list: %s" % regs)
 	if jmp != "esp":
 		if instructions.find("pop "+jmp) > -1:
 			popfound=True
@@ -15082,8 +14975,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 	Returns : nothing
 	"""
 	
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	
 	query_type = query_type.lower()
 	if query_type == "export" or query_type == "eat":
@@ -15151,8 +15043,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 								#read pointer of imported function
 								ptr=struct.unpack(PTR_FMT,dbg.readMemory(func,PTR_SIZE))[0]
 							except Exception as e:
-								if DEBUG_MODE:
-									dbgp("Unable to read IAT entry at %s" % (PTR_PRINT % func))
+								dbgp("Unable to read IAT entry at %s" % (PTR_PRINT % func))
 								pass
 							if ptr > 0:
 								if not ptr in bpfuncs:
@@ -15183,8 +15074,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 							dbg.log("        Symbol lookup, run %d done. Processing results" % (runcnt+1))
 						if DEBUG_MODE:
 							dbg.nativeCommand("!sym quiet")
-						if DEBUG_MODE:
-							dbgp("output: %s" % output)
+						dbgp("output: %s" % output)
 						outputlines = output.split("\n")
 						for line in outputlines:
 							if line.replace(" ","") != "":
@@ -15498,9 +15388,8 @@ def procFindJ(args, procUsage=""):
 
 
 def procFindJMP(args, procUsage=""):
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
-		dbgp("    args: %s" % args)
+	dbgp(get_current_function_name())
+	dbgp("    args: %s" % args)
 	#default criteria
 	modulecriteria={}
 	modulecriteria["aslr"] = False
@@ -15573,9 +15462,8 @@ def procFindJMP(args, procUsage=""):
 		return				
 	else:
 		modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-		if DEBUG_MODE:
-			dbgp("    modulecriteria: %s" % modulecriteria)
-			dbgp("    searchcriteria: %s" % criteria)
+		dbgp("    modulecriteria: %s" % modulecriteria)
+		dbgp("    searchcriteria: %s" % criteria)
 		# go for it !	
 		all_opcodes=findJMP(modulecriteria,criteria,args["r"].lower().strip())
 	
@@ -16335,8 +16223,7 @@ def procJOP(args,mode="all"):
 def procCreatePATTERN(args):
 	size = 0
 	pattern = ""
-	if DEBUG_MODE:
-		dbgp("Args: %s" % args)
+	dbgp("Args: %s" % args)
 	if "?" in args and args["?"] != "":
 		try:
 			if "0x" in args["?"].lower():
@@ -17111,8 +16998,7 @@ def procBu(args):
 # ----- bf: Set a breakpoint on exported functions of a module ----- #
 def procBf(args):
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	funcfilter = ""
 	
@@ -17479,8 +17365,7 @@ def procUpdate(args):
 	- if no newer version is found (or download failed), show release notes for the current version
 	"""
 
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 
 	def _normalize_version(v):
 		if v is None:
@@ -21562,8 +21447,7 @@ def procDumpLog(args):
 
 		for tline in contents:
 			line = ensure_text(tline)
-			if DEBUG_MODE:
-				dbgp("Read line from logfile: %s" % line)
+			dbgp("Read line from logfile: %s" % line)
 			if line.startswith("alloc("):
 				size = ""
 				addy = ""
@@ -21796,8 +21680,7 @@ def procCopy(args):
 		except Exception as e:
 			dbg.log("    *** Copy failed, check if both locations are accessible/mapped",highlight=1)
 			dbg.log("    *** %s" % str(e))
-			if DEBUG_MODE:
-				dbgp("    *** Traceback: %s" % traceback.format_exc())
+			dbgp("    *** Traceback: %s" % traceback.format_exc())
 	return
 
 
@@ -22612,8 +22495,7 @@ def procToBp(args):
 	"""
 	Generate WinDBG syntax to create a logging breakpoint on a given location
 	"""
-	if DEBUG_MODE:
-		dbgp(get_current_function_name())
+	dbgp(get_current_function_name())
 	addy = 0
 	addyerror = False
 	executenow = False
@@ -22628,8 +22510,7 @@ def procToBp(args):
 	if arch == 64:
 		# add 64bit regs as well
 		regnames = Registers64BitsOrder + Registers32BitsOrder
-	if DEBUG_MODE:
-		dbgp("Regs used: %s" % regnames)
+	dbgp("Regs used: %s" % regnames)
 	regs = getRegisters()
 	silent = True
 	if "a" in args:
@@ -24103,15 +23984,13 @@ def main(args):
 			dbg.log("monaArgs: %s" % monaArgs)
 			dbg.log("-" * 50)
 
-		if DEBUG_MODE:
-			dbgp("Command: %s" % command)
-			dbgp("Architecture: %s" % arch)
-			dbgp("monaArgs: %s" % monaArgs)
+		dbgp("Command: %s" % command)
+		dbgp("Architecture: %s" % arch)
+		dbgp("monaArgs: %s" % monaArgs)
 
 		# ----- execute the chosen command ----- #
-		if DEBUG_MODE:
-			dbgp("You're trying to run command '%s'" % command)
-			dbgp("Args: %s" % monaArgs)
+		dbgp("You're trying to run command '%s'" % command)
+		dbgp("Args: %s" % monaArgs)
 
 		# special case - if you are invoking a real command
 		# but specified -h
@@ -24163,8 +24042,7 @@ def main(args):
 					if "?" in monaArgs:
 						help_for_command = monaArgs["?"]
 						helpForCommand = None
-						if DEBUG_MODE:
-							dbgp("You're asking for help on using the '%s' command" % help_for_command)
+						dbgp("You're asking for help on using the '%s' command" % help_for_command)
 						if help_for_command in acceptedcommands:
 							helpForCommand = acceptedcommands[help_for_command]
 						elif help_for_command in acceptedaliases:
