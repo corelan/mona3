@@ -176,19 +176,48 @@ noheader = False
 
 dbg = dbglib.Debugger()
 
+def _ensureSymbolCache(auto_fix=False):
+	"""Check that WinDBG has a valid local symbol cache configured.
+
+	Returns a list of valid local filesystem cache directories.
+	If none are found and auto_fix is True, sets a default symbol path.
+	If none are found and auto_fix is False, logs a warning and returns [].
+	"""
+	if __DEBUGGERAPP__ != "WinDBG":
+		return []
+
+	raw = dbglib.getSymbolPath().replace(" ", "")
+	if raw == "":
+		if auto_fix:
+			dbg.log("")
+			dbg.log("** Warning, no symbol path set ! ** ", highlight=1)
+			sympath = "srv*c:\\symbols*https://msdl.microsoft.com/download/symbols"
+			dbg.log("   I'll set the symbol path to %s" % sympath)
+			dbglib.setSymbolPath(sympath)
+			dbg.log("   Symbol path set, now reloading symbols...")
+			dbg.nativeCommand(".reload")
+			dbg.log("   All set. Please restart WinDBG.")
+			dbg.log("")
+		else:
+			dbg.log("[!] No symbol path configured", highlight=1)
+			dbg.log("    Configure a symbol path first, e.g.:")
+			dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+			return []
+
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+
+	if not cache_dirs and not auto_fix:
+		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
+		dbg.log("    Configure a symbol path with a local cache, e.g.:")
+		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+
+	return cache_dirs
+
 commands = {}
 
 if __DEBUGGERAPP__ == "WinDBG":
-	if pykd.getSymbolPath().replace(" ","") == "":
-		dbg.log("")
-		dbg.log("** Warning, no symbol path set ! ** ",highlight=1)
-		sympath = "srv*c:\symbols*https://msdl.microsoft.com/download/symbols"
-		dbg.log("   I'll set the symbol path to %s" % sympath)
-		pykd.setSymbolPath(sympath)
-		dbg.log("   Symbol path set, now reloading symbols...")
-		dbg.nativeCommand(".reload")
-		dbg.log("   All set. Please restart WinDBG.")
-		dbg.log("")
+	_ensureSymbolCache(auto_fix=True)
 
 osver = dbg.getOsVersion()
 if osver in ["6", "7", "8", "10", "11", "vista", "win7", "2008server", "win8", "win8.1", "win10", "win11"]:
@@ -22972,6 +23001,11 @@ def procSym(args):
 		dbg.log("*** Sorry, command 'sym' is not supported in %s ***" % __DEBUGGERAPP__, highlight=1)
 		return
 
+	# Require at least one valid filesystem cache directory
+	cache_dirs = _ensureSymbolCache(auto_fix=False)
+	if not cache_dirs:
+		return
+
 	if "l" in args or "list" in args:
 		_sym_list(args)
 	elif "f" in args or "fetch" in args:
@@ -23002,12 +23036,7 @@ def _sym_list(args):
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
-
-	if not cache_dirs:
-		dbg.log("[!] No symbol cache directories found in .sympath")
-		dbg.log("    Configure a symbol path first, e.g.:")
-		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
-		return
+	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	filtertext = criteriaToText(modulecriteria, True)
 	if filtertext:
@@ -23015,13 +23044,15 @@ def _sym_list(args):
 	dbg.log("[+] Total modules: %d | After filters: %d" % (len(mnproc.g_modules), len(modulestosearch)))
 	dbg.log("")
 
-	# Symbol path table
+	# Symbol path table — only show entries with a valid filesystem cache
 	sympath_data = {}
 	sympath_order = []
 	for i, e in enumerate(sym_entries):
-		key = i + 1
-		sympath_data[key] = (e["cache"] or "(none)", e["server"] or "(local only)")
-		sympath_order.append(key)
+		ec = e["cache"] or ""
+		if ec and not ec.lower().startswith(("http://", "https://")):
+			key = i + 1
+			sympath_data[key] = (ec, e["server"] or "(local only)")
+			sympath_order.append(key)
 
 	print_dict_table(
 		sympath_data,
@@ -23055,28 +23086,34 @@ def _sym_list(args):
 			cached_str = "N/A"
 			pdb_display = "(no PDB info)"
 			pdb_path = ""
+			pdb_size = ""
 			missing_count += 1
 		else:
 			pdb_display = pdbname
 			cached_str = "No"
 			pdb_path = ""
+			pdb_size = ""
 			for ci, cdir in enumerate(cache_dirs):
 				candidate = os.path.join(cdir, pdbname, guidage, pdbname)
 				if os.path.isfile(candidate):
 					cached_str = "Yes (#%d)" % (ci + 1)
 					pdb_path = candidate
+					try:
+						pdb_size = "0x%x" % os.path.getsize(candidate)
+					except:
+						pdb_size = "?"
 					found_count += 1
 					break
 			else:
 				missing_count += 1
 
-		table_data[base] = (modname, pdb_display, cached_str, pdb_path)
+		table_data[base] = (modname, pdb_display, cached_str, pdb_size, pdb_path)
 		row_order.append(base)
 
 	print_dict_table(
 		table_data,
-		["Base", "Module", "PDB", "Cached", "Path"],
-		["pointer", "string", "string", "string", "string"],
+		["Base", "Module", "PDB", "Cached", "Size", "Path"],
+		["pointer", "string", "string", "string", "string", "string"],
 		itemsequence=row_order,
 		padding="    ",
 	)
@@ -23149,12 +23186,7 @@ def _sym_load(args):
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
-
-	if not sym_entries:
-		dbg.log("[!] No symbol path configured")
-		dbg.log("    Configure with e.g.:")
-		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
-		return
+	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	# Parse -s for specific server/cache index
 	server_idx = None
@@ -23173,7 +23205,8 @@ def _sym_load(args):
 	if server_idx is not None:
 		entry = sym_entries[server_idx - 1]
 		http_servers = [entry["server"]] if entry["server"] else []
-		http_cache = entry["cache"] if entry["cache"] else (cache_dirs[0] if cache_dirs else None)
+		ec = entry["cache"] if entry["cache"] and not entry["cache"].lower().startswith(("http://", "https://")) else ""
+		http_cache = ec if ec else (cache_dirs[0] if cache_dirs else None)
 	else:
 		http_servers = list(servers)
 		http_cache = cache_dirs[0] if cache_dirs else None
@@ -23249,7 +23282,12 @@ def _sym_load(args):
 				loaded += 1
 				dbg.log("    [+] %s" % message)
 				if local_path:
-					dbg.log("    [+] %s" % local_path)
+					size_str = ""
+					try:
+						size_str = " (0x%x)" % os.path.getsize(local_path)
+					except:
+						pass
+					dbg.log("    [+] %s%s" % (local_path, size_str))
 			else:
 				failed += 1
 				dbg.log("    [-] %s" % message)
