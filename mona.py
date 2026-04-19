@@ -6908,7 +6908,7 @@ class MnPointer:
 	def showObjectInfo(self):
 		# check if chunk is a DOM object
 		if __DEBUGGERAPP__ == "WinDBG":
-			cmdtorun = "dds 0x%08x L 1" % self.address
+			cmdtorun = "dps %s L 1" % (PTR_PRINT % self.address)
 			output = dbg.nativeCommand(cmdtorun)
 			outputlower = output.lower()
 			outputlines = output.split("\n")
@@ -6925,12 +6925,12 @@ class MnPointer:
 						ieversion = 9
 					if ieversionstr.startswith("10."):
 						ieversion = 10
-				dbg.log("      0x%08x may be the start of an object, vtable pointer: %s" % (self.address,outputlines[0]))
+				dbg.log("      %s may be the start of an object, vtable pointer: %s" % (PTR_PRINT % self.address),outputlines[0])
 				vtableptr_s = outputlines[0][10:18]
 				try:
 					vtableptr = hexStrToInt(vtableptr_s)
-					dbg.log("      Start of vtable at 0x%08x: (showing first 4 entries only)" % vtableptr)
-					cmdtorun = "dds 0x%08x L 4" % vtableptr
+					dbg.log("      Start of vtable at %s: (showing first 4 entries only)" % (PTR_PRINT % vtableptr))
+					cmdtorun = "dps %s L 4" % (PTR_PRINT % vtableptr)
 					output = dbg.nativeCommand(cmdtorun)
 					outputlines = output.split("\n")
 					cnt = 0
@@ -7284,7 +7284,7 @@ class MnPointer:
 		global silent
 		silent = True
 		if __DEBUGGERAPP__ == "WinDBG":
-			lncmd = "ln 0x%08x" % self.address
+			lncmd = "ln %s" % (PTR_PRINT % self.address)
 			lnoutput = dbg.nativeCommand(lncmd)
 			for line in lnoutput.split("\n"):
 				if line.replace(" ","") != "" and line.find("%08x" % self.address) > -1:
@@ -7319,9 +7319,9 @@ class MnPointer:
 				dbg.log("")
 				dbg.log("----------------------------------------------------")
 				if (size < 0x500):
-					dbg.log("[+] Dumping object at 0x%08x, 0x%02x bytes" % (addy,size))
+					dbg.log("[+] Dumping object at %s, 0x%02x bytes" % ((PTR_PRINT % addy),size))
 				else:
-					dbg.log("[+] Dumping object at 0x%08x, 0x%02x bytes (output below will be limited to the first 0x500 bytes !)" % (addy,size))
+					dbg.log("[+] Dumping object at %s, 0x%02x bytes (output below will be limited to the first 0x500 bytes !)" % ((PTR_PRINT % addy),size))
 					size = 0x500
 				if levels > 0:
 					dbg.log("[+] Also dumping up to %d levels deep, max size of nested objects: 0x%02x bytes" % (levels, nestedsize))
@@ -7341,7 +7341,7 @@ class MnPointer:
 			while levelcnt <= levels:
 				thisleveladdys = []
 				for addy in addys:
-					cmdtorun = "dps 0x%08x L 0x%02x/%x" % (addy,size,archValue(4,8))
+					cmdtorun = "dps %s L 0x%02x/%x" % ((PTR_PRINT % addy),size,archValue(4,8))
 					startaddy = addy
 					endaddy = addy + size
 					output = dbg.nativeCommand(cmdtorun)
@@ -7362,11 +7362,11 @@ class MnPointer:
 								dumpdata[hexStrToInt(loc)] = info
 					if addy in parentdata:
 						pdata = parentdata[addy]
-						parent = "Referenced at 0x%08x (object 0x%08x, offset +0x%02x)" % (pdata[0],pdata[1],pdata[0]-pdata[1])
+						parent = "Referenced at %s (object %s, offset +0x%02x)" % ((PTR_PRINT % pdata[0]),(PTR_PRINT % pdata[1]),pdata[0]-pdata[1])
 					else:
 						parent = ""
 					
-					cmd2torun = "!heap -p -a 0x%08x" % (addy)
+					cmd2torun = "!heap -p -a %s" % (PTR_PRINT % addy)
 					output2 = dbg.nativeCommand(cmd2torun)
 					heapdata = output2.split("\n")
 					
@@ -7406,7 +7406,7 @@ class MnPointer:
 			if parent == "":
 				logfile.write("=" * 60,thislog)
 
-			line = ">> Object at 0x%08x%s:" % (startaddy,sizem)
+			line = ">> Object at %s%s:" % ((PTR_PRINT % startaddy),sizem)
 			if not silent:
 				dbg.log("")
 				dbg.log(line)
@@ -7442,7 +7442,7 @@ class MnPointer:
 						content = info[3]
 					contentinfo = toAsciiOnly(info[1])
 					offsetstr = toSize("%02x" % offset,4)
-					line = "+%s   0x%08x | 0x%s  %s" % (offsetstr,loc,content,contentinfo)
+					line = "+%s   %s | %s  %s" % (offsetstr,(PTR_PRINT % loc),content,contentinfo)
 					if not silent:
 						dbg.log(line)
 					logfile.write(line,thislog)
@@ -7460,10 +7460,10 @@ class MnPointer:
 		
 		if addy >= startaddy and addy <= endaddy:
 			offset = addy - startaddy
-			locinfo = ["self","ptr to self+0x%08x" % offset,""]
+			locinfo = ["self","ptr to self+%s" % (PTR_PRINT % offset),""]
 			return locinfo
 
-		if addy == 0xc0c0c0c0:
+		if addy == 0xc0c0c0c0 or addy == 0xc0c0c0c0c0c0c0c0:
 			locinfo = ["self", "Uninitialized", addy]
 			return locinfo
 			
@@ -7481,7 +7481,7 @@ class MnPointer:
 				extra = " (%s.%s)" % (memloc,detailmemloc)
 
 		# maybe it's a pointer to an object ?
-		cmd2run = "dps 0x%08x L 1" % addy
+		cmd2run = "dps %s L 1" % (PTR_PRINT % addy)
 		output = dbg.nativeCommand(cmd2run)
 		outputlines = output.split("\n")
 		if len(outputlines) > 0:
@@ -7592,7 +7592,7 @@ class MnPointer:
 			if not "??" in outputlines[0]:
 				ismapped = True
 				ptraddy = outputlines[0][archValue(10,19):archValue(18,36)]
-				locinfo = ["ptr_obj","%sptr to 0x%08x" % (extra,hexStrToInt(ptraddy)),str(addy)]
+				locinfo = ["ptr_obj","%sptr to 0%s" % (extra,(PTR_PRINT % hexStrToInt(ptraddy))),str(addy)]
 				return locinfo
 
 		# nothing special to report
@@ -7648,6 +7648,8 @@ def getSegmentsForHeap(heapbase):
 	dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
 	mnproc.segmentlistCache[heapbase] = segmentinfo
 	return segmentinfo
+
+
 
 def containsBadChars(address, badchars=b"\x0a\x0d"):
 	"""
@@ -7763,8 +7765,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 	"""
 	dbgp(get_current_function_name())
 	dbgp("    sequences: %s" % sequences)
-	dbgp("    start: 0x%08x" % start)
-	dbgp("    end: 0x%08x" % end )
+	dbgp("    start: %s" % (PTR_PRINT % start))
+	dbgp("    end: %s" % (PTR_PRINT % end ))
 	dbgp("    criteria: %s" % criteria)
 	
 	if not "accesslevel" in criteria:
@@ -7794,9 +7796,6 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 				page_start = a
 				page_size = dbg.MemoryPages[a].getSize()
 				page_end   = a + page_size
-
-				#if DEBUG_MODE:
-				#	dbgp("    Validating candidate page 0x%08x - 0x%08x" % (page_start, page_end))
 				
 				if ( start > page_end or end < page_start ):
 					# we are outside the search range, skip
@@ -7826,9 +7825,9 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 				
 				mem = dbg.MemoryPages[a].getMemory()
-				dbgp("      + Page 0x%08x is within scope, loading memory contents" % a)
+				dbgp("      + Page %s is within scope, loading memory contents" % (PTR_PRINT % a))
 				if not mem:
-					dbgp("        Failed to load page 0x%08x!!" % a)
+					dbgp("        Failed to load page %s!!" % (PTR_PRINT % a))
 					continue
 				else:
 					dbgp("        mem size: 0x%08x" % len(mem))
