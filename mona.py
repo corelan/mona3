@@ -9830,10 +9830,13 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 		for offsetval in range(0, 40+1, 2):
 			search.append("jmp [" + jreg + "+0x" + toHexByte(offsetval)+"]")
 
-	search.append("jmp [esp]")
+	stackreg = "esp"
+	if arch == 64:
+		stackreg = "rsp"
+	search.append("jmp [%s]" % stackreg)
 		
 	for offsetval in range(0, 40+1, 2):
-		search.append("jmp [esp+0x" + toHexByte(offsetval) + "]")
+		search.append("jmp [" + stackreg + "+0x" + toHexByte(offsetval) + "]")
 	
 	dbg.log("[+] Enumerating %d endings in %d module(s)..." % (len(search),len(modulestosearch)))
 	for thismodule in modulestosearch:
