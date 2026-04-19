@@ -22994,8 +22994,15 @@ def _sym_list(args):
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
 
+	# Filter out non-filesystem cache paths
+	all_cache_dirs = list(cache_dirs)
+	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+
 	if not cache_dirs:
-		dbg.log("[!] No symbol cache directories found in .sympath")
+		if all_cache_dirs:
+			dbg.log("[!] Symbol cache path(s) found but none are local filesystem paths: %s" % ", ".join(all_cache_dirs), highlight=1)
+		else:
+			dbg.log("[!] No symbol cache directories found in .sympath", highlight=1)
 		dbg.log("    Configure a symbol path first, e.g.:")
 		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
 		return
@@ -23006,13 +23013,15 @@ def _sym_list(args):
 	dbg.log("[+] Total modules: %d | After filters: %d" % (len(mnproc.g_modules), len(modulestosearch)))
 	dbg.log("")
 
-	# Symbol path table
+	# Symbol path table — only show entries with a valid filesystem cache
 	sympath_data = {}
 	sympath_order = []
 	for i, e in enumerate(sym_entries):
-		key = i + 1
-		sympath_data[key] = (e["cache"] or "(none)", e["server"] or "(local only)")
-		sympath_order.append(key)
+		ec = e["cache"] or ""
+		if ec and not ec.lower().startswith(("http://", "https://")):
+			key = i + 1
+			sympath_data[key] = (ec, e["server"] or "(local only)")
+			sympath_order.append(key)
 
 	print_dict_table(
 		sympath_data,
@@ -23046,28 +23055,34 @@ def _sym_list(args):
 			cached_str = "N/A"
 			pdb_display = "(no PDB info)"
 			pdb_path = ""
+			pdb_size = ""
 			missing_count += 1
 		else:
 			pdb_display = pdbname
 			cached_str = "No"
 			pdb_path = ""
+			pdb_size = ""
 			for ci, cdir in enumerate(cache_dirs):
 				candidate = os.path.join(cdir, pdbname, guidage, pdbname)
 				if os.path.isfile(candidate):
 					cached_str = "Yes (#%d)" % (ci + 1)
 					pdb_path = candidate
+					try:
+						pdb_size = "0x%x" % os.path.getsize(candidate)
+					except:
+						pdb_size = "?"
 					found_count += 1
 					break
 			else:
 				missing_count += 1
 
-		table_data[base] = (modname, pdb_display, cached_str, pdb_path)
+		table_data[base] = (modname, pdb_display, cached_str, pdb_size, pdb_path)
 		row_order.append(base)
 
 	print_dict_table(
 		table_data,
-		["Base", "Module", "PDB", "Cached", "Path"],
-		["pointer", "string", "string", "string", "string"],
+		["Base", "Module", "PDB", "Cached", "Size", "Path"],
+		["pointer", "string", "string", "string", "string", "string"],
 		itemsequence=row_order,
 		padding="    ",
 	)
@@ -23141,6 +23156,10 @@ def _sym_load(args):
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
 
+	# Filter out non-filesystem cache paths
+	all_cache_dirs = list(cache_dirs)
+	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+
 	if not sym_entries:
 		dbg.log("[!] No symbol path configured")
 		dbg.log("    Configure with e.g.:")
@@ -23164,7 +23183,8 @@ def _sym_load(args):
 	if server_idx is not None:
 		entry = sym_entries[server_idx - 1]
 		http_servers = [entry["server"]] if entry["server"] else []
-		http_cache = entry["cache"] if entry["cache"] else (cache_dirs[0] if cache_dirs else None)
+		ec = entry["cache"] if entry["cache"] and not entry["cache"].lower().startswith(("http://", "https://")) else ""
+		http_cache = ec if ec else (cache_dirs[0] if cache_dirs else None)
 	else:
 		http_servers = list(servers)
 		http_cache = cache_dirs[0] if cache_dirs else None
@@ -23240,7 +23260,12 @@ def _sym_load(args):
 				loaded += 1
 				dbg.log("    [+] %s" % message)
 				if local_path:
-					dbg.log("    [+] %s" % local_path)
+					size_str = ""
+					try:
+						size_str = " (0x%x)" % os.path.getsize(local_path)
+					except:
+						pass
+					dbg.log("    [+] %s%s" % (local_path, size_str))
 			else:
 				failed += 1
 				dbg.log("    [-] %s" % message)
