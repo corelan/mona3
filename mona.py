@@ -22963,6 +22963,15 @@ def procSym(args):
 		dbg.log("*** Sorry, command 'sym' is not supported in %s ***" % __DEBUGGERAPP__, highlight=1)
 		return
 
+	# Require at least one valid filesystem cache directory
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+	if not cache_dirs:
+		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
+		dbg.log("    Configure a symbol path with a local cache first, e.g.:")
+		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+		return
+
 	if "l" in args or "list" in args:
 		_sym_list(args)
 	elif "f" in args or "fetch" in args:
@@ -22993,19 +23002,7 @@ def _sym_list(args):
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
-
-	# Filter out non-filesystem cache paths
-	all_cache_dirs = list(cache_dirs)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
-
-	if not cache_dirs:
-		if all_cache_dirs:
-			dbg.log("[!] Symbol cache path(s) found but none are local filesystem paths: %s" % ", ".join(all_cache_dirs), highlight=1)
-		else:
-			dbg.log("[!] No symbol cache directories found in .sympath", highlight=1)
-		dbg.log("    Configure a symbol path first, e.g.:")
-		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
-		return
 
 	filtertext = criteriaToText(modulecriteria, True)
 	if filtertext:
@@ -23155,16 +23152,7 @@ def _sym_load(args):
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
-
-	# Filter out non-filesystem cache paths
-	all_cache_dirs = list(cache_dirs)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
-
-	if not sym_entries:
-		dbg.log("[!] No symbol path configured")
-		dbg.log("    Configure with e.g.:")
-		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
-		return
 
 	# Parse -s for specific server/cache index
 	server_idx = None
