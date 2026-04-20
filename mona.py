@@ -19720,9 +19720,9 @@ def procLayout(args):
 		else:
 			in_heap_chain = False
 		prev_category = category
-		row_key = idx
-		table_data[row_key] = (start, end, psize, category, indent + description)
-		table_seq.append(row_key)
+		# Use idx as key to avoid duplicates; start goes in the value
+		table_data[idx] = (start, end, psize, category, indent + description)
+		table_seq.append(idx)
 
 	headers = ["#", "Start", "End", "Size", "Type", "Description"]
 	types   = ["int", "pointer", "pointer", "string", "string", "string"]
