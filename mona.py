@@ -590,11 +590,13 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
 	padding : string to prepend to every printed line
+	logobj  : optional MnLog object for file output
+	logfile : optional filename (used with logobj.write())
 	"""
 
 	if itemsequence is None:
@@ -717,6 +719,8 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 
 	def _p(line):
 		dbg.log("%s%s" % (padding, line))
+		if logobj is not None and logfile is not None:
+			logobj.write("%s%s" % (padding, line), logfile)
 
 	_p(fmt % tuple([_ensure_text(h) for h in headers]))
 	_p(fmt % tuple([("-" * w) for w in col_widths]))
@@ -727,6 +731,8 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 			addr_val = _pointer_to_int(raw_row[0])
 			if addr_val is not None:
 				dbg.log("%s%s" % (padding, line), address=addr_val)
+				if logobj is not None and logfile is not None:
+					logobj.write("%s%s" % (padding, line), logfile)
 				continue
 		_p(line)
 
@@ -19664,40 +19670,21 @@ def procLayout(args):
 	objfile = MnLog(filename)
 	logfile = objfile.reset()
 
-	has_static = any(len(r) > 4 and r[4] for r in regions)
-
-	if arch == 64:
-		addr_width = 18
-	else:
-		addr_width = 10
-	size_width = addr_width - 2
-	if has_static:
-		size_width += 9  # room for "(static) " prefix
-	type_width = 15
-	fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s" % (addr_width, addr_width, size_width, type_width)
-
-	header = fmt % ("Start", "End", "Size", "Type", "Description")
-	sep = "-" * len(header)
-	dbg.log(header)
-	dbg.log(sep)
-	objfile.write(header, logfile)
-	objfile.write(sep, logfile)
+	# Build table data for print_dict_table
+	headers = ["Start", "End", "Size", "Type", "Description"]
+	types   = ["pointer", "pointer", "string", "string", "string"]
+	table_data = OrderedDict()
+	table_seq = []
 
 	in_heap_chain = False
 	prev_category = ""
-	for region in regions:
+	for idx, region in enumerate(regions):
 		start, end, category, description = region[0], region[1], region[2], region[3]
 		static_size = region[4] if len(region) > 4 else False
 		if end > start:
 			size = end - start
 		else:
 			size = 0
-		if arch == 64:
-			pstart = "0x%016x" % start
-			pend = "0x%016x" % end
-		else:
-			pstart = "0x%08x" % start
-			pend = "0x%08x" % end
 		psize = "(static) 0x%x" % size if static_size else "0x%x" % size
 		indent = ""
 		if category == "Heap":
@@ -19713,12 +19700,14 @@ def procLayout(args):
 					indent = "  \\_"
 		else:
 			in_heap_chain = False
-		tolog = fmt % (pstart, pend, psize, category, indent + description)
-		dbg.log(tolog)
-		objfile.write(tolog, logfile)
 		prev_category = category
+		row_key = idx
+		table_data[row_key] = [start, end, psize, category, indent + description]
+		table_seq.append(row_key)
 
-	dbg.log(sep)
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile)
+
+	dbg.log("")
 	dbg.log("Total: %d entities" % len(regions))
 	objfile.write("Total: %d entities" % len(regions), logfile)
 	silent = False
