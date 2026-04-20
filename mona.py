@@ -175,6 +175,7 @@ silent = False
 g_omitModuleTableInOutpuFile = False
 noheader = False
 g_keystoneLoaded = False
+_sym_cache_dirs = None
 
 try:
 	import keystone
@@ -199,7 +200,9 @@ def _ensureSymbolCache(auto_fix=False):
 	Returns a list of valid local filesystem cache directories.
 	If none are found and auto_fix is True, sets a default symbol path.
 	If none are found and auto_fix is False, logs a warning and returns [].
+	Also populates _sym_cache_dirs for use by showModuleTable.
 	"""
+	global _sym_cache_dirs
 	if __DEBUGGERAPP__ != "WinDBG":
 		return []
 
@@ -224,12 +227,33 @@ def _ensureSymbolCache(auto_fix=False):
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
+	if cache_dirs:
+		_sym_cache_dirs = cache_dirs
+
 	if not cache_dirs and not auto_fix:
 		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
 		dbg.log("    Configure a symbol path with a local cache, e.g.:")
 		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
 
 	return cache_dirs
+
+
+def _hasSymbolsCached(modprops):
+	"""Check if a module's PDB is present in any known symbol cache directory.
+
+	Returns True/False, or None if the cache hasn't been populated yet.
+	"""
+	if _sym_cache_dirs is None:
+		return None
+	pdbname = modprops.get("pdbname", "")
+	guidage = modprops.get("pdbguidage", "")
+	if not pdbname or not guidage:
+		return False
+	for cdir in _sym_cache_dirs:
+		candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+		if os.path.isfile(candidate):
+			return True
+	return False
 
 commands = {}
 
@@ -8657,7 +8681,13 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				items = sorted(items, key=_POST_SORT_FIELDS[key], reverse=reverse)
 
 
+	if _sym_cache_dirs is None:
+		_ensureSymbolCache(auto_fix=False)
+	show_sym = _sym_cache_dirs is not None
+
 	linelength = 175
+	if show_sym:
+		linelength += 7
 	thistable += ("-" * linelength) + "\n"
 	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.g_modules), len(modules))
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
@@ -8674,9 +8704,17 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		thistable += ("%s\n" % excluded_by_configtext)
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
-		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
+		hdr = " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll |"
+		if show_sym:
+			hdr += " Sym  |"
+		hdr += " Version, ImageName & Path, DLLCharacteristics\n"
+		thistable += hdr
 	elif arch == 64:
-		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
+		hdr = " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll |"
+		if show_sym:
+			hdr += " Sym  |"
+		hdr += " Version, ImageName & Path, DLLCharacteristics\n"
+		thistable += hdr
 	thistable += ("-" * linelength) + "\n"
 
 
@@ -8695,10 +8733,14 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			path 	= str(modproperties["path"])
 			name	= str(modproperties["filename"] or modproperties["name"])
 			dllflag = "0x%x" % modproperties["dllcharacteristics"]
+			sym_col = ""
+			if show_sym:
+				has_sym = _hasSymbolsCached(modproperties)
+				sym_col = " " + toSize(str(has_sym if has_sym is not None else "?"), 4) + " |"
 			if arch == 32:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "|" + sym_col + " " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
 			if arch == 64:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "|" + sym_col + " " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
 	thistable += ("-" * linelength) + "\n"
 	tableinfo = thistable.split('\n')
 	if logfile == "":
