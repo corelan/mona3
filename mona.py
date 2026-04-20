@@ -6649,8 +6649,19 @@ class MnProc:
 
 		# Stacks
 		for tid, sinfo in self.stacks.items():
-			dispname = "Stack (Thread ID: %s | TEB: 0x%s)" % (
-				str(tid), toHex(sinfo["teb"]))
+			seh_info = ""
+			if arch == 32:
+				threads = self.getThreads()
+				mteb = threads.get(tid)
+				if mteb and hasattr(mteb, "SEHChain") and len(mteb.SEHChain) > 0:
+					records, overwritten = _walkSehChain(mteb.SEHChain)
+					smashed_count = len(overwritten)
+					if smashed_count > 0:
+						seh_info = " | SEH: %d records, %d SMASHED" % (len(records), smashed_count)
+					else:
+						seh_info = " | SEH: %d records" % len(records)
+			dispname = "Stack (Thread ID: %s | TEB: 0x%s%s)" % (
+				str(tid), toHex(sinfo["teb"]), seh_info)
 			regions.append((sinfo["limit"], sinfo["base"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
@@ -22160,73 +22171,83 @@ def procBPSeh(self):
 	dbg.log("")
 	return "Done"
 
+def _walkSehChain(sehchain):
+	"""Walk a list of SEH records and analyse each entry.
+
+	Arguments:
+		sehchain - list of [record_address, handler_address] pairs
+		           (same format as dbg.getSehChain() or MnTEB.SEHChain)
+
+	Returns: (records, overwritten)
+		records     - OrderedDict {record_addr: [nseh_value, handler, funcname, info]}
+		overwritten - dict {record_addr: [type, offset]}  (only smashed entries)
+	"""
+	records = OrderedDict()
+	overwritten = {}
+	for sehrecord in sehchain:
+		recaddress = sehrecord[0]
+		sehandler = sehrecord[1]
+		nsehvalue = 0
+		nseh = ""
+		try:
+			nsehvalue = struct.unpack('<L', dbg.readMemory(recaddress, 4))[0]
+			nseh = "0x%08x" % nsehvalue
+		except:
+			nseh = 0
+			sehandler = 0
+		overwritedata = checkSEHOverwrite(recaddress, nseh, sehandler)
+		funcname = ""
+		recinfo = ""
+		if sehandler > 0:
+			ptr = MnPointer(sehandler)
+			funcname = ptr.getPtrFunction()
+		else:
+			recinfo = "corrupted record"
+			if str(nseh).startswith("0x"):
+				nseh = "0x%08x" % int(nseh, 16)
+			else:
+				nseh = "0x%08x" % int(nseh)
+		if len(overwritedata) > 0:
+			overwritten[recaddress] = overwritedata
+			smashoffset = int(overwritedata[1])
+			typeinfo = ""
+			if overwritedata[0] == "unicode":
+				smashoffset += 2
+				typeinfo = " [unicode]"
+			recinfo = "Smashed, offset %d%s" % (smashoffset, typeinfo)
+		if nsehvalue == 0xffffffff:
+			recinfo = "End of SEH chain"
+		records[recaddress] = [nsehvalue, sehandler, funcname, recinfo]
+	return records, overwritten
+
+
 def procSehChain(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
 	dbg.log("")
-	dict_sehrecords = {}
-	headers = ["On Stack", "Next SEH", "SE Handler", "Function", "Info"]
-	types   = ["pointer", "pointer", "pointer", "string", "string"]
-	sehseq = []
 
-	handlersoverwritten = {}
 	if len(sehchain) > 0:
 		dbg.log("Start of chain (TEB FS:[0]) : 0x%08x" % sehchain[0][0])
 		dbg.log("")
 
-		for sehrecord in sehchain:
-			recaddress = sehrecord[0]
-			sehandler = sehrecord[1]
-			nsehvalue = 0
-			nseh = ""
-			try:
-				nsehvalue = struct.unpack('<L',dbg.readMemory(recaddress,4))[0]
-				nseh = "0x%08x" % nsehvalue
-			except:
-				nseh = 0
-				sehandler = 0
-			overwritedata = checkSEHOverwrite(recaddress,nseh,sehandler)
-			funcname = ""
-			recinfo = ""
-			if sehandler > 0:
-				ptr = MnPointer(sehandler)
-				funcname = ptr.getPtrFunction()
-			else:
-				recinfo = "corrupted record"
-				if str(nseh).startswith("0x"):
-					nseh = "0x%08x" % int(nseh,16)
+		records, handlersoverwritten = _walkSehChain(sehchain)
+
+		headers = ["On Stack", "Next SEH", "SE Handler", "Function", "Info"]
+		types   = ["pointer", "pointer", "pointer", "string", "string"]
+		print_dict_table(records, headers, types, padding = "      ")
+
+		if len(handlersoverwritten) > 0:
+			dbg.log("")
+			dbg.log("Payload structure suggestion(s):")
+			for overwrittenhandler in handlersoverwritten:
+				overwrittendata = handlersoverwritten[overwrittenhandler]
+				overwrittentype = overwrittendata[0]
+				overwrittenoffset = int(overwrittendata[1])
+				if not overwrittentype == "unicode":
+					dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset))
 				else:
-					nseh = "0x%08x" % int(nseh)
-			if len(overwritedata) > 0:
-				handlersoverwritten[recaddress] = overwritedata
-				smashoffset = int(overwritedata[1])
-				typeinfo = ""
-				if overwritedata[0] == "unicode":
-					smashoffset += 2
-					typeinfo = " [unicode]"
-				recinfo = "Smashed, offset %d%s" % (smashoffset,typeinfo)
-			
-			if nsehvalue == 0xffffffff:
-				recinfo = "End of SEH chain"
-			dict_sehrecords[recaddress] = [nsehvalue, sehandler, funcname, recinfo]
-			sehseq.append(recaddress)
-
-			#dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
-		
-		print_dict_table(dict_sehrecords, headers, types, padding = "      ", itemsequence = sehseq)
-
-	if len(handlersoverwritten) > 0:
-		dbg.log("")
-		dbg.log("Payload structure suggestion(s):")
-		for overwrittenhandler in handlersoverwritten:
-			overwrittendata = handlersoverwritten[overwrittenhandler]
-			overwrittentype = overwrittendata[0]
-			overwrittenoffset = int(overwrittendata[1])
-			if not overwrittentype == "unicode":
-				dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset))
-			else:
-				overwrittenoffset += 2
-				dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
+					overwrittenoffset += 2
+					dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
 	return
 
 
