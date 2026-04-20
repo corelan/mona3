@@ -19720,12 +19720,11 @@ def procLayout(args):
 		else:
 			in_heap_chain = False
 		prev_category = category
-		# Use idx as key to avoid duplicates; start goes in the value
-		table_data[idx] = (start, end, psize, category, indent + description)
-		table_seq.append(idx)
+		table_data[start] = (end, psize, category, indent + description)
+		table_seq.append(start)
 
-	headers = ["#", "Start", "End", "Size", "Type", "Description"]
-	types   = ["int", "pointer", "pointer", "string", "string", "string"]
+	headers = ["Start", "End", "Size", "Type", "Description"]
+	types   = ["pointer", "pointer", "string", "string", "string"]
 	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile)
 
 	dbg.log("")
