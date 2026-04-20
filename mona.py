@@ -18028,6 +18028,11 @@ def procUpdate(args):
 	- print release notes
 	- do NOT overwrite existing .py files
 
+	If "force" is present in args, then:
+	- still validate downloaded files contain version/revision info
+	- overwrite local file(s) even if the version is not newer
+	- show release notes for the downloaded version/revision (if available)
+
 	In simulation mode:
 	- if a newer version is found, show release notes for that newer version
 	- if no newer version is found (or download failed), show release notes for the current version
@@ -18232,8 +18237,17 @@ def procUpdate(args):
 		except:
 			simulate_only = True
 
+	force_update = False
+	if "force" in args:
+		try:
+			force_update = str_to_bool(args["force"])
+		except:
+			force_update = True
+
 	if simulate_only:
 		dbg.log("[+] Simulation mode enabled", highlight=1)
+	if force_update and not simulate_only:
+		dbg.log("[+] Force update enabled", highlight=1)
 
 	if not _check_connectivity():
 		dbg.log("[-] No internet connectivity detected. Update aborted.", highlight=1)
@@ -18318,9 +18332,11 @@ def procUpdate(args):
 		dbgp("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
 
 		if current_version == "" and current_revision == "0":
-			dbgp("    [!] Unable to read current version info from %s" % current_file)
-			dbgp("Skipping %s because current version info could not be read" % name)
-			continue
+			if not force_update:
+				dbgp("    [!] Unable to read current version info from %s" % current_file)
+				dbgp("Skipping %s because current version info could not be read" % name)
+				continue
+			dbg.log("    [!] Unable to read current version info from %s (continuing due to -force)" % current_file, highlight=1)
 
 		ok_download, used_url = _download_with_fallback(
 			main_url,
@@ -18360,7 +18376,21 @@ def procUpdate(args):
 		dbg.log("    Download: version %s / revision %s" % (new_version, new_revision))
 		dbgp("%s downloaded from %s" % (name, used_url))
 
-		if _is_newer(current_version, current_revision, new_version, new_revision):
+		if force_update:
+			if simulate_only:
+				dbg.log("    [*] Simulation mode enabled - not updating %s (but -force would overwrite it)" % name)
+				release_notes_targets.append((name, new_version, new_revision))
+			else:
+				try:
+					dbgp("Force copying %s over %s" % (download_file, current_file))
+					shutil.copyfile(download_file, current_file)
+					dbg.log("    [+] Forced update of %s in place" % name, highlight=1)
+					release_notes_targets.append((name, new_version, new_revision))
+				except Exception as e:
+					dbg.log("    [-] Unable to force update %s" % name, highlight=1)
+					dbg.log("        %s" % str(e))
+					dbgp("Force copy failed for %s : %s" % (name, str(e)))
+		elif _is_newer(current_version, current_revision, new_version, new_revision):
 			dbg.log("    [+] Newer version found for %s" % name, highlight=1)
 
 			if simulate_only:
@@ -18401,9 +18431,9 @@ def procUpdate(args):
 			seen_release_headers[header] = True
 
 			if notes != "":
-				dbg.log("    %s" % header, highlight=1)
+				dbg.log("    %s" % header, highlight = True)
 				for line in notes.splitlines():
-					dbg.log("    %s" % line)
+					dbg.log("    %s" % line, highlight = True)
 			else:
 				dbgp("No release note entry found for %s, even after retrying backup server" % header)
 	elif not downloaded_release_notes:
@@ -18412,6 +18442,7 @@ def procUpdate(args):
 		dbgp("No release notes targets were collected, so no release notes section will be printed")
 
 	return "Done"
+
 
 
 #----- GetPC -----#
@@ -24356,9 +24387,10 @@ Optional argument:
     -t <type>     : specify type of output. Valid choices are 'python' (default) or 'ruby' """
 	
 	updateUsage = """Update mona to the latest version
-Optional argument:
-     -simul    	  : Check for updates and simulate updating. Will show release notes if available.	
-	"""
+	Optional argument:
+	     -simul    	  : Check for updates and simulate updating. Will show release notes if available.	
+	     -force       : Always overwrite local file(s) with downloaded copy if version/revision info is present.
+		"""
 	getpcUsage = """Find getpc routine for specific register
 
 Mandatory argument :
@@ -24683,11 +24715,11 @@ Arguments:
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
-	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC)
+	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC,"rf",[32,64])
 	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP chain and perhaps do some ROP magic with them",ropUsage,procROP,"",[32,64])
 	commands["jop"] 			= MnCommand("jop","Finds gadgets that can be used in a JOP chain",jopUsage,procJOP,"",[32,64])		
 	commands["jseh"]			= MnCommand("jseh", "Finds gadgets that can be used to bypass SafeSEH", jsehUsage, procJseh)
-	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots)
+	commands["stackpivot"]		= MnCommand("stackpivot","Finds stackpivots (move stackpointer to controlled area)",stackpivotUsage,procStackPivots,"sp",[32,64])
 	commands["modules"] 		= MnCommand("modules","Show all loaded modules and their properties",modulesUsage,procShowMODULES,"mod", [32,64])
 	commands["moduleinfo"]		= MnCommand("moduleinfo","Show detailed info about a specific module",moduleInfoUsage,procModuleInfo,"modinfo", [32,64])
 	commands["filecompare"]		= MnCommand("filecompare","Compares 2 or more files created by mona using the same output commands",filecompareUsage,procFileCOMPARE,"fc",[32,64])
@@ -24711,7 +24743,7 @@ Arguments:
 	commands["egghunter"]		= MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
 	commands["stacks"]			= MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks,"",[32,64])
 	commands["proclayout"]		= MnCommand("proclayout","Show unified process memory layout map",proclayoutUsage,procLayout,"pl",[32,64])
-	commands["skeleton"]		= MnCommand("skeleton","Create a Metasploit module skeleton with a cyclic pattern for a given type of exploit",skeletonUsage,procSkeleton)
+	commands["skeleton"]		= MnCommand("skeleton","Create a Metasploit module skeleton with a cyclic pattern for a given type of exploit",skeletonUsage,procSkeleton,"skel", [32,64])
 	commands["breakfunc"]		= MnCommand("breakfunc","Set a breakpoint on an exported function in on or more dll's",bfUsage,procBf,"bf", [32,64])
 	commands["heap"]			= MnCommand("heap","Show heap related information",heapUsage,procHeap,"hp", [32,64])
 	commands["getiat"]			= MnCommand("getiat","Show IAT of selected module(s)",getiatUsage,procGetIAT,"iat", [32,64])
