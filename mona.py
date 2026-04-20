@@ -343,9 +343,10 @@ def checkKeystone():
 			dbg.log("[!] Warning - keystone engine not loaded", highlight=True)
 			dbg.log("    This will severely impact your ability to assemble mnemonics on 64bit", highlight=True)
 			dbg.log("    Consider installing the keystone-engine library")
-			dbg.log("    Open an administrator command prompt, and run the following command:") 
+			dbg.log("    Open an administrator command prompt, and run the following command(s):")
+			dbg.log("     (select the one(s) that apply to your system setup)") 
 			dbg.log("        py -%s -m pip install keystone-engine" % pyversion, highlight=True)
-			dbg.log("     and/or")
+			dbg.log("        py -%s-32 -m pip install keystone-engine" % pyversion, highlight=True)
 			dbg.log("        py -%s-64 -m pip install keystone-engine" % pyversion, highlight=True)
 			dbg.log("")
 		return False
