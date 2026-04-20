@@ -23553,6 +23553,7 @@ def _sym_clean(args):
 	dbg.log("[+] Found %d unique folder(s) to inspect" % len(folders_to_clean))
 	for thisfolder in folders_to_clean:
 		dbg.log("    %s" % thisfolder)
+	dbg.log("")
 
 	deleted_files = []
 	total_recovered = 0
