@@ -19692,8 +19692,6 @@ def procLayout(args):
 	logfile = objfile.reset()
 
 	# Build table data for print_dict_table
-	headers = ["Start", "End", "Size", "Type", "Description"]
-	types   = ["pointer", "pointer", "string", "string", "string"]
 	table_data = OrderedDict()
 	table_seq = []
 
@@ -19723,9 +19721,11 @@ def procLayout(args):
 			in_heap_chain = False
 		prev_category = category
 		row_key = idx
-		table_data[row_key] = [start, end, psize, category, indent + description]
+		table_data[row_key] = (start, end, psize, category, indent + description)
 		table_seq.append(row_key)
 
+	headers = ["#", "Start", "End", "Size", "Type", "Description"]
+	types   = ["int", "pointer", "pointer", "string", "string", "string"]
 	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile)
 
 	dbg.log("")
