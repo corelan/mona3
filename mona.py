@@ -238,30 +238,43 @@ def _ensureSymbolCache(auto_fix=False):
 	return cache_dirs
 
 
-def _hasSymbolsCached(modprops):
-	"""Check if a module's PDB is present alongside the module's binary
-	or in any known symbol cache directory.
+def _findSymbolsCached(modprops, cache_dirs=None):
+	"""Find a module's cached PDB path.
 
-	Returns True/False, or None if the cache hasn't been populated yet
-	and no local PDB was found.
+	Checks next to the binary first, then symbol cache directories.
+
+	Returns: (path_str, label) or (None, None) if not found.
+	  label is "local" or "#N" (1-based cache dir index).
 	"""
 	pdbname = modprops.get("pdbname", "")
 	guidage = modprops.get("pdbguidage", "")
-	# Check next to the DLL/EXE itself
 	modpath = modprops.get("path", "")
+	if modpath and pdbname:
+		local_pdb = os.path.join(os.path.dirname(modpath), pdbname)
+		if os.path.isfile(local_pdb):
+			return local_pdb, "local"
+	dirs = cache_dirs if cache_dirs is not None else _sym_cache_dirs
+	if dirs is not None and pdbname and guidage:
+		for ci, cdir in enumerate(dirs):
+			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+			if os.path.isfile(candidate):
+				return candidate, "#%d" % (ci + 1)
+	return None, None
+
+
+def _hasSymbolsCached(modprops):
+	"""Check if a module's PDB is cached. Returns True/False/None."""
+	pdbname = modprops.get("pdbname", "")
+	modpath = modprops.get("path", "")
+	# Local check doesn't need _sym_cache_dirs
 	if modpath and pdbname:
 		local_pdb = os.path.join(os.path.dirname(modpath), pdbname)
 		if os.path.isfile(local_pdb):
 			return True
 	if _sym_cache_dirs is None:
 		return None
-	if not pdbname or not guidage:
-		return False
-	for cdir in _sym_cache_dirs:
-		candidate = os.path.join(cdir, pdbname, guidage, pdbname)
-		if os.path.isfile(candidate):
-			return True
-	return False
+	path, _ = _findSymbolsCached(modprops)
+	return path is not None
 
 commands = {}
 
@@ -23313,31 +23326,20 @@ def _sym_list(args):
 		guidage = modprops.get("pdbguidage", "")
 
 		if not pdbname or not guidage:
-			cached_str = "N/A"
-			pdb_display = "(no PDB info)"
-			pdb_path = ""
-			pdb_size = ""
+			table_data[base] = (modname, "(no PDB info)", "N/A", "", "")
 			missing_count += 1
 		else:
-			pdb_display = pdbname
-			cached_str = "No"
-			pdb_path = ""
-			pdb_size = ""
-			for ci, cdir in enumerate(cache_dirs):
-				candidate = os.path.join(cdir, pdbname, guidage, pdbname)
-				if os.path.isfile(candidate):
-					cached_str = "Yes (#%d)" % (ci + 1)
-					pdb_path = candidate
-					try:
-						pdb_size = "0x%x" % os.path.getsize(candidate)
-					except:
-						pdb_size = "?"
-					found_count += 1
-					break
+			pdb_path, label = _findSymbolsCached(modprops, cache_dirs)
+			if pdb_path:
+				try:
+					pdb_size = "0x%x" % os.path.getsize(pdb_path)
+				except:
+					pdb_size = "?"
+				table_data[base] = (modname, pdbname, "Yes (%s)" % label, pdb_size, pdb_path)
+				found_count += 1
 			else:
+				table_data[base] = (modname, pdbname, "No", "", "")
 				missing_count += 1
-
-		table_data[base] = (modname, pdb_display, cached_str, pdb_size, pdb_path)
 		row_order.append(base)
 
 	print_dict_table(
