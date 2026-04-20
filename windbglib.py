@@ -4595,6 +4595,7 @@ class wpage():
 				dbgp("Error accessing memory: %s" % str(e))
 				return None
 		else:
+			dbgp("Page at %s has no access, cannot read memory" % (PTR_PRINT % self.begin))
 			return None
 
 

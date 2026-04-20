@@ -145,6 +145,7 @@ DESC = "Corelan Consulting bv exploit development swiss army knife"
 
 TOP_USERLAND = 0x7fffffff if arch == 32 else 0x7FFFFFFFFFFF
 STACK_POINTER = "esp" if arch == 32 else "rsp"
+PROGRAM_COUNTER = "eip" if arch == 32 else "rip"
 PTR_SIZE_DIRECTIVE = "dword ptr" if arch == 32 else "qword ptr"
 PTR_SIZE = 4 if arch == 32 else 8
 PTR_FMT = '<L' if arch == 32 else '<Q'
@@ -14969,6 +14970,8 @@ def checkSEHOverwrite(address, nseh, seh):
 	silent = False
 	return overwritten
 
+
+
 def goFindMSP(distance=0, args=None):
 	"""
 	Finds all references to cyclic pattern in memory
@@ -14997,16 +15000,6 @@ def goFindMSP(distance=0, args=None):
 	fullpattern = createPattern(50000, args)
 	# use bytes version when comparing with dbg.readMemory()
 	fullpattern_bytes = ensure_bytes(fullpattern)
-
-	# determine stack pointer register / pointer size
-	if arch == 64:
-		sp_reg = "rsp"
-		ptr_size = 8
-		ptr_pack_fmt = "<Q"
-	else:
-		sp_reg = "esp"
-		ptr_size = 4
-		ptr_pack_fmt = "<L"
 
 	# are we attached to an application ?
 	if dbg.getDebuggedPid() == 0:
@@ -15061,8 +15054,8 @@ def goFindMSP(distance=0, args=None):
 							memory[ptr] = [thissize, pattype]
 
 					# get distance from SP
-					if sp_reg in regs:
-						thissp = regs[sp_reg]
+					if STACK_POINTER in regs:
+						thissp = regs[STACK_POINTER]
 						thisptr = MnPointer(ptr)
 						if thisptr.isOnStack():
 							if ptr > thissp:
@@ -15075,6 +15068,7 @@ def goFindMSP(distance=0, args=None):
 
 	# 2. registers overwritten ?
 	if not silent:
+		dbg.log("")
 		dbg.log("[+] Examining registers")
 	tofile += "\n[+] Examining registers\n"
 
@@ -15096,13 +15090,13 @@ def goFindMSP(distance=0, args=None):
 
 			# Pack register value as raw bytes
 			try:
-				regbytes = struct.pack(ptr_pack_fmt, regs[reg] & ((1 << (ptr_size * 8)) - 1))
+				regbytes = struct.pack(PTR_FMT, regs[reg] & ((1 << (PTR_SIZE * 8)) - 1))
 			except:
 				regbytes = b""
 
 			# Try full pointer width, then low 4 bytes
 			candidates = []
-			if ptr_size == 8 and len(regbytes) == 8:
+			if PTR_SIZE == 8 and len(regbytes) == 8:
 				candidates.append((regbytes, False))
 				candidates.append((regbytes[::-1], True))
 				candidates.append((regbytes[:4], False))
@@ -15177,6 +15171,46 @@ def goFindMSP(distance=0, args=None):
 							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 							registers_to[reg] = [regs[reg], offset, thissize, pattype]
 
+	if arch == 64:
+		if STACK_POINTER in registers_to and not PROGRAM_COUNTER in registers:
+			rip_val = regs[PROGRAM_COUNTER]
+			rsp_val = regs[STACK_POINTER]
+			opc = dbglib.opcode(rip_val)
+			opc_instruction = opc.getDisasm()
+			if opc.isRet():
+				warningline = "    Warning! This is 64bit, %s points into pattern, and %s is about to execute '%s'" % (STACK_POINTER, PROGRAM_COUNTER, opc_instruction)
+				dbg.log(warningline)
+				tofile += "%s\n" % warningline
+
+				warningline = "      That means we technically control %s, and %s will be adjusted accordingly" % (PROGRAM_COUNTER, STACK_POINTER)
+				dbg.log(warningline)
+				tofile += "%s\n" % warningline				
+				# bingo. Get the possible offset due to calling conventions
+				# (unlikely on 64bit, but you never know)
+				dbgp("Instruction at %s: %s" % ((PTR_PRINT % rsp_val), opc_instruction))
+				rip_offset = registers_to[STACK_POINTER][1]
+				rip_patterntype = registers_to[STACK_POINTER][3]
+
+				# what is at rsp right now, is what rip will become
+				adjust_rsp = 8	# default for ret
+				extra_adjust = getOffset(opc_instruction)
+				total_adjust = adjust_rsp + extra_adjust
+				dbgp("Extra adjustment for retn offset instruction: %d" % total_adjust)
+				value_on_stack = struct.unpack(PTR_FMT,dbg.readMemory(rsp_val,PTR_SIZE))[0]
+				registers[PROGRAM_COUNTER] = [value_on_stack, rip_offset, rip_patterntype]
+				warningline = "      -> We control %s at offset %d in %s pattern" % (PROGRAM_COUNTER, rip_offset, rip_patterntype)
+				dbg.log(warningline)
+				tofile += "%s\n" % warningline		
+				# the stack pointer itself will change, and this its position and length also
+				rsp_offset = rip_offset + total_adjust
+				rsp_val = regs[STACK_POINTER] + total_adjust
+				rsp_size = registers_to[STACK_POINTER][2] - total_adjust
+				registers_to[STACK_POINTER] = [rsp_val, rsp_offset, rsp_size, rip_patterntype]
+				warningline = "      -> %s (%s) actually points at offset %d in %s pattern (length %d) <- trampoline" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
+				dbg.log(warningline)
+				tofile += "%s\n" % warningline	
+
+
 	if "registers" not in results:
 		results["registers"] = registers
 	if "registers_to" not in results:
@@ -15185,8 +15219,9 @@ def goFindMSP(distance=0, args=None):
 	# 3. SEH record overwritten ?
 	# SEH chain logic is x86-only in this form, so skip entirely on x64
 	seh = {}
-	if ptr_size == 4:
+	if PTR_SIZE == 4:
 		if not silent:
+			dbg.log("")
 			dbg.log("[+] Examining SEH chain")
 		tofile += "\n[+] Examining SEH chain\n"
 		thissehchain = dbg.getSehChain()
@@ -15251,14 +15286,15 @@ def goFindMSP(distance=0, args=None):
 	stackcontains = {}
 
 	# 4. walking stack
-	if sp_reg in regs:
-		curresp = regs[sp_reg]
+	if STACK_POINTER in regs:
+		curresp = regs[STACK_POINTER]
 
 		if not silent:
 			if distance == 0:
 				extratxt = "(entire stack)"
 			else:
 				extratxt = "(+- " + str(distance) + " bytes)"
+			dbg.log("")
 			dbg.log("[+] Examining stack %s - looking for cyclic pattern" % extratxt)
 		tofile += "\n[+] Examining stack %s - looking for cyclic pattern\n" % extratxt
 
@@ -15274,19 +15310,20 @@ def goFindMSP(distance=0, args=None):
 					thisstacktop = stacks[tstack][1]
 		else:
 			thisstackbase = curresp - distance
-			thisstacktop = curresp + distance + ptr_size
+			thisstacktop = curresp + distance + PTR_SIZE
 
 		stackcounter = thisstackbase
 		sign = ""
 
 		if not silent:
-			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter)))
-		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter))
+			dbg.log("")
+			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter)))
+		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter))
 
 		# stack contains part of a cyclic pattern ?
-		while stackcounter < thisstacktop - ptr_size:
+		while stackcounter < thisstacktop - PTR_SIZE:
 			espoffset = stackcounter - curresp
-			stepsize = ptr_size
+			stepsize = PTR_SIZE
 			dbg.updateLog()
 
 			if espoffset > -1:
@@ -15333,8 +15370,8 @@ def goFindMSP(distance=0, args=None):
 								offsetvalue = abs(espoffset)
 								if thissize > 0:
 									stepsize = thissize
-									if (thissize % ptr_size) != 0:
-										stepsize = ((thissize // ptr_size) * ptr_size) + ptr_size
+									if (thissize % PTR_SIZE) != 0:
+										stepsize = ((thissize // PTR_SIZE) * PTR_SIZE) + PTR_SIZE
 
 									if not silent:
 										espoff = 0
@@ -15346,14 +15383,14 @@ def goFindMSP(distance=0, args=None):
 											espsign = "-"
 
 										dbg.log("    0x%s : Contains %s cyclic pattern at %s%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : %s%s0x%s)" % (
-											toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
-											sign, offsetvalue, offset, thissize,
-											toHex(stackcounter + thissize - 1), sp_reg, espsign, rmLeading(toHex(espoff), "0")))
+												(PTR_PRINT % stackcounter), pattype, STACK_POINTER, sign, rmLeading(toHex(offsetvalue), "0"),
+												sign, offsetvalue, offset, thissize,
+												(PTR_PRINT % (stackcounter + thissize - 1)), STACK_POINTER, espsign, rmLeading(toHex(espoff), "0")))
 
 									tofile += "    0x%s : Contains %s cyclic pattern at %s%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : %s%s0x%s)\n" % (
-										toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
-										sign, offsetvalue, offset, thissize,
-										toHex(stackcounter + thissize - 1), sp_reg, espsign, rmLeading(toHex(espoff), "0"))
+											(PTR_PRINT % stackcounter), pattype, STACK_POINTER, sign, rmLeading(toHex(offsetvalue), "0"),
+											sign, offsetvalue, offset, thissize,
+											(PTR_PRINT % (stackcounter + thissize - 1)), STACK_POINTER, espsign, rmLeading(toHex(espoff), "0"))
 
 									if currptr not in stackcontains:
 										stackcontains[currptr] = [offsetvalue, sign, offset, thissize, pattype]
@@ -15385,16 +15422,16 @@ def goFindMSP(distance=0, args=None):
 					thisstacktop = stacks[tstack][1]
 		else:
 			thisstackbase = curresp - distance
-			thisstacktop = curresp + distance + ptr_size
+			thisstacktop = curresp + distance + PTR_SIZE
 
 		stackcounter = thisstackbase
 		sign = ""
 
 		if not silent:
-			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter)))
-		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - ptr_size), toHex(thisstacktop - ptr_size - stackcounter))
+			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter)))
+		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter))
 
-		while stackcounter < thisstacktop - ptr_size:
+		while stackcounter < thisstacktop - PTR_SIZE:
 			espoffset = stackcounter - curresp
 			dbg.updateLog()
 
@@ -15403,11 +15440,11 @@ def goFindMSP(distance=0, args=None):
 			else:
 				sign = "-"
 
-			cont = dbg.readMemory(stackcounter, ptr_size)
+			cont = dbg.readMemory(stackcounter, PTR_SIZE)
 
-			if len(cont) == ptr_size:
+			if len(cont) == PTR_SIZE:
 				try:
-					currptr = struct.unpack(ptr_pack_fmt, cont)[0]
+					currptr = struct.unpack(PTR_FMT, cont)[0]
 					contat = dbg.readMemory(currptr, 4)
 				except:
 					contat = b""
@@ -15447,16 +15484,16 @@ def goFindMSP(distance=0, args=None):
 									offsetvalue = abs(espoffset)
 									if not silent:
 										dbg.log("    0x%s : Pointer into %s cyclic pattern at %s%s0x%s (%s%s) : 0x%s : offset %d, length %d" % (
-											toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
+											toHex(stackcounter), pattype, STACK_POINTER, sign, rmLeading(toHex(offsetvalue), "0"),
 											sign, offsetvalue, toHex(currptr), offset, thissize))
 									tofile += "    0x%s : Pointer into %s cyclic pattern at %s%s0x%s (%s%s) : 0x%s : offset %d, length %d\n" % (
-										toHex(stackcounter), pattype, sp_reg, sign, rmLeading(toHex(offsetvalue), "0"),
+										toHex(stackcounter), pattype, STACK_POINTER, sign, rmLeading(toHex(offsetvalue), "0"),
 										sign, offsetvalue, toHex(currptr), offset, thissize)
 
 									if currptr not in stack:
 										stack[currptr] = [offsetvalue, sign, offset, thissize, pattype]
 
-			stackcounter += ptr_size
+			stackcounter += PTR_SIZE
 	else:
 		dbg.log("** Are you connected to an application ?", highlight=1)
 
@@ -19059,7 +19096,7 @@ def procSuggest(args):
 	# start building exploit structure
 	
 	if not isEIP and not isSEH:
-		dbg.log(" ** Unable to suggest anything useful. You don't seem to control EIP or SEH ** ",highlight=1)
+		dbg.log(" ** Unable to suggest anything useful. You don't seem to control %s or SEH ** " % PROGRAM_COUNTER,highlight=1)
 		return
 
 	# ask for type of module
