@@ -6655,9 +6655,17 @@ class MnProc:
 				mteb = threads.get(tid)
 				if mteb and hasattr(mteb, "SEHChain") and len(mteb.SEHChain) > 0:
 					records, overwritten = _walkSehChain(mteb.SEHChain)
-					smashed_count = len(overwritten)
-					if smashed_count > 0:
-						seh_info = " | SEH: %d records, %d SMASHED" % (len(records), smashed_count)
+					if len(overwritten) > 0:
+						smash_parts = []
+						for recaddr, odata in overwritten.items():
+							smashoffset = int(odata[1])
+							otype = odata[0]
+							if otype == "unicode":
+								smashoffset += 2
+							smash_parts.append("0x%s at offset %d%s" % (
+								toHex(recaddr), smashoffset,
+								" [unicode]" if otype == "unicode" else ""))
+						seh_info = " | SEH: %d records, SMASHED: %s" % (len(records), "; ".join(smash_parts))
 					else:
 						seh_info = " | SEH: %d records" % len(records)
 			dispname = "Stack (Thread ID: %s | TEB: 0x%s%s)" % (
