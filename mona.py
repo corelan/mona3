@@ -5163,6 +5163,20 @@ class MnHeap(object):
 		"""
 		return "Unknown"
 
+	def getHeaderSize(self):
+		"""Return the size of the _HEAP structure header in bytes.
+
+		Uses ntdll symbols via getTypeSize when available (WinDBG only).
+		Returns 0 if symbols are not available or on Immunity Debugger.
+		"""
+		if __DEBUGGERAPP__ != "WinDBG":
+			return 0
+		try:
+			sz = dbg.getTypeSize("ntdll!_HEAP")
+			return sz if sz else 0
+		except:
+			return 0
+
 	def getEncodingInfo(self):
 		"""
 		Read EncodeFlagMask and raw Encoding bytes from the heap.
@@ -6656,15 +6670,16 @@ class MnProc:
 				corrupted = mheap.isCorrupted()
 			except:
 				corrupted = True
+			heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted else 0)
 			if corrupted:
-				regions.append((heapaddr, heapaddr, "Heap", "%s (** CORRUPTED **)" % heapname))
+				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heapname))
 				continue
 			if heapaddr in self.ntheapdetail:
 				fe_type = self.ntheapdetail[heapaddr].get("frontend_type", 0)
 				fe_label = " | FrontEnd: %s" % fe_names.get(fe_type, "0x%x" % fe_type)
 				seg_count = len(self.ntheapdetail[heapaddr].get("segments", {}))
 				va_count = len(self.ntheapdetail[heapaddr].get("va_blocks", {}))
-			regions.append((heapaddr, heapaddr, "Heap", "%s (%s%s | Segments: %d | VA Blocks: %d)" % (heapname, htype, fe_label, seg_count, va_count)))
+			regions.append((heapaddr, heap_end, "Heap", "%s (%s%s | Segments: %d | VA Blocks: %d)" % (heapname, htype, fe_label, seg_count, va_count)))
 
 			if heapaddr in self.ntheapdetail:
 				detail = self.ntheapdetail[heapaddr]
