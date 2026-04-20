@@ -3496,6 +3496,7 @@ class MnLog:
 		if clear:
 			dbgp("Filename: %s" % self.filename)
 			if not silent:
+				dbg.log("")
 				dbg.log("[+] Preparing output file '" + self.filename +"'")
 		if not showheader:
 			noheader = True
@@ -19258,7 +19259,10 @@ def procSuggest(args):
 				# eip is before shellcode
 				exploitstr += "    buffer =  rand_text(target['Offset'])  \n"
 				if not isEIPUnicode:
-					exploitstr += "    buffer << [target.ret].pack('V')  \n"
+					if arch == 32:
+						exploitstr += "    buffer << [target.ret].pack('V')  \n"
+					if arch == 64:
+						exploitstr += "    buffer << [target.ret].pack('Q<')  \n"
 				else:
 					exploitstr += "    buffer << target['Ret']  #Unicode friendly jump\n\n"
 				if offsetreg > initialoffsetEIP+2:
@@ -24789,7 +24793,7 @@ Arguments:
 	commands["compare"]			= MnCommand("compare","Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory", compareUsage, procCompare,"cmp", [32,64])
 	commands["breakpoint"]		= MnCommand("bp","Set a breakpoint (software or hardware) at a given address", bpUsage, procBp,"bp", [32,64])
 	commands["findmsp"]			= MnCommand("findmsp","Find cyclic pattern in memory", findmspUsage,procFindMSP,"findmsf", [32,64])
-	commands["suggest"]			= MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest)
+	commands["suggest"]			= MnCommand("suggest","Suggest an exploit buffer structure", suggestUsage,procSuggest,"sg", [32,64])
 	commands["bytearray"]		= MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba", [32,64])
 	commands["header"]			= MnCommand("header","Read a binary file and convert content to a nice 'header' string",headerUsage,procPrintHeader,"",[32,64])
 	commands["update"]			= MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up", [32, 64])
