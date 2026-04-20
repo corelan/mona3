@@ -6635,9 +6635,9 @@ class MnProc:
 
 		# Stacks
 		for tid, sinfo in self.stacks.items():
-			dispname = "Stack (Thread ID: %s | TEB: 0x%s | Size: 0x%s)" % (
-				str(tid), toHex(sinfo["teb"]), toHex(sinfo["size"]))
-			regions.append((sinfo["base"], sinfo["limit"], "Stack", dispname))
+			dispname = "Stack (Thread ID: %s | TEB: 0x%s)" % (
+				str(tid), toHex(sinfo["teb"]))
+			regions.append((sinfo["limit"], sinfo["base"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
 		fe_names = {0: "None", 1: "LAL", 2: "LFH"}
