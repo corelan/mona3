@@ -11355,6 +11355,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 		flipovermax = 2000
 	elif totalfound > 10000:
 		flipovermax = 1000
+	elif totalfound > 1000:
+		flipovermax = 100
 	if totalfound > 0:
 		if not silent:
 			dbg.log("")
@@ -11381,7 +11383,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 				continue
 			allfound = True
 			thisdisam = thisdisam.strip("\n")
-			dbgp("Disassembly at 0x%08x: " % thisptr)
+			dbgp("Disassembly at %s: " % (PTR_PRINT % thisptr))
 			dbgp("%s" % thisdisam)
 			ptrcnt += 1
 			flipover += 1
