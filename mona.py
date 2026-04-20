@@ -8686,8 +8686,6 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	show_sym = _sym_cache_dirs is not None
 
 	linelength = 175
-	if show_sym:
-		linelength += 7
 	thistable += ("-" * linelength) + "\n"
 	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.g_modules), len(modules))
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
@@ -8704,17 +8702,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		thistable += ("%s\n" % excluded_by_configtext)
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
-		hdr = " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll |"
-		if show_sym:
-			hdr += " Sym  |"
-		hdr += " Version, ImageName & Path, DLLCharacteristics\n"
-		thistable += hdr
+		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
 	elif arch == 64:
-		hdr = " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll |"
-		if show_sym:
-			hdr += " Sym  |"
-		hdr += " Version, ImageName & Path, DLLCharacteristics\n"
-		thistable += hdr
+		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
 	thistable += ("-" * linelength) + "\n"
 
 
@@ -8733,14 +8723,15 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			path 	= str(modproperties["path"])
 			name	= str(modproperties["filename"] or modproperties["name"])
 			dllflag = "0x%x" % modproperties["dllcharacteristics"]
-			sym_col = ""
+			sym_tag = ""
 			if show_sym:
 				has_sym = _hasSymbolsCached(modproperties)
-				sym_col = " " + toSize(str(has_sym if has_sym is not None else "?"), 4) + " |"
+				if has_sym:
+					sym_tag = " [Symbols]"
 			if arch == 32:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "|" + sym_col + " " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + sym_tag + "\n"
 			if arch == 64:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "|" + sym_col + " " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + sym_tag + "\n"
 	thistable += ("-" * linelength) + "\n"
 	tableinfo = thistable.split('\n')
 	if logfile == "":
