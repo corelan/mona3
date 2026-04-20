@@ -19493,13 +19493,27 @@ def procStacks(args):
 	if len(stacks) > 0:
 		dbg.log("Stacks :")
 		dbg.log("--------")
+
+		stackDict = {}
+		headers = ["Thread ID", "Start", "End", "Size"]
+		types = ["string", "pointer", "pointer", "pointer"]
+		alreadyPrinted = False
 		for threadid in stacks:
 			s = stacks[threadid]
 			if isinstance(s, dict):
 				dbg.log("Thread ID: %s | TEB: 0x%s | Size: 0x%s" % (
 					str(threadid), toHex(s["teb"]), toHex(s["size"])))
+				alreadyPrinted = True
 			else:
-				dbg.log("Thread ID: %s | Size: 0x%s" % (str(threadid), toHex(s[1]-s[0])))
+				startaddress = s[0]
+				endaddress = s[1]
+				size = s[1] - s[0]
+				stackDict[str(threadid)] = [startaddress, endaddress, size]
+
+		if not alreadyPrinted:
+			print_dict_table(stackDict, headers, types, padding = "    ", itemsequence = [])	
+
+
 	else:
 		dbg.log("No threads/stacks found !",highlight=1)
 	return
