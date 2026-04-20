@@ -8702,9 +8702,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		thistable += ("%s\n" % excluded_by_configtext)
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
-		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Sym} (Path), DLLCharacteristics\n"
+		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
 	elif arch == 64:
-		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Sym} (Path), DLLCharacteristics\n"
+		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
 	thistable += ("-" * linelength) + "\n"
 
 
@@ -8726,8 +8726,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			sym_tag = ""
 			if show_sym:
 				has_sym = _hasSymbolsCached(modproperties)
-				if has_sym:
-					sym_tag = " {sym}"
+				sym_tag = " {%s}" % str(bool(has_sym))
 			if arch == 32:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 			if arch == 64:
