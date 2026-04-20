@@ -238,22 +238,43 @@ def _ensureSymbolCache(auto_fix=False):
 	return cache_dirs
 
 
-def _hasSymbolsCached(modprops):
-	"""Check if a module's PDB is present in any known symbol cache directory.
+def _findSymbolsCached(modprops, cache_dirs=None):
+	"""Find a module's cached PDB path.
 
-	Returns True/False, or None if the cache hasn't been populated yet.
+	Checks next to the binary first, then symbol cache directories.
+
+	Returns: (path_str, label) or (None, None) if not found.
+	  label is "local" or "#N" (1-based cache dir index).
 	"""
-	if _sym_cache_dirs is None:
-		return None
 	pdbname = modprops.get("pdbname", "")
 	guidage = modprops.get("pdbguidage", "")
-	if not pdbname or not guidage:
-		return False
-	for cdir in _sym_cache_dirs:
-		candidate = os.path.join(cdir, pdbname, guidage, pdbname)
-		if os.path.isfile(candidate):
+	modpath = modprops.get("path", "")
+	if modpath and pdbname:
+		local_pdb = os.path.join(os.path.dirname(modpath), pdbname)
+		if os.path.isfile(local_pdb):
+			return local_pdb, "local"
+	dirs = cache_dirs if cache_dirs is not None else _sym_cache_dirs
+	if dirs is not None and pdbname and guidage:
+		for ci, cdir in enumerate(dirs):
+			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+			if os.path.isfile(candidate):
+				return candidate, "#%d" % (ci + 1)
+	return None, None
+
+
+def _hasSymbolsCached(modprops):
+	"""Check if a module's PDB is cached. Returns True/False/None."""
+	pdbname = modprops.get("pdbname", "")
+	modpath = modprops.get("path", "")
+	# Local check doesn't need _sym_cache_dirs
+	if modpath and pdbname:
+		local_pdb = os.path.join(os.path.dirname(modpath), pdbname)
+		if os.path.isfile(local_pdb):
 			return True
-	return False
+	if _sym_cache_dirs is None:
+		return None
+	path, _ = _findSymbolsCached(modprops)
+	return path is not None
 
 commands = {}
 
@@ -590,11 +611,13 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
 	padding : string to prepend to every printed line
+	logobj  : optional MnLog object for file output
+	logfile : optional filename (used with logobj.write())
 	"""
 
 	if itemsequence is None:
@@ -717,6 +740,8 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 
 	def _p(line):
 		dbg.log("%s%s" % (padding, line))
+		if logobj is not None and logfile is not None:
+			logobj.write("%s%s" % (padding, line), logfile)
 
 	_p(fmt % tuple([_ensure_text(h) for h in headers]))
 	_p(fmt % tuple([("-" * w) for w in col_widths]))
@@ -727,6 +752,8 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 			addr_val = _pointer_to_int(raw_row[0])
 			if addr_val is not None:
 				dbg.log("%s%s" % (padding, line), address=addr_val)
+				if logobj is not None and logfile is not None:
+					logobj.write("%s%s" % (padding, line), logfile)
 				continue
 		_p(line)
 
@@ -19664,40 +19691,19 @@ def procLayout(args):
 	objfile = MnLog(filename)
 	logfile = objfile.reset()
 
-	has_static = any(len(r) > 4 and r[4] for r in regions)
-
-	if arch == 64:
-		addr_width = 18
-	else:
-		addr_width = 10
-	size_width = addr_width - 2
-	if has_static:
-		size_width += 9  # room for "(static) " prefix
-	type_width = 15
-	fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds  %%s" % (addr_width, addr_width, size_width, type_width)
-
-	header = fmt % ("Start", "End", "Size", "Type", "Description")
-	sep = "-" * len(header)
-	dbg.log(header)
-	dbg.log(sep)
-	objfile.write(header, logfile)
-	objfile.write(sep, logfile)
+	# Build table data for print_dict_table
+	table_data = OrderedDict()
+	table_seq = []
 
 	in_heap_chain = False
 	prev_category = ""
-	for region in regions:
+	for idx, region in enumerate(regions):
 		start, end, category, description = region[0], region[1], region[2], region[3]
 		static_size = region[4] if len(region) > 4 else False
 		if end > start:
 			size = end - start
 		else:
 			size = 0
-		if arch == 64:
-			pstart = "0x%016x" % start
-			pend = "0x%016x" % end
-		else:
-			pstart = "0x%08x" % start
-			pend = "0x%08x" % end
 		psize = "(static) 0x%x" % size if static_size else "0x%x" % size
 		indent = ""
 		if category == "Heap":
@@ -19713,12 +19719,15 @@ def procLayout(args):
 					indent = "  \\_"
 		else:
 			in_heap_chain = False
-		tolog = fmt % (pstart, pend, psize, category, indent + description)
-		dbg.log(tolog)
-		objfile.write(tolog, logfile)
 		prev_category = category
+		table_data[start] = (end, psize, category, indent + description)
+		table_seq.append(start)
 
-	dbg.log(sep)
+	headers = ["Start", "End", "Size", "Type", "Description"]
+	types   = ["pointer", "pointer", "string", "string", "string"]
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ")
+
+	dbg.log("")
 	dbg.log("Total: %d entities" % len(regions))
 	objfile.write("Total: %d entities" % len(regions), logfile)
 	silent = False
@@ -23316,31 +23325,20 @@ def _sym_list(args):
 		guidage = modprops.get("pdbguidage", "")
 
 		if not pdbname or not guidage:
-			cached_str = "N/A"
-			pdb_display = "(no PDB info)"
-			pdb_path = ""
-			pdb_size = ""
+			table_data[base] = (modname, "(no PDB info)", "N/A", "", "")
 			missing_count += 1
 		else:
-			pdb_display = pdbname
-			cached_str = "No"
-			pdb_path = ""
-			pdb_size = ""
-			for ci, cdir in enumerate(cache_dirs):
-				candidate = os.path.join(cdir, pdbname, guidage, pdbname)
-				if os.path.isfile(candidate):
-					cached_str = "Yes (#%d)" % (ci + 1)
-					pdb_path = candidate
-					try:
-						pdb_size = "0x%x" % os.path.getsize(candidate)
-					except:
-						pdb_size = "?"
-					found_count += 1
-					break
+			pdb_path, label = _findSymbolsCached(modprops, cache_dirs)
+			if pdb_path:
+				try:
+					pdb_size = "0x%x" % os.path.getsize(pdb_path)
+				except:
+					pdb_size = "?"
+				table_data[base] = (modname, pdbname, "Yes (%s)" % label, pdb_size, pdb_path)
+				found_count += 1
 			else:
+				table_data[base] = (modname, pdbname, "No", "", "")
 				missing_count += 1
-
-		table_data[base] = (modname, pdb_display, cached_str, pdb_size, pdb_path)
 		row_order.append(base)
 
 	print_dict_table(
