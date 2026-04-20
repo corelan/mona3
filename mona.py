@@ -175,6 +175,7 @@ silent = False
 g_omitModuleTableInOutpuFile = False
 noheader = False
 g_keystoneLoaded = False
+_sym_cache_dirs = None
 
 try:
 	import keystone
@@ -199,7 +200,9 @@ def _ensureSymbolCache(auto_fix=False):
 	Returns a list of valid local filesystem cache directories.
 	If none are found and auto_fix is True, sets a default symbol path.
 	If none are found and auto_fix is False, logs a warning and returns [].
+	Also populates _sym_cache_dirs for use by showModuleTable.
 	"""
+	global _sym_cache_dirs
 	if __DEBUGGERAPP__ != "WinDBG":
 		return []
 
@@ -224,12 +227,33 @@ def _ensureSymbolCache(auto_fix=False):
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
+	if cache_dirs:
+		_sym_cache_dirs = cache_dirs
+
 	if not cache_dirs and not auto_fix:
 		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
 		dbg.log("    Configure a symbol path with a local cache, e.g.:")
 		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
 
 	return cache_dirs
+
+
+def _hasSymbolsCached(modprops):
+	"""Check if a module's PDB is present in any known symbol cache directory.
+
+	Returns True/False, or None if the cache hasn't been populated yet.
+	"""
+	if _sym_cache_dirs is None:
+		return None
+	pdbname = modprops.get("pdbname", "")
+	guidage = modprops.get("pdbguidage", "")
+	if not pdbname or not guidage:
+		return False
+	for cdir in _sym_cache_dirs:
+		candidate = os.path.join(cdir, pdbname, guidage, pdbname)
+		if os.path.isfile(candidate):
+			return True
+	return False
 
 commands = {}
 
@@ -5139,6 +5163,20 @@ class MnHeap(object):
 		"""
 		return "Unknown"
 
+	def getHeaderSize(self):
+		"""Return the size of the _HEAP structure header in bytes.
+
+		Uses ntdll symbols via getTypeSize when available (WinDBG only).
+		Returns 0 if symbols are not available or on Immunity Debugger.
+		"""
+		if __DEBUGGERAPP__ != "WinDBG":
+			return 0
+		try:
+			sz = dbg.getTypeSize("ntdll!_HEAP")
+			return sz if sz else 0
+		except:
+			return 0
+
 	def getEncodingInfo(self):
 		"""
 		Read EncodeFlagMask and raw Encoding bytes from the heap.
@@ -6611,9 +6649,28 @@ class MnProc:
 
 		# Stacks
 		for tid, sinfo in self.stacks.items():
-			dispname = "Stack (Thread ID: %s | TEB: 0x%s | Size: 0x%s)" % (
-				str(tid), toHex(sinfo["teb"]), toHex(sinfo["size"]))
-			regions.append((sinfo["base"], sinfo["limit"], "Stack", dispname))
+			seh_info = ""
+			if arch == 32:
+				threads = self.getThreads()
+				mteb = threads.get(tid)
+				if mteb and hasattr(mteb, "SEHChain") and len(mteb.SEHChain) > 0:
+					records, overwritten = _walkSehChain(mteb.SEHChain)
+					if len(overwritten) > 0:
+						smash_parts = []
+						for recaddr, odata in overwritten.items():
+							smashoffset = int(odata[1])
+							otype = odata[0]
+							if otype == "unicode":
+								smashoffset += 2
+							smash_parts.append("0x%s at offset %d%s" % (
+								toHex(recaddr), smashoffset,
+								" [unicode]" if otype == "unicode" else ""))
+						seh_info = " | SEH: %d records, SMASHED: %s" % (len(records), "; ".join(smash_parts))
+					else:
+						seh_info = " | SEH: %d records" % len(records)
+			dispname = "Stack (Thread ID: %s | TEB: 0x%s%s)" % (
+				str(tid), toHex(sinfo["teb"]), seh_info)
+			regions.append((sinfo["limit"], sinfo["base"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
 		fe_names = {0: "None", 1: "LAL", 2: "LFH"}
@@ -6632,15 +6689,16 @@ class MnProc:
 				corrupted = mheap.isCorrupted()
 			except:
 				corrupted = True
+			heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted else 0)
 			if corrupted:
-				regions.append((heapaddr, heapaddr, "Heap", "%s (** CORRUPTED **)" % heapname))
+				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heapname))
 				continue
 			if heapaddr in self.ntheapdetail:
 				fe_type = self.ntheapdetail[heapaddr].get("frontend_type", 0)
 				fe_label = " | FrontEnd: %s" % fe_names.get(fe_type, "0x%x" % fe_type)
 				seg_count = len(self.ntheapdetail[heapaddr].get("segments", {}))
 				va_count = len(self.ntheapdetail[heapaddr].get("va_blocks", {}))
-			regions.append((heapaddr, heapaddr, "Heap", "%s (%s%s | Segments: %d | VA Blocks: %d)" % (heapname, htype, fe_label, seg_count, va_count)))
+			regions.append((heapaddr, heap_end, "Heap", "%s (%s%s | Segments: %d | VA Blocks: %d)" % (heapname, htype, fe_label, seg_count, va_count)))
 
 			if heapaddr in self.ntheapdetail:
 				detail = self.ntheapdetail[heapaddr]
@@ -8657,6 +8715,10 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				items = sorted(items, key=_POST_SORT_FIELDS[key], reverse=reverse)
 
 
+	if _sym_cache_dirs is None:
+		_ensureSymbolCache(auto_fix=False)
+	show_sym = _sym_cache_dirs is not None
+
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
 	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.g_modules), len(modules))
@@ -8674,9 +8736,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		thistable += ("%s\n" % excluded_by_configtext)
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
-		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
+		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
 	elif arch == 64:
-		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, ImageName & Path, DLLCharacteristics\n"
+		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
 	thistable += ("-" * linelength) + "\n"
 
 
@@ -8695,10 +8757,14 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			path 	= str(modproperties["path"])
 			name	= str(modproperties["filename"] or modproperties["name"])
 			dllflag = "0x%x" % modproperties["dllcharacteristics"]
+			sym_tag = ""
+			if show_sym:
+				has_sym = _hasSymbolsCached(modproperties)
+				sym_tag = " {%s}" % str(bool(has_sym))
 			if arch == 32:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 			if arch == 64:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "] (" + path + ") " + dllflag + "\n"
+				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 	thistable += ("-" * linelength) + "\n"
 	tableinfo = thistable.split('\n')
 	if logfile == "":
@@ -19649,8 +19715,8 @@ def procLayout(args):
 		prev_category = category
 
 	dbg.log(sep)
-	dbg.log("Total: %d regions" % len(regions))
-	objfile.write("Total: %d regions" % len(regions), logfile)
+	dbg.log("Total: %d entities" % len(regions))
+	objfile.write("Total: %d entities" % len(regions), logfile)
 	silent = False
 	return
 
@@ -22113,73 +22179,83 @@ def procBPSeh(self):
 	dbg.log("")
 	return "Done"
 
+def _walkSehChain(sehchain):
+	"""Walk a list of SEH records and analyse each entry.
+
+	Arguments:
+		sehchain - list of [record_address, handler_address] pairs
+		           (same format as dbg.getSehChain() or MnTEB.SEHChain)
+
+	Returns: (records, overwritten)
+		records     - OrderedDict {record_addr: [nseh_value, handler, funcname, info]}
+		overwritten - dict {record_addr: [type, offset]}  (only smashed entries)
+	"""
+	records = OrderedDict()
+	overwritten = {}
+	for sehrecord in sehchain:
+		recaddress = sehrecord[0]
+		sehandler = sehrecord[1]
+		nsehvalue = 0
+		nseh = ""
+		try:
+			nsehvalue = struct.unpack('<L', dbg.readMemory(recaddress, 4))[0]
+			nseh = "0x%08x" % nsehvalue
+		except:
+			nseh = 0
+			sehandler = 0
+		overwritedata = checkSEHOverwrite(recaddress, nseh, sehandler)
+		funcname = ""
+		recinfo = ""
+		if sehandler > 0:
+			ptr = MnPointer(sehandler)
+			funcname = ptr.getPtrFunction()
+		else:
+			recinfo = "corrupted record"
+			if str(nseh).startswith("0x"):
+				nseh = "0x%08x" % int(nseh, 16)
+			else:
+				nseh = "0x%08x" % int(nseh)
+		if len(overwritedata) > 0:
+			overwritten[recaddress] = overwritedata
+			smashoffset = int(overwritedata[1])
+			typeinfo = ""
+			if overwritedata[0] == "unicode":
+				smashoffset += 2
+				typeinfo = " [unicode]"
+			recinfo = "Smashed, offset %d%s" % (smashoffset, typeinfo)
+		if nsehvalue == 0xffffffff:
+			recinfo = "End of SEH chain"
+		records[recaddress] = [nsehvalue, sehandler, funcname, recinfo]
+	return records, overwritten
+
+
 def procSehChain(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
 	dbg.log("")
-	dict_sehrecords = {}
-	headers = ["On Stack", "Next SEH", "SE Handler", "Function", "Info"]
-	types   = ["pointer", "pointer", "pointer", "string", "string"]
-	sehseq = []
 
-	handlersoverwritten = {}
 	if len(sehchain) > 0:
 		dbg.log("Start of chain (TEB FS:[0]) : 0x%08x" % sehchain[0][0])
 		dbg.log("")
 
-		for sehrecord in sehchain:
-			recaddress = sehrecord[0]
-			sehandler = sehrecord[1]
-			nsehvalue = 0
-			nseh = ""
-			try:
-				nsehvalue = struct.unpack('<L',dbg.readMemory(recaddress,4))[0]
-				nseh = "0x%08x" % nsehvalue
-			except:
-				nseh = 0
-				sehandler = 0
-			overwritedata = checkSEHOverwrite(recaddress,nseh,sehandler)
-			funcname = ""
-			recinfo = ""
-			if sehandler > 0:
-				ptr = MnPointer(sehandler)
-				funcname = ptr.getPtrFunction()
-			else:
-				recinfo = "corrupted record"
-				if str(nseh).startswith("0x"):
-					nseh = "0x%08x" % int(nseh,16)
+		records, handlersoverwritten = _walkSehChain(sehchain)
+
+		headers = ["On Stack", "Next SEH", "SE Handler", "Function", "Info"]
+		types   = ["pointer", "pointer", "pointer", "string", "string"]
+		print_dict_table(records, headers, types, padding = "      ")
+
+		if len(handlersoverwritten) > 0:
+			dbg.log("")
+			dbg.log("Payload structure suggestion(s):")
+			for overwrittenhandler in handlersoverwritten:
+				overwrittendata = handlersoverwritten[overwrittenhandler]
+				overwrittentype = overwrittendata[0]
+				overwrittenoffset = int(overwrittendata[1])
+				if not overwrittentype == "unicode":
+					dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset))
 				else:
-					nseh = "0x%08x" % int(nseh)
-			if len(overwritedata) > 0:
-				handlersoverwritten[recaddress] = overwritedata
-				smashoffset = int(overwritedata[1])
-				typeinfo = ""
-				if overwritedata[0] == "unicode":
-					smashoffset += 2
-					typeinfo = " [unicode]"
-				recinfo = "Smashed, offset %d%s" % (smashoffset,typeinfo)
-			
-			if nsehvalue == 0xffffffff:
-				recinfo = "End of SEH chain"
-			dict_sehrecords[recaddress] = [nsehvalue, sehandler, funcname, recinfo]
-			sehseq.append(recaddress)
-
-			#dbg.log("0x%08x  %s  0x%08x %s%s" % (recaddress,nseh,sehandler,funcinfo, overwritemark), recaddress)
-		
-		print_dict_table(dict_sehrecords, headers, types, padding = "      ", itemsequence = sehseq)
-
-	if len(handlersoverwritten) > 0:
-		dbg.log("")
-		dbg.log("Payload structure suggestion(s):")
-		for overwrittenhandler in handlersoverwritten:
-			overwrittendata = handlersoverwritten[overwrittenhandler]
-			overwrittentype = overwrittendata[0]
-			overwrittenoffset = int(overwrittendata[1])
-			if not overwrittentype == "unicode":
-				dbg.log("[Junk * %d]['\\xeb\\x06\\x41\\x41'][p/p/r][shellcode][more junk if needed]" % (overwrittenoffset))
-			else:
-				overwrittenoffset += 2
-				dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
+					overwrittenoffset += 2
+					dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
 	return
 
 
