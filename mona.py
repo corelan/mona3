@@ -1888,10 +1888,7 @@ def getStacks():
 		return mnproc.stacklistCache
 	stacks = {}
 	for tid, teb in mnproc.getThreads().items():
-		if arch == 32:
-			stacks[tid] = [teb.StackBase, teb.StackLimit]
-		if arch == 64:
-			stacks[tid] = [teb.StackLimit, teb.StackBase]
+		stacks[tid] = [teb.StackLimit, teb.StackBase]
 	mnproc.stacklistCache = stacks
 	return stacks
 
