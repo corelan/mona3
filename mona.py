@@ -1888,7 +1888,10 @@ def getStacks():
 		return mnproc.stacklistCache
 	stacks = {}
 	for tid, teb in mnproc.getThreads().items():
-		stacks[tid] = [teb.StackBase, teb.StackLimit]
+		if arch == 32:
+			stacks[tid] = [teb.StackBase, teb.StackLimit]
+		if arch == 64:
+			stacks[tid] = [teb.StackLimit, teb.StackBase]
 	mnproc.stacklistCache = stacks
 	return stacks
 
@@ -7892,12 +7895,12 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 				
 				mem = dbg.MemoryPages[a].getMemory()
-				dbgp("      + Page %s is within scope, loading memory contents" % (PTR_PRINT % a))
+				#dbgp("      + Page %s is within scope, loading memory contents" % (PTR_PRINT % a))
 				if not mem:
-					dbgp("        Failed to load page %s!!" % (PTR_PRINT % a))
+					#dbgp("        Failed to load page %s!!" % (PTR_PRINT % a))
 					continue
 				else:
-					dbgp("        mem size: 0x%08x" % len(mem))
+					#dbgp("        mem size: 0x%08x" % len(mem))
 
 					# loop on each sequence
 					for seq in sequences:
@@ -15206,7 +15209,7 @@ def goFindMSP(distance=0, args=None):
 				rsp_val = regs[STACK_POINTER] + total_adjust
 				rsp_size = registers_to[STACK_POINTER][2] - total_adjust
 				registers_to[STACK_POINTER] = [rsp_val, rsp_offset, rsp_size, rip_patterntype]
-				warningline = "      -> %s (%s) actually points at offset %d in %s pattern (length %d) <- trampoline" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
+				warningline = "      -> %s will become %s, and then points at offset %d in %s pattern (length %d) <- trampoline" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
 				dbg.log(warningline)
 				tofile += "%s\n" % warningline	
 
@@ -15300,11 +15303,14 @@ def goFindMSP(distance=0, args=None):
 
 		# get stack this address belongs to
 		stacks = getStacks()
+		dbgp("Finding stack that has current value of %s : %s" % (STACK_POINTER, PTR_PRINT % curresp))
+
 		thisstackbase = 0
 		thisstacktop = 0
 
 		if distance < 1:
 			for tstack in stacks:
+				dbgp("Stack %d : %s - %s" % (tstack, (PTR_PRINT % stacks[tstack][0]), (PTR_PRINT % stacks[tstack][1])))
 				if (stacks[tstack][0] < curresp) and (curresp < stacks[tstack][1]):
 					thisstackbase = stacks[tstack][0]
 					thisstacktop = stacks[tstack][1]
