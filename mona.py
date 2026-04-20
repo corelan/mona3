@@ -24389,7 +24389,7 @@ Optional argument:
 	updateUsage = """Update mona to the latest version
 	Optional argument:
 	     -simul    	  : Check for updates and simulate updating. Will show release notes if available.	
-	     -force       : Always overwrite local file(s) with downloaded copy if version/revision info is present.
+	     -force    	  : Always overwrite local file(s) with downloaded copy if version/revision info is present.
 		"""
 	getpcUsage = """Find getpc routine for specific register
 
