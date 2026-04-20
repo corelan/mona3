@@ -239,7 +239,8 @@ def _ensureSymbolCache(auto_fix=False):
 
 
 def _hasSymbolsCached(modprops):
-	"""Check if a module's PDB is present in any known symbol cache directory.
+	"""Check if a module's PDB is present in any known symbol cache directory
+	or alongside the module's binary.
 
 	Returns True/False, or None if the cache hasn't been populated yet.
 	"""
@@ -247,6 +248,12 @@ def _hasSymbolsCached(modprops):
 		return None
 	pdbname = modprops.get("pdbname", "")
 	guidage = modprops.get("pdbguidage", "")
+	# Check next to the DLL/EXE itself
+	modpath = modprops.get("path", "")
+	if modpath and pdbname:
+		local_pdb = os.path.join(os.path.dirname(modpath), pdbname)
+		if os.path.isfile(local_pdb):
+			return True
 	if not pdbname or not guidage:
 		return False
 	for cdir in _sym_cache_dirs:
