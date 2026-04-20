@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Copyright (c) 2011-2026, Peter Van Eeckhoutte - Corelan Consulting bv
 All rights reserved.
@@ -4064,12 +4065,14 @@ class Debugger:
 		dbgp("origbytes: %s" % bin2hex(origbytes))
 
 		# in most cases, we just need to assemble one instruction.  if it's cached, we don't even need to check for an address
-
 		if len(allinstructions) == 1:
 			thisinstruction = allinstructions[0]
 			thisinstruction = self.cleanInstruction(thisinstruction)
 			# Ensure thisinstruction is ASCII for PyKD compatibility
-			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
+			if PY3:
+				ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
+			else:
+				ascii_instruction = thisinstruction.encode('ascii', 'ignore')
 			if ascii_instruction in self.AsmCache:
 				dbgp("Single instruction '%s' found in cache, returning cached bytes" % ascii_instruction)
 				dbgp("Cached entry: %s" % bin2hex(self.AsmCache[ascii_instruction]))
@@ -4106,7 +4109,7 @@ class Debugger:
 					read_success = False
 
 				if not read_success or origbytes == b"":
-					dbgp("Selecting fallback address. Previous address (%s) didn't work" % (PRT_PRINT % address))
+					dbgp("Selecting fallback address. Previous address (%s) didn't work" % (PTR_PRINT))
 					thismod = pykd.module("ntdll")
 					thismodbase = thismod.begin()
 					ntHeader = getNtHeaders(thismodbase)
@@ -4115,17 +4118,17 @@ class Debugger:
 					# Only add 0x1000 if entrypoint is 0
 					if entrypoint == 0:
 						address = thismodbase + 0x1000
-						dbgp("Fallback address set to: %s (module base: %s + 0x1000, entrypoint was 0)" % (PRT_PRINT % address, PRT_PRINT % thismodbase))
+						dbgp("Fallback address set to: %s (module base: %s + 0x1000, entrypoint was 0)" % (PTR_PRINT % address, PTR_PRINT % thismodbase))
 					else:
 						address = thismodbase + entrypoint
-						dbgp("Fallback address set to: %s (module base: %s + entrypoint: %s)" % (PRT_PRINT % address, PRT_PRINT % thismodbase, intToHex(entrypoint)))
+						dbgp("Fallback address set to: %s (module base: %s + entrypoint: %s)" % (PTR_PRINT % address, PTR_PRINT % thismodbase, intToHex(entrypoint)))
 					
 					try:
 						origbytes = self.readMemory(address, read_size)
-						dbgp("Successfully read from fallback address %s" % (PRT_PRINT % address))
+						dbgp("Successfully read from fallback address %s" % (PTR_PRINT % address))
 						read_success = True
 					except Exception as e:
-						dbgp("Failed to read from fallback address %s: %s" % (PRT_PRINT % address, str(e)))
+						dbgp("Failed to read from fallback address %s: %s" % (PTR_PRINT % address, str(e)))
 						origbytes = b""
 				attempts += 1
 
@@ -4141,7 +4144,10 @@ class Debugger:
 			thisinstruction = self.cleanInstruction(thisinstruction)
 
 			# Ensure thisinstruction is ASCII for compatibility
-			ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
+			if PY3:
+				ascii_instruction = thisinstruction.encode('ascii', 'ignore').decode('ascii')
+			else:
+				ascii_instruction = thisinstruction.encode('ascii', 'ignore')
 
 			if ascii_instruction in self.AsmCache:
 				dbgp("Found instruction '%s' in cache" % ascii_instruction)
@@ -4153,8 +4159,12 @@ class Debugger:
 				if keystoneLoaded:
 					try:
 						encodedinstruction, count = ks.asm(ascii_instruction)
-						thesebytes = bytes(encodedinstruction)
-						dbgp("Keystone: Instruction '%s' assembled to bytes: %s" % (ascii_instruction, thesebytes.hex(" ")))
+						# keystone returns a list of ints. Convert to raw bytes for both py2/py3.
+						if PY3:
+							thesebytes = bytes(encodedinstruction)
+						else:
+							thesebytes = ''.join(chr(b & 0xff) for b in encodedinstruction)
+						dbgp("Keystone: Instruction '%s' assembled to bytes: %s" % (ascii_instruction, bin2hex(thesebytes)))
 						allbytes += thesebytes
 						self.AsmCache[ascii_instruction] = thesebytes
 					except Exception as e:
@@ -4175,9 +4185,6 @@ class Debugger:
 							del self.OpcodeCache[address]
 
 						opc = opcode(address)
-						thesebytes = opc.getBytes()
-
-						opc = opcode(address)	
 						thesebytes = opc.getBytes()
 						dbgp("bytes: %s " % thesebytes)
 						allbytes += thesebytes
