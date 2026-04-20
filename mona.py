@@ -19725,7 +19725,7 @@ def procLayout(args):
 
 	headers = ["Start", "End", "Size", "Type", "Description"]
 	types   = ["pointer", "pointer", "string", "string", "string"]
-	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile)
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ")
 
 	dbg.log("")
 	dbg.log("Total: %d entities" % len(regions))
