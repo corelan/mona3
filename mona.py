@@ -336,7 +336,7 @@ def dbgp(s):
 
 
 def checkKeystone():
-	pyversion = f"{sys.version_info.major}.{sys.version_info.minor}"
+	pyversion = "%d.%d" % (sys.version_info[0], sys.version_info[1])
 	if not g_keystoneLoaded:
 		if arch==64:
 			dbg.log("")
@@ -17823,7 +17823,8 @@ def procByteArray(args):
 #----- Read binary file, print 'nice' header -----#
 def procPrintHeader(args):
 	alltypes = ["ruby","rb","python","py"]
-	thistype = "ruby"
+	# Default to Python output (works in both Python2 and Python3)
+	thistype = "python"
 	filename = ""
 	typewrong = False
 	stopnow = False
@@ -17864,6 +17865,10 @@ def procPrintHeader(args):
 	except:
 		dbg.log("Unable to read file %s" % filename,highlight=1)
 		return
+	# Python3 returns bytes; convert to a 1:1 text representation so this routine
+	# can safely use string operations while keeping original byte values intact.
+	if PY3 and isinstance(content, (bytes, bytearray)):
+		content = content.decode("latin1")
 	dbg.log("Read %d bytes from %s" % (len(content),filename))	
 	dbg.log("Output type: %s" % thistype)
 	cnt = 0
@@ -17878,15 +17883,20 @@ def procPrintHeader(args):
 	if thistype == "python":
 		addchar = "+="
 	
-	# keep it easy, initialize header as an empty string
-	output = "header = \"\"\n"
+	# keep it easy, initialize header as an empty string/bytes
+	litprefix = "\""
+	if thistype == "python":
+		litprefix = "b\""
+		output = "header = b\"\"\n"
+	else:
+		output = "header = \"\"\n"
 
 	while cnt < max:
 
 		# first check for unicode
 		if cnt < max-1:
 			
-			thisline = "header %s \"" % addchar	
+			thisline = "header %s %s" % (addchar, litprefix)	
 			thiscnt = cnt
 			while cnt < max-1 and isAscii2(_ord(content[cnt])) and _ord(content[cnt+1]) == 0:
 				if content[cnt] == "\\":
@@ -17899,7 +17909,7 @@ def procPrintHeader(args):
 				output += thisline + "\"" + "\n"
 				linecnt += 1
 				
-		thisline = "header %s \"" % addchar
+		thisline = "header %s %s" % (addchar, litprefix)
 		thiscnt = cnt
 		
 		# ascii repetitions
@@ -17913,6 +17923,11 @@ def procPrintHeader(args):
 				else:
 					break
 			if reps > 1:
+				# Avoid emitting literal newlines/CR in generated code
+				if startval == "\n":
+					startval = "\\n"
+				elif startval == "\r":
+					startval = "\\r"
 				if startval == "\\":
 					startval += "\\"
 				if startval == "\"":
@@ -17923,7 +17938,7 @@ def procPrintHeader(args):
 				continue
 				
 
-		thisline = "header %s \"" % addchar
+		thisline = "header %s %s" % (addchar, litprefix)
 		thiscnt = cnt
 		
 		# check for just ascii
@@ -17944,7 +17959,7 @@ def procPrintHeader(args):
 		
 		#check others : repetitions
 		if cnt < max:
-			thisline = "header %s \"" % addchar
+			thisline = "header %s %s" % (addchar, litprefix)
 			thiscnt = cnt
 			while cnt < max:
 				if isAscii2(_ord(content[cnt])):
@@ -17963,10 +17978,10 @@ def procPrintHeader(args):
 				if reps > 1:
 					if len(thisline) > 12:
 						output += thisline + "\"" + "\n"
-					thisline = "header %s \"\\x" % addchar 
+					thisline = "header %s %s\\x" % (addchar, litprefix)
 					thisline += "%02x\" * %d" % (startval,reps)
 					output += thisline + "\n"
-					thisline = "header %s \"" % addchar
+					thisline = "header %s %s" % (addchar, litprefix)
 					linecnt += 1
 				else:
 					thisline += "\\x" + "%02x" % _ord(content[cnt])	
@@ -17977,6 +17992,9 @@ def procPrintHeader(args):
 					linecnt += 1			
 
 	headerfilename="header.txt"
+	global g_omitModuleTableInOutpuFile
+	currentlyOmittingModuleTable = g_omitModuleTableInOutpuFile
+	g_omitModuleTableInOutpuFile = True
 	objheaderfile = MnLog(headerfilename)
 	headerfile = objheaderfile.reset()
 	objheaderfile.write(output,headerfile)
@@ -17985,6 +18003,7 @@ def procPrintHeader(args):
 		dbg.logLines(output)
 		dbg.log("-" * 30)			
 	dbg.log("Wrote header to %s" % headerfile)
+	g_omitModuleTableInOutpuFile = currentlyOmittingModuleTable
 	return
 
 #----- Update -----#
@@ -24329,7 +24348,7 @@ Mandatory argument :
     -f <filename> : source filename
 
 Optional argument:
-    -t <type>     : specify type of output. Valid choices are 'ruby' (default) or 'python' """
+    -t <type>     : specify type of output. Valid choices are 'python' (default) or 'ruby' """
 	
 	updateUsage = """Update mona to the latest version
 Optional argument:
