@@ -173,8 +173,24 @@ ptr_to_get = -1
 silent = False
 g_omitModuleTableInOutpuFile = False
 noheader = False
+g_keystoneLoaded = False
+
+try:
+	import keystone
+	g_keystoneLoaded = True
+except:
+	g_keystoneLoadd = False
+
+
+###
+#
+# Some stuff that needs to happen early on
+#
+###
+
 
 dbg = dbglib.Debugger()
+
 
 def _ensureSymbolCache(auto_fix=False):
 	"""Check that WinDBG has a valid local symbol cache configured.
@@ -317,6 +333,23 @@ def dbgp(s):
 		except Exception as e:
 			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
 			pass	
+
+
+def checkKeystone():
+	pyversion = f"{sys.version_info.major}.{sys.version_info.minor}"
+	if not g_keystoneLoaded:
+		if arch==64:
+			dbg.log("")
+			dbg.log("[!] Warning - keystone engine not loaded", highlight=True)
+			dbg.log("    This will severely impact your ability to assemble mnemonics on 64bit", highlight=True)
+			dbg.log("    Consider installing via py -%s -m pip install keystone-engine" % pyversion)
+			dbg.log("")
+		return False
+	else:
+		dbg.log("[+] keystone-engine version %s loaded successfully" % keystone.__version__)
+		dbg.log("")
+		return True 
+
 
 def resetGlobals():
 	"""
@@ -11234,6 +11267,11 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 		dbg.log("[+] Type of search: %s" % patterntype)
 		dbg.log("[+] Searching for matches up to %d instructions deep" % maxdepth)
 		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
+
+		if patterntype == "str":
+			checkKeystone()
+			dbg.log("")
+
 	if len(modulecriteria) > 0:
 		modulestosearch = getModulesToQuery(modulecriteria)
 		# convert modules to ranges
@@ -11289,10 +11327,10 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 						if pageaccess.startswith(desiredacl_str):
 							compatible_pageacl = True
 				if compatible_pageacl:
-					dbg.log("    Adding page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+					dbg.log("    Adding page at 0x%08x to scope, ACL: %s" % (pageaddress, pageaccess))
 					rangestosearch.append([pagebegin, pageend])
 				else:
-					dbgp("    Skipping page at 0x%08x to list, ACL: %s" % (pageaddress, pageaccess))
+					dbgp("    Skipping page at 0x%08x to scope, ACL: %s" % (pageaddress, pageaccess))
 		#rangestosearch.append([base,top])
 	
 	pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" ,",",").replace("# ","#").replace(" #","#")
@@ -17164,7 +17202,9 @@ def procFindWild(args):
 def procAssemble(args):
 	opcodes = ""
 	encoder = ""
-	
+
+	checkKeystone()
+
 	if not 's' in args:
 		dbg.log("Mandatory argument -s <opcodes> missing", highlight=1)
 		return
@@ -23865,6 +23905,8 @@ def procHelp(args, helpForCommand=None):
 	if __DEBUGGERAPP__ == "WinDBG":
 		pykdversion = dbg.getPyKDVersionNr()
 		dbg.log("    PyKD version %s" % pykdversion)
+		if g_keystoneLoaded:
+			dbg.log("    keystone-engine version : %s " % (keystone.__version__))
 	dbg.log("    Written by Corelan - https://www.corelan.be")
 	dbg.log("    Project page : https://github.com/corelan/mona3")
 	dbg.logLines(getBanner(),highlight=1)
@@ -24886,6 +24928,8 @@ def main(args):
 		dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
 		if __DEBUGGERAPP__ == "WinDBG":
 			dbg.log("[ -- START -- ] PyKD: %s " % dbg.getPyKDVersionNr())
+			if not g_keystoneLoaded and arch==64:
+				dbg.log("[ -- START -- ] Keystone-engine NOT loaded")
 		dbg.log("")
 
 		ptr_counter = 0

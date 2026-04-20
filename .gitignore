@@ -13,6 +13,9 @@ __pycache__/
 *.cmd
 *.zsh
 
+# VS Code Workspace files
+*.code-workspace
+
 # Distribution / packaging
 .Python
 build/
