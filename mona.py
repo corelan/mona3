@@ -19715,8 +19715,8 @@ def procLayout(args):
 		prev_category = category
 
 	dbg.log(sep)
-	dbg.log("Total: %d regions" % len(regions))
-	objfile.write("Total: %d regions" % len(regions), logfile)
+	dbg.log("Total: %d entities" % len(regions))
+	objfile.write("Total: %d entities" % len(regions), logfile)
 	silent = False
 	return
 
