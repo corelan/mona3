@@ -15206,10 +15206,9 @@ def goFindMSP(distance=0, args=None):
 				rsp_val = regs[STACK_POINTER] + total_adjust
 				rsp_size = registers_to[STACK_POINTER][2] - total_adjust
 				registers_to[STACK_POINTER] = [rsp_val, rsp_offset, rsp_size, rip_patterntype]
-				warningline = "      -> %s will become %s, and then points at offset %d in %s pattern (length %d) <- trampoline" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
+				warningline = "      -> %s will become %s, and then points at offset %d in %s pattern (length %d) <- trampoline?" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
 				dbg.log(warningline)
 				tofile += "%s\n" % warningline	
-
 
 	if "registers" not in results:
 		results["registers"] = registers
@@ -15410,6 +15409,7 @@ def goFindMSP(distance=0, args=None):
 				extratxt = "(entire stack)"
 			else:
 				extratxt = "(+- " + str(distance) + " bytes)"
+			dbg.log("")
 			dbg.log("[+] Examining stack %s - looking for pointers to cyclic pattern" % extratxt)
 		tofile += "\n[+] Examining stack %s - looking for pointers to cyclic pattern\n" % extratxt
 
