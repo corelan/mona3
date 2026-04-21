@@ -172,7 +172,6 @@ _excluded_modules_list = None
 ptr_counter = 0
 ptr_to_get = -1
 silent = False
-g_omitModuleTableInOutpuFile = False
 noheader = False
 g_keystoneLoaded = False
 _sym_cache_dirs = None
@@ -3742,9 +3741,8 @@ class MnLog:
 				except:
 					pass
 			#write module table
-			dbgp("reset: g_omitModuleTableInOutpuFile=%s, skipModuleTable=%s, logfile=%s" % (g_omitModuleTableInOutpuFile, skipModuleTable, logfile))
 			try:
-				if not g_omitModuleTableInOutpuFile and not skipModuleTable:
+				if not skipModuleTable:
 					showModuleTable(logfile)
 			except Exception as e:
 				dbgp("showModuleTable failed: %s" % str(e))
@@ -22046,12 +22044,8 @@ def procEnc(args):
 			encodedbytes = cEncoder.encodeAlphaNum(badchars = badbytes)
 			# determine correct sequence of dictionary
 			if len(encodedbytes) > 0:
-				global g_omitModuleTableInOutpuFile
-				curomit = g_omitModuleTableInOutpuFile
-				g_omitModuleTableInOutpuFile = True
 				logfile = MnLog("encoded_%s.txt" % encodertype)
 				thislog = logfile.reset(skipModuleTable=True)
-				g_omitModuleTableInOutpuFile = curomit
 				if not silent:
 					dbg.log("")
 					dbg.log("Results:")
