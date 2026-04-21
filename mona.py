@@ -479,6 +479,16 @@ def _to_bytes(value):
 	return text_type(value).encode('latin1')
 
 
+def _normalize_single_fill_byte(fillvalue):
+	"""Normalize fill input to exactly one byte, Python 2/3 compatible."""
+	if isinstance(fillvalue, int):
+		return struct.pack('B', fillvalue & 0xff)
+	fillbyte = _to_bytes(fillvalue)
+	if len(fillbyte) == 0:
+		return b""
+	return fillbyte[:1]
+
+
 def str_to_bool(value):
     """
     Convert a string (or other value) to boolean.
@@ -6373,13 +6383,9 @@ class MnChunk:
 		if size is None or size <= 0:
 			return (0, 0)
 
-		if isinstance(fillchar, int):
-			fillbyte = struct.pack('B', fillchar & 0xff)
-		else:
-			fillbyte = _to_bytes(fillchar)
+		fillbyte = _normalize_single_fill_byte(fillchar)
 		if len(fillbyte) == 0:
 			return (0, 0)
-		fillbyte = fillbyte[:1]
 
 		data = fillbyte * size
 		dbg.writeMemory(start, data)
@@ -21446,7 +21452,11 @@ def procFillChunk(args):
 			if customsize > 0:
 				dbg.log("Filling memory location starting at %s with \\x%s" % ((PTR_PRINT % refvalue),bin2hex(fillchar)))
 				dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
-				data = fillchar * customsize
+				fillbyte = _normalize_single_fill_byte(fillchar)
+				if len(fillbyte) == 0:
+					dbg.log("Invalid fill byte specified", highlight=1)
+					return False
+				data = fillbyte * customsize
 				dbg.writeMemory(refvalue,data)
 				dbg.log("Done")
 				return True
@@ -21477,7 +21487,11 @@ def procFillChunk(args):
 				return False
 			dbg.log("Heap chunk found at %s, size 0x%08x (%d) bytes" % ((PTR_PRINT % chunkptr),size,size))
 			dbg.log("Filling chunk with \\x%s, starting at %s" % (bin2hex(fillchar),(PTR_PRINT % userptr)))
-			data = fillchar * size
+			fillbyte = _normalize_single_fill_byte(fillchar)
+			if len(fillbyte) == 0:
+				dbg.log("Invalid fill byte specified", highlight=1)
+				return False
+			data = fillbyte * size
 			dbg.writeMemory(userptr,data)
 			dbg.log("Done")
 			return True
