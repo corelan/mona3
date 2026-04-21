@@ -4995,6 +4995,8 @@ def getProcessHeapsInfo():
 	except:
 		return results
 
+	seen_heap_addrs = set()
+
 	for idx in range(nrofheaps):
 		try:
 			heapaddr = readPtrSizeBytes(processheaps_ptr + (idx * ptrsize))
@@ -5002,6 +5004,9 @@ def getProcessHeapsInfo():
 			continue
 		if heapaddr == 0:
 			break
+		if heapaddr in seen_heap_addrs:
+			continue
+		seen_heap_addrs.add(heapaddr)
 
 		mheap = MnHeap(heapaddr)
 		htype = mheap.getHeapType()
@@ -6676,9 +6681,14 @@ class MnProc:
 		Each item: (address, type_str, info_dict)
 		"""
 		result = []
+		# Keep a single entry per address, preferring NT over Segment over Unknown.
+		seen = {}
 		for htype in ("NT", "Segment", "Unknown"):
 			for addr, info in self.heapinfo.get(htype, {}).items():
-				result.append((addr, htype, info))
+				if addr in seen:
+					continue
+				seen[addr] = (addr, htype, info)
+		result = list(seen.values())
 		result.sort(key=lambda x: x[0])
 		return result
 
