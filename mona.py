@@ -3585,7 +3585,6 @@ class MnLog:
 	"""
 	def __init__(self, filename, numbered=False):
 		dbgp(get_current_function_name())
-		
 		self.filename = filename
 		self.numbered = numbered
 		
@@ -9243,9 +9242,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 		dbg.log("[+] Looking for pointers to interesting functions...")
 		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
 	curmod = ""
-	#ropfuncfilename="ropfunc.txt"
-	#objropfuncfile = MnLog(ropfuncfilename)
-	#ropfuncfile = objropfuncfile.reset()
+
 	
 	offsetpointers = {}
 	
@@ -9476,7 +9473,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	progressfilename="_rop_progress_"+dbg.getDebuggedName()+"_"+progressid+".log"
 	
 	objprogressfile = MnLog(progressfilename)
-	progressfile = objprogressfile.reset()
+	progressfile = objprogressfile.reset(skipModuleTable=True)
 	dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
 	dbg.log("[+] Progress will be written to %s" % progressfilename)
 	dbg.log("[+] Maximum offset : %d" % maxoffset)
@@ -10264,9 +10261,9 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 	if filenotfound:
 		return
 	objcomparefile = MnLog("filecompare.txt")
-	comparefile = objcomparefile.reset()
+	comparefile = objcomparefile.reset(skipModuleTable=True)
 	objcomparefilenot = MnLog("filecompare_not.txt")
-	comparefilenot = objcomparefilenot.reset()
+	comparefilenot = objcomparefilenot.reset(skipModuleTable=True)
 	objcomparefilenot.write("Source files:",comparefilenot)
 	for fcnt in xrange(len(allfiles)):
 		objcomparefile.write(" - " + str(fcnt+1)+". "+allfiles[fcnt],comparefile)
@@ -12317,7 +12314,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 	if not findunicode:
 		modes.remove("unicode")
 	objlogfile = MnLog("compare.txt")
-	logfile = objlogfile.reset()
+	logfile = objlogfile.reset(skipModuleTable=True)
 	for mode in modes:
 		if mode == "normal":
 			srcdata = srcdata_normal
@@ -13404,7 +13401,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		vplogtxt += "    rop_gadgets = [\n"
 		vplogtxt += thischaintxt
 		vplogtxt += "    ]\n"
-		vplogtxt += "    return ''.join(struct.pack('<I', _) for _ in rop_gadgets)\n\n"
+		vplogtxt += "    return b''.join(struct.pack('<I', _) for _ in rop_gadgets)\n\n"
 		vplogtxt += vplogtxtpy
 		vplogtxt += "  rop_chain = create_rop_chain(%s)\n\n" % argtxtpy
 		# Javascript
@@ -13473,11 +13470,11 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			shortmodname = modulename.replace(".dll","")
 			if ropdbchain.lower().find("virtualprotect") > -1:
 				ofile = MnLog(shortmodname+"_virtualprotect.xml")
-				thisofile = ofile.reset(showheader = False)
+				thisofile = ofile.reset(showheader = False, skipModuleTable=True)
 				ofile.write(ropdb,thisofile)
 			if ropdbchain.lower().find("virtualalloc") > -1:
 				ofile = MnLog(shortmodname+"_virtualalloc.xml")
-				thisofile = ofile.reset(showheader = False)
+				thisofile = ofile.reset(showheader = False, skipModuleTable=True)
 				ofile.write(ropdb,thisofile)
 		
 		#go to the next one
@@ -17149,7 +17146,7 @@ def procCreatePATTERN(args):
 		dbg.log("Creating cyclic pattern of %d bytes" % size)				
 		dbg.log(pattern)
 		objpatternfile = MnLog("pattern.txt")
-		patternfile = objpatternfile.reset()
+		patternfile = objpatternfile.reset(skipModuleTable=True)
 		# ASCII
 		objpatternfile.write("\nPattern of " + str(size) + " bytes :\n",patternfile)
 		objpatternfile.write("-" * (19 + len(str(size))),patternfile)
@@ -18069,7 +18066,7 @@ def procByteArray(args):
 	
 	arrayfilename="bytearray.txt"
 	objarrayfile = MnLog(arrayfilename)
-	arrayfile = objarrayfile.reset()
+	arrayfile = objarrayfile.reset(skipModuleTable=True)
 	binfilename = arrayfile.replace("bytearray.txt","bytearray.bin")
 	objarrayfile.write(output,arrayfile)
 	dbg.logLines(output)
@@ -18256,18 +18253,14 @@ def procPrintHeader(args):
 					linecnt += 1			
 
 	headerfilename="header.txt"
-	global g_omitModuleTableInOutpuFile
-	currentlyOmittingModuleTable = g_omitModuleTableInOutpuFile
-	g_omitModuleTableInOutpuFile = True
 	objheaderfile = MnLog(headerfilename)
-	headerfile = objheaderfile.reset()
+	headerfile = objheaderfile.reset(skipModuleTable=True)
 	objheaderfile.write(output,headerfile)
 	if not silent:
 		dbg.log("-" * 30)
 		dbg.logLines(output)
 		dbg.log("-" * 30)			
 	dbg.log("Wrote header to %s" % headerfile)
-	g_omitModuleTableInOutpuFile = currentlyOmittingModuleTable
 	return
 
 #----- Update -----#
@@ -18755,7 +18748,7 @@ def procgetPC(args):
 				
 	getpcfilename="getpc.txt"
 	objgetpcfile = MnLog(getpcfilename)
-	getpcfile = objgetpcfile.reset()
+	getpcfile = objgetpcfile.reset(skipModuleTable=True)
 	objgetpcfile.write(output,getpcfile)
 	dbg.logLines(output)
 	dbg.log("")			
@@ -19152,7 +19145,7 @@ def procEgg(args):
 			
 	hunterfilename="egghunter.txt"
 	objegghunterfile = MnLog(hunterfilename)
-	egghunterfile = objegghunterfile.reset()						
+	egghunterfile = objegghunterfile.reset(skipModuleTable=True)						
 
 	dbg.log("[+] Egghunter %s (%d bytes): " % (_to_text(extratext), len(egghunter.strip().replace(b" ", b""))))
 	dbg.logLines("%s" % egghunter_hex)
@@ -19272,7 +19265,7 @@ def procSuggest(args):
 
 	#ptr_to_get = 5				
 	noheader = True
-	exploitfile = objexploitfile.reset()			
+	exploitfile = objexploitfile.reset(showheader = False, skipModuleTable=True)			
 	noheader = False
 	
 	dbg.log(" ")
@@ -19312,7 +19305,7 @@ def procSuggest(args):
 		noheader = True
 		exploitfilename_seh="exploit_seh.rb"
 		objexploitfile_seh = MnLog(exploitfilename_seh)
-		exploitfile_seh = objexploitfile_seh.reset()				
+		exploitfile_seh = objexploitfile_seh.reset(showheader=False,skipModuleTable=True)				
 		noheader = False
 
 	# start building exploit structure
@@ -21164,7 +21157,7 @@ def procSkeleton(args):
 	objexploitfile = MnLog(exploitfilename)
 	global noheader
 	noheader = True
-	exploitfile = objexploitfile.reset()			
+	exploitfile = objexploitfile.reset(showheader=False,skipModuleTable=True)			
 	noheader = False
 
 	modulecriteria = {}
@@ -21453,7 +21446,7 @@ def procInfoDump(args):
 		xmldata += "<pages>\n"				
 		# first dump module info to file
 		objfile = MnLog(filename, numbered = True)
-		infofile = objfile.reset(clear=True,showheader=False)
+		infofile = objfile.reset(clear=True,showheader=False,skipModuleTable=True)
 		f = open(infofile,"w")
 		for line in xmldata.split("\n"):
 			if line != "":
@@ -22057,7 +22050,7 @@ def procEnc(args):
 				curomit = g_omitModuleTableInOutpuFile
 				g_omitModuleTableInOutpuFile = True
 				logfile = MnLog("encoded_%s.txt" % encodertype)
-				thislog = logfile.reset()
+				thislog = logfile.reset(skipModuleTable=True)
 				g_omitModuleTableInOutpuFile = curomit
 				if not silent:
 					dbg.log("")
@@ -22839,7 +22832,7 @@ def procUnicodeAlign(args):
 			if not silent:
 				dbg.log("[+] Alignment generator finished, %d results" % len(alignresults))
 				logfile = MnLog("venetian_alignment.txt")
-				thislog = logfile.reset()
+				thislog = logfile.reset(skipModuleTable=True)
 				for resultnr in alignresults:
 					resulttitle = "Alignment routine %d:" % resultnr
 					logfile.write(resulttitle,thislog)
@@ -23930,7 +23923,7 @@ def procToBp(args):
 	bpsyntax = locsyntax + ' ".echo ---------------;u @$ip L 1;' + regsyntax + dmpsyntax + ".echo;g" + '"'
 	filename = "logbps.txt"
 	logfile = MnLog(filename)
-	thislog = logfile.reset(False,False)
+	thislog = logfile.reset(clear = False,showheader=False,skipModuleTable=True)
 	with open(thislog, "a") as fh:
 		fh.write(bpsyntax + "\n")
 	silent = oldsilent
