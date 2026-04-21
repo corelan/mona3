@@ -6373,7 +6373,10 @@ class MnChunk:
 		if size is None or size <= 0:
 			return (0, 0)
 
-		fillbyte = _to_bytes(fillchar)
+		if isinstance(fillchar, int):
+			fillbyte = struct.pack('B', fillchar & 0xff)
+		else:
+			fillbyte = _to_bytes(fillchar)
 		if len(fillbyte) == 0:
 			return (0, 0)
 		fillbyte = fillbyte[:1]
