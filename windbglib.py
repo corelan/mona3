@@ -545,6 +545,8 @@ def clearvars():
 	global InstructionCache
 	global PageSections
 	global ModuleCache
+	global currentPID
+	global currentTEBAddress
 	global cpebaddress
 	MemoryPages = None
 	AsmCache = None
@@ -554,6 +556,8 @@ def clearvars():
 	InstructionCache = None
 	PageSections = None
 	ModuleCache = None
+	currentPID = 0
+	currentTEBAddress = 0
 	cpebaddress = 0
 	return
 
@@ -567,8 +571,14 @@ def getTEBAddress():
 	dbgp(get_current_function_name())
 
 	global currentTEBAddress
-	if currentTEBAddress == 0:
-		currentTEBAddress = int(pykd.getImplicitThread())
+	global currentPID
+	global cpebaddress
+	new_teb = int(pykd.getImplicitThread())
+	if currentTEBAddress != new_teb:
+		currentTEBAddress = new_teb
+		# Context switched to another thread/process; drop dependent caches.
+		currentPID = 0
+		cpebaddress = 0
 	return currentTEBAddress
 
 
@@ -3410,10 +3420,26 @@ class Debugger:
 		dbgp(get_current_function_name())
 
 		global currentPID
+		teb = self.get_teb_addr()
 
-		if currentPID == 0:
-			teb = self.get_teb_addr()
-			currentPID = pykd.ptrDWord(teb + TEB_CLIENT_ID_PROCESS[_arch_idx])
+		# Prefer debugger engine PID for the current implicit process.
+		try:
+			pid_from_engine = int(pykd.getProcessSystemID())
+		except:
+			pid_from_engine = 0
+
+		pid_from_teb = 0
+		try:
+			pid_from_teb = int(pykd.ptrDWord(teb + TEB_CLIENT_ID_PROCESS[_arch_idx]))
+		except:
+			pid_from_teb = 0
+
+		if pid_from_engine != 0:
+			currentPID = pid_from_engine
+		elif pid_from_teb != 0:
+			currentPID = pid_from_teb
+		else:
+			currentPID = 0
 
 		return currentPID
 

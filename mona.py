@@ -6673,14 +6673,28 @@ class MnProc:
 
 	memProtConstants = {
 		"X": ["PAGE_EXECUTE", 0x10],
+		"PAGE_EXECUTE": ["PAGE_EXECUTE", 0x10],
 		"RX": ["PAGE_EXECUTE_READ", 0x20],
+		"PAGE_EXECUTE_READ": ["PAGE_EXECUTE_READ", 0x20],
 		"RWX": ["PAGE_EXECUTE_READWRITE", 0x40],
+		"RXW": ["PAGE_EXECUTE_READWRITE", 0x40],
+		"PAGE_EXECUTE_READWRITE": ["PAGE_EXECUTE_READWRITE", 0x40],
+		"XW": ["PAGE_EXECUTE_WRITECOPY", 0x80],
+		"PAGE_EXECUTE_WRITECOPY": ["PAGE_EXECUTE_WRITECOPY", 0x80],
 		"N": ["PAGE_NOACCESS", 0x1],
+		"PAGE_NOACCESS": ["PAGE_NOACCESS", 0x1],
 		"R": ["PAGE_READONLY", 0x2],
+		"PAGE_READONLY": ["PAGE_READONLY", 0x2],
 		"RW": ["PAGE_READWRITE", 0x4],
+		"PAGE_READWRITE": ["PAGE_READWRITE", 0x4],
+		"W": ["PAGE_WRITECOPY", 0x8],
+		"PAGE_WRITECOPY": ["PAGE_WRITECOPY", 0x8],
 		"GUARD": ["PAGE_GUARD", 0x100],
+		"PAGE_GUARD": ["PAGE_GUARD", 0x100],
 		"NOCACHE": ["PAGE_NOCACHE", 0x200],
+		"PAGE_NOCACHE": ["PAGE_NOCACHE", 0x200],
 		"WC": ["PAGE_WRITECOMBINE", 0x400],
+		"PAGE_WRITECOMBINE": ["PAGE_WRITECOMBINE", 0x400],
 	}
 
 	def __init__(self):
@@ -22003,11 +22017,26 @@ def procPageACL(args):
 	global MemoryPageACL
 	silent = True
 	findaddy = 0
+	aclfilter = ""
+	aclfilter_val = None
+	modifier_only_acl_vals = [0x100, 0x200, 0x400]
 	if "a" in args:
 		findaddy,addyok = getAddyArg(args["a"])
 		if not addyok:
 			dbg.log("%s is an invalid address" % args["a"], highlight=1)
 			return
+	if "acl" in args:
+		if type(args["acl"]).__name__.lower() != "bool":
+			candidate_acl = args["acl"].upper()
+			if candidate_acl in MnProc.memProtConstants:
+				aclfilter = candidate_acl
+				aclfilter_val = MnProc.memProtConstants[candidate_acl][1]
+			else:
+				dbg.log(" *** Please specify a valid memory protection constant with -acl ***")
+				dbg.log(" *** Valid values are :")
+				for acltype in MnProc.memProtConstants:
+					dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),MnProc.memProtConstants[acltype][0],MnProc.memProtConstants[acltype][1]))
+				return
 	if findaddy > 0:
 		dbg.log("Displaying page information around address 0x%08x" % findaddy)
 	# Force a fresh memory map snapshot for each pageacl invocation.
@@ -22046,6 +22075,8 @@ def procPageACL(args):
 		toshow.sort()
 		orderedpages = toshow
 		dbg.log("Showing %d pages" % len(orderedpages))
+	if aclfilter != "":
+		dbg.log("Filtering pages with ACL: %s" % MnProc.memProtConstants[aclfilter][0])
 	if len(orderedpages) > 0:
 		# Pre-build lookup tables to avoid per-page MnPointer/belongsTo overhead
 		populateModuleInfo()
@@ -22126,6 +22157,14 @@ def procPageACL(args):
 								break
 					if in_heap and "Heap" not in pageusage:
 						mod = "(%s)" % owner
+			acl_num = page.getAccess()
+			if aclfilter_val != None:
+				if aclfilter_val in modifier_only_acl_vals:
+					if (acl_num & aclfilter_val) != aclfilter_val:
+						continue
+				else:
+					if acl_num != aclfilter_val:
+						continue
 			acl = page.getAccess(human=True)
 			tolog = ""
 			pusage = ""
@@ -24284,13 +24323,13 @@ def procChangeACL(args):
 	if not addyerror and not aclerror:
 		pageacl = MnProc.memProtConstants[acl][1]
 		pageaclname = MnProc.memProtConstants[acl][0]
-		modifier_only_acls = ["GUARD", "NOCACHE", "WC"]
+		modifier_only_acl_vals = [0x100, 0x200, 0x400]
 		base_acl_mask = 0xff
 		dbg.log("[+] ACL Changes for address %s" % (PTR_PRINT % addy))
 		current_acl = dbg.getMemoryPageByAddress(addy).getAccess()
 		before_access = getPointerAccess(addy, forcedread = True)
 		dbg.log("[+] Current ACL: %s" % before_access)
-		if acl in modifier_only_acls:
+		if pageacl in modifier_only_acl_vals:
 			base_acl = current_acl & base_acl_mask
 			if base_acl == 0:
 				base_acl = 0x1
@@ -25390,7 +25429,8 @@ Optional arguments:
 	changeaclUsage = """Change the ACL of a given page.
 Arguments:
     -a <address>   : Address belonging to the page that needs to be changed
-    -acl <level>   : New ACL. Valid values are R,RW,RXW,RX,N,GUARD,NOCACHE,WC""" 
+	-acl <level>   : New ACL. Valid values include N,R,RW,W,X,RX,RWX/RXW,XW,GUARD,NOCACHE,WC
+					 You can also use full names such as PAGE_READWRITE, PAGE_EXECUTE_READ, etc.""" 
 
 	infodumpUsage = """Dumps contents of memory to file. Contents will include all pages that don't
 belong to stack, heap or loaded modules.
