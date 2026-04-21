@@ -621,7 +621,7 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
@@ -719,10 +719,11 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	if len(printsequence) == 0:
 		printsequence = list(data.keys())
 
-	for key in printsequence:
+	for _pdt_i, key in enumerate(printsequence):
 		if key in data:
 			value = data[key]
-			row = _normalize_row(key, value)
+			col0 = key_col[_pdt_i] if key_col is not None else key
+			row = _normalize_row(col0, value)
 
 			if len(row) != expected_cols:
 				raise ValueError(
@@ -19806,9 +19807,13 @@ def procLayout(args):
 	objfile = MnLog(filename)
 	logfile = objfile.reset()
 
-	# Build table data for print_dict_table
+	# Use sequential idx as dict key to avoid address collisions (e.g. Heap
+	# header and first Heap Segment share the same start address). The actual
+	# start address is conveyed to print_dict_table via key_col.
 	table_data = OrderedDict()
 	table_seq = []
+	table_starts = []       # parallel start-address list for key_col
+	seen_regions = set()   # (start, category) pairs to suppress true duplicates
 
 	in_heap_chain = False
 	prev_category = ""
@@ -19835,17 +19840,20 @@ def procLayout(args):
 		else:
 			in_heap_chain = False
 		prev_category = category
-		# print_dict_table uses the dict key as the first column, so duplicate
-		# start addresses (e.g. Heap + first Heap Segment) can overwrite rows
-		# and produce duplicate output through itemsequence. Keep first row only.
-		if start in table_data:
+		# Deduplicate truly identical (start, category) pairs (e.g. a segment
+		# walked twice). Different categories at the same start are kept
+		# (Heap header + first Heap Segment both begin at the heap base).
+		dedup_key = (start, category)
+		if dedup_key in seen_regions:
 			continue
-		table_data[start] = (end, psize, category, indent + description)
-		table_seq.append(start)
+		seen_regions.add(dedup_key)
+		table_data[idx] = (end, psize, category, indent + description)
+		table_seq.append(idx)
+		table_starts.append(start)
 
 	headers = ["Start", "End", "Size", "Type", "Description"]
 	types   = ["pointer", "pointer", "string", "string", "string"]
-	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ")
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts)
 
 	dbg.log("")
 	dbg.log("Total: %d entities" % len(table_seq))
