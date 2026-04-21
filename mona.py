@@ -6330,11 +6330,13 @@ class MnSegment:
 				nextchunk += heapgranularity
 
 			chunktype = "chunk"
-			if "virtall" in getHeapFlag(flag).lower() or "internal" in getHeapFlag(flag).lower():
-				#chunktype = "virtualalloc"
+			is_virtalloc = "virtall" in getHeapFlag(flag).lower()
+			if is_virtalloc or "internal" in getHeapFlag(flag).lower():
 				headersize = 0x20
-					
-			if not thischunk in allchunks and thissize > 0:
+
+			# Virtual-alloc chunks are tracked separately via getVirtualAllocdBlocks().
+			# Skip them here so they don't appear mixed in with segment chunks.
+			if not is_virtalloc and not thischunk in allchunks and thissize > 0:
 				mChunk = MnChunk(thischunk,chunktype,headersize,self.heapbase,self.segmentstart,thissize,prevsize,segmentid,flag,unused,tag)
 				allchunks[thischunk] = mChunk
 			
