@@ -899,6 +899,9 @@ class Debugger:
 		kernel32.CloseHandle(hprocess)
 
 		if vaddr:
+			# Invalidate cached page map so subsequent page queries reflect
+			# the new allocation immediately.
+			self.MemoryPages = {}
 			return int(vaddr)
 		return 0
 
@@ -932,6 +935,9 @@ class Debugger:
 		)
 
 		kernel32.CloseHandle(hprocess)
+		if returnval:
+			# Invalidate cached page map so ACL changes are visible right away.
+			self.MemoryPages = {}
 		return returnval
 
 

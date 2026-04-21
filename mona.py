@@ -22000,6 +22000,7 @@ def procTEB(args):
 
 def procPageACL(args):
 	global silent
+	global MemoryPageACL
 	silent = True
 	findaddy = 0
 	if "a" in args:
@@ -22009,6 +22010,13 @@ def procPageACL(args):
 			return
 	if findaddy > 0:
 		dbg.log("Displaying page information around address 0x%08x" % findaddy)
+	# Force a fresh memory map snapshot for each pageacl invocation.
+	# This avoids stale output after allocmem/changeacl commands.
+	try:
+		dbg.MemoryPages = {}
+	except:
+		pass
+	MemoryPageACL = {}
 	allpages = dbg.getMemoryPages()
 	dbg.log("Total of %d pages : "% len(allpages))
 	filename="pageacl.txt"
