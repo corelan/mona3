@@ -3523,10 +3523,58 @@ class MnLog:
 	"""
 	Class to perform logfile operations
 	"""
-	def __init__(self, filename):
+	def __init__(self, filename, numbered=False):
 		dbgp(get_current_function_name())
 		
 		self.filename = filename
+		self.numbered = numbered
+		
+	def _get_timestamped_filename(self, logfile, max_suffix=9999):
+		"""
+		Return a unique timestamped filename for logfile.
+		Example: logfile 'name.xml' -> 'name-20260421153045.xml'
+		If a file with the same timestamp exists, returns 'name-20260421153045-1.xml', etc.
+		This routine is strictly bounded and cannot loop forever.
+		"""
+		root, ext = os.path.splitext(logfile)
+		try:
+			timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+		except Exception:
+			try:
+				timestamp = time.strftime("%Y%m%d%H%M%S")
+			except Exception:
+				timestamp = "00000000000000"
+
+		candidate = "%s-%s%s" % (root, timestamp, ext)
+		if not os.path.exists(candidate):
+			return candidate
+
+		# Bounded collision handling: append -1 .. -max_suffix
+		for suffix in xrange(1, max_suffix + 1):
+			candidate = "%s-%s-%d%s" % (root, timestamp, suffix, ext)
+			if not os.path.exists(candidate):
+				return candidate
+
+		# Final bounded fallback: add short random token
+		for _ in xrange(0, 100):
+			try:
+				rnd = "%04x" % random.randint(0, 0xFFFF)
+			except Exception:
+				rnd = "0000"
+			candidate = "%s-%s-%s%s" % (root, timestamp, rnd, ext)
+			if not os.path.exists(candidate):
+				return candidate
+
+		# Worst case: return a (very likely) unique name, but don't loop forever trying
+		try:
+			rnd = "%04x" % random.randint(0, 0xFFFF)
+		except Exception:
+			rnd = "0000"
+		try:
+			pid = os.getpid()
+		except Exception:
+			pid = 0
+		return "%s-%s-%d-%s%s" % (root, timestamp, pid, rnd, ext)
 		
 			
 	def reset(self,clear=True,showheader=True,skipModuleTable=False):
@@ -3548,7 +3596,10 @@ class MnLog:
 			dbgp("Filename: %s" % self.filename)
 			if not silent:
 				dbg.log("")
-				dbg.log("[+] Preparing output file '" + self.filename +"'")
+				if self.numbered:
+					dbg.log("[+] Preparing output file '" + self.filename +"' (timestamped)")
+				else:
+					dbg.log("[+] Preparing output file '" + self.filename +"'")
 		if not showheader:
 			noheader = True
 		debuggedname = dbg.getDebuggedName()
@@ -3572,28 +3623,35 @@ class MnLog:
 		logfile = getAbsolutePath(self.filename)
 
 		if clear:
+			if self.numbered:
+				# when numbered=True: always create a timestamped logfile name
+				try:
+					logfile = self._get_timestamped_filename(logfile)
+				except Exception:
+					pass
 			if not silent:
 				dbg.log("    - (Re)setting output file %s" % logfile)
-			# remove logfile.old2 if it exists
-			try:
-				if os.path.isfile(logfile + ".old2"):
-					os.remove(logfile + ".old2")
-			except Exception:
-				pass
+			if not self.numbered:
+				# remove logfile.old2 if it exists
+				try:
+					if os.path.isfile(logfile + ".old2"):
+						os.remove(logfile + ".old2")
+				except Exception:
+					pass
 
-			# rotate logfile.old -> logfile.old2
-			try:
-				if os.path.isfile(logfile + ".old"):
-					os.rename(logfile + ".old", logfile + ".old2")
-			except Exception:
-				pass
+				# rotate logfile.old -> logfile.old2
+				try:
+					if os.path.isfile(logfile + ".old"):
+						os.rename(logfile + ".old", logfile + ".old2")
+				except Exception:
+					pass
 
-			# rotate logfile -> logfile.old
-			try:
-				if os.path.isfile(logfile):
-					os.rename(logfile, logfile + ".old")
-			except Exception:
-				pass
+				# rotate logfile -> logfile.old
+				try:
+					if os.path.isfile(logfile):
+						os.rename(logfile, logfile + ".old")
+				except Exception:
+					pass
 
 			#write header
 			if not noheader:
@@ -21316,8 +21374,8 @@ def procInfoDump(args):
 		xmldata += "  <module name='%s'>\n" % thismodule
 		thisbase = getModuleProperty(thismodule,"base")
 		thissize = getModuleProperty(thismodule,"size")
-		xmldata += "    <base>0x%08x</base>\n" % thisbase
-		xmldata += "    <size>0x%08x</size>\n" % thissize
+		xmldata += "    <base>%s</base>\n" % (PTR_PRINT % thisbase)
+		xmldata += "    <size>%s</size>\n" % (PTR_PRINT % thissize)
 		xmldata += "  </module>\n"
 	xmldata += "</modules>\n"
 	orderedpages = []
@@ -21327,16 +21385,22 @@ def procInfoDump(args):
 	if len(orderedpages) > 0:
 		xmldata += "<pages>\n"				
 		# first dump module info to file
-		objfile = MnLog(filename)
+		objfile = MnLog(filename, numbered = True)
 		infofile = objfile.reset(clear=True,showheader=False)
 		f = open(infofile,"w")
 		for line in xmldata.split("\n"):
 			if line != "":
 				f.write(line + "\n")
+		dbg.log("")
 		tolog = "Dumping the following pages to file:"
 		dbg.log(tolog)
-		tolog = "Start        End        Size         ACL"
-		dbg.log(tolog)
+		# PTR_SIZE is in bytes; for display we want the length of a rendered pointer (e.g. "0x%08x").
+		fieldsize = len(PTR_PRINT % 0)
+		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds" % (fieldsize, fieldsize, fieldsize, fieldsize)
+		header = fmt % ("Start", "End", "Size", "ACL")
+		separator = fmt % ("-" * fieldsize, "-" * fieldsize, "-" * fieldsize, "-" * fieldsize)
+		dbg.log(header)
+		dbg.log(separator)
 		for thispage in orderedpages:
 			page = allpages[thispage]
 			pagestart = page.getBaseAddress()
@@ -21362,12 +21426,12 @@ def procInfoDump(args):
 			if not ismod and not isstack and not isheap:
 				acl = page.getAccess(human=True)
 				if not "NOACCESS" in acl:
-					tolog = "0x%08x - 0x%08x (0x%08x) %s" % (pagestart,pagestart + pagesize,pagesize,acl)
+					tolog = "%s - %s (%s) %s" % (PTR_PRINT % pagestart, PTR_PRINT % (pagestart + pagesize), PTR_PRINT % pagesize, acl)
 					dbg.log(tolog)
 					# add page contents to xml
 					thispage = dbg.readMemory(pagestart,pagesize)
-					f.write("  <page start=\"0x%08x\">\n" % pagestart)
-					f.write("    <size>0x%08x</size>\n" % pagesize)
+					f.write("  <page start=\"%s\">\n" % (PTR_PRINT % pagestart))
+					f.write("    <size>%s</size>\n" % (PTR_PRINT % pagesize))
 					f.write("    <acl>%s</acl>\n" % acl)
 					f.write("    <contents>")
 					memcontents = bin2hex(thispage)
@@ -21378,7 +21442,7 @@ def procInfoDump(args):
 		f.write("</info>")
 		dbg.log("")
 		f.close()
-		dbg.log("Done")
+		dbg.log("Done.  Memory contents written to %s" % infofile)
 	return
 
 
@@ -24891,7 +24955,7 @@ Arguments:
 	commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain",[32])
 	commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd",[32,64])
 	commands["gflags"]			= MnCommand("gflags", "Show current GFlags settings from PEB.NtGlobalFlag", gflagsUsage, procFlags, "gf", [32,64])
-	commands["infodump"]		= MnCommand("infodump","Dumps specific parts of memory to file", infodumpUsage, procInfoDump,"if")
+	commands["infodump"]		= MnCommand("infodump","Dumps specific parts of memory to file", infodumpUsage, procInfoDump,"if",[32,64])
 	commands["peb"]				= MnCommand("peb","Show location of the PEB",pebUsage,procPEB,"peb",[32,64])
 	commands["teb"]				= MnCommand("teb","Show TEB related information",tebUsage,procTEB,"teb",[32,64])
 	commands["string"]			= MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str",[32,64])
