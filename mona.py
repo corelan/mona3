@@ -6354,6 +6354,34 @@ class MnChunk:
 		self.remaining = self.unused - self.headersize - self.extraheadersize
 		self.flagtxt = getHeapFlag(self.flag)
 
+	def fill(self, fillchar="A", start=None, size=None):
+		"""
+		Fill chunk data with a single byte.
+
+		Arguments:
+			fillchar - byte/char to use for filling (only first byte is used)
+			start    - optional start address override (defaults to userptr)
+			size     - optional size override (defaults to usersize)
+
+		Return:
+			(start_addr, written_size) on success, (0, 0) if nothing was written
+		"""
+		if start is None:
+			start = self.userptr
+		if size is None:
+			size = self.usersize
+		if size is None or size <= 0:
+			return (0, 0)
+
+		fillbyte = _to_bytes(fillchar)
+		if len(fillbyte) == 0:
+			return (0, 0)
+		fillbyte = fillbyte[:1]
+
+		data = fillbyte * size
+		dbg.writeMemory(start, data)
+		return (start, size)
+
 
 	def showChunk(self,showdata = False):
 		chunkshown = False
@@ -21316,6 +21344,12 @@ def procFillChunk(args):
 			if not addyok:
 				dbg.log("%s is an invalid address" % args["a"], highlight=1)
 				return
+		else:
+			dbg.log("Please specify a valid address/register with -a", highlight=1)
+			return
+	else:
+		dbg.log("Please specify a chunk address/register with -a", highlight=1)
+		return
 
 	dbg.log("Location: %s" % (PTR_PRINT % refvalue))
 
@@ -21328,25 +21362,91 @@ def procFillChunk(args):
 
 	dbg.log("Fill char : \\x%s" % bin2hex(fillchar))
 
-	cmd2run = "!heap -x 0x%08x" % refvalue
-	output = dbg.nativeCommand(cmd2run)
-	outputlines = output.split("\n")
-	heapinfo = ""
-	for line in outputlines:
-		if line.find("[") > -1 and line.find("]") > -1 and line.find("(") > -1 and line.find(")") > -1:
-			heapinfo = line
-			break
-	if heapinfo == "":
-		dbg.log("Address is not part of a heap chunk")
-		if customsize > 0:
-			dbg.log("Filling memory location starting at 0x%08x with \\x%s" % (refvalue,bin2hex(fillchar)))
-			dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
-			data = fillchar * customsize
-			dbg.writeMemory(refvalue,data)
-			dbg.log("Done")
-		else:
+	def _fillChunkFromMnProcMap():
+		try:
+			_ensure_mnproc()
+			mnproc.populate(include_chunks=True)
+		except:
+			return False
+
+		if mnproc is None:
+			return False
+
+		# 1) Use MnProc's unified range map to identify the chunk range quickly.
+		chunk_start = 0
+		chunk_end = 0
+		for start, end, category, description, static in mnproc.getAllSorted():
+			if category == "Heap Chunk" and refvalue >= start and refvalue < end:
+				chunk_start = start
+				chunk_end = end
+				break
+
+		if chunk_start == 0:
+			return False
+
+		# 2) Find owning segment range and resolve precise MnChunk object.
+		for heapaddr, detail in mnproc.ntheapdetail.items():
+			segments = detail.get("segments", {})
+			for segaddr, seg in segments.items():
+				if chunk_start < seg.get("base", 0) or chunk_start >= seg.get("end", 0):
+					continue
+				try:
+					allchunks = walkSegment(seg["firstentry"], seg["lastentry"], heapaddr)
+				except:
+					allchunks = {}
+
+				matched_chunk = None
+				if chunk_start in allchunks:
+					matched_chunk = allchunks[chunk_start]
+				else:
+					for chunkaddr, mchunk in allchunks.items():
+						chunksize = mchunk.size * heapgranularity
+						if chunk_start >= chunkaddr and chunk_start < (chunkaddr + chunksize):
+							matched_chunk = mchunk
+							break
+
+				if matched_chunk is not None and matched_chunk.usersize > 0:
+					dbg.log("Heap chunk found at %s, size 0x%08x (%d) bytes [MnProc ranges]" % (
+						(PTR_PRINT % matched_chunk.chunkptr), matched_chunk.usersize, matched_chunk.usersize))
+					dbg.log("Filling chunk with \\x%s, starting at %s" % (
+						bin2hex(fillchar), (PTR_PRINT % matched_chunk.userptr)))
+					matched_chunk.fill(fillchar)
+					dbg.log("Done")
+					return True
+		return False
+
+	def _fillChunkFromHeapXFallback():
+		def _cleanHexDword(token):
+			token = token.strip()
+			token = token.replace("`", "")
+			token = token.replace("[", "")
+			token = token.replace("]", "")
+			token = token.replace("(", "")
+			token = token.replace(")", "")
+			token = token.replace(",", "")
+			token = token.replace("0x", "")
+			return token
+
+		cmd2run = "!heap -x %s" % (PTR_PRINT % refvalue)
+		output = dbg.nativeCommand(cmd2run)
+		outputlines = output.split("\n")
+		heapinfo = ""
+		for line in outputlines:
+			if line.find("[") > -1 and line.find("]") > -1 and line.find("(") > -1 and line.find(")") > -1:
+				heapinfo = line
+				break
+		if heapinfo == "":
+			dbg.log("Address is not part of a heap chunk")
+			if customsize > 0:
+				dbg.log("Filling memory location starting at %s with \\x%s" % ((PTR_PRINT % refvalue),bin2hex(fillchar)))
+				dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
+				data = fillchar * customsize
+				dbg.writeMemory(refvalue,data)
+				dbg.log("Done")
+				return True
 			dbg.log("Please specify a custom size with -s to fill up the memory location anyway")
-	else:
+			return False
+
 		infofields = []
 		cnt = 0
 		charseen = False
@@ -21363,14 +21463,26 @@ def procFillChunk(args):
 		if thisfield != "":
 			infofields.append(thisfield)
 		if len(infofields) > 7:
-			chunkptr = hexStrToInt(infofields[0]) 
-			userptr = hexStrToInt(infofields[4])
-			size = hexStrToInt(infofields[5])
-			dbg.log("Heap chunk found at 0x%08x, size 0x%08x (%d) bytes" % (chunkptr,size,size))
-			dbg.log("Filling chunk with \\x%s, starting at 0x%08x" % (bin2hex(fillchar),userptr))
+			chunkptr = hexStrToInt(_cleanHexDword(infofields[0]))
+			userptr = hexStrToInt(_cleanHexDword(infofields[4]))
+			size = hexStrToInt(_cleanHexDword(infofields[5]))
+			if chunkptr == 0 or userptr == 0 or size == 0:
+				dbg.log("Unable to parse heap chunk details from '!heap -x' output", highlight=1)
+				return False
+			dbg.log("Heap chunk found at %s, size 0x%08x (%d) bytes" % ((PTR_PRINT % chunkptr),size,size))
+			dbg.log("Filling chunk with \\x%s, starting at %s" % (bin2hex(fillchar),(PTR_PRINT % userptr)))
 			data = fillchar * size
 			dbg.writeMemory(userptr,data)
 			dbg.log("Done")
+			return True
+
+		dbg.log("Unable to locate heap chunk metadata in '!heap -x' output", highlight=1)
+		return False
+
+	if _fillChunkFromMnProcMap():
+		return
+
+	_fillChunkFromHeapXFallback()
 	return
 
 def procInfoDump(args):
@@ -24708,7 +24820,7 @@ Mandatory arguments :
 	""" 
 	
 
-	fillchunkUsage = """Fills a heap chunk, referenced by a register, with A's (or another character)
+	fillchunkUsage = """Fills a heap chunk, referenced by an address expression, with A's (or another character)
 
 Mandatory arguments :
     -a <address> : reference to heap chunk to fill (address, register, offset from register, etc)
@@ -24984,7 +25096,7 @@ Arguments:
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
 	if __DEBUGGERAPP__ == "WinDBG":
-		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk",[32,64])
+		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
 		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
