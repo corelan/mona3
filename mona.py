@@ -21375,7 +21375,10 @@ def procFillChunk(args):
 		# 1) Use MnProc's unified range map to identify the chunk range quickly.
 		chunk_start = 0
 		chunk_end = 0
-		for start, end, category, description, static in mnproc.getAllSorted():
+		for region in mnproc.getAllSorted():
+			if len(region) < 4:
+				continue
+			start, end, category, description = region[:4]
 			if category == "Heap Chunk" and refvalue >= start and refvalue < end:
 				chunk_start = start
 				chunk_end = end
