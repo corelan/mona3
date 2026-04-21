@@ -6716,7 +6716,7 @@ class MnProc:
 		va_ranges.sort(key=lambda x: x[0])
 		self.VACache = {"segments": seg_ranges, "vablocks": va_ranges}
 
-	def populate(self, include_chunks=False):
+	def populate(self, include_chunks=False, include_modules=True):
 		"""
 		Populate all fields by querying the debugger.
 
@@ -6737,7 +6737,7 @@ class MnProc:
 				pass
 
 		# Modules
-		if len(self.modules) == 0:
+		if len(self.modules) == 0 and include_modules:
 			populateModuleInfo()
 			self.modules = dict(self.g_modules)
 
@@ -21528,11 +21528,13 @@ def procFillChunk(args):
 				fillchar = args["b"][0]
 
 	dbg.log("Fill char : \\x%s" % bin2hex(fillchar))
+	dbg.log("")
+	dbg.log("[+] Attempting to identify heap chunk details...")
 
 	def _fillChunkFromMnProcMap():
 		try:
 			_ensure_mnproc()
-			mnproc.populate(include_chunks=True)
+			mnproc.populate(include_chunks=True, include_modules = False)
 		except:
 			return False
 
@@ -21576,12 +21578,12 @@ def procFillChunk(args):
 							break
 
 				if matched_chunk is not None and matched_chunk.usersize > 0:
-					dbg.log("Heap chunk found at %s, size 0x%08x (%d) bytes [MnProc ranges]" % (
+					dbg.log("[+] Heap chunk found at %s, size 0x%08x (%d) bytes [MnProc ranges]" % (
 						(PTR_PRINT % matched_chunk.chunkptr), matched_chunk.usersize, matched_chunk.usersize))
-					dbg.log("Filling chunk with \\x%s, starting at %s" % (
+					dbg.log("[+] Filling chunk with \\x%s, starting at %s" % (
 						bin2hex(fillchar), (PTR_PRINT % matched_chunk.userptr)))
 					matched_chunk.fill(fillchar)
-					dbg.log("Done")
+					dbg.log("[+] Done")
 					return True
 		return False
 
