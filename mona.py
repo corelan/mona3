@@ -19835,6 +19835,11 @@ def procLayout(args):
 		else:
 			in_heap_chain = False
 		prev_category = category
+		# print_dict_table uses the dict key as the first column, so duplicate
+		# start addresses (e.g. Heap + first Heap Segment) can overwrite rows
+		# and produce duplicate output through itemsequence. Keep first row only.
+		if start in table_data:
+			continue
 		table_data[start] = (end, psize, category, indent + description)
 		table_seq.append(start)
 
@@ -19843,8 +19848,8 @@ def procLayout(args):
 	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ")
 
 	dbg.log("")
-	dbg.log("Total: %d entities" % len(regions))
-	objfile.write("Total: %d entities" % len(regions), logfile)
+	dbg.log("Total: %d entities" % len(table_seq))
+	objfile.write("Total: %d entities" % len(table_seq), logfile)
 	silent = False
 	return
 
