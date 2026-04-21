@@ -15341,7 +15341,7 @@ def goFindMSP(distance=0, args=None):
 				dbg.log(warningline)
 				tofile += "%s\n" % warningline
 
-				warningline = "      That means we technically control %s, and %s will be adjusted accordingly" % (PROGRAM_COUNTER, STACK_POINTER)
+				warningline = "      That means we technically control %s, and %s will be adjusted after the '%s' instruction" % (PROGRAM_COUNTER, STACK_POINTER, opc_instruction)
 				dbg.log(warningline)
 				tofile += "%s\n" % warningline				
 				# bingo. Get the possible offset due to calling conventions
@@ -15355,19 +15355,24 @@ def goFindMSP(distance=0, args=None):
 				extra_adjust = getOffset(opc_instruction)
 				total_adjust = adjust_rsp + extra_adjust
 				dbgp("Extra adjustment for retn offset instruction: %d" % total_adjust)
-				value_on_stack = struct.unpack(PTR_FMT,dbg.readMemory(rsp_val,PTR_SIZE))[0]
-				registers[PROGRAM_COUNTER] = [value_on_stack, rip_offset, rip_patterntype]
-				warningline = "      -> We control %s at offset %d in %s pattern" % (PROGRAM_COUNTER, rip_offset, rip_patterntype)
-				dbg.log(warningline)
-				tofile += "%s\n" % warningline		
-				# the stack pointer itself will change, and this its position and length also
-				rsp_offset = rip_offset + total_adjust
-				rsp_val = regs[STACK_POINTER] + total_adjust
-				rsp_size = registers_to[STACK_POINTER][2] - total_adjust
-				registers_to[STACK_POINTER] = [rsp_val, rsp_offset, rsp_size, rip_patterntype]
-				warningline = "      -> %s will become %s, and then points at offset %d in %s pattern (length %d) <- trampoline?" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
-				dbg.log(warningline)
-				tofile += "%s\n" % warningline	
+				try:
+					value_on_stack = struct.unpack(PTR_FMT,dbg.readMemory(rsp_val,PTR_SIZE))[0]
+					registers[PROGRAM_COUNTER] = [value_on_stack, rip_offset, rip_patterntype]
+					warningline = "      -> We control %s at offset %d in %s pattern" % (PROGRAM_COUNTER, rip_offset, rip_patterntype)
+					dbg.log(warningline)
+					tofile += "%s\n" % warningline		
+					# the stack pointer itself will change, and this its position and length also
+					rsp_offset = rip_offset + total_adjust
+					rsp_val = regs[STACK_POINTER] + total_adjust
+					rsp_size = registers_to[STACK_POINTER][2] - total_adjust
+					registers_to[STACK_POINTER] = [rsp_val, rsp_offset, rsp_size, rip_patterntype]
+					warningline = "      -> %s will become %s, and then points at offset %d in %s pattern (length %d) <- trampoline?" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
+					dbg.log(warningline)
+					tofile += "%s\n" % warningline
+				except Exception as e:
+					warningline = "      *** Could not read memory at %s to confirm control over %s: %s" % ((PTR_PRINT % rsp_val), PROGRAM_COUNTER, str(e))
+					dbg.log(warningline)
+					tofile += "%s\n" % warningline
 
 	if "registers" not in results:
 		results["registers"] = registers
