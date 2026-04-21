@@ -478,6 +478,16 @@ def _to_bytes(value):
 	return text_type(value).encode('latin1')
 
 
+def _normalize_single_fill_byte(fillvalue):
+	"""Normalize fill input to exactly one byte, Python 2/3 compatible."""
+	if isinstance(fillvalue, int):
+		return struct.pack('B', fillvalue & 0xff)
+	fillbyte = _to_bytes(fillvalue)
+	if len(fillbyte) == 0:
+		return b""
+	return fillbyte[:1]
+
+
 def str_to_bool(value):
     """
     Convert a string (or other value) to boolean.
@@ -610,7 +620,7 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
@@ -715,10 +725,11 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	if len(printsequence) == 0:
 		printsequence = list(data.keys())
 
-	for key in printsequence:
+	for _pdt_i, key in enumerate(printsequence):
 		if key in data:
 			value = data[key]
-			row = _normalize_row(key, value)
+			col0 = key_col[_pdt_i] if key_col is not None else key
+			row = _normalize_row(col0, value)
 
 			if len(row) != expected_cols:
 				raise ValueError(
@@ -1140,6 +1151,8 @@ def hex2bin(pattern):
 	the bytes
 	"""
 	pattern = pattern.replace("\\x", "")
+	pattern = pattern.replace("0x", "")
+	pattern = pattern.replace("`", "")
 	pattern = pattern.replace("\"", "")
 	pattern = pattern.replace("\'", "")
 		
@@ -1945,13 +1958,17 @@ def getHeapFlag(flag):
 
 def decodeHeapHeader(headeraddress,headersize,key):
 	# get header and XOR first 8 bytes with encoding key (_HEAP_ENTRY sized)
+	# Always read in 4-byte chunks: _HEAP_ENTRY fields are WORD/BYTE-sized, not
+	# pointer-sized. Reading PTR_SIZE (8) bytes on x64 produces a 16-char hex
+	# string but the inner loop only processes 8 chars, silently discarding half
+	# the header and producing corrupt field values.
 	key_size = 8
 	blockcnt = 0
 	fullheaderbytes = ""
 	decodedheader = ""
 	fullheaderbytes = ""
 	while blockcnt < headersize:
-		header = struct.unpack(PTR_FMT,dbg.readMemory(headeraddress+blockcnt,PTR_SIZE))[0]
+		header = struct.unpack('<L',dbg.readMemory(headeraddress+blockcnt,4))[0]
 		if blockcnt < key_size:
 			# extract the corresponding 4 bytes of the key
 			key_dword = (key >> (blockcnt * 8)) & 0xFFFFFFFF
@@ -5040,6 +5057,8 @@ def getProcessHeapsInfo():
 	except:
 		return results
 
+	seen_heap_addrs = set()
+
 	for idx in range(nrofheaps):
 		try:
 			heapaddr = readPtrSizeBytes(processheaps_ptr + (idx * ptrsize))
@@ -5047,6 +5066,9 @@ def getProcessHeapsInfo():
 			continue
 		if heapaddr == 0:
 			break
+		if heapaddr in seen_heap_addrs:
+			continue
+		seen_heap_addrs.add(heapaddr)
 
 		mheap = MnHeap(heapaddr)
 		htype = mheap.getHeapType()
@@ -5341,6 +5363,20 @@ class MnHeap(object):
 		"""
 		return 0
 
+	def getChunkHeaderDataOffset(self):
+		"""Return the byte offset within a _HEAP_ENTRY at which the
+		encoded compact header begins (i.e. after any unencoded prefix).
+
+		On Windows 8+ x64, _HEAP_ENTRY is 16 bytes: the first 8 bytes
+		are PreviousBlockPrivateData (unencoded), and the next 8 bytes
+		are the encoded compact header (Size/Flags/etc.).
+		On all x86 targets and on Windows 7 x64, _HEAP_ENTRY is 8 bytes
+		with no unencoded prefix, so the offset is 0.
+
+		Return: int, byte offset to pass as an addend to the chunk pointer
+		when reading the encoded compact header.
+		"""
+		return 0
 
 	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
 		"""
@@ -6077,11 +6113,67 @@ class MnNT8Heap(MnNT7Heap):
 	+0x0c8 FreeLists        : _LIST_ENTRY
 	+0x0d0 FrontEndHeap     : Ptr32 Void
 	+0x0d6 FrontEndHeapType : UChar
+
+	_HEAP (Windows 8 x64 selected fields)
+	+0x000 Entry            : _HEAP_ENTRY (16 bytes: +0 PreviousBlockPrivateData, +8 compact header)
+	+0x010 SegmentSignature : Uint4B
+	+0x018 SegmentListEntry : _LIST_ENTRY
+	+0x028 Heap             : Ptr64 _HEAP
+	+0x030 BaseAddress      : Ptr64 Void
+	+0x038 NumberOfPages    : Uint4B
+	+0x040 FirstEntry       : Ptr64 _HEAP_ENTRY
+	+0x048 LastValidEntry   : Ptr64 _HEAP_ENTRY
+	+0x07c EncodeFlagMask   : Uint4B
+	+0x080 Encoding         : _HEAP_ENTRY  (+0x088 = key bytes after PreviousBlockPrivateData)
+	+0x098 Signature        : Uint4B
+	+0x110 VirtualAllocdBlocks : _LIST_ENTRY
+	+0x120 SegmentList      : _LIST_ENTRY
+	+0x150 FreeLists        : _LIST_ENTRY
+	+0x170 FrontEndHeap     : Ptr64 Void
+	+0x17a FrontEndHeapType : UChar
 	"""
-	pass
+
+	def getEncodingKey(self):
+		"""Retrieve the Encoding key from the Win8+ NT heap header.
+
+		On Win8+ x64, _HEAP_ENTRY is 16 bytes.  The Encoding field
+		(at heapbase+0x080 on x64) is itself a _HEAP_ENTRY, so its
+		first 8 bytes are PreviousBlockPrivateData (not the key).
+		The actual 8-byte XOR key starts at heapbase+0x088.
+
+		On x86 the layout is unchanged from Win7 (8-byte _HEAP_ENTRY,
+		no PreviousBlockPrivateData prefix).
+
+		Return: int, 8-byte XOR key (0 when encoding is disabled).
+		"""
+		self.Encoding = 0
+		offset = archValue(0x4c, 0x7c)
+		self.EncodeFlagMask = struct.unpack('<L', dbg.readMemory(self.heapbase + offset, 4))[0]
+		if self.EncodeFlagMask == 0x100000:
+			# x86: Encoding _HEAP_ENTRY starts at +0x050 (8 bytes, no prefix)
+			# x64: Encoding _HEAP_ENTRY starts at +0x080 but first 8 bytes are
+			#      PreviousBlockPrivateData; key bytes begin at +0x088.
+			encoding_offset = archValue(0x50, 0x88)
+			self.Encoding = struct.unpack('<Q', dbg.readMemory(self.heapbase + encoding_offset, 8))[0]
+		return self.Encoding
+
+	def getChunkHeaderDataOffset(self):
+		"""Return the byte offset to the encoded compact header within a _HEAP_ENTRY.
+
+		On Win8+ x64 each _HEAP_ENTRY is 16 bytes: the first 8 bytes are
+		PreviousBlockPrivateData (stored in plain-text, not XOR-encoded).
+		The encoded compact header (Size, Flags, SmallTagIndex, PreviousSize,
+		SegmentOffset, UnusedBytes) begins at byte 8.
+
+		On x86 (all versions) and Win7 x64 _HEAP_ENTRY is 8 bytes with no
+		unencoded prefix, so the offset is 0.
+
+		Return: int (0 for x86, 8 for x64).
+		"""
+		return archValue(0, 8)
 
 
-class MnNT10Heap(MnNT7Heap):
+class MnNT10Heap(MnNT8Heap):
 	"""
 	NT Heap implementation for Windows 10 / 11.
 
@@ -6241,6 +6333,7 @@ class MnSegment:
 		savedprevsize = 0
 		mHeap = MnHeap(self.heapbase)
 		key = mHeap.getEncodingKey()
+		header_data_offset = mHeap.getChunkHeaderDataOffset()
 		while not allchunksfound:
 			thissize = 0
 			prevsize = 0
@@ -6252,9 +6345,9 @@ class MnSegment:
 			try:
 				fullheaderbin = ""
 				if key == 0 and not win7mode:
-					fullheaderbin = dbg.readMemory(thischunk,headersize)
+					fullheaderbin = dbg.readMemory(thischunk + header_data_offset, headersize)
 				else:
-					fullheaderbin = decodeHeapHeader(thischunk,headersize,key)
+					fullheaderbin = decodeHeapHeader(thischunk + header_data_offset, headersize, key)
 
 				sizebytes = fullheaderbin[0:2]
 				thissize = struct.unpack('<H',sizebytes)[0]
@@ -6289,16 +6382,18 @@ class MnSegment:
 				unused = 0
 
 			if thissize > 0:
-				nextchunk = thischunk + (thissize * 8)
+				nextchunk = thischunk + (thissize * heapgranularity)
 			else:
-				nextchunk += headersize
+				nextchunk += heapgranularity
 
 			chunktype = "chunk"
-			if "virtall" in getHeapFlag(flag).lower() or "internal" in getHeapFlag(flag).lower():
-				#chunktype = "virtualalloc"
+			is_virtalloc = "virtall" in getHeapFlag(flag).lower()
+			if is_virtalloc or "internal" in getHeapFlag(flag).lower():
 				headersize = 0x20
-					
-			if not thischunk in allchunks and thissize > 0:
+
+			# Virtual-alloc chunks are tracked separately via getVirtualAllocdBlocks().
+			# Skip them here so they don't appear mixed in with segment chunks.
+			if not is_virtalloc and not thischunk in allchunks and thissize > 0:
 				mChunk = MnChunk(thischunk,chunktype,headersize,self.heapbase,self.segmentstart,thissize,prevsize,segmentid,flag,unused,tag)
 				allchunks[thischunk] = mChunk
 			
@@ -6408,6 +6503,33 @@ class MnChunk:
 		self.usersize = (self.size * heapgranularity) - self.unused - self.extraheadersize
 		self.remaining = self.unused - self.headersize - self.extraheadersize
 		self.flagtxt = getHeapFlag(self.flag)
+
+	def fill(self, fillchar="A", start=None, size=None):
+		"""
+		Fill chunk data with a single byte.
+
+		Arguments:
+			fillchar - byte/char to use for filling (only first byte is used)
+			start    - optional start address override (defaults to userptr)
+			size     - optional size override (defaults to usersize)
+
+		Return:
+			(start_addr, written_size) on success, (0, 0) if nothing was written
+		"""
+		if start is None:
+			start = self.userptr
+		if size is None:
+			size = self.usersize
+		if size is None or size <= 0:
+			return (0, 0)
+
+		fillbyte = _normalize_single_fill_byte(fillchar)
+		if len(fillbyte) == 0:
+			return (0, 0)
+
+		data = fillbyte * size
+		dbg.writeMemory(start, data)
+		return (start, size)
 
 
 	def showChunk(self,showdata = False):
@@ -6694,9 +6816,14 @@ class MnProc:
 		Each item: (address, type_str, info_dict)
 		"""
 		result = []
+		# Keep a single entry per address, preferring NT over Segment over Unknown.
+		seen = {}
 		for htype in ("NT", "Segment", "Unknown"):
 			for addr, info in self.heapinfo.get(htype, {}).items():
-				result.append((addr, htype, info))
+				if addr in seen:
+					continue
+				seen[addr] = (addr, htype, info)
+		result = list(seen.values())
 		result.sort(key=lambda x: x[0])
 		return result
 
@@ -8693,6 +8820,14 @@ def getPointerAccess(address, forcedread=False):
 	paccess = ""
 	try:
 		page   = dbg.getMemoryPageByAddress( address )
+		if forcedread:
+			# Refresh underlying page protection and invalidate the human-readable cache.
+			try:
+				page.protect = None
+			except:
+				pass
+			if page in MemoryPageACL:
+				del MemoryPageACL[page]
 		if page in MemoryPageACL and not forcedread:
 			paccess = MemoryPageACL[page]
 		else:
@@ -19757,8 +19892,8 @@ def procLayout(args):
 
 	show_all = "a" in args or "all" in args
 
-	if "f" in args or "filter" in args:
-		filterval = args.get("f", args.get("filter", ""))
+	if "f" in args or "filter" in args or "t" in args or "type" in args:
+		filterval = args.get("f", args.get("filter", args.get("t", args.get("type", ""))))
 		if type(filterval).__name__.lower() == "bool":
 			dbg.log("Please provide a comma-separated list of types to show with -f", highlight=1)
 			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
@@ -19807,9 +19942,13 @@ def procLayout(args):
 	objfile = MnLog(filename)
 	logfile = objfile.reset()
 
-	# Build table data for print_dict_table
+	# Use sequential idx as dict key to avoid address collisions (e.g. Heap
+	# header and first Heap Segment share the same start address). The actual
+	# start address is conveyed to print_dict_table via key_col.
 	table_data = OrderedDict()
 	table_seq = []
+	table_starts = []       # parallel start-address list for key_col
+	seen_regions = set()   # (start, category) pairs to suppress true duplicates
 
 	in_heap_chain = False
 	prev_category = ""
@@ -19836,16 +19975,24 @@ def procLayout(args):
 		else:
 			in_heap_chain = False
 		prev_category = category
-		table_data[start] = (end, psize, category, indent + description)
-		table_seq.append(start)
+		# Deduplicate truly identical (start, category) pairs (e.g. a segment
+		# walked twice). Different categories at the same start are kept
+		# (Heap header + first Heap Segment both begin at the heap base).
+		dedup_key = (start, category)
+		if dedup_key in seen_regions:
+			continue
+		seen_regions.add(dedup_key)
+		table_data[idx] = (end, psize, category, indent + description)
+		table_seq.append(idx)
+		table_starts.append(start)
 
 	headers = ["Start", "End", "Size", "Type", "Description"]
 	types   = ["pointer", "pointer", "string", "string", "string"]
-	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ")
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts)
 
 	dbg.log("")
-	dbg.log("Total: %d entities" % len(regions))
-	objfile.write("Total: %d entities" % len(regions), logfile)
+	dbg.log("Total: %d entities" % len(table_seq))
+	objfile.write("Total: %d entities" % len(table_seq), logfile)
 	silent = False
 	return
 
@@ -21364,6 +21511,12 @@ def procFillChunk(args):
 			if not addyok:
 				dbg.log("%s is an invalid address" % args["a"], highlight=1)
 				return
+		else:
+			dbg.log("Please specify a valid address/register with -a", highlight=1)
+			return
+	else:
+		dbg.log("Please specify a chunk address/register with -a", highlight=1)
+		return
 
 	dbg.log("Location: %s" % (PTR_PRINT % refvalue))
 
@@ -21376,25 +21529,98 @@ def procFillChunk(args):
 
 	dbg.log("Fill char : \\x%s" % bin2hex(fillchar))
 
-	cmd2run = "!heap -x 0x%08x" % refvalue
-	output = dbg.nativeCommand(cmd2run)
-	outputlines = output.split("\n")
-	heapinfo = ""
-	for line in outputlines:
-		if line.find("[") > -1 and line.find("]") > -1 and line.find("(") > -1 and line.find(")") > -1:
-			heapinfo = line
-			break
-	if heapinfo == "":
-		dbg.log("Address is not part of a heap chunk")
-		if customsize > 0:
-			dbg.log("Filling memory location starting at 0x%08x with \\x%s" % (refvalue,bin2hex(fillchar)))
-			dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
-			data = fillchar * customsize
-			dbg.writeMemory(refvalue,data)
-			dbg.log("Done")
-		else:
+	def _fillChunkFromMnProcMap():
+		try:
+			_ensure_mnproc()
+			mnproc.populate(include_chunks=True)
+		except:
+			return False
+
+		if mnproc is None:
+			return False
+
+		# 1) Use MnProc's unified range map to identify the chunk range quickly.
+		chunk_start = 0
+		chunk_end = 0
+		for region in mnproc.getAllSorted():
+			if len(region) < 4:
+				continue
+			start, end, category, description = region[:4]
+			if category == "Heap Chunk" and refvalue >= start and refvalue < end:
+				chunk_start = start
+				chunk_end = end
+				break
+
+		if chunk_start == 0:
+			return False
+
+		# 2) Find owning segment range and resolve precise MnChunk object.
+		for heapaddr, detail in mnproc.ntheapdetail.items():
+			segments = detail.get("segments", {})
+			for segaddr, seg in segments.items():
+				if chunk_start < seg.get("base", 0) or chunk_start >= seg.get("end", 0):
+					continue
+				try:
+					allchunks = walkSegment(seg["firstentry"], seg["lastentry"], heapaddr)
+				except:
+					allchunks = {}
+
+				matched_chunk = None
+				if chunk_start in allchunks:
+					matched_chunk = allchunks[chunk_start]
+				else:
+					for chunkaddr, mchunk in allchunks.items():
+						chunksize = mchunk.size * heapgranularity
+						if chunk_start >= chunkaddr and chunk_start < (chunkaddr + chunksize):
+							matched_chunk = mchunk
+							break
+
+				if matched_chunk is not None and matched_chunk.usersize > 0:
+					dbg.log("Heap chunk found at %s, size 0x%08x (%d) bytes [MnProc ranges]" % (
+						(PTR_PRINT % matched_chunk.chunkptr), matched_chunk.usersize, matched_chunk.usersize))
+					dbg.log("Filling chunk with \\x%s, starting at %s" % (
+						bin2hex(fillchar), (PTR_PRINT % matched_chunk.userptr)))
+					matched_chunk.fill(fillchar)
+					dbg.log("Done")
+					return True
+		return False
+
+	def _fillChunkFromHeapXFallback():
+		def _cleanHexDword(token):
+			token = token.strip()
+			token = token.replace("`", "")
+			token = token.replace("[", "")
+			token = token.replace("]", "")
+			token = token.replace("(", "")
+			token = token.replace(")", "")
+			token = token.replace(",", "")
+			token = token.replace("0x", "")
+			return token
+
+		cmd2run = "!heap -x %s" % (PTR_PRINT % refvalue)
+		output = dbg.nativeCommand(cmd2run)
+		outputlines = output.split("\n")
+		heapinfo = ""
+		for line in outputlines:
+			if line.find("[") > -1 and line.find("]") > -1 and line.find("(") > -1 and line.find(")") > -1:
+				heapinfo = line
+				break
+		if heapinfo == "":
+			dbg.log("Address is not part of a heap chunk")
+			if customsize > 0:
+				dbg.log("Filling memory location starting at %s with \\x%s" % ((PTR_PRINT % refvalue),bin2hex(fillchar)))
+				dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
+				fillbyte = _normalize_single_fill_byte(fillchar)
+				if len(fillbyte) == 0:
+					dbg.log("Invalid fill byte specified", highlight=1)
+					return False
+				data = fillbyte * customsize
+				dbg.writeMemory(refvalue,data)
+				dbg.log("Done")
+				return True
 			dbg.log("Please specify a custom size with -s to fill up the memory location anyway")
-	else:
+			return False
+
 		infofields = []
 		cnt = 0
 		charseen = False
@@ -21411,14 +21637,30 @@ def procFillChunk(args):
 		if thisfield != "":
 			infofields.append(thisfield)
 		if len(infofields) > 7:
-			chunkptr = hexStrToInt(infofields[0]) 
-			userptr = hexStrToInt(infofields[4])
-			size = hexStrToInt(infofields[5])
-			dbg.log("Heap chunk found at 0x%08x, size 0x%08x (%d) bytes" % (chunkptr,size,size))
-			dbg.log("Filling chunk with \\x%s, starting at 0x%08x" % (bin2hex(fillchar),userptr))
-			data = fillchar * size
+			chunkptr = hexStrToInt(_cleanHexDword(infofields[0]))
+			userptr = hexStrToInt(_cleanHexDword(infofields[4]))
+			size = hexStrToInt(_cleanHexDword(infofields[5]))
+			if chunkptr == 0 or userptr == 0 or size == 0:
+				dbg.log("Unable to parse heap chunk details from '!heap -x' output", highlight=1)
+				return False
+			dbg.log("Heap chunk found at %s, size 0x%08x (%d) bytes" % ((PTR_PRINT % chunkptr),size,size))
+			dbg.log("Filling chunk with \\x%s, starting at %s" % (bin2hex(fillchar),(PTR_PRINT % userptr)))
+			fillbyte = _normalize_single_fill_byte(fillchar)
+			if len(fillbyte) == 0:
+				dbg.log("Invalid fill byte specified", highlight=1)
+				return False
+			data = fillbyte * size
 			dbg.writeMemory(userptr,data)
 			dbg.log("Done")
+			return True
+
+		dbg.log("Unable to locate heap chunk metadata in '!heap -x' output", highlight=1)
+		return False
+
+	if _fillChunkFromMnProcMap():
+		return
+
+	_fillChunkFromHeapXFallback()
 	return
 
 def procInfoDump(args):
@@ -23790,11 +24032,21 @@ def procChangeACL(args):
 	if not addyerror and not aclerror:
 		pageacl = MnProc.memProtConstants[acl][1]
 		pageaclname = MnProc.memProtConstants[acl][0]
+		modifier_only_acls = ["GUARD", "NOCACHE", "WC"]
+		base_acl_mask = 0xff
 		dbg.log("[+] ACL Changes for address %s" % (PTR_PRINT % addy))
-		before_access = getPointerAccess(addy)
-		dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
-		dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
-		if before_access != pageaclname:
+		current_acl = dbg.getMemoryPageByAddress(addy).getAccess()
+		before_access = getPointerAccess(addy, forcedread = True)
+		dbg.log("[+] Current ACL: %s" % before_access)
+		if acl in modifier_only_acls:
+			base_acl = current_acl & base_acl_mask
+			if base_acl == 0:
+				base_acl = 0x1
+			pageacl = base_acl | pageacl
+			dbg.log("[+] Desired ACL: %s (effective 0x%02x)" % (pageaclname,pageacl))
+		else:
+			dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
+		if current_acl != pageacl:
 			#retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
 			retval = dbg.rVirtualProtect(addy,1,pageacl)
 			after_access = getPointerAccess(addy, forcedread = True)
@@ -24791,7 +25043,7 @@ Mandatory arguments :
 	""" 
 	
 
-	fillchunkUsage = """Fills a heap chunk, referenced by a register, with A's (or another character)
+	fillchunkUsage = """Fills a heap chunk, referenced by an address expression, with A's (or another character)
 
 Mandatory arguments :
     -a <address> : reference to heap chunk to fill (address, register, offset from register, etc)
@@ -25067,7 +25319,7 @@ Arguments:
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
 	if __DEBUGGERAPP__ == "WinDBG":
-		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by a register",fillchunkUsage,procFillChunk,"fchunk",[32,64])
+		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
 		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
