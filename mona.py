@@ -6250,9 +6250,9 @@ class MnSegment:
 				unused = 0
 
 			if thissize > 0:
-				nextchunk = thischunk + (thissize * 8)
+				nextchunk = thischunk + (thissize * heapgranularity)
 			else:
-				nextchunk += headersize
+				nextchunk += heapgranularity
 
 			chunktype = "chunk"
 			if "virtall" in getHeapFlag(flag).lower() or "internal" in getHeapFlag(flag).lower():
