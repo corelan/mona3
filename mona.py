@@ -672,6 +672,13 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 			except:
 				return _ensure_text(v)
 
+		if vtype == "size":
+			try:
+				ival = int(v)
+				return "0x%x" % (ival)
+			except:
+				return _ensure_text(v)
+
 		elif vtype == "int":
 			try:
 				return str(int(v))
@@ -18576,7 +18583,7 @@ def procUpdate(args):
 				try:
 					dbgp("Force copying %s over %s" % (download_file, current_file))
 					shutil.copyfile(download_file, current_file)
-					dbg.log("    [+] Forced update of %s in place" % name, highlight=1)
+					dbg.log("    [+] Forced in-place update of %s" % name, highlight=1)
 					release_notes_targets.append((name, new_version, new_revision))
 				except Exception as e:
 					dbg.log("    [-] Unable to force update %s" % name, highlight=1)
@@ -21394,11 +21401,12 @@ def procInfoDump(args):
 		dbg.log("")
 		tolog = "Dumping the following pages to file:"
 		dbg.log(tolog)
+		dbg.log("")
 		# PTR_SIZE is in bytes; for display we want the length of a rendered pointer (e.g. "0x%08x").
 		fieldsize = len(PTR_PRINT % 0)
-		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds" % (fieldsize, fieldsize, fieldsize, fieldsize)
+		fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds" % (fieldsize, fieldsize, 8 , fieldsize)
 		header = fmt % ("Start", "End", "Size", "ACL")
-		separator = fmt % ("-" * fieldsize, "-" * fieldsize, "-" * fieldsize, "-" * fieldsize)
+		separator = fmt % ("-" * fieldsize, "-" * fieldsize, "-" * 8, "-" * fieldsize)
 		dbg.log(header)
 		dbg.log(separator)
 		for thispage in orderedpages:
@@ -21426,12 +21434,13 @@ def procInfoDump(args):
 			if not ismod and not isstack and not isheap:
 				acl = page.getAccess(human=True)
 				if not "NOACCESS" in acl:
-					tolog = "%s - %s (%s) %s" % (PTR_PRINT % pagestart, PTR_PRINT % (pagestart + pagesize), PTR_PRINT % pagesize, acl)
+					fmt = "%%-%ds  %%-%ds  %%-%ds  %%-%ds" % (fieldsize, fieldsize, 8, fieldsize)
+					tolog = fmt % (PTR_PRINT % pagestart, PTR_PRINT % (pagestart + pagesize), "0x%x" % (pagesize), acl)
 					dbg.log(tolog)
 					# add page contents to xml
 					thispage = dbg.readMemory(pagestart,pagesize)
 					f.write("  <page start=\"%s\">\n" % (PTR_PRINT % pagestart))
-					f.write("    <size>%s</size>\n" % (PTR_PRINT % pagesize))
+					f.write("    <size>0x%x</size>\n" % (pagesize))
 					f.write("    <acl>%s</acl>\n" % acl)
 					f.write("    <contents>")
 					memcontents = bin2hex(thispage)
@@ -24174,7 +24183,8 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("  -o                     : Ignore OS modules")
 		dbg.log("  -m <module,module,...> : only query the given modules. Be sure what you are doing !")
 		dbg.log("                           You can specify multiple modules (comma separated)")
-		dbg.log("                           Tip : you can use -m *  to include all modules. All other module criteria will be ignored")
+		dbg.log("                           Tip : you can use -m *  to include all modules.")
+		dbg.log("                           All other module criteria will be ignored")
 		dbg.log("                           Other wildcards : *blah.dll = ends with blah.dll, blah* = starts with blah,")
 		dbg.log("                           blah or *blah* = contains blah")
 		dbg.log("  -cm <crit,crit,...>    : Apply some additional criteria to the modules to query.")
@@ -24190,9 +24200,11 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("  -p <nr>                : Stop search after <nr> pointers.")
 		dbg.log("  -cp <crit,crit,...>    : Apply some criteria to the pointers to return")
 		dbg.log("                           Available options are :")
-		dbg.log("                           unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,numeric,alphanum,nonull,startswithnull,unicoderev")
-		dbg.log("                           Note : Multiple criteria will be evaluated using 'AND', except if you are looking for unicode + one crit")
-		dbg.log("  -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
+		dbg.log("                           unicode,ascii,asciiprint,upper,lower,uppernum,lowernum,")
+		dbg.log("                           numeric,alphanum,nonull,startswithnull,unicoderev")
+		dbg.log("                           Note : Multiple criteria will be evaluated using 'AND', ")
+		dbg.log("                                  except if you are looking for unicode + one crit")
+		dbg.log("  -cpb '\\x00\\x01'      : Provide list with bad chars, applies to pointers")
 		dbg.log("                           You can use .. to indicate a range of bytes (in between 2 bad chars)")
 		dbg.log("  -x <access>            : Specify desired access level of the returning pointers. If not specified,")
 		dbg.log("                           only executable pointers will be returned.")
@@ -24200,7 +24212,8 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("")
 		dbg.logLines("\n  Other global options:\n", highlight=1)
 		dbg.log("  -h                     : Show help / usage for the selected command ")
-		dbg.log("  -debug                 : Enable debug routines in mona/windbglib. Don't use this option unless you've been asked to do so")
+		dbg.log("  -debug                 : Enable debug routines in mona/windbglib.")
+		dbg.log("                           Don't use this option unless you've been asked to do so")
 		dbg.log("")
 		dbg.log("-" * 120)
 	scriptname = get_script_name()
