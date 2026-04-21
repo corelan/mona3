@@ -5306,6 +5306,20 @@ class MnHeap(object):
 		"""
 		return 0
 
+	def getChunkHeaderDataOffset(self):
+		"""Return the byte offset within a _HEAP_ENTRY at which the
+		encoded compact header begins (i.e. after any unencoded prefix).
+
+		On Windows 8+ x64, _HEAP_ENTRY is 16 bytes: the first 8 bytes
+		are PreviousBlockPrivateData (unencoded), and the next 8 bytes
+		are the encoded compact header (Size/Flags/etc.).
+		On all x86 targets and on Windows 7 x64, _HEAP_ENTRY is 8 bytes
+		with no unencoded prefix, so the offset is 0.
+
+		Return: int, byte offset to pass as an addend to the chunk pointer
+		when reading the encoded compact header.
+		"""
+		return 0
 
 	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
 		"""
@@ -6042,11 +6056,67 @@ class MnNT8Heap(MnNT7Heap):
 	+0x0c8 FreeLists        : _LIST_ENTRY
 	+0x0d0 FrontEndHeap     : Ptr32 Void
 	+0x0d6 FrontEndHeapType : UChar
+
+	_HEAP (Windows 8 x64 selected fields)
+	+0x000 Entry            : _HEAP_ENTRY (16 bytes: +0 PreviousBlockPrivateData, +8 compact header)
+	+0x010 SegmentSignature : Uint4B
+	+0x018 SegmentListEntry : _LIST_ENTRY
+	+0x028 Heap             : Ptr64 _HEAP
+	+0x030 BaseAddress      : Ptr64 Void
+	+0x038 NumberOfPages    : Uint4B
+	+0x040 FirstEntry       : Ptr64 _HEAP_ENTRY
+	+0x048 LastValidEntry   : Ptr64 _HEAP_ENTRY
+	+0x07c EncodeFlagMask   : Uint4B
+	+0x080 Encoding         : _HEAP_ENTRY  (+0x088 = key bytes after PreviousBlockPrivateData)
+	+0x098 Signature        : Uint4B
+	+0x110 VirtualAllocdBlocks : _LIST_ENTRY
+	+0x120 SegmentList      : _LIST_ENTRY
+	+0x150 FreeLists        : _LIST_ENTRY
+	+0x170 FrontEndHeap     : Ptr64 Void
+	+0x17a FrontEndHeapType : UChar
 	"""
-	pass
+
+	def getEncodingKey(self):
+		"""Retrieve the Encoding key from the Win8+ NT heap header.
+
+		On Win8+ x64, _HEAP_ENTRY is 16 bytes.  The Encoding field
+		(at heapbase+0x080 on x64) is itself a _HEAP_ENTRY, so its
+		first 8 bytes are PreviousBlockPrivateData (not the key).
+		The actual 8-byte XOR key starts at heapbase+0x088.
+
+		On x86 the layout is unchanged from Win7 (8-byte _HEAP_ENTRY,
+		no PreviousBlockPrivateData prefix).
+
+		Return: int, 8-byte XOR key (0 when encoding is disabled).
+		"""
+		self.Encoding = 0
+		offset = archValue(0x4c, 0x7c)
+		self.EncodeFlagMask = struct.unpack('<L', dbg.readMemory(self.heapbase + offset, 4))[0]
+		if self.EncodeFlagMask == 0x100000:
+			# x86: Encoding _HEAP_ENTRY starts at +0x050 (8 bytes, no prefix)
+			# x64: Encoding _HEAP_ENTRY starts at +0x080 but first 8 bytes are
+			#      PreviousBlockPrivateData; key bytes begin at +0x088.
+			encoding_offset = archValue(0x50, 0x88)
+			self.Encoding = struct.unpack('<Q', dbg.readMemory(self.heapbase + encoding_offset, 8))[0]
+		return self.Encoding
+
+	def getChunkHeaderDataOffset(self):
+		"""Return the byte offset to the encoded compact header within a _HEAP_ENTRY.
+
+		On Win8+ x64 each _HEAP_ENTRY is 16 bytes: the first 8 bytes are
+		PreviousBlockPrivateData (stored in plain-text, not XOR-encoded).
+		The encoded compact header (Size, Flags, SmallTagIndex, PreviousSize,
+		SegmentOffset, UnusedBytes) begins at byte 8.
+
+		On x86 (all versions) and Win7 x64 _HEAP_ENTRY is 8 bytes with no
+		unencoded prefix, so the offset is 0.
+
+		Return: int (0 for x86, 8 for x64).
+		"""
+		return archValue(0, 8)
 
 
-class MnNT10Heap(MnNT7Heap):
+class MnNT10Heap(MnNT8Heap):
 	"""
 	NT Heap implementation for Windows 10 / 11.
 
@@ -6206,6 +6276,7 @@ class MnSegment:
 		savedprevsize = 0
 		mHeap = MnHeap(self.heapbase)
 		key = mHeap.getEncodingKey()
+		header_data_offset = mHeap.getChunkHeaderDataOffset()
 		while not allchunksfound:
 			thissize = 0
 			prevsize = 0
@@ -6217,9 +6288,9 @@ class MnSegment:
 			try:
 				fullheaderbin = ""
 				if key == 0 and not win7mode:
-					fullheaderbin = dbg.readMemory(thischunk,headersize)
+					fullheaderbin = dbg.readMemory(thischunk + header_data_offset, headersize)
 				else:
-					fullheaderbin = decodeHeapHeader(thischunk,headersize,key)
+					fullheaderbin = decodeHeapHeader(thischunk + header_data_offset, headersize, key)
 
 				sizebytes = fullheaderbin[0:2]
 				thissize = struct.unpack('<H',sizebytes)[0]
