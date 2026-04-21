@@ -418,12 +418,16 @@ def resetGlobals():
 	return
 
 
-def _ensure_mnproc():
-	"""Lazily create the MnProc instance on first access."""
+def _ensureMnProc(entities=None):
+	"""Lazily create MnProc and optionally populate selected entities."""
 	global mnproc
 	if mnproc is None:
 		try:
 			mnproc = MnProc()
+	if entities is not None:
+		mnproc.populate(
+			entities=entities,
+		)
 		except Exception as e:
 			dbg.log("[!] Are you connected to a process?", highlight=1)
 			dbgp("Error creating MnProc instance: %s" % str(e))
@@ -2068,7 +2072,7 @@ def getStacks():
 	Return:
 	a dictionary, with key = threadID. Each entry contains an array with base and top of the stack
 	"""
-	_ensure_mnproc()
+	_ensureMnProc(entities=["threads"])
 	if len(mnproc.stacklistCache) > 0:
 		return mnproc.stacklistCache
 	stacks = {}
@@ -2523,6 +2527,7 @@ class MnTEB:
 	@staticmethod
 	def getByAddress(teb_addr):
 		"""Return the MnTEB with the given TEB address from the MnProc cache, or None."""
+		_ensureMnProc(entities=["threads"])
 		for tid, mteb in mnproc.getThreads().items():
 			if mteb.TEBAddress == teb_addr:
 				return mteb
@@ -4960,7 +4965,7 @@ class MnModule:
 
 
 def getNtGlobalFlag():
-	_ensure_mnproc()
+	_ensureMnProc(entities=["peb"])
 	flagoffset = 0x68
 	if arch == 64:
 		flagoffset = 0xBC
@@ -6761,7 +6766,7 @@ class MnProc:
 
 	def getModuleForAddress(self, addr):
 		"""Return the MnModule containing *addr*, or None."""
-		populateModuleInfo()
+		self.populate(entities=["modules"])
 		for modkey, props in self.g_modules.items():
 			if props["base"] <= addr <= props["top"]:
 				return MnModule(modkey)
@@ -6796,91 +6801,152 @@ class MnProc:
 		va_ranges.sort(key=lambda x: x[0])
 		self.VACache = {"segments": seg_ranges, "vablocks": va_ranges}
 
-	def populate(self, include_chunks=False, include_modules=True):
+	def _normalizePopulateEntities(self, entities, include_modules):
 		"""
-		Populate all fields by querying the debugger.
+		Normalize populate entity selection into a lowercase token set.
+
+		Supported tokens:
+			peb, teb, threads, stacks, modules,
+			heaps, defaultheap, ntheapdetail, vacache, chunks, all
+		"""
+		all_entities = set([
+			"peb", "teb", "threads", "stacks", "modules",
+			"heaps", "defaultheap", "ntheapdetail", "vacache", "chunks",
+		])
+		aliases = {
+			"all": set(all_entities),
+			"core": set(["peb", "teb", "threads", "stacks", "modules"]),
+			"heap": set(["heaps", "defaultheap", "ntheapdetail"]),
+			"memory": set(["heaps", "defaultheap", "ntheapdetail", "vacache"]),
+		}
+
+		if entities is None:
+			selected = set(["peb", "teb", "threads", "stacks", "heaps", "defaultheap", "ntheapdetail"])
+			if include_modules:
+				selected.add("modules")
+			return selected
+
+		if type(entities).__name__.lower() in ["str", "unicode"]:
+			raw = [x.strip().lower() for x in entities.split(",") if x.strip() != ""]
+		else:
+			raw = []
+			for item in entities:
+				raw.append(str(item).strip().lower())
+
+		selected = set()
+		for token in raw:
+			if token in aliases:
+				selected |= aliases[token]
+			elif token in all_entities:
+				selected.add(token)
+
+		return selected
+
+	def populate(self, include_chunks=False, include_modules=True, entities=None):
+		"""
+		Populate selected fields by querying the debugger.
 
 		Arguments:
 			include_chunks - bool. If True, walks segments and enumerates
 			                 chunks. This can be slow on large heaps.
+			include_modules - bool. Kept for backward compatibility when
+			                 entities is None.
+			entities - None, comma-separated string, or iterable of tokens.
+			           Controls which structures are populated.
 		"""
+		selected = self._normalizePopulateEntities(entities, include_modules)
+		if len(selected) == 0:
+			return
+
+		if "chunks" in selected:
+			include_chunks = True
+			selected.add("ntheapdetail")
+			selected.add("heaps")
 		# PEB / TEB
-		if self.peb is None:
+		if "peb" in selected and self.peb is None:
 			try:
 				self.peb = get_peb_addr()
 			except:
 				pass
-		if self.teb is None:
+		if "teb" in selected and self.teb is None:
 			try:
 				self.teb = get_teb_addr()
 			except:
 				pass
 
 		# Modules
-		if len(self.modules) == 0 and include_modules:
+		if "modules" in selected and len(self.modules) == 0:
 			populateModuleInfo()
 			self.modules = dict(self.g_modules)
 
 		# Stacks
-		if len(self.stacks) == 0:
+		if "threads" in selected:
+			self.getThreads()
+		if "stacks" in selected and len(self.stacks) == 0:
 			self.getStacks()
 
 		# Heaps (type detection + encoding info)
-		if len(self.heapinfo) == 0:
+		if "heaps" in selected and len(self.heapinfo) == 0:
 			self.heapinfo = getProcessHeapsInfo()
 
 		# Default process heap
-		if self.defaultheap is None:
+		if "defaultheap" in selected and not self.defaultheap:
 			try:
 				self.defaultheap = getDefaultProcessHeap()
 			except:
 				pass
 
 		# NT heap detail (segments, VA blocks, optionally chunks)
-		for heapaddr in self.heapinfo.get("NT", {}):
+		if "ntheapdetail" in selected:
+			if len(self.heapinfo) == 0:
+				self.heapinfo = getProcessHeapsInfo()
+			for heapaddr in self.heapinfo.get("NT", {}):
 			# Skip if already populated (unless upgrading to include chunks)
-			if heapaddr in self.ntheapdetail:
-				existing = self.ntheapdetail[heapaddr]
-				needs_chunks = include_chunks and not existing.get("_has_chunks", False)
-				if not needs_chunks:
-					continue
-			try:
-				if include_chunks:
-					detail = getNTHeapInfo(heapaddr)
-					try:
+				if heapaddr in self.ntheapdetail:
+					existing = self.ntheapdetail[heapaddr]
+					needs_chunks = include_chunks and not existing.get("_has_chunks", False)
+					if not needs_chunks:
+						continue
+				try:
+					if include_chunks:
+						detail = getNTHeapInfo(heapaddr)
+						try:
+							mheap = MnHeap(heapaddr)
+							detail["frontend_type"] = mheap.getFrontEndHeapType()
+						except:
+							if "frontend_type" not in detail:
+								detail["frontend_type"] = 0
+						detail["_has_chunks"] = True
+						self.ntheapdetail[heapaddr] = detail
+					else:
 						mheap = MnHeap(heapaddr)
-						detail["frontend_type"] = mheap.getFrontEndHeapType()
-					except:
-						if "frontend_type" not in detail:
-							detail["frontend_type"] = 0
-					detail["_has_chunks"] = True
-					self.ntheapdetail[heapaddr] = detail
-				else:
-					mheap = MnHeap(heapaddr)
-					detail = {"segments": {}, "va_blocks": {}, "frontend_type": 0}
-					try:
-						detail["frontend_type"] = mheap.getFrontEndHeapType()
-					except:
-						pass
-					try:
-						seglist = mheap.getHeapSegmentList()
-						for segaddr, seg in seglist.items():
-							segdetail = {
-								"base": seg["base"],
-								"end": seg["end"],
-								"firstentry": seg["firstentry"],
-								"lastentry": seg["lastentry"],
-							}
-							detail["segments"][segaddr] = segdetail
-					except:
-						pass
-					try:
-						detail["va_blocks"] = mheap.getVirtualAllocdBlocks()
-					except:
-						pass
-					self.ntheapdetail[heapaddr] = detail
-			except:
-				pass
+						detail = {"segments": {}, "va_blocks": {}, "frontend_type": 0}
+						try:
+							detail["frontend_type"] = mheap.getFrontEndHeapType()
+						except:
+							pass
+						try:
+							seglist = mheap.getHeapSegmentList()
+							for segaddr, seg in seglist.items():
+								segdetail = {
+									"base": seg["base"],
+									"end": seg["end"],
+									"firstentry": seg["firstentry"],
+									"lastentry": seg["lastentry"],
+								}
+								detail["segments"][segaddr] = segdetail
+						except:
+							pass
+						try:
+							detail["va_blocks"] = mheap.getVirtualAllocdBlocks()
+						except:
+							pass
+						self.ntheapdetail[heapaddr] = detail
+				except:
+					pass
+
+		if "vacache" in selected and len(self.VACache) == 0:
+			self.populateVACache()
 
 	def getModulesSorted(self):
 		"""Return modules sorted by base address: [(name, properties), ...]"""
@@ -7353,8 +7419,7 @@ class MnPointer:
 		Return:
 		Boolean - True if pointer is in heap
 		"""
-		if len(mnproc.VACache) == 0:
-			mnproc.populateVACache()
+		_ensureMnProc(entities=["vacache"])
 
 		# Check segments
 		for heap, segstart, seglast in mnproc.VACache["segments"]:
@@ -8100,7 +8165,9 @@ def getSegmentsForHeap(heapbase):
 
 	Return: dict {segaddr: [base, end, firstentry, lastentry]}
 	"""
-	_ensure_mnproc()
+	# Minimal pre-population only: process/thread context + heap list.
+	# Segment details are then crawled only for the requested heap below.
+	_ensureMnProc(entities=["peb", "teb", "heaps"])
 	dbgp(get_current_function_name())
 	if heapbase in mnproc.segmentlistCache:
 		return mnproc.segmentlistCache[heapbase]
@@ -9066,6 +9133,7 @@ def getModuleProperty(modname,parameter):
 	value associated with the given parameter / module combination
 	
 	"""
+	_ensureMnProc(entities=["modules"])
 	modproperties = mnproc.g_modules.get(modname.strip())
 	if modproperties is not None:
 		return modproperties[parameter.lower()]
@@ -9081,12 +9149,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 	Dictionary
 	"""
 	dbgp(get_current_function_name())
-	_ensure_mnproc()
-
-	if mnproc is None:
-		dbgp("Error: mnproc is None in populateModuleInfo()")
-		sys.exit("Unable to proceed")
-		return
+	_ensureMnProc()
 
 	if len(mnproc.g_modules) > 0 and mnproc.g_modulesOrder == peb_order:
 		return
@@ -14935,7 +14998,7 @@ def readGadgetsFromFile(filename):
 def isGoodGadgetPtr(gadget,criteria):
 	#if DEBUG_MODE:
 	#	dbgp(get_current_function_name())
-	_ensure_mnproc()
+	_ensureMnProc()
 	if gadget in mnproc.CritCache:
 		return mnproc.CritCache[gadget]
 	else:
@@ -20170,9 +20233,24 @@ def procLayout(args):
 		resetGlobals()
 		dbg.log("Cache flushed, re-walking process...")
 
-	_ensure_mnproc()
+	_ensureMnProc()
+	populate_entities = set()
+	if "PEB" in show_categories:
+		populate_entities.add("peb")
+	if "TEB" in show_categories:
+		populate_entities.add("teb")
+	if "Stack" in show_categories:
+		populate_entities.add("stacks")
+	if "Module" in show_categories:
+		populate_entities.add("modules")
+	if ("Heap" in show_categories) or ("Heap Segment" in show_categories) or ("Heap VA Block" in show_categories) or ("Heap Chunk" in show_categories):
+		populate_entities.add("heaps")
+		populate_entities.add("defaultheap")
+		populate_entities.add("ntheapdetail")
+	if "Heap Chunk" in show_categories:
+		populate_entities.add("chunks")
 	dbg.log("Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
-	mnproc.populate(include_chunks=include_chunks)
+	mnproc.populate(include_chunks=include_chunks, entities=sorted(populate_entities))
 	regions = mnproc.getAllSorted()
 
 	# Filter regions
@@ -21779,8 +21857,9 @@ def procFillChunk(args):
 
 	def _fillChunkFromMnProcMap():
 		try:
-			_ensure_mnproc()
-			mnproc.populate(include_chunks=True, include_modules = False)
+			_ensureMnProc(
+				entities=["heaps", "defaultheap", "ntheapdetail", "chunks"],
+			)
 		except:
 			return False
 
@@ -22079,16 +22158,13 @@ def procPageACL(args):
 		dbg.log("Filtering pages with ACL: %s" % MnProc.memProtConstants[aclfilter][0])
 	if len(orderedpages) > 0:
 		# Pre-build lookup tables to avoid per-page MnPointer/belongsTo overhead
-		populateModuleInfo()
+		_ensureMnProc(entities=["modules", "vacache"])
 		mod_ranges = []
 		for modname, modprops in mnproc.g_modules.items():
 			mod_ranges.append((modprops["base"], modprops["top"], modname))
 		mod_ranges.sort()
 
 		stacks = getStacks()
-
-		if len(mnproc.VACache) == 0:
-			mnproc.populateVACache()
 
 		objfile = MnLog(filename)
 		aclfile = objfile.reset()
