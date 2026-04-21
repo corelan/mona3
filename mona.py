@@ -1134,6 +1134,8 @@ def hex2bin(pattern):
 	the bytes
 	"""
 	pattern = pattern.replace("\\x", "")
+	pattern = pattern.replace("0x", "")
+	pattern = pattern.replace("`", "")
 	pattern = pattern.replace("\"", "")
 	pattern = pattern.replace("\'", "")
 	
