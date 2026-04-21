@@ -15337,13 +15337,11 @@ def goFindMSP(distance=0, args=None):
 			opc = dbglib.opcode(rip_val)
 			opc_instruction = opc.getDisasm()
 			if opc.isRet():
+				dbg.log("")
 				warningline = "    Warning! This is 64bit, %s points into pattern, and %s is about to execute '%s'" % (STACK_POINTER, PROGRAM_COUNTER, opc_instruction)
 				dbg.log(warningline)
 				tofile += "%s\n" % warningline
 
-				warningline = "      That means we technically control %s, and %s will be adjusted after the '%s' instruction" % (PROGRAM_COUNTER, STACK_POINTER, opc_instruction)
-				dbg.log(warningline)
-				tofile += "%s\n" % warningline				
 				# bingo. Get the possible offset due to calling conventions
 				# (unlikely on 64bit, but you never know)
 				dbgp("Instruction at %s: %s" % ((PTR_PRINT % rsp_val), opc_instruction))
@@ -15355,6 +15353,11 @@ def goFindMSP(distance=0, args=None):
 				extra_adjust = getOffset(opc_instruction)
 				total_adjust = adjust_rsp + extra_adjust
 				dbgp("Extra adjustment for retn offset instruction: %d" % total_adjust)
+
+				warningline = "    That means we control %s, and %s will be adjusted with 0x%x bytes after the '%s' instruction" % (PROGRAM_COUNTER, STACK_POINTER, total_adjust, opc_instruction)
+				dbg.log(warningline)
+				tofile += "%s\n" % warningline	
+
 				try:
 					value_on_stack = struct.unpack(PTR_FMT,dbg.readMemory(rsp_val,PTR_SIZE))[0]
 					registers[PROGRAM_COUNTER] = [value_on_stack, rip_offset, rip_patterntype]
@@ -15482,7 +15485,6 @@ def goFindMSP(distance=0, args=None):
 		sign = ""
 
 		if not silent:
-			dbg.log("")
 			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter)))
 		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter))
 
