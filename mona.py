@@ -1900,13 +1900,17 @@ def getHeapFlag(flag):
 
 def decodeHeapHeader(headeraddress,headersize,key):
 	# get header and XOR first 8 bytes with encoding key (_HEAP_ENTRY sized)
+	# Always read in 4-byte chunks: _HEAP_ENTRY fields are WORD/BYTE-sized, not
+	# pointer-sized. Reading PTR_SIZE (8) bytes on x64 produces a 16-char hex
+	# string but the inner loop only processes 8 chars, silently discarding half
+	# the header and producing corrupt field values.
 	key_size = 8
 	blockcnt = 0
 	fullheaderbytes = ""
 	decodedheader = ""
 	fullheaderbytes = ""
 	while blockcnt < headersize:
-		header = struct.unpack(PTR_FMT,dbg.readMemory(headeraddress+blockcnt,PTR_SIZE))[0]
+		header = struct.unpack('<L',dbg.readMemory(headeraddress+blockcnt,4))[0]
 		if blockcnt < key_size:
 			# extract the corresponding 4 bytes of the key
 			key_dword = (key >> (blockcnt * 8)) & 0xFFFFFFFF
@@ -19757,8 +19761,8 @@ def procLayout(args):
 
 	show_all = "a" in args or "all" in args
 
-	if "f" in args or "filter" in args:
-		filterval = args.get("f", args.get("filter", ""))
+	if "f" in args or "filter" in args or "t" in args or "type" in args:
+		filterval = args.get("f", args.get("filter", args.get("t", args.get("type", ""))))
 		if type(filterval).__name__.lower() == "bool":
 			dbg.log("Please provide a comma-separated list of types to show with -f", highlight=1)
 			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
