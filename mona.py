@@ -3987,27 +3987,28 @@ class MnModule:
 			# if info is cached, retrieve from cache
 			if ModInfoCached(modulename):
 				dbgp("Module %s retrieved from cache" % modulename)
-				modisaslr = getModuleProperty(modulename,"aslr")
-				modissafeseh = getModuleProperty(modulename,"safeseh")
-				modrebased = getModuleProperty(modulename,"rebase")
-				modisnx = getModuleProperty(modulename,"nx")
-				modisos = getModuleProperty(modulename,"os")
-				modiscfg = getModuleProperty(modulename,"cfg")
-				path = getModuleProperty(modulename,"path")
-				filename = getModuleProperty(modulename,"filename")
-				mzbase = getModuleProperty(modulename,"base")
-				mzsize = getModuleProperty(modulename,"size")
-				mztop = getModuleProperty(modulename,"top")
-				mversion = getModuleProperty(modulename,"version")
-				mentry = getModuleProperty(modulename,"entry")
-				mcodebase = getModuleProperty(modulename,"codebase")
-				mcodesize = getModuleProperty(modulename,"codesize")
-				mcodetop = getModuleProperty(modulename,"codetop")
-				mdllcharacteristics = getModuleProperty(modulename, "dllcharacteristics")
-				msehtable = getModuleProperty(modulename, "sehtable") or 0
-				msehcount = getModuleProperty(modulename, "sehcount") or 0
-				mpdbname = getModuleProperty(modulename, "pdbname") or ""
-				mpdbguidage = getModuleProperty(modulename, "pdbguidage") or ""
+				cached = mnproc.g_modules.get(modulename.strip(), {})
+				modisaslr = cached.get("aslr", modisaslr)
+				modissafeseh = cached.get("safeseh", modissafeseh)
+				modrebased = cached.get("rebase", modrebased)
+				modisnx = cached.get("nx", modisnx)
+				modisos = cached.get("os", modisos)
+				modiscfg = cached.get("cfg", modiscfg)
+				path = cached.get("path", path)
+				filename = cached.get("filename", filename)
+				mzbase = cached.get("base", mzbase)
+				mzsize = cached.get("size", mzsize)
+				mztop = cached.get("top", mztop)
+				mversion = cached.get("version", mversion)
+				mentry = cached.get("entry", mentry)
+				mcodebase = cached.get("codebase", mcodebase)
+				mcodesize = cached.get("codesize", mcodesize)
+				mcodetop = cached.get("codetop", mcodetop)
+				mdllcharacteristics = cached.get("dllcharacteristics", mdllcharacteristics)
+				msehtable = cached.get("sehtable", 0) or 0
+				msehcount = cached.get("sehcount", 0) or 0
+				mpdbname = cached.get("pdbname", "") or ""
+				mpdbguidage = cached.get("pdbguidage", "") or ""
 			else:
 				#gather info manually - this code should only get called from populateModuleInfo()
 				modissafeseh = True
@@ -6716,6 +6717,7 @@ class MnProc:
 		self.FreeListBitmap = {}
 		self.g_modules = {}
 		self.g_modulesOrder = None
+		self._is_populating_modules = False
 
 		# --- populated by populate() ---
 		self.peb = MnPEB()
@@ -6876,7 +6878,10 @@ class MnProc:
 
 		# Modules
 		if "modules" in selected and len(self.modules) == 0:
-			populateModuleInfo()
+			if self._is_populating_modules:
+				self.modules = dict(self.g_modules)
+			else:
+				populateModuleInfo()
 			self.modules = dict(self.g_modules)
 
 		# Stacks
@@ -9150,68 +9155,75 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 	"""
 	dbgp(get_current_function_name())
 	_ensureMnProc()
+	if mnproc._is_populating_modules:
+		return
 
 	if len(mnproc.g_modules) > 0 and mnproc.g_modulesOrder == peb_order:
 		return
 
-	if not silent:
-		dbg.setStatusBar("Getting modules info...")
-		dbg.log("[+] Generating module info table, hang on...")
-		dbg.log("    - Processing modules")
-		#dbg.updateLog()
-	mnproc.g_modules={}
-	dbgp("Enumerating modules via getAllModules")
-	if __DEBUGGERAPP__ == "WinDBG":
-		allmodules=dbg.getAllModules(from_memory=from_memory, peb_order=peb_order)
-	else:
-		allmodules=dbg.getAllModules()
-	dbgp("Number of modules found: %d" % len(allmodules))
-	dbgp("keys: %s" % allmodules.keys())
-	curmod = ""
-	for key in allmodules.keys():
-		try:    
-			modinfo={}
-			dbgp("Transforming %s into a MnModule object" % key)
-			thismod = MnModule(key)
-			dbgp("Result: %s" % thismod)
-			if not thismod is None:
-				modinfo["path"]		= thismod.modulePath
-				modinfo["filename"] = thismod.moduleFilename
-				modinfo["base"] 	= thismod.moduleBase
-				modinfo["size"] 	= thismod.moduleSize
-				modinfo["top"]  	= thismod.moduleTop
-				modinfo["safeseh"]	= thismod.isSafeSEH
-				modinfo["aslr"]		= thismod.isAslr
-				modinfo["nx"]		= thismod.isNX
-				modinfo["rebase"]	= thismod.isRebase
-				modinfo["version"]	= thismod.moduleVersion
-				modinfo["os"]		= thismod.isOS
-				modinfo["cfg"]		= thismod.isCFG
-				modinfo["name"]		= key
-				modinfo["entry"]	= thismod.moduleEntry
-				modinfo["codebase"]	= thismod.moduleCodebase
-				modinfo["codesize"]	= thismod.moduleCodesize
-				modinfo["codetop"]	= thismod.moduleCodetop
-				modinfo["dllcharacteristics"]  = thismod.moduleDllCharacteristics
-				modinfo["sehtable"]            = thismod.moduleSEHTable
-				modinfo["sehcount"]            = thismod.moduleSEHCount
-				modinfo["pdbname"]             = thismod.modulePdbName
-				modinfo["pdbguidage"]          = thismod.modulePdbGuidAge
-				mnproc.g_modules[thismod.moduleKey] = modinfo
-			else:
+	mnproc._is_populating_modules = True
+	try:
+
+		if not silent:
+			dbg.setStatusBar("Getting modules info...")
+			dbg.log("[+] Generating module info table, hang on...")
+			dbg.log("    - Processing modules")
+			#dbg.updateLog()
+		mnproc.g_modules={}
+		dbgp("Enumerating modules via getAllModules")
+		if __DEBUGGERAPP__ == "WinDBG":
+			allmodules=dbg.getAllModules(from_memory=from_memory, peb_order=peb_order)
+		else:
+			allmodules=dbg.getAllModules()
+		dbgp("Number of modules found: %d" % len(allmodules))
+		dbgp("keys: %s" % allmodules.keys())
+		curmod = ""
+		for key in allmodules.keys():
+			try:    
+				modinfo={}
+				dbgp("Transforming %s into a MnModule object" % key)
+				thismod = MnModule(key)
+				dbgp("Result: %s" % thismod)
+				if not thismod is None:
+					modinfo["path"]		= thismod.modulePath
+					modinfo["filename"] = thismod.moduleFilename
+					modinfo["base"] 	= thismod.moduleBase
+					modinfo["size"] 	= thismod.moduleSize
+					modinfo["top"]  	= thismod.moduleTop
+					modinfo["safeseh"]	= thismod.isSafeSEH
+					modinfo["aslr"]		= thismod.isAslr
+					modinfo["nx"]		= thismod.isNX
+					modinfo["rebase"]	= thismod.isRebase
+					modinfo["version"]	= thismod.moduleVersion
+					modinfo["os"]		= thismod.isOS
+					modinfo["cfg"]		= thismod.isCFG
+					modinfo["name"]		= key
+					modinfo["entry"]	= thismod.moduleEntry
+					modinfo["codebase"]	= thismod.moduleCodebase
+					modinfo["codesize"]	= thismod.moduleCodesize
+					modinfo["codetop"]	= thismod.moduleCodetop
+					modinfo["dllcharacteristics"]  = thismod.moduleDllCharacteristics
+					modinfo["sehtable"]            = thismod.moduleSEHTable
+					modinfo["sehcount"]            = thismod.moduleSEHCount
+					modinfo["pdbname"]             = thismod.modulePdbName
+					modinfo["pdbguidage"]          = thismod.modulePdbGuidAge
+					mnproc.g_modules[thismod.moduleKey] = modinfo
+				else:
+					if not silent:
+						dbg.log("    - Oops, potential issue with module %s, skipping module" % key)
+			except Exception as e:
 				if not silent:
-					dbg.log("    - Oops, potential issue with module %s, skipping module" % key)
-		except Exception as e:
-			if not silent:
-				dbg.log("    - Unable to create MnModule for '%s', skipping module" % key)
-				dbg.log("%s" % str(e))
-			continue            
-        
-	if not silent:
-		dbg.log("    - Done. Let's rock 'n roll.")
-		dbg.setStatusBar("")	
-		dbg.updateLog()
-	mnproc.g_modulesOrder = peb_order
+					dbg.log("    - Unable to create MnModule for '%s', skipping module" % key)
+					dbg.log("%s" % str(e))
+				continue            
+			
+		if not silent:
+			dbg.log("    - Done. Let's rock 'n roll.")
+			dbg.setStatusBar("")	
+			dbg.updateLog()
+		mnproc.g_modulesOrder = peb_order
+	finally:
+		mnproc._is_populating_modules = False
 
 def ModInfoCached(modulename):
 	"""
@@ -9223,10 +9235,11 @@ def ModInfoCached(modulename):
 	Return:
 	Boolean - True if the module info is cached
 	"""
-	if (getModuleProperty(modulename,"base") == ""):
+	_ensureMnProc()
+	mod = mnproc.g_modules.get(modulename.strip())
+	if not mod:
 		return False
-	else:
-		return True
+	return mod.get("base", "") != ""
 
 
 def criteriaToText(criteria, toupper=False):
