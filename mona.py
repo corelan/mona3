@@ -1143,8 +1143,60 @@ def hex2bin(pattern):
 	pattern = pattern.replace("\\x", "")
 	pattern = pattern.replace("\"", "")
 	pattern = pattern.replace("\'", "")
-	
+		
 	return ensure_bytes(''.join([_to_text(binascii.a2b_hex(i+j)) for i,j in zip(pattern[0::2],pattern[1::2])]))
+
+
+def normalizeHexBytesArg(pattern):
+	"""
+	Normalize a user-provided byte string into a pure hex string (no separators).
+
+	Accepted examples:
+	  - "\\x41\\x42"
+	  - "0x41,0x42"
+	  - "41 42"
+	  - "4142"
+
+	Return:
+	  - normalized hex string (e.g. "4142") for byte inputs
+	  - "" for empty input
+	  - None if the input doesn't look like bytes
+	"""
+	if pattern is None:
+		return ""
+
+	try:
+		txt = _to_text(pattern)
+	except:
+		try:
+			txt = text_type(pattern)
+		except:
+			return None
+
+	txt = txt.strip()
+	if txt == "":
+		return ""
+
+	# Strip optional Python bytes literal prefix: b".." / b'..'
+	if len(txt) >= 2 and txt[0] in ("b", "B") and txt[1] in ("'", '"'):
+		txt = txt[1:]
+
+	txt = txt.replace('"', '').replace("'", "")
+	# Remove common separators
+	txt = re.sub(r'[\s,]', '', txt)
+	# Allow \xNN and 0xNN formats
+	txt = re.sub(r'(?i)\\x', '', txt)
+	txt = re.sub(r'(?i)0x', '', txt)
+
+	if txt == "":
+		return ""
+
+	if not re.match(r'(?i)^[0-9a-f]+$', txt):
+		return None
+	if (len(txt) % 2) != 0:
+		return None
+
+	return txt
 
 def cleanHex(hex):
 	hex = hex.replace("'","")
@@ -21895,7 +21947,9 @@ def procEnc(args):
 	byteerror = True
 	encodertype = ""
 	bytestoencodestr = ""
-	bytestoencode = ""
+	bytestoencode = b""
+	s_input_type = ""  # "bytes" or "asm"
+	s_input_asm = ""
 	badbytes = ""
 	
 	if "t" in args:
@@ -21905,7 +21959,15 @@ def procEnc(args):
 
 	if "s" in args:
 		if type(args["s"]).__name__.lower() != "bool":
-			bytestoencodestr = args["s"]
+			# -s can be bytes (\\xNN...) or assembly (instr#instr#...)
+			raw_s = args["s"]
+			normalized = normalizeHexBytesArg(raw_s)
+			if normalized is not None and normalized != "":
+				bytestoencodestr = normalized
+				s_input_type = "bytes"
+			else:
+				s_input_asm = raw_s
+				s_input_type = "asm"
 			byteerror = False
 
 	if "f" in args:
@@ -21920,7 +21982,8 @@ def procEnc(args):
 					f.close()
 					for c in content:
 						for a in c:
-							bytestoencodestr += "\\x%02x" % _ord(a)
+							bytestoencodestr += "%02x" % _ord(a)
+					s_input_type = "bytes"
 					byteerror = False
 				except:
 					dbg.log("*** Error - unable to read bytes from %s" % binfile)
@@ -21938,10 +22001,37 @@ def procEnc(args):
 	if not encodertype in validencoders:
 		encodertyperror = True
 
-	if bytestoencodestr == "":
+	if bytestoencodestr == "" and s_input_asm == "":
 		byteerror = True
 	else:
-		bytestoencode = hex2bin(bytestoencodestr)
+		try:
+			if s_input_type == "asm" and s_input_asm != "":
+				#checkKeystone()
+				asmtext = _to_text(s_input_asm).replace('"', "").replace("'", "")
+				asmparts = [p.strip() for p in re.split(r'[;#]', asmtext) if p and p.strip()]
+				if len(asmparts) == 0:
+					byteerror = True
+				else:
+					dbgp("[+] Assembling the following instructions:\n%s" % "\n".join(asmparts))
+					asmjoined = "\n".join(asmparts)
+					assembled = dbg.assemble(asmjoined)
+					dbgp("[+] Assembled bytes: %s" % bin2hex(assembled))
+					# dbg.assemble should return raw bytes (py3) or str (py2). Coerce for safety.
+					if isinstance(assembled, bytearray):
+						assembled = bytes(assembled) if PY3 else ''.join(chr(b & 0xff) for b in assembled)
+					elif PY3 and isinstance(assembled, (list, tuple)):
+						assembled = bytes([b & 0xff for b in assembled])
+					bytestoencode = _to_bytes(assembled)
+					byteerror = (bytestoencode == b"")
+			else:
+				normalized = normalizeHexBytesArg(bytestoencodestr)
+				if normalized is None or normalized == "":
+					byteerror = True
+				else:
+					bytestoencode = hex2bin(normalized)
+					byteerror = False
+		except:
+			byteerror = True
 
 	if encodertyperror:
 		dbg.log("*** Please specific a valid encodertype with parameter -t.",highlight=True)
@@ -21950,6 +22040,7 @@ def procEnc(args):
 
 	if byteerror:
 		dbg.log("*** Please specify a valid series of bytes with parameter -s",highlight=True)
+		dbg.log("*** or specify assembly instructions with parameter -s (use # to separate instructions)",highlight=True)
 		dbg.log("*** or specify a valid path with parameter -f",highlight=True)
 
 	if encodertyperror or byteerror:
@@ -21961,8 +22052,12 @@ def procEnc(args):
 			encodedbytes = cEncoder.encodeAlphaNum(badchars = badbytes)
 			# determine correct sequence of dictionary
 			if len(encodedbytes) > 0:
+				global g_omitModuleTableInOutpuFile
+				curomit = g_omitModuleTableInOutpuFile
+				g_omitModuleTableInOutpuFile = True
 				logfile = MnLog("encoded_%s.txt" % encodertype)
 				thislog = logfile.reset()
+				g_omitModuleTableInOutpuFile = curomit
 				if not silent:
 					dbg.log("")
 					dbg.log("Results:")
@@ -24805,9 +24900,9 @@ In that case, all addresses will be listed. TRY THIS ONE !"""
 	
 	encUsage = """Encode a series of bytes
 Arguments:
-    -t <type>         : Type of encoder to use.  Allowed value(s) are alphanum 
-    -s <bytes>        : The bytes to encode (or use -f instead)
-    -f <path to file> : The full path to the binary file that contains the bytes to encode"""
+	    -t <type>         : Type of encoder to use.  Allowed value(s) are alphanum 
+	    -s <bytes|asm>    : Bytes to encode (e.g. \\x41\\x42, 4142) or assembly (use # to separate instructions)
+	    -f <path to file> : The full path to the binary file that contains the bytes to encode"""
 	
 	stringUsage = """Read a string from memory or write a string to memory
 Arguments:
