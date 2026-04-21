@@ -2937,6 +2937,7 @@ class MnEncoder:
 		if not silent:
 			dbg.log("[+] Using alphanum encoder")
 			dbg.log("[+] Received %d bytes to encode" % len(self.origbytestoencode))
+			dbg.log("    %s" % bin2hexstr(self.origbytestoencode))
 			dbg.log("[+] Nr of bad chars: %d" % len(badchars))
 		# first, check if there are no bad char conflicts
 		nobadchars = b"\x25\x2a\x2d\x31\x32\x35\x4a\x4d\x4e\x50\x55"
