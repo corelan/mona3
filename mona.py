@@ -24504,13 +24504,23 @@ def procAllocMem(args):
 			dbg.log("    Current page ACL: %s" % getPointerAccess(addy))
 		dbg.log("    Desired page ACL: %s (0x%02x)" % (pageaclname,pageacl))
 		VIRTUAL_MEM = ( 0x1000 | 0x2000 )
-		allocat = dbg.rVirtualAlloc(addy,size,0x1000,pageacl)
-		if addy == 0 and allocat > 0:
-			retval = dbg.rVirtualProtect(allocat,1,pageacl)
+		allocat = dbg.rVirtualAlloc(addy,size,VIRTUAL_MEM,pageacl)
+		if allocat == 0:
+			dbg.log("[!] VirtualAllocEx failed (size=0x%x, acl=%s)." % (size, pageaclname), highlight=1)
+			if addy > 0:
+				dbg.log("    Trying VirtualProtectEx on existing mapping at 0x%08x" % addy)
+				retval = dbg.rVirtualProtect(addy,size,pageacl)
+				if retval == 0:
+					dbg.log("[!] VirtualProtectEx failed at 0x%08x" % addy, highlight=1)
+				else:
+					dbg.log("[+] Changed ACL at 0x%08x to %s" % (addy, pageaclname))
+			return
+
+		retval = dbg.rVirtualProtect(allocat,size,pageacl)
+		if retval == 0:
+			dbg.log("[!] VirtualProtectEx failed at %s" % (PTR_PRINT % allocat), highlight=1)
 		else:
-			retval = dbg.rVirtualProtect(addy,1,pageacl)
-		
-		dbg.log("[+] Allocated memory at %s" % (PTR_PRINT % allocat))
+			dbg.log("[+] Allocated memory at %s" % (PTR_PRINT % allocat))
 		#if allocat > 0:
 		#	dbg.log("    ACL 0x%08x: %s" % (allocat,getPointerAccess(allocat)))
 		#else:
