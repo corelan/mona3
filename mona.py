@@ -8636,6 +8636,14 @@ def getPointerAccess(address, forcedread=False):
 	paccess = ""
 	try:
 		page   = dbg.getMemoryPageByAddress( address )
+		if forcedread:
+			# Refresh underlying page protection and invalidate the human-readable cache.
+			try:
+				page.protect = None
+			except:
+				pass
+			if page in MemoryPageACL:
+				del MemoryPageACL[page]
 		if page in MemoryPageACL and not forcedread:
 			paccess = MemoryPageACL[page]
 		else:
@@ -23691,11 +23699,21 @@ def procChangeACL(args):
 	if not addyerror and not aclerror:
 		pageacl = MnProc.memProtConstants[acl][1]
 		pageaclname = MnProc.memProtConstants[acl][0]
+		modifier_only_acls = ["GUARD", "NOCACHE", "WC"]
+		base_acl_mask = 0xff
 		dbg.log("[+] ACL Changes for address %s" % (PTR_PRINT % addy))
-		before_access = getPointerAccess(addy)
-		dbg.log("[+] Current ACL: %s" % getPointerAccess(addy))
-		dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
-		if before_access != pageaclname:
+		current_acl = dbg.getMemoryPageByAddress(addy).getAccess()
+		before_access = getPointerAccess(addy, forcedread = True)
+		dbg.log("[+] Current ACL: %s" % before_access)
+		if acl in modifier_only_acls:
+			base_acl = current_acl & base_acl_mask
+			if base_acl == 0:
+				base_acl = 0x1
+			pageacl = base_acl | pageacl
+			dbg.log("[+] Desired ACL: %s (effective 0x%02x)" % (pageaclname,pageacl))
+		else:
+			dbg.log("[+] Desired ACL: %s (0x%02x)" % (pageaclname,pageacl))
+		if current_acl != pageacl:
 			#retval = dbg.rVirtualAlloc(addy,1,0x1000,pageacl)
 			retval = dbg.rVirtualProtect(addy,1,pageacl)
 			after_access = getPointerAccess(addy, forcedread = True)
