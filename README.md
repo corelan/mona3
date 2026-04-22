@@ -81,7 +81,7 @@ quit()
 
 Next, run `py -3.9-64`
 
-You should get a Python interactive shell running Python 3.9.13 32bit
+That should provide you with a Python interactive shell running Python 3.9.13 64bit
 
 ```batch
 C:\>py -3.9-64
