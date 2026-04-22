@@ -6530,7 +6530,12 @@ class MnChunk:
 			return (0, 0)
 
 		data = fillbyte * size
-		dbg.writeMemory(start, data)
+		try:
+			dbg.writeMemory(start, data)
+		except Exception as e:
+			errormsg = "Error writing to address %s: %s" % ((PTR_PRINT % start), str(e))
+			dbg.log(errormsg)
+			pass
 		return (start, size)
 
 
