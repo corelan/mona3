@@ -7172,6 +7172,18 @@ class MnPointer:
 	"""
 	Class to access pointer properties
 	"""
+
+	# Constant byte-classification ranges — defined once at class level so
+	# they are not rebuilt on every MnPointer instantiation.
+	_NullRange          = [0]
+	_AsciiRange         = list(range(1, 128))
+	_AsciiPrintRange    = list(range(20, 127))
+	_AsciiUpperRange    = list(range(65, 91))
+	_AsciiLowerRange    = list(range(97, 123))
+	_AsciiAlphaRange    = list(range(65, 91)) + list(range(97, 123))
+	_AsciiNumericRange  = list(range(48, 58))
+	_AsciiSpaceRange    = [32]
+
 	def __init__(self,address):
 
 		# check that the address is an integer
@@ -7180,14 +7192,14 @@ class MnPointer:
 	
 		self.address = address
 		
-		NullRange 			= [0]
-		AsciiRange			= list(range(1,128))
-		AsciiPrintRange		= list(range(20,127))
-		AsciiUppercaseRange = list(range(65,91))
-		AsciiLowercaseRange = list(range(97,123))
-		AsciiAlphaRange     = AsciiUppercaseRange + AsciiLowercaseRange
-		AsciiNumericRange   = list(range(48,58))
-		AsciiSpaceRange     = [32]
+		NullRange 			= MnPointer._NullRange
+		AsciiRange			= MnPointer._AsciiRange
+		AsciiPrintRange		= MnPointer._AsciiPrintRange
+		AsciiUppercaseRange = MnPointer._AsciiUpperRange
+		AsciiLowercaseRange = MnPointer._AsciiLowerRange
+		AsciiAlphaRange     = MnPointer._AsciiAlphaRange
+		AsciiNumericRange   = MnPointer._AsciiNumericRange
+		AsciiSpaceRange     = MnPointer._AsciiSpaceRange
 		
 		self.HexAddress = toHex(address)
 
@@ -8297,7 +8309,7 @@ def search(sequences,criteria=[]):
 	return searchInRange(sequences,criteria)
 	
 	
-def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
+def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pages=True):
 	"""
 	search for byte sequences in a specified address range
 
@@ -8306,6 +8318,9 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 	start - the start address of the search (defaults to 0)
 	end   - the end address of the search
 	criteria - Dictionary containing the criteria each pointer should comply with
+	refresh_pages - if True (default), call dbg.getMemoryPages() before searching.
+	               Pass False when the caller has already refreshed the page list
+	               (e.g. findSEH calls it once before the per-module loop).
 
 	Return:
 	Dictionary (opcode sequence => List of addresses)
@@ -8376,7 +8391,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 			start, end = end, start
 
 		dbg.setStatusBar("Searching...")
-		dbg.getMemoryPages()
+		if refresh_pages:
+			dbg.getMemoryPages()
 		had_unreadable_pages = False
 		for a in dbg.MemoryPages.keys():
 
@@ -8597,13 +8613,16 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 	return found_opcodes
 
 # search for byte sequences in a module
-def searchInModule(sequences, name,criteria=[]):
+def searchInModule(sequences, name, criteria=[], refresh_pages=True):
 	"""
 	search for byte sequences in a specified module
 
 	Arguments:
 	sequences - array of byte sequences to search for
 	name - the name of the module to search in
+	criteria - Dictionary containing the criteria each pointer should comply with
+	refresh_pages - passed through to searchInRange; set False when the caller
+	               has already refreshed the page list.
 
 	Return:
 	Dictionary (text opcode => array of addresses)
@@ -8618,7 +8637,7 @@ def searchInModule(sequences, name,criteria=[]):
 	start = module.getBaseAddress()
 	end   = start + module.getSize()
 
-	return searchInRange(sequences, start, end, criteria)
+	return searchInRange(sequences, start, end, criteria, refresh_pages=refresh_pages)
 
 def getRangesOutsideModules():
 	"""
@@ -9561,12 +9580,15 @@ def findSEH(modulecriteria={},criteria={}):
 		dbg.log("[+] Querying %d modules" % len(modulestosearch))
 	
 	starttime = datetime.datetime.now()
+	# Refresh the memory page list once here so per-module searchInModule calls
+	# do not each trigger a full page re-enumeration (searchInRange refresh_pages=False).
+	dbg.getMemoryPages()
 	for thismodule in modulestosearch:
 		if not silent:
 			dbg.log("    - Querying module %s" % thismodule)
 		dbg.updateLog()
 		#search
-		found_opcodes = searchInModule(search,thismodule,criteria)
+		found_opcodes = searchInModule(search, thismodule, criteria, refresh_pages=False)
 		#merge results
 		all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
 	#search outside modules
@@ -9585,7 +9607,7 @@ def findSEH(modulecriteria={},criteria={}):
 			for thisrange in rangestosearch:
 				if not silent:
 					dbg.log("    - Querying 0x%08x - 0x%08x" % (thisrange[0],thisrange[1]))
-				found_opcodes = searchInRange(search, thisrange[0], thisrange[1],criteria)
+				found_opcodes = searchInRange(search, thisrange[0], thisrange[1], criteria, refresh_pages=False)
 				all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
 			if not silent:
 				dbg.log("    - Search complete, processing results")
