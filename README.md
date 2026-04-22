@@ -114,7 +114,9 @@ This will install all required components to run `mona` on Windows 7.
 ### 1.3. A note on 64bit
 
 The 64bit versions of WinDBG(X) don't actually support assembling 64bit mnemonics into opcode. 
-We've hardcoded a few common instructions in an assembly "cache" inside windbglib.py, but we're also checking if your machine has the `keystone-engine` library installed for Python 3.9 64bit.  
+
+We've hardcoded a few common instructions in an assembly "cache" inside windbglib.py, but we're also checking if your machine has the `keystone-engine` library installed.
+ 
 If it is the case, windbglib will use it as needed to assemble.
 If not, support for 64bit assembly will be limited, and some commands that take arbitrary assemby statements might fail.
 
