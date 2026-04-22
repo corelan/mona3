@@ -425,8 +425,9 @@ def _ensure_mnproc():
 		try:
 			mnproc = MnProc()
 		except Exception as e:
-			dbgp("Error creating MnProc instance: %s" % str(e))
 			dbg.log("[!] Are you connected to a process?", highlight=1)
+			dbgp("Error creating MnProc instance: %s" % str(e))
+			dbgp("Exception details:\n%s" % traceback.format_exc())
 	return mnproc
 
 
