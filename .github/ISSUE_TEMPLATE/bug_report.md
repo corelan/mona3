@@ -11,10 +11,16 @@ assignees: ''
 A clear and concise description of what the bug is.
 
 **To Reproduce**
-Steps to reproduce the behavior:
-1. OS version, application, architecture, python version and debugger used
-2. what command did you run
-3. output
+
+***System setup***
+1. OS:
+2. Application:
+3. Debugger used (Name & architecture):
+4. Python version used:
+
+***Steps to reproduce the behavior***
+1. what command did you run
+2. provide the full output
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.
