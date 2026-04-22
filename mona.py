@@ -277,7 +277,21 @@ def _hasSymbolsCached(modprops):
 
 commands = {}
 
+# Probe the WinDBG engine version once at startup so hot paths can decide
+# which extension prefix to use (e.g. !heap vs !ext.heap).
+# vertarget output: "Windows ... Version X.Y.Z ..."
+# WinDBG 10+ moved !heap -p from exts.dll to ext.dll.
+_WINDBG_HEAP_CMD_PREFIX = "!"
 if __DEBUGGERAPP__ == "WinDBG":
+	try:
+		_vt = dbg.nativeCommand("vertarget")
+		import re as _re
+		_m = _re.search(r'WinDbg (\d+)\.', _vt, _re.IGNORECASE)
+		if _m and int(_m.group(1)) >= 10:
+			_WINDBG_HEAP_CMD_PREFIX = "!ext."
+	except:
+		pass
+
 	_ensureSymbolCache(auto_fix=True)
 
 osver = dbg.getOsVersion()
@@ -7951,7 +7965,7 @@ class MnPointer:
 					else:
 						parent = ""
 					
-					cmd2torun = "!heap -p -a %s" % (PTR_PRINT % addy)
+					cmd2torun = "%sheap -p -a %s" % (_WINDBG_HEAP_CMD_PREFIX, PTR_PRINT % addy)
 					output2 = dbg.nativeCommand(cmd2torun)
 					heapdata = output2.split("\n")
 					
