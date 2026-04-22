@@ -175,6 +175,7 @@ silent = False
 noheader = False
 g_keystoneLoaded = False
 _sym_cache_dirs = None
+_heap_cmd_prefix = None  # Lazily probed on first dumpObjectAtLocation call; "!" or "!ext."
 
 try:
 	import keystone
@@ -277,22 +278,7 @@ def _hasSymbolsCached(modprops):
 
 commands = {}
 
-# Probe the WinDBG engine version once at startup so hot paths can decide
-# which extension prefix to use (e.g. !heap vs !ext.heap).
-# vertarget output: "Windows ... Version X.Y.Z ..."
-# WinDBG 10+ moved !heap -p from exts.dll to ext.dll.
-_WINDBG_HEAP_CMD_PREFIX = "!"
 if __DEBUGGERAPP__ == "WinDBG":
-	try:
-		# Probe whether ext.dll is loaded (WinDBG 10+ moved !heap -p there).
-		# A successful load returns help text; a missing DLL returns an error
-		# containing "Unable to find" or an empty string.
-		_probe = dbg.nativeCommand("!ext.heap")
-		if _probe and "Unable to find" not in _probe and "No export" not in _probe:
-			_WINDBG_HEAP_CMD_PREFIX = "!ext."
-	except:
-		pass
-
 	_ensureSymbolCache(auto_fix=True)
 
 osver = dbg.getOsVersion()
@@ -7966,7 +7952,17 @@ class MnPointer:
 					else:
 						parent = ""
 					
-					cmd2torun = "%sheap -p -a %s" % (_WINDBG_HEAP_CMD_PREFIX, PTR_PRINT % addy)
+					global _heap_cmd_prefix
+					if _heap_cmd_prefix is None:
+						try:
+							_probe = dbg.nativeCommand("!ext.heap")
+							if _probe and "Unable to find" not in _probe and "No export" not in _probe:
+								_heap_cmd_prefix = "!ext."
+							else:
+								_heap_cmd_prefix = "!"
+						except:
+							_heap_cmd_prefix = "!"
+					cmd2torun = "%sheap -p -a %s" % (_heap_cmd_prefix, PTR_PRINT % addy)
 					output2 = dbg.nativeCommand(cmd2torun)
 					heapdata = output2.split("\n")
 					
