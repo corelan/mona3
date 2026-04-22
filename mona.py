@@ -422,7 +422,11 @@ def _ensure_mnproc():
 	"""Lazily create the MnProc instance on first access."""
 	global mnproc
 	if mnproc is None:
-		mnproc = MnProc()
+		try:
+			mnproc = MnProc()
+		except Exception as e:
+			dbgp("Error creating MnProc instance: %s" % str(e))
+			dbg.log("[!] Are you connected to a process?", highlight=1)
 	return mnproc
 
 
@@ -8872,6 +8876,11 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 	"""
 	dbgp(get_current_function_name())
 	_ensure_mnproc()
+
+	if mnproc is None:
+		dbgp("Error: mnproc is None in populateModuleInfo()")
+		sys.exit("Unable to proceed")
+		return
 
 	if len(mnproc.g_modules) > 0 and mnproc.g_modulesOrder == peb_order:
 		return
