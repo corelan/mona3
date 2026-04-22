@@ -284,10 +284,11 @@ commands = {}
 _WINDBG_HEAP_CMD_PREFIX = "!"
 if __DEBUGGERAPP__ == "WinDBG":
 	try:
-		_vt = dbg.nativeCommand("vertarget")
-		import re as _re
-		_m = _re.search(r'WinDbg (\d+)\.', _vt, _re.IGNORECASE)
-		if _m and int(_m.group(1)) >= 10:
+		# Probe whether ext.dll is loaded (WinDBG 10+ moved !heap -p there).
+		# A successful load returns help text; a missing DLL returns an error
+		# containing "Unable to find" or an empty string.
+		_probe = dbg.nativeCommand("!ext.heap")
+		if _probe and "Unable to find" not in _probe and "No export" not in _probe:
 			_WINDBG_HEAP_CMD_PREFIX = "!ext."
 	except:
 		pass
