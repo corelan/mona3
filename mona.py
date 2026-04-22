@@ -3355,7 +3355,9 @@ class MnConfig:
 				# avoid trying to move onto itself
 				if os.path.abspath(self.fullpath).lower() != os.path.abspath(self.legacyfullpath).lower():
 					shutil.move(self.legacyfullpath, self.fullpath)
-					dbg.log("[+] Migrated mona.ini from %s to %s" % (self.legacyfullpath, self.fullpath))
+					dbg.log("[+] Migrated mona.ini")
+					dbg.log("    From %s" % (self.legacyfullpath))
+					dbg.log("    To   %s" % (self.fullpath))
 		except Exception as e:
 			dbg.log(" ** Warning: unable to migrate mona.ini from %s to %s : %s" % (self.legacyfullpath, self.fullpath, str(e)), highlight=1)
 
@@ -25318,10 +25320,10 @@ Arguments:
 	commands["string"]			= MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str",[32,64])
 	commands["copy"]			= MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp",[32,64])
 	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])	
+	commands["fillchunk"]	    = MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
 	if __DEBUGGERAPP__ == "WinDBG":
-		commands["fillchunk"]	= MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
 		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
