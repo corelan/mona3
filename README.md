@@ -49,8 +49,8 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 The script will automatically:
 
 * ***Install*** **Python 3.9.13** (both 32-bit and 64-bit)
-* ***Install*** **PyKD** library for both Python architectures
-* ***Install*** **Capstone** library for Python3.9 64bit architectures 
+* ***Install*** **PyKD** Python library
+* ***Install*** **Keystone-engine** Python library 
 * ***Install*** **PyKD-ext** bootstrapper WinDBG extension
 * ***Install*** **Visual Studio runtime** and register required DLLs
 
@@ -74,6 +74,7 @@ Type the following commands and verify there are no warnings or errors:
 
 ```python
 import pykd
+import keystone
 quit()
 ```
 
