@@ -22464,8 +22464,12 @@ def procString(args):
 	stringtowrite = ""
 	# read or write ?
 	if not "r" in args and not "w" in args:
-		dbg.log("*** Error: you must indicate if you want to read (-r) or write (-w) ***",highlight=True)
-		return
+		dbg.log("[+] Default mode is read (-r)")     
+		dbg.log("    Use -w if you would like to write instead")
+		dbg.log("")
+		#dbg.log("*** Error: you must indicate if you want to read (-r) or write (-w) ***",highlight=True)
+		mode = "read"
+
 	addresserror = False
 	if not "a" in args:
 		addresserror = True
@@ -22483,11 +22487,12 @@ def procString(args):
 		dbg.log("*** Error: you must specify a valid address with -a ***",highlight=True)
 		return
 
-	if "w" in args:
-		mode = "write"
-	if "r" in args:
-		# read wins, because it's non destructive
-		mode = "read"
+	if mode == "":
+		if "w" in args:
+			mode = "write"
+		if "r" in args:
+			# read wins, because it's non destructive
+			mode = "read"
 	if "u" in args:
 		useunicode = True
 
