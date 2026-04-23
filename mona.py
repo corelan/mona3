@@ -8203,6 +8203,43 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 		if not sequences:
 			return {}
+
+		# Pre-assemble / normalize patterns once (can be hundreds for `jmp`)
+		compiled_patterns = []
+		for seq in sequences:
+			buf = None
+			human_format = b""
+			try:
+				if isinstance(seq, str):
+					human_format = seq.replace("\n"," # ").lower()
+					buf = dbg.assemble(seq)
+				elif isinstance(seq, (bytes, bytearray)):
+					buf = bytes(seq)
+					human_format = " ".join(["%02x" % b for b in buf])
+				elif isinstance(seq, int):
+					buf = bytes([seq & 0xff])
+					human_format = "%02x" % (seq & 0xff)
+				elif isinstance(seq, (list, tuple)) and len(seq) >= 2:
+					human_format = str(seq[0]).replace("\n"," # ")
+					buf = seq[1]
+				else:
+					dbg.log(" ** Unsupported sequence type: %s" % type(seq), highlight=1)
+					continue
+			except Exception as e:
+				dbg.log(" ** Unable to build searchPattern '%s'. **" % str(seq), highlight=1)
+				dbg.log(str(e))
+				continue
+
+			buf = ensure_bytes(buf) if buf is not None else b""
+			# Skip if buf is empty to avoid "ValueError: empty separator"
+			if not buf or len(buf) == 0:
+				dbg.log(" ** Search pattern '%s' resulted in empty buffer, skipping **" % human_format, highlight=1)
+				continue
+
+			compiled_patterns.append((human_format, buf))
+
+		if not compiled_patterns:
+			return {}
 			
 		# check that start is before end
 		if start > end:
@@ -8210,7 +8247,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 		dbg.setStatusBar("Searching...")
 		dbg.getMemoryPages()
-		process_error_found = False
+		had_unreadable_pages = False
 		for a in dbg.MemoryPages.keys():
 
 			if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
@@ -8248,91 +8285,143 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 
 				
 				mem = dbg.MemoryPages[a].getMemory()
-				#dbgp("      + Page %s is within scope, loading memory contents" % (PTR_PRINT % a))
+
+				# If a full region read fails (common when a region contains an unreadable sub-page),
+				# fall back to smaller reads and scan those chunks. This prevents skipping the entire
+				# region and missing hits (e.g. `mona jmp -r esp`).
 				if not mem:
-					#dbgp("        Failed to load page %s!!" % (PTR_PRINT % a))
-					continue
-				else:
-					#dbgp("        mem size: 0x%08x" % len(mem))
+					had_unreadable_pages = True
+					dbgp("      !Failed to read full range %s-%s, falling back to chunked reads" %
+						 ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 
-					# loop on each sequence
-					for seq in sequences:
-						if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
-							buf = None
-							human_format = b""
-							if isinstance(seq, str):
-								human_format = seq.replace("\n"," # ").lower()
-								buf = dbg.assemble(seq)
-							elif isinstance(seq, (bytes, bytearray)):
-								buf = bytes(seq)
-								human_format = " ".join(["%02x" % b for b in buf])
-							elif isinstance(seq, int):
-								buf = bytes([seq & 0xff])
-								human_format = "%02x" % (seq & 0xff)
-							elif isinstance(seq, (list, tuple)) and len(seq) >= 2:
-								human_format = str(seq[0]).replace("\n"," # ")
-								buf = seq[1]
-							else:
-								dbg.log(" ** Unsupported sequence type: %s" % type(seq), highlight=1)
-								continue
+					chunk_size = 0x1000
+					scan_start = max(page_start, start)
+					# page_end is exclusive; search end is inclusive
+					scan_end_inclusive = min(page_end - 1, end)
+					if scan_end_inclusive < scan_start:
+						continue
 
-						buf = ensure_bytes(buf)
-						
-						# Skip if buf is empty to avoid "ValueError: empty separator"
-						if not buf or len(buf) == 0:
-							dbg.log(" ** Search pattern '%s' resulted in empty buffer, skipping **" % human_format, highlight=1)
+					# carry per pattern to catch matches spanning chunk boundaries
+					carries = [b"" for _ in compiled_patterns]
+
+					cursor = scan_start
+					while cursor <= scan_end_inclusive:
+						if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
+							return found_opcodes
+
+						read_len = min(chunk_size, (scan_end_inclusive - cursor) + 1)
+						chunk = dbg.readMemory(cursor, read_len)
+						if not chunk or len(chunk) == 0:
+							# gap / unreadable chunk: reset carries to avoid cross-gap matches
+							carries = [b"" for _ in compiled_patterns]
+							cursor += read_len
 							continue
-						
-						recur_find   = []		
-						try:
-							buf_len      = len(buf)
-							mem_list     = mem.split( buf )
-							total_length = buf_len * -1
-						except Exception as e:
-							process_error_found = True
-							dbg.log(" ** Unable to process searchPattern '%s'. **" % human_format)
-							dbg.log("%s" % str(buf))
-							dbg.log(str(e))
-							dbg.log("%s" % traceback.format_exc())
-							break
-						
-						for i in mem_list:
-							total_length = total_length + len(i) + buf_len
-							seq_address = a + total_length
-							recur_find.append( seq_address )
 
-						#The last one is the remaining slice from the split
-						#so remove it from the list
-						del recur_find[ len(recur_find) - 1 ]
+						for pidx, (human_format, buf) in enumerate(compiled_patterns):
+							if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
+								return found_opcodes
 
-						page_find = []
-						for i in recur_find:
-							if ( i >= start and i <= end ):
-								
-								ptr = MnPointer(i)
+							buf_len = len(buf)
+							carry = carries[pidx] if buf_len > 1 else b""
+							window = carry + chunk if carry else chunk
+							window_base = cursor - (len(carry) if carry else 0)
 
-								# check if pointer meets criteria
+							start_idx = 0
+							while True:
+								found_at = window.find(buf, start_idx)
+								if found_at == -1:
+									break
+
+								# avoid duplicates: if the match is fully inside carry, it was already reported
+								if carry and found_at < len(carry) and (found_at + buf_len) <= len(carry):
+									start_idx = found_at + 1
+									continue
+
+								hit = window_base + found_at
+								start_idx = found_at + 1
+
+								if hit < start or hit > end:
+									continue
+
+								ptr = MnPointer(hit)
 								if not meetsCriteria(ptr, criteria):
 									continue
-								
-								page_find.append(i)
-								
+
+								if human_format in found_opcodes:
+									found_opcodes[human_format].append(hit)
+								else:
+									found_opcodes[human_format] = [hit]
+
 								ptr_counter += 1
 								if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
-								#stop search
-									if human_format in found_opcodes:
-										found_opcodes[human_format] += page_find
-									else:
-										found_opcodes[human_format] = page_find
 									return found_opcodes
-						#add current pointers to the list and continue		
-						if len(page_find) > 0:
-							if human_format in found_opcodes:
-								found_opcodes[human_format] += page_find
+
+							# update carry (last buf_len-1 bytes)
+							if buf_len > 1:
+								if len(window) >= (buf_len - 1):
+									carries[pidx] = window[-(buf_len - 1):]
+								else:
+									carries[pidx] = window
 							else:
-								found_opcodes[human_format] = page_find
-				if process_error_found:
-					break
+								carries[pidx] = b""
+
+						cursor += read_len
+
+					continue
+
+				# fast path: full region read succeeded
+				for human_format, buf in compiled_patterns:
+					if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
+						return found_opcodes
+
+					recur_find   = []		
+					try:
+						buf_len      = len(buf)
+						mem_list     = mem.split(buf)
+						total_length = buf_len * -1
+					except Exception as e:
+						dbg.log(" ** Unable to process searchPattern '%s'. **" % human_format)
+						dbg.log("%s" % str(buf))
+						dbg.log(str(e))
+						dbg.log("%s" % traceback.format_exc())
+						break
+					
+					for i in mem_list:
+						total_length = total_length + len(i) + buf_len
+						seq_address = a + total_length
+						recur_find.append(seq_address)
+
+					# The last one is the remaining slice from the split, so remove it
+					del recur_find[len(recur_find) - 1]
+
+					page_find = []
+					for i in recur_find:
+						if (i >= start and i <= end):
+							ptr = MnPointer(i)
+
+							# check if pointer meets criteria
+							if not meetsCriteria(ptr, criteria):
+								continue
+							
+							page_find.append(i)
+							
+							ptr_counter += 1
+							if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
+								# stop search
+								if human_format in found_opcodes:
+									found_opcodes[human_format] += page_find
+								else:
+									found_opcodes[human_format] = page_find
+								return found_opcodes
+
+					# add current pointers to the list and continue
+					if len(page_find) > 0:
+						if human_format in found_opcodes:
+							found_opcodes[human_format] += page_find
+						else:
+							found_opcodes[human_format] = page_find
+		if had_unreadable_pages and not silent:
+			dbg.log("[!] Some memory ranges could not be read during this search; results may be incomplete.", highlight=1)
 	return found_opcodes
 
 # search for byte sequences in a module

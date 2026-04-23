@@ -4592,6 +4592,95 @@ class wpage():
 				data = bytes(bytearray(pykd.loadBytes(self.begin, self.size)))
 				return data
 			except Exception as e:
+				# pykd.loadBytes() may fail for large reads or when the region contains an unreadable sub-page.
+				# Before bailing out, try to reconstruct the full region using smaller reads.
+
+				def _windbg_db_read_bytes(addr, length):
+					"""Read memory using WinDBG's `db` output and parse bytes.
+
+					Returns bytes on success, or None on failure/incomplete output.
+					"""
+					try:
+						cmd = "db 0x%x L0x%x" % (addr, length)
+						out = pykd.dbgCommand(cmd)
+					except Exception:
+						return None
+					if not out:
+						return None
+
+					collected = bytearray()
+					for line in out.splitlines():
+						line = line.strip()
+						if not line:
+							continue
+						low = line.lower()
+						if "memory access" in low or "error" in low:
+							return None
+
+						parts = line.split()
+						if len(parts) < 2:
+							continue
+
+						# Skip the address column (first token) and parse 2-hex-digit tokens until ASCII column.
+						for tok in parts[1:]:
+							if tok == "-":
+								continue
+							if re.match(r"^[0-9a-fA-F]{2}$", tok):
+								collected.append(int(tok, 16))
+								if len(collected) >= length:
+									return bytes(collected[:length])
+							else:
+								break
+
+					if len(collected) != length:
+						return None
+					return bytes(collected)
+
+				def _resilient_read_full_region():
+					# Read in 0x1000 chunks; if a chunk fails, retry in 0x100 chunks and (last resort) via `db`.
+					page_chunk = 0x1000
+					small_chunk = 0x100
+					outbuf = bytearray()
+
+					offset = 0
+					while offset < self.size:
+						remaining = self.size - offset
+						this_len = page_chunk if remaining > page_chunk else remaining
+						addr = self.begin + offset
+						try:
+							outbuf.extend(bytearray(pykd.loadBytes(addr, this_len)))
+							offset += this_len
+							continue
+						except Exception:
+							pass
+
+						# Try smaller reads (and windbg `db` as last resort per small chunk)
+						suboff = 0
+						while suboff < this_len:
+							subrem = this_len - suboff
+							slen = small_chunk if subrem > small_chunk else subrem
+							saddr = addr + suboff
+							try:
+								outbuf.extend(bytearray(pykd.loadBytes(saddr, slen)))
+								suboff += slen
+								continue
+							except Exception:
+								dbbytes = _windbg_db_read_bytes(saddr, slen)
+								if dbbytes is None or len(dbbytes) != slen:
+									return None
+								outbuf.extend(bytearray(dbbytes))
+								suboff += slen
+
+						offset += this_len
+
+					if len(outbuf) != self.size:
+						return None
+					return bytes(outbuf)
+
+				data2 = _resilient_read_full_region()
+				if data2 is not None:
+					return data2
+
 				dbgp("Error accessing memory: %s" % str(e))
 				return None
 		else:
