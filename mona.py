@@ -8310,12 +8310,16 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 							return found_opcodes
 
 						read_len = min(chunk_size, (scan_end_inclusive - cursor) + 1)
-						chunk = dbg.readMemory(cursor, read_len)
-						if not chunk or len(chunk) == 0:
-							# gap / unreadable chunk: reset carries to avoid cross-gap matches
-							carries = [b"" for _ in compiled_patterns]
-							cursor += read_len
-							continue
+						try:
+							chunk = dbg.readMemory(cursor, read_len)
+						except Exception:
+							chunk = b""
+
+						chunk = ensure_bytes(chunk) if chunk else b""
+						if len(chunk) < read_len:
+							chunk += b"\x00" * (read_len - len(chunk))
+						elif len(chunk) > read_len:
+							chunk = chunk[:read_len]
 
 						for pidx, (human_format, buf) in enumerate(compiled_patterns):
 							if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
@@ -8421,7 +8425,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 						else:
 							found_opcodes[human_format] = page_find
 		if had_unreadable_pages and not silent:
-			dbg.log("[!] Some memory ranges could not be read during this search; results may be incomplete.", highlight=1)
+			dbgp("[!] Some memory ranges could not be read during this search; results may be incomplete.", highlight=1)
 	return found_opcodes
 
 # search for byte sequences in a module

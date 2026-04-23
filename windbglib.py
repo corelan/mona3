@@ -4648,7 +4648,12 @@ class wpage():
 						this_len = page_chunk if remaining > page_chunk else remaining
 						addr = self.begin + offset
 						try:
-							outbuf.extend(bytearray(pykd.loadBytes(addr, this_len)))
+							chunk = bytes(bytearray(pykd.loadBytes(addr, this_len)))
+							if len(chunk) < this_len:
+								chunk += b"\x00" * (this_len - len(chunk))
+							elif len(chunk) > this_len:
+								chunk = chunk[:this_len]
+							outbuf.extend(bytearray(chunk))
 							offset += this_len
 							continue
 						except Exception:
@@ -4661,20 +4666,31 @@ class wpage():
 							slen = small_chunk if subrem > small_chunk else subrem
 							saddr = addr + suboff
 							try:
-								outbuf.extend(bytearray(pykd.loadBytes(saddr, slen)))
+								subchunk = bytes(bytearray(pykd.loadBytes(saddr, slen)))
+								if len(subchunk) < slen:
+									subchunk += b"\x00" * (slen - len(subchunk))
+								elif len(subchunk) > slen:
+									subchunk = subchunk[:slen]
+								outbuf.extend(bytearray(subchunk))
 								suboff += slen
 								continue
 							except Exception:
 								dbbytes = _windbg_db_read_bytes(saddr, slen)
-								if dbbytes is None or len(dbbytes) != slen:
-									return None
+								if dbbytes is None:
+									dbbytes = b"\x00" * slen
+								elif len(dbbytes) < slen:
+									dbbytes += b"\x00" * (slen - len(dbbytes))
+								elif len(dbbytes) > slen:
+									dbbytes = dbbytes[:slen]
 								outbuf.extend(bytearray(dbbytes))
 								suboff += slen
 
 						offset += this_len
 
-					if len(outbuf) != self.size:
-						return None
+					if len(outbuf) < self.size:
+						outbuf.extend(bytearray(b"\x00" * (self.size - len(outbuf))))
+					elif len(outbuf) > self.size:
+						outbuf = outbuf[:self.size]
 					return bytes(bytearray(outbuf))
 
 				data2 = _resilient_read_full_region()
