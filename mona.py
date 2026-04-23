@@ -18267,6 +18267,9 @@ def procBf(args):
 # ----- Print byte array ----- #
 
 def procByteArray(args):
+
+	dbgp(get_current_function_name())
+
 	badchars = ""
 	bytesperline = 32
 	startval = 0
@@ -25053,13 +25056,15 @@ Optional arguments :
                      WinDBG example: -if "eax==0"
                      Immunity example: -if "EAX==0" (evaluated via LogBpHook)
  WinDBG only:
-    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit
-		The commands must be in between double quotes, and separated by semi-colons.
-		
-		If a command needs double quotes, please replace them with #, 
-		and I will convert them back to double quotes when setting the breakpoint.
-		
-		Example: -c ".printf #-----Breakpoint hit at 0x%p\\n#,@$ip;u @$ip L 1;r;.echo -----;gc"					 
+	    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit
+			The commands must be in between double quotes, and separated by semi-colons.
+			If WinDBG truncates -c at the first ';', use '|' instead.
+			Mona will convert '|' back to ';' before setting the breakpoint.
+			
+			If a command needs double quotes, please replace them with #, 
+			and I will convert them back to double quotes when setting the breakpoint.
+			
+			Example: -c ".printf #-----Breakpoint hit at 0x%p\\n#,@$ip|u @$ip L 1|r|.echo -----|gc"					 
  """
 	
 	bfUsage = """Set a breakpoint on exported or imported function(s) of the selected modules. 
@@ -25071,15 +25076,17 @@ Optional arguments:
     -f <function type> : set to 'import' or 'export' to read IAT or EAT. Default : export
     -s <func,func,func> : specify function names. 
                           If you want a bp on all functions, set -s to *
-    WinDBG only:
-    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit
-		The commands must be in between double quotes, and separated by semi-colons.
-		
-		If a command needs double quotes, please replace them with #, 
-		and I will convert them back to double quotes when setting the breakpoint.
-		
-		Example: -c ".printf #-----Breakpoint hit at 0x%p\\n#,@$ip;u @$ip L 1;r;.echo -----;gc"
-"""	
+	    WinDBG only:
+	    -c "windbg cmd;windbg cmd" : windbg command(s) to execute when breakpoint gets hit
+			The commands must be in between double quotes, and separated by semi-colons.
+			If WinDBG truncates -c at the first ';', use '|' instead.
+			Mona will convert '|' back to ';' before setting the breakpoint.
+			
+			If a command needs double quotes, please replace them with #, 
+			and I will convert them back to double quotes when setting the breakpoint.
+			
+			Example: -c ".printf #-----Breakpoint hit at 0x%p\\n#,@$ip|u @$ip L 1|r|.echo -----|gc"
+	"""	
 	
 	findmspUsage = """Finds begin of a cyclic pattern in memory, looks if one of the registers contains (is overwritten) with a cyclic pattern
 or points into a cyclic pattern. findmsp will also look if a SEH record is overwritten and finally, 

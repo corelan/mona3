@@ -4240,7 +4240,18 @@ class Debugger:
 
 	def sanitizeExtraCommand(self, extracmd):
 		if extracmd != "":
-			return ('"%s"' % extracmd.replace("#",'\\"').replace("\\n",'\\\\n'))
+			# Allow users to pass '|' as a safe separator in !mona -c input.
+			# This avoids WinDBG splitting the top-level command line on ';'
+			# before mona receives the full payload.
+			escaped = extracmd.replace("|", ";")
+			# Escape separators so dbgCommand sends the full payload to bp/ba
+			# instead of executing commands after the first ';' immediately.
+			escaped = escaped.replace(";", "\\;")
+			# '#' is the mona placeholder for a literal double quote.
+			escaped = escaped.replace("#", '\\"')
+			# Preserve literal '\n' sequences for .printf style commands.
+			escaped = escaped.replace("\\n", "\\\\n")
+			return ('"%s"' % escaped)
 		return ""
 
 	def setBreakpoint(self,address,condition="",extracmd=""):
@@ -4335,6 +4346,8 @@ class Debugger:
 						bpcommand = '%s %s' % (bpcommand, extracmd)
 					output = pykd.dbgCommand(bpcommand)
 				else:
+					dbgp("Error setting memory breakpoint with command: %s" % bpcommand)
+					dbgp("Output: %s" % output)
 					self.log("** Unable to set memory breakpoint. Check alignment,")
 					self.log("   and try to run the following command to get more information:")
 					self.log("   %s" % bpcommand)
