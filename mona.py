@@ -370,13 +370,13 @@ offsets = {
 #  Utility functions                    #
 #---------------------------------------#	
 
-def dbgp(s):
+def dbgp(s, highlight=False):
 	# print debug information
 	if DEBUG_MODE:
 		try:
-			dbg.log("[MONA DEBUG] %s | %s" % (get_current_datetime(),s))
+			dbg.log("[MONA DEBUG] %s | %s" % (get_current_datetime(),s), highlight=highlight)
 		except Exception as e:
-			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
+			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)), highlight=True)
 			pass	
 
 
@@ -8198,6 +8198,12 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 	global ptr_to_get
 	
 	found_opcodes = {}
+	fallback_pages = 0
+	fallback_pages_with_reads = 0
+	fallback_pages_with_hits = 0
+	fallback_chunk_reads_total = 0
+	fallback_chunk_reads_ok = 0
+	fallback_hits_total = 0
 	
 	if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
 
@@ -8236,7 +8242,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 				dbg.log(" ** Search pattern '%s' resulted in empty buffer, skipping **" % human_format, highlight=1)
 				continue
 
-			compiled_patterns.append((human_format, buf))
+			compiled_patterns.append((human_format, buf, len(buf)))
 
 		if not compiled_patterns:
 			return {}
@@ -8283,6 +8289,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 						dbg.log("      !Skipped search of range %08x-%08x (Doesn't start with null)" % (page_start,page_end))
 					continue
 
+				dbgp("      -Trying to read page %s-%s" % ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 				
 				mem = dbg.MemoryPages[a].getMemory()
 
@@ -8301,6 +8308,11 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 					if scan_end_inclusive < scan_start:
 						continue
 
+					fallback_pages += 1
+					page_fallback_chunk_total = 0
+					page_fallback_chunk_ok = 0
+					page_fallback_hits = 0
+
 					# carry per pattern to catch matches spanning chunk boundaries
 					carries = [b"" for _ in compiled_patterns]
 
@@ -8310,22 +8322,32 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 							return found_opcodes
 
 						read_len = min(chunk_size, (scan_end_inclusive - cursor) + 1)
+						page_fallback_chunk_total += 1
+						fallback_chunk_reads_total += 1
 						try:
 							chunk = dbg.readMemory(cursor, read_len)
 						except Exception:
 							chunk = b""
 
 						chunk = ensure_bytes(chunk) if chunk else b""
+						# Performance-first fallback: if the first chunk cannot be read,
+						# do not continue chunking this page.
+						if page_fallback_chunk_total == 1 and len(chunk) == 0:
+							dbgp("      !Fallback first chunk read failed at %s for range %s-%s, skipping rest of page" %
+								 ((PTR_PRINT % cursor), (PTR_PRINT % page_start), (PTR_PRINT % page_end)))
+							break
+						if len(chunk) > 0:
+							page_fallback_chunk_ok += 1
+							fallback_chunk_reads_ok += 1
 						if len(chunk) < read_len:
 							chunk += b"\x00" * (read_len - len(chunk))
 						elif len(chunk) > read_len:
 							chunk = chunk[:read_len]
 
-						for pidx, (human_format, buf) in enumerate(compiled_patterns):
+						for pidx, (human_format, buf, buf_len) in enumerate(compiled_patterns):
 							if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
 								return found_opcodes
 
-							buf_len = len(buf)
 							carry = carries[pidx] if buf_len > 1 else b""
 							window = carry + chunk if carry else chunk
 							window_base = cursor - (len(carry) if carry else 0)
@@ -8355,6 +8377,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 									found_opcodes[human_format].append(hit)
 								else:
 									found_opcodes[human_format] = [hit]
+								page_fallback_hits += 1
+								fallback_hits_total += 1
 
 								ptr_counter += 1
 								if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
@@ -8370,17 +8394,28 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 								carries[pidx] = b""
 
 						cursor += read_len
+					if page_fallback_chunk_ok > 0:
+						fallback_pages_with_reads += 1
+					if page_fallback_hits > 0:
+						fallback_pages_with_hits += 1
+					dbgp("      !Fallback result for range %s-%s: readable chunks %d/%d, hits=%d" %
+						 ((PTR_PRINT % page_start), (PTR_PRINT % page_end), page_fallback_chunk_ok, page_fallback_chunk_total, page_fallback_hits))
+					if page_fallback_chunk_ok == 0:
+						dbgp("      !Fallback did not recover readable bytes for this range")
+					elif page_fallback_hits == 0:
+						dbgp("      !Fallback recovered bytes for this range but no matches were found")
+					else:
+						dbgp("      !Fallback recovered bytes and produced matches for this range")
 
 					continue
 
 				# fast path: full region read succeeded
-				for human_format, buf in compiled_patterns:
+				for human_format, buf, buf_len in compiled_patterns:
 					if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
 						return found_opcodes
 
 					recur_find   = []		
 					try:
-						buf_len      = len(buf)
 						mem_list     = mem.split(buf)
 						total_length = buf_len * -1
 					except Exception as e:
@@ -8424,6 +8459,15 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 							found_opcodes[human_format] += page_find
 						else:
 							found_opcodes[human_format] = page_find
+		if fallback_pages > 0:
+			dbgp("searchInRange fallback summary: pages=%d, readable_pages=%d, pages_with_hits=%d, chunk_reads_ok=%d/%d, hits=%d" %
+				 (fallback_pages, fallback_pages_with_reads, fallback_pages_with_hits, fallback_chunk_reads_ok, fallback_chunk_reads_total, fallback_hits_total))
+			if fallback_chunk_reads_ok == 0:
+				dbgp("searchInRange fallback usefulness: no readable chunks were recovered")
+			elif fallback_hits_total == 0:
+				dbgp("searchInRange fallback usefulness: recovered bytes but found no matches")
+			else:
+				dbgp("searchInRange fallback usefulness: recovered bytes and found matches")
 		if had_unreadable_pages and not silent:
 			dbgp("[!] Some memory ranges could not be read during this search; results may be incomplete.")
 	return found_opcodes
