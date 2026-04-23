@@ -8425,7 +8425,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND,criteria=[]):
 						else:
 							found_opcodes[human_format] = page_find
 		if had_unreadable_pages and not silent:
-			dbgp("[!] Some memory ranges could not be read during this search; results may be incomplete.", highlight=1)
+			dbgp("[!] Some memory ranges could not be read during this search; results may be incomplete.")
 	return found_opcodes
 
 # search for byte sequences in a module
