@@ -4628,13 +4628,13 @@ class wpage():
 							if re.match(r"^[0-9a-fA-F]{2}$", tok):
 								collected.append(int(tok, 16))
 								if len(collected) >= length:
-									return bytes(collected[:length])
+									return bytes(bytearray(collected[:length]))
 							else:
 								break
 
 					if len(collected) != length:
 						return None
-					return bytes(collected)
+					return bytes(bytearray(collected))
 
 				def _resilient_read_full_region():
 					# Read in 0x1000 chunks; if a chunk fails, retry in 0x100 chunks and (last resort) via `db`.
@@ -4675,7 +4675,7 @@ class wpage():
 
 					if len(outbuf) != self.size:
 						return None
-					return bytes(outbuf)
+					return bytes(bytearray(outbuf))
 
 				data2 = _resilient_read_full_region()
 				if data2 is not None:
