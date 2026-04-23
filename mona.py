@@ -16026,7 +16026,7 @@ def goFindMSP(distance=0, args=None):
 
 	if tofile != "":
 		objfindmspfile = MnLog("findmsp.txt")
-		findmspfile = objfindmspfile.reset()
+		findmspfile = objfindmspfile.reset(skipModuleTable=True)
 		objfindmspfile.write(tofile, findmspfile)
 
 	return results
