@@ -833,6 +833,7 @@ def getAddyArg(argaddy):
 	addypartsint = []
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
 	regs = getAllRegisters()
+	dbgp("getAddyArg parser: supports 0x.. / ..h hex and 0n.. / ..n decimal")
 
 	def _tokenize_addy_expression(expr):
 		parts = []
@@ -877,20 +878,35 @@ def getAddyArg(argaddy):
 			ptraddy, ptraddyok = getAddyArg(partclean[1:-1])
 			if ptraddyok:
 				try:
-					ptrval = struct.unpack(PTR_FMT,dbg.readMemory(ptraddy,PTR_SIZE))[0]
+					ptrval = struct.unpack(PTR_FMT, dbg.readMemory(ptraddy, PTR_SIZE))[0]
+					dbgp("Dereferenced address %s, got value %s" % ((PTR_PRINT % ptraddy), (PTR_PRINT % ptrval)))
 					return ptrval, True
-				except Exception as e:
+				except Exception:
 					dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE))
 					return 0, False
 			return 0, False
 
 		if partlower.startswith("0n"):
 			try:
-				return int(partlower.replace("0n","",1)), True
+				decval = int(partlower.replace("0n", "", 1))
+				dbgp("  Detected decimal prefix 0n, value: %d" % decval)
+				return decval, True
 			except:
 				pass
 		else:
-			hexpart = partlower.replace("0x","",1)
+			# Accept decimal constants ending in 'n', e.g. 10n.
+			if partlower.endswith("n") and len(partlower) > 1 and partlower[:-1].isdigit():
+				decval = int(partlower[:-1])
+				dbgp("  Detected decimal suffix n, value: %d" % decval)
+				return decval, True
+
+			hexpart = partlower.replace("0x", "", 1)
+			# Accept MASM-style hex constants ending in 'h', e.g. 0Ch / 10h.
+			# To avoid ambiguity with symbols/module names, only treat as hex when it starts with a digit.
+			if hexpart.endswith("h") and len(hexpart) > 1 and hexpart[0].isdigit():
+				dbgp("  Detected hex suffix h, normalized %s -> %s" % (hexpart, hexpart[:-1]))
+				hexpart = hexpart[:-1]
+
 			if isAddress(hexpart):
 				return hexStrToInt(hexpart), True
 
@@ -899,9 +915,9 @@ def getAddyArg(argaddy):
 			return m.moduleBase, True
 
 		if "!" in partclean:
-			modparts = partclean.split("!",1)
+			modparts = partclean.split("!", 1)
 			if len(modparts) > 1:
-				funcaddy = getFunctionAddress(modparts[0],modparts[1])
+				funcaddy = getFunctionAddress(modparts[0], modparts[1])
 				if funcaddy > 0:
 					return funcaddy, True
 
@@ -909,7 +925,7 @@ def getAddyArg(argaddy):
 			try:
 				symboladdy = dbg.resolveSymbol(partclean)
 				if symboladdy != "":
-					symboladdy = str(symboladdy).strip().replace("`","").replace("0x","",1)
+					symboladdy = str(symboladdy).strip().replace("`", "").replace("0x", "", 1)
 					if isAddress(symboladdy):
 						return hexStrToInt(symboladdy), True
 			except:
