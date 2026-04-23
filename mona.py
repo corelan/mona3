@@ -18304,31 +18304,35 @@ def procByteArray(args):
 			binarray += binbyte
 
 	dbg.log("Dumping table to file")
-	output = ""
-	cnt = 0
-	outputline = '"'
 	totalbytes = len(arraytable)
 	tablecnt = 0
+	rawoutputlines = []
+	pythonoutputlines = ["byte_array = b\"\""]
 	while tablecnt < totalbytes:
-		if (cnt < bytesperline):
-			outputline += "\\x" + arraytable[tablecnt]
-		else:
-			outputline += '"\n'
-			cnt = 0
-			output += outputline
-			outputline = '"\\x' + arraytable[tablecnt]
-		tablecnt += 1
-		cnt += 1
-	if (cnt-1) < bytesperline:
-		outputline += '"\n'
-	output += outputline
+		cnt = 0
+		thisline = ""
+		while tablecnt < totalbytes and cnt < bytesperline:
+			thisline += "\\x" + arraytable[tablecnt]
+			tablecnt += 1
+			cnt += 1
+		rawoutputlines.append("\"%s\"" % thisline)
+		pythonoutputlines.append("byte_array += b\"%s\"" % thisline)
+
+	if totalbytes == 0:
+		rawoutputlines.append("\"\"")
+		pythonoutputlines.append("bytearray += b\"\"")
+
+	output = "\n".join(rawoutputlines) + "\n"
+	outputpy = "\n".join(pythonoutputlines) + "\n"
+	outputcombined = output + "\n# Python 2/3 compatible format\n" + outputpy
 	
 	arrayfilename="bytearray.txt"
 	objarrayfile = MnLog(arrayfilename)
 	arrayfile = objarrayfile.reset(skipModuleTable=True)
 	binfilename = arrayfile.replace("bytearray.txt","bytearray.bin")
-	objarrayfile.write(output,arrayfile)
+	objarrayfile.write(outputcombined,arrayfile)
 	dbg.logLines(output)
+	dbg.log("Python 2/3 bytearray code added to %s" % arrayfile)
 	dbg.log("")
 	binfile = open(binfilename,"wb")
 	binfile.write(binarray)
@@ -25061,7 +25065,8 @@ Optional arguments:
          Example: -s \\x01 -e \\x7f to have all bytes from 0x01 to 0x7f
                   -s \\xff -e \\x7f to have all bytes from 0xff to 0x7f in reverse
     -r : show array backwards (reversed), starting at \\xff
-    Output will be written to bytearray.txt, and binary output will be written to bytearray.bin"""
+    Output will be written to bytearray.txt (raw bytes + Python 2/3 code),
+    and binary output will be written to bytearray.bin"""
 	
 	headerUsage = """Convert contents of a binary file to code that can be run to produce the file
 
