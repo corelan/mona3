@@ -4588,58 +4588,83 @@ class wpage():
 	def getMemory(self):
 		if self.getAccess() > 0x1:
 			try:
+				dbgp("wpage.getMemory: trying direct read for page %s-%s (size 0x%x)" % (PTR_PRINT % self.begin, PTR_PRINT % self.end, self.size))
 				#data =  pykd.loadChars(self.begin,self.size)
 				data = bytes(bytearray(pykd.loadBytes(self.begin, self.size)))
 				return data
 			except Exception as e:
 				# pykd.loadBytes() may fail for large reads or when the region contains an unreadable sub-page.
-				# Before bailing out, try to reconstruct the full region using smaller reads.
+				# Before bailing out, try to reconstruct the region using 0x1000 chunk reads.
+				dbgp("wpage.getMemory: direct read failed for page %s-%s: %s" % (PTR_PRINT % self.begin, PTR_PRINT % self.end, str(e)))
 
-				def _windbg_db_read_bytes(addr, length):
-					"""Read memory using WinDBG's `db` output and parse bytes.
-
-					Returns bytes on success, or None on failure/incomplete output.
-					"""
-					try:
-						cmd = "db 0x%x L0x%x" % (addr, length)
-						out = pykd.dbgCommand(cmd)
-					except Exception:
-						return None
+				def _parse_db_output_tokens(out, max_tokens=0):
+					"""Parse db/db$ output tokens into [0..255] or None (for ??)."""
+					tokens = []
 					if not out:
-						return None
-
-					collected = bytearray()
+						return tokens
 					for line in out.splitlines():
 						line = line.strip()
 						if not line:
 							continue
 						low = line.lower()
 						if "memory access" in low or "error" in low:
-							return None
+							return []
 
 						parts = line.split()
 						if len(parts) < 2:
 							continue
 
-						# Skip the address column (first token) and parse 2-hex-digit tokens until ASCII column.
+						# Skip address column (first token), parse byte columns until ASCII column.
 						for tok in parts[1:]:
 							if tok == "-":
 								continue
 							if re.match(r"^[0-9a-fA-F]{2}$", tok):
-								collected.append(int(tok, 16))
-								if len(collected) >= length:
-									return bytes(bytearray(collected[:length]))
+								tokens.append(int(tok, 16))
+							elif tok == "??":
+								tokens.append(None)
 							else:
 								break
+							if max_tokens > 0 and len(tokens) >= max_tokens:
+								return tokens
+					return tokens
 
-					if len(collected) != length:
+				def _windbg_db_has_real_bytes(addr, length):
+					"""Return True if `db` shows at least one concrete byte; False for all ??; None if inconclusive."""
+					try:
+						out = pykd.dbgCommand("db 0x%x L0x%x" % (addr, length))
+					except Exception:
 						return None
-					return bytes(bytearray(collected))
+					tokens = _parse_db_output_tokens(out, max_tokens=length)
+					if not tokens:
+						return None
+					# If all visible bytes are ??, there is nothing useful to read.
+					if all(t is None for t in tokens):
+						return False
+					return True
+
+				def _windbg_db_read_bytes(addr, length, use_db_dollar=True):
+					"""Read memory using WinDBG `db$` (or `db`) output and parse concrete bytes.
+
+					Returns bytes on success, or None on failure/incomplete output.
+					"""
+					try:
+						cmd = "db$ 0x%x L0x%x" % (addr, length) if use_db_dollar else "db 0x%x L0x%x" % (addr, length)
+						out = pykd.dbgCommand(cmd)
+					except Exception:
+						return None
+					tokens = _parse_db_output_tokens(out, max_tokens=length)
+					if len(tokens) < length:
+						return None
+					if any(t is None for t in tokens[:length]):
+						return None
+					return bytes(bytearray(tokens[:length]))
 
 				def _resilient_read_full_region():
-					# Read in 0x1000 chunks; if a chunk fails, retry in 0x100 chunks and (last resort) via `db`.
+					# Read in 0x1000 chunks only.
+					# On chunk read failure: probe with `db`.
+					# - all ?? => treat as no data, stop trying this page.
+					# - has bytes => read that chunk via `db$`.
 					page_chunk = 0x1000
-					small_chunk = 0x100
 					outbuf = bytearray()
 
 					offset = 0
@@ -4647,6 +4672,8 @@ class wpage():
 						remaining = self.size - offset
 						this_len = page_chunk if remaining > page_chunk else remaining
 						addr = self.begin + offset
+						dbgp("wpage.getMemory: trying chunk read at %s len=0x%x (page %s-%s)" %
+							 (PTR_PRINT % addr, this_len, PTR_PRINT % self.begin, PTR_PRINT % self.end))
 						try:
 							chunk = bytes(bytearray(pykd.loadBytes(addr, this_len)))
 							if len(chunk) < this_len:
@@ -4657,40 +4684,44 @@ class wpage():
 							offset += this_len
 							continue
 						except Exception:
-							pass
+							dbgp("wpage.getMemory: chunk read failed at %s len=0x%x; probing with db" %
+								 (PTR_PRINT % addr, this_len))
 
-						# Try smaller reads (and windbg `db` as last resort per small chunk)
-						suboff = 0
-						while suboff < this_len:
-							subrem = this_len - suboff
-							slen = small_chunk if subrem > small_chunk else subrem
-							saddr = addr + suboff
-							try:
-								subchunk = bytes(bytearray(pykd.loadBytes(saddr, slen)))
-								if len(subchunk) < slen:
-									subchunk += b"\x00" * (slen - len(subchunk))
-								elif len(subchunk) > slen:
-									subchunk = subchunk[:slen]
-								outbuf.extend(bytearray(subchunk))
-								suboff += slen
-								continue
-							except Exception:
-								dbbytes = _windbg_db_read_bytes(saddr, slen)
-								if dbbytes is None:
-									dbbytes = b"\x00" * slen
-								elif len(dbbytes) < slen:
-									dbbytes += b"\x00" * (slen - len(dbbytes))
-								elif len(dbbytes) > slen:
-									dbbytes = dbbytes[:slen]
-								outbuf.extend(bytearray(dbbytes))
-								suboff += slen
+						db_probe = _windbg_db_has_real_bytes(addr, this_len)
+						if db_probe is False:
+							dbgp("wpage.getMemory: db shows only ?? at %s len=0x%x; giving up page %s-%s" %
+								 (PTR_PRINT % addr, this_len, PTR_PRINT % self.begin, PTR_PRINT % self.end))
+							return None
+						if db_probe is None:
+							dbgp("wpage.getMemory: db probe inconclusive at %s len=0x%x; giving up page" %
+								 (PTR_PRINT % addr, this_len))
+							return None
 
+						dbgp("wpage.getMemory: db shows concrete bytes at %s len=0x%x; reading with db$" %
+							 (PTR_PRINT % addr, this_len))
+						dbbytes = _windbg_db_read_bytes(addr, this_len, use_db_dollar=True)
+						if dbbytes is None:
+							# If db$ is not available/parseable, fallback to db parsing as compatibility path.
+							dbgp("wpage.getMemory: db$ read failed at %s len=0x%x; trying db parser fallback" %
+								 (PTR_PRINT % addr, this_len))
+							dbbytes = _windbg_db_read_bytes(addr, this_len, use_db_dollar=False)
+						if dbbytes is None:
+							dbgp("wpage.getMemory: unable to recover chunk via db$/db at %s len=0x%x; giving up page" %
+								 (PTR_PRINT % addr, this_len))
+							return None
+						if len(dbbytes) < this_len:
+							dbbytes += b"\x00" * (this_len - len(dbbytes))
+						elif len(dbbytes) > this_len:
+							dbbytes = dbbytes[:this_len]
+						outbuf.extend(bytearray(dbbytes))
 						offset += this_len
 
 					if len(outbuf) < self.size:
 						outbuf.extend(bytearray(b"\x00" * (self.size - len(outbuf))))
 					elif len(outbuf) > self.size:
 						outbuf = outbuf[:self.size]
+					dbgp("wpage.getMemory: reconstructed page %s-%s using chunk/db$ path" %
+						 (PTR_PRINT % self.begin, PTR_PRINT % self.end))
 					return bytes(bytearray(outbuf))
 
 				data2 = _resilient_read_full_region()
