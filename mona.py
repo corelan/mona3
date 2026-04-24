@@ -6889,17 +6889,18 @@ class MnNTVistaSegment:
 
 	def __init__(self, segaddr):
 		self.address = segaddr
+		ai = self._arch_index
 
-		self.SegmentSignature              = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["SegmentSignature"][self.address], 4))[0]
-		self.SegmentFlags                  = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["SegmentFlags"][self.address], 4))[0]
-		self.Heap                          = readPtrSizeBytes(segaddr + self._offsets["Heap"][self.address])
-		self.BaseAddress                   = readPtrSizeBytes(segaddr + self._offsets["BaseAddress"][self.address])
-		self.NumberOfPages                 = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfPages"][self.address], 4))[0]
-		self.FirstEntry                    = readPtrSizeBytes(segaddr + self._offsets["FirstEntry"][self.address])
-		self.LastValidEntry                = readPtrSizeBytes(segaddr + self._offsets["LastValidEntry"][self.address])
-		self.NumberOfUnCommittedPages      = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfUnCommittedPages"][self.address], 4))[0]
-		self.NumberOfUnCommittedRanges     = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfUnCommittedRanges"][self.address], 4))[0]
-		self.SegmentAllocatorBackTraceIndex = struct.unpack('<H', dbg.readMemory(segaddr + self._offsets["SegmentAllocatorBackTraceIndex"][self.address], 2))[0]
+		self.SegmentSignature              = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["SegmentSignature"][ai], 4))[0]
+		self.SegmentFlags                  = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["SegmentFlags"][ai], 4))[0]
+		self.Heap                          = readPtrSizeBytes(segaddr + self._offsets["Heap"][ai])
+		self.BaseAddress                   = readPtrSizeBytes(segaddr + self._offsets["BaseAddress"][ai])
+		self.NumberOfPages                 = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfPages"][ai], 4))[0]
+		self.FirstEntry                    = readPtrSizeBytes(segaddr + self._offsets["FirstEntry"][ai])
+		self.LastValidEntry                = readPtrSizeBytes(segaddr + self._offsets["LastValidEntry"][ai])
+		self.NumberOfUnCommittedPages      = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfUnCommittedPages"][ai], 4))[0]
+		self.NumberOfUnCommittedRanges     = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfUnCommittedRanges"][ai], 4))[0]
+		self.SegmentAllocatorBackTraceIndex = struct.unpack('<H', dbg.readMemory(segaddr + self._offsets["SegmentAllocatorBackTraceIndex"][ai], 2))[0]
 		self.end                           = self.BaseAddress + (self.NumberOfPages * 0x1000)
 
 
