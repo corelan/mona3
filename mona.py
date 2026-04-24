@@ -125,7 +125,6 @@ import pickle
 import json
 from collections import OrderedDict
 import bisect
-import enum
 import math
 import argparse
 import time
@@ -5630,14 +5629,14 @@ class MnNT8ChunkEntry(MnNTVistaChunkEntry):
 	"""
 
 
-class HeapType(enum.Enum):
+class HeapType(object):
 	"""High-level heap implementation type."""
 	NT      = "NT"
 	SEGMENT = "Segment"
 	UNKNOWN = "Unknown"
 
 
-class HeapVersion(enum.Enum):
+class HeapVersion(object):
 	"""Windows version that introduced the _HEAP layout in use."""
 	XP      = "XP"
 	VISTA   = "Vista"
