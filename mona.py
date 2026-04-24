@@ -5232,7 +5232,7 @@ def getNTSegmentInfo(heapbase, segaddr, segstart, segend, firstentry, lastentry)
 	free_count = 0
 	max_free = 0
 	for chunkaddr, chunk in allchunks.items():
-		state = getHeapFlag(chunk.flag)
+		state = "BUSY" if (chunk.flag & 0x01) else "FREE"
 		csize = chunk.size * heapgranularity
 		chunkinfo = {
 			"address": chunkaddr,
