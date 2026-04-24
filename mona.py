@@ -19221,16 +19221,19 @@ def procEgg(args):
 	
 	
 	#read payload file
-	data = ""
+	data = b""
 	if filename != "":
-		try:
-			f = open(filename, "rb")
-			data = f.read()
-			f.close()
-			dbg.log("[+] Read payload file (%d bytes)" % len(data))
-		except:
-			dbg.log("Unable to read file %s" %filename, highlight=1)
-			return
+		filebytes = fileToBin(filename)
+		if len(filebytes) == 0:
+			try:
+				if os.path.getsize(filename) > 0:
+					dbg.log("Unable to read file %s" % filename, highlight=1)
+					return
+			except:
+				dbg.log("Unable to read file %s" % filename, highlight=1)
+				return
+		data = _to_bytes(''.join(chr(b) for b in filebytes))
+		dbg.log("[+] Read payload file (%d bytes)" % len(data))
 
 			
 	#let's start		
