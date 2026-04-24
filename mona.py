@@ -25768,16 +25768,13 @@ def main(args):
 			dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
 		if __DEBUGGERAPP__ == "WinDBG":
-			workingfolder = "C:\\"
-			try:
-				thisconfig = MnConfig()
-				workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
-				#dbgp("Workingfolder: %s" % workingfolder)
-			except:
-				workingfolder = "C:\\"
-			logopenfile = os.path.join(workingfolder, "%s-windbg_debug.log" % get_current_datetime_flat())
+			# prepare an empty log file
+			# so WinDBG can write its output to it
+			windbglogfile = MnLog("%s-windbg_debug.log" % get_current_datetime_flat())
+			windbglog = windbglogfile.reset(clear = True, skipModuleTable = True)
+			dbg.log("*** Writing WinDBG output to %s ***" % windbglog, highlight=True)
 			dbg.nativeCommand(".logclose")
-			dbg.nativeCommand(".logopen \"%s\"" % logopenfile)
+			dbg.nativeCommand(".logopen \"%s\"" % windbglog)
 	else:
 		DEBUG_MODE = False
 		if (__DEBUGGERAPP__ == "WinDBG"):
