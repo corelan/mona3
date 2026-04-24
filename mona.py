@@ -17234,10 +17234,12 @@ def procFindROPFUNC(args):
 	processResults(ropfuncs,logfile,thislog,forcelower=True)
 	global silent
 	silent = True
-	dbg.log("[+] Processing offsets to pointers to interesting rop functions")
-	logfile = MnLog("ropfunc_offset.txt")
-	thislog = logfile.reset()
-	processResults(ropfuncoffsets,logfile,thislog,forcelower=True)			
+	if len(ropfuncoffsets) > 0:
+		dbg.log("")
+		dbg.log("[+] Processing offsets to pointers to interesting rop functions")
+		logfile = MnLog("ropfunc_offset.txt")
+		thislog = logfile.reset()
+		processResults(ropfuncoffsets,logfile,thislog,forcelower=True)			
 	
 def procStackPivots(args):
 	procROP(args, "stackpivot")
