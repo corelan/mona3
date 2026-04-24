@@ -25770,7 +25770,7 @@ def main(args):
 		if __DEBUGGERAPP__ == "WinDBG":
 			# prepare an empty log file
 			# so WinDBG can write its output to it
-			windbglogfile = MnLog("%s-windbg_debug.log" % get_current_datetime_flat())
+			windbglogfile = MnLog("%s-mona-windbg-debug.log" % get_current_datetime_flat())
 			windbglog = windbglogfile.reset(clear = True, skipModuleTable = True)
 			dbg.log("*** Writing WinDBG output to %s ***" % windbglog, highlight=True)
 			dbg.nativeCommand(".logclose")
