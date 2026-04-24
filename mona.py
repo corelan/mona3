@@ -16821,7 +16821,7 @@ def goFindMSP(distance=0, args=None):
 	silent = oldsilent
 	pattypes = ["normal", "unicode", "lower", "upper"]
 	if not silent:
-		dbg.log("[+] Looking for cyclic pattern in memory")
+		dbg.log("[+] Looking for the first 6 characters of the cyclic pattern in memory")
 	tofile += "[+] Looking for cyclic pattern in memory\n"
 
 	for pattype in pattypes:
