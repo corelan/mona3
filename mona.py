@@ -22424,19 +22424,24 @@ def procEnc(args):
 			if os.path.exists(binfile):
 				if not silent:
 					dbg.log("[+] Reading bytes from %s" % binfile)
-				try:
-					f = open(binfile,"rb")
-					content = f.readlines()
-					f.close()
-					for c in content:
-						for a in c:
-							bytestoencodestr += "%02x" % _ord(a)
+				filebytes = fileToBin(binfile)
+				if len(filebytes) > 0:
+					bytestoencodestr = ''.join("%02x" % b for b in filebytes)
 					s_input_type = "bytes"
 					byteerror = False
-				except:
-					dbg.log("*** Error - unable to read bytes from %s" % binfile)
-					dbg.logLines(traceback.format_exc(),highlight=True)
-					byteerror = True
+				else:
+					# Distinguish unreadable file from empty file while preserving old behavior.
+					try:
+						if os.path.getsize(binfile) > 0:
+							dbg.log("*** Error - unable to read bytes from %s" % binfile)
+							byteerror = True
+						else:
+							s_input_type = "bytes"
+							byteerror = False
+					except:
+						dbg.log("*** Error - unable to read bytes from %s" % binfile)
+						dbg.logLines(traceback.format_exc(),highlight=True)
+						byteerror = True
 			else:
 				byteerror = True
 		else:
