@@ -431,26 +431,26 @@ def _ensureMnProc(entities=None):
 	MnProc instances, which would cause unbounded recursion.
 	"""
 	global mnproc, _creating_mnproc
-	if mnproc is None:
-		if _creating_mnproc:
-			# Re-entrant call during MnProc construction — return None safely.
-			# Callers that depend on the cache (ModInfoCached) will get a miss
-			# and fall through to the manual-parse path, which is correct here.
-			return None
-		_creating_mnproc = True
-		try:
-			mnproc = MnProc()
-		finally:
-			_creating_mnproc = False
-	if entities is not None:
-		mnproc.populate(
-			entities=entities,
-		)
-		except Exception as e:
-			dbg.log("[!] Are you connected to a process?", highlight=1)
-			dbgp("Error creating MnProc instance: %s" % str(e))
-			dbgp("Exception details:\n%s" % traceback.format_exc())
-	return mnproc
+    
+    if mnproc is None:
+        if _creating_mnproc:
+            return None
+        
+        _creating_mnproc = True
+        try:
+            mnproc = MnProc()
+        except Exception as e:
+            dbg.log("[!] Are you connected to a process?", highlight=1)
+            # Log the error, but keep mnproc as None
+        finally:
+            _creating_mnproc = False
+
+    if mnproc is not None:
+        if entities is not None:
+            mnproc.populate(entities=entities)
+        return mnproc
+    
+    return None
 
 
 def getRegisters():
