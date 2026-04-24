@@ -5802,7 +5802,7 @@ class MnNTHeap(MnHeap):
 			# so only used here as a last resort before defaulting to MnNT10Heap).
 			try:
 				seg_flags = struct.unpack('<L', dbg.readMemory(address + _SEGMENT_FLAGS, 4))[0]
-				if seg_flags & 0x20:checkForRecentHeapVersion
+				if seg_flags & 0x20:
 					return MnNT11Heap
 			except:
 				pass
