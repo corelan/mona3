@@ -5314,6 +5314,184 @@ def getNTHeapInfo(heapaddr):
 #  Class for heap structures            #
 #---------------------------------------#
 
+"""
+_HEAP_ENTRY compact-header descriptor classes.
+
+Each class documents the byte layout of the 8-byte compact _HEAP_ENTRY
+header for a specific Windows version, and provides a parse() classmethod
+that extracts fields from a raw 8-byte buffer.
+
+On x86 the chunk pointer points directly to the compact header.
+On x64 (all versions including XP) the chunk pointer points to a 16-byte
+_HEAP_ENTRY: bytes 0-7 are PreviousBlockPrivateData (plain-text, unencoded),
+bytes 8-15 are the compact header (XOR-encoded on Vista+).  _DATA_OFFSET
+records this as (x86_offset, x64_offset) so callers can read the right bytes.
+
+Confirmed from PDB dumps in logs/:
+  XP x64   (logs/xp/64):   prefix @0, compact @8, layout == XP x86
+  Vista x64 (logs/vista/64): prefix @0, compact @8, layout == Vista x86
+  Win7 x64  (logs/7/64):   prefix @0, compact @8, layout == Vista x64 (confirmed native)
+  Win8 x64  (logs/8/64):   prefix @0, compact @8, layout == Vista x64
+  Win8.1 x64 (logs/8.1/64): prefix @0, compact @8, layout == Win8 x64
+  Win10 x64 (logs/10/64):  prefix @0, compact @8, layout == Vista x64
+
+Heap classes expose the appropriate descriptor via _chunk_entry_class.
+
+All offset tuples follow the (x86_value, x64_value) convention used throughout
+the codebase.  The compact header layout is arch-independent (field positions
+are the same on x86 and x64); the arch difference is only the pointer-width
+prefix captured by _DATA_OFFSET.  Tuples therefore always have equal elements,
+but the consistent form lets callers use cls._arch_index uniformly.
+"""
+
+class MnNTXPChunkEntry:
+	"""
+	_HEAP_ENTRY compact header layout for Windows XP / 2003.
+
+	No XOR encoding on XP; the compact header is read plain from memory.
+
+	_HEAP_ENTRY (x86, 8 bytes total)
+	+0x000 Size             : Uint2B
+	+0x002 PreviousSize     : Uint2B
+	+0x000 SubSegmentCode   : Ptr32 Void  (union)
+	+0x004 SmallTagIndex    : UChar
+	+0x005 Flags            : UChar
+	+0x006 UnusedBytes      : UChar
+	+0x007 SegmentIndex     : UChar       (removed in Vista)
+
+	_HEAP_ENTRY (x64, 16 bytes total)
+	+0x000 PreviousBlockPrivateData : Ptr64 Void  (plain-text prefix, not in compact header)
+	+0x008 Size             : Uint2B       (compact header starts here)
+	+0x00a PreviousSize     : Uint2B
+	+0x00c SmallTagIndex    : UChar
+	+0x00d Flags            : UChar
+	+0x00e UnusedBytes      : UChar
+	+0x00f SegmentIndex     : UChar
+	+0x008 CompactHeader    : Uint8B  (union over above 8 bytes)
+	"""
+
+	_arch_index = 1 if arch == 64 else 0
+	_HEADER_SIZE = 8  # compact header is always 8 bytes
+	# Byte offset from chunk pointer to the compact header start.
+	# x86: no prefix (0).  x64: PreviousBlockPrivateData prefix (8 bytes).
+	_DATA_OFFSET = (0, 8)  # (x86, x64)
+
+	# Field offsets within the decoded 8-byte compact header: (x86, x64).
+	# The compact header layout is arch-independent; tuples are equal pairs.
+	_offsets = {
+		"Size":          (0x000, 0x000),  # Uint2B
+		"PreviousSize":  (0x002, 0x002),  # Uint2B
+		"SmallTagIndex": (0x004, 0x004),  # UChar  (passed as 'segment' / SegmentId in MnChunk)
+		"Flags":         (0x005, 0x005),  # UChar
+		"UnusedBytes":   (0x006, 0x006),  # UChar
+		"SegmentIndex":  (0x007, 0x007),  # UChar  (XP only — index into Segments[64] array)
+	}
+
+	@classmethod
+	def data_offset(cls):
+		"""Return the byte offset from the chunk pointer to the compact header."""
+		return cls._DATA_OFFSET[cls._arch_index]
+
+	@classmethod
+	def parse(cls, raw_bytes):
+		"""Parse an 8-byte compact header buffer.  Returns a field dict."""
+		ai = cls._arch_index
+		o = cls._offsets
+		return {
+			"Size":          struct.unpack('<H', raw_bytes[o["Size"][ai]:o["Size"][ai]+2])[0],
+			"PreviousSize":  struct.unpack('<H', raw_bytes[o["PreviousSize"][ai]:o["PreviousSize"][ai]+2])[0],
+			"SmallTagIndex": struct.unpack('<B', raw_bytes[o["SmallTagIndex"][ai]:o["SmallTagIndex"][ai]+1])[0],
+			"Flags":         struct.unpack('<B', raw_bytes[o["Flags"][ai]:o["Flags"][ai]+1])[0],
+			"UnusedBytes":   struct.unpack('<B', raw_bytes[o["UnusedBytes"][ai]:o["UnusedBytes"][ai]+1])[0],
+			"SegmentIndex":  struct.unpack('<B', raw_bytes[o["SegmentIndex"][ai]:o["SegmentIndex"][ai]+1])[0],
+		}
+
+
+class MnNTVistaChunkEntry:
+	"""
+	_HEAP_ENTRY compact header layout for Windows Vista / 7.
+
+	Vista introduced XOR encoding of the compact header (EncodeFlagMask / Encoding).
+	Win7 is byte-identical to Vista on both arches (confirmed from logs/7/32 and logs/7/64).
+
+	Key differences from XP:
+	  - Flags  moved from +0x005 (XP x86) / +0x00d (XP x64) → +0x002 / +0x00a
+	  - PreviousSize moved from +0x002 / +0x00a → +0x004 / +0x00c
+	  - SmallTagIndex moved from +0x004 / +0x00c → +0x003 / +0x00b
+	  - UnusedBytes moved from +0x006 / +0x00e → +0x007 / +0x00f
+	  - SegmentIndex (+0x007 XP) replaced by SegmentOffset (+0x006 / +0x00e)
+
+	_HEAP_ENTRY (x86, 8 bytes total)
+	+0x000 Size             : Uint2B
+	+0x002 Flags            : UChar
+	+0x003 SmallTagIndex    : UChar
+	+0x000 SubSegmentCode   : Ptr32 Void  (union)
+	+0x004 PreviousSize     : Uint2B
+	+0x006 SegmentOffset    : UChar       (overlaps LFHFlags)
+	+0x006 LFHFlags         : UChar
+	+0x007 UnusedBytes      : UChar
+	+0x000 AgregateCode     : Uint8B  (union)
+
+	_HEAP_ENTRY (x64, 16 bytes total)
+	+0x000 PreviousBlockPrivateData : Ptr64 Void  (plain-text prefix)
+	+0x008 Size             : Uint2B       (compact header starts here)
+	+0x00a Flags            : UChar
+	+0x00b SmallTagIndex    : UChar
+	+0x00c PreviousSize     : Uint2B
+	+0x00e SegmentOffset    : UChar
+	+0x00e LFHFlags         : UChar
+	+0x00f UnusedBytes      : UChar
+	+0x008 CompactHeader    : Uint8B  (union)
+	"""
+
+	_arch_index = 1 if arch == 64 else 0
+	_HEADER_SIZE = 8
+	_DATA_OFFSET = (0, 8)  # (x86, x64)
+
+	# Field offsets within the decoded 8-byte compact header: (x86, x64).
+	_offsets = {
+		"Size":          (0x000, 0x000),  # Uint2B
+		"Flags":         (0x002, 0x002),  # UChar  (was +0x005 on XP x86 / +0x00d on XP x64)
+		"SmallTagIndex": (0x003, 0x003),  # UChar  (was +0x004 / +0x00c)
+		"PreviousSize":  (0x004, 0x004),  # Uint2B (was +0x002 / +0x00a)
+		"SegmentOffset": (0x006, 0x006),  # UChar  (replaces XP's SegmentIndex; overlaps LFHFlags)
+		"UnusedBytes":   (0x007, 0x007),  # UChar  (was +0x006 / +0x00e)
+	}
+
+	@classmethod
+	def data_offset(cls):
+		return cls._DATA_OFFSET[cls._arch_index]
+
+	@classmethod
+	def parse(cls, raw_bytes):
+		ai = cls._arch_index
+		o = cls._offsets
+		return {
+			"Size":          struct.unpack('<H', raw_bytes[o["Size"][ai]:o["Size"][ai]+2])[0],
+			"Flags":         struct.unpack('<B', raw_bytes[o["Flags"][ai]:o["Flags"][ai]+1])[0],
+			"SmallTagIndex": struct.unpack('<B', raw_bytes[o["SmallTagIndex"][ai]:o["SmallTagIndex"][ai]+1])[0],
+			"PreviousSize":  struct.unpack('<H', raw_bytes[o["PreviousSize"][ai]:o["PreviousSize"][ai]+2])[0],
+			"SegmentOffset": struct.unpack('<B', raw_bytes[o["SegmentOffset"][ai]:o["SegmentOffset"][ai]+1])[0],
+			"UnusedBytes":   struct.unpack('<B', raw_bytes[o["UnusedBytes"][ai]:o["UnusedBytes"][ai]+1])[0],
+		}
+
+
+class MnNT8ChunkEntry(MnNTVistaChunkEntry):
+	"""
+	_HEAP_ENTRY compact header layout for Windows 8 / 8.1 / 10 / 11.
+
+	x86: Identical to Vista/7 — Code234 (Win8) and SubSegmentCode (Win8.1) are union
+	     aliases overlapping +0x000–0x003; Win10 ExtendedEntry/UnpackedEntry are outer
+	     union wrappers. Byte positions of Size, Flags, SmallTagIndex, PreviousSize,
+	     SegmentOffset, UnusedBytes are unchanged across all these versions.
+
+	x64: Identical to Vista/7 x64 in byte layout. SubSegmentCode (Win8.1) overlaps
+	     +0x008–0x00b; Win10 union wrappers do not shift any field offsets.
+
+	Inherits _offsets, parse(), and data_offset() unchanged from MnNTVistaChunkEntry.
+	"""
+
+
 class HeapType(enum.Enum):
 	"""High-level heap implementation type."""
 	NT      = "NT"
@@ -6915,184 +7093,6 @@ class MnSegment:
 			cnt += 1
 		self.chunks = allchunks
 		return allchunks
-
-"""
-_HEAP_ENTRY compact-header descriptor classes.
-
-Each class documents the byte layout of the 8-byte compact _HEAP_ENTRY
-header for a specific Windows version, and provides a parse() classmethod
-that extracts fields from a raw 8-byte buffer.
-
-On x86 the chunk pointer points directly to the compact header.
-On x64 (all versions including XP) the chunk pointer points to a 16-byte
-_HEAP_ENTRY: bytes 0-7 are PreviousBlockPrivateData (plain-text, unencoded),
-bytes 8-15 are the compact header (XOR-encoded on Vista+).  _DATA_OFFSET
-records this as (x86_offset, x64_offset) so callers can read the right bytes.
-
-Confirmed from PDB dumps in logs/:
-  XP x64   (logs/xp/64):   prefix @0, compact @8, layout == XP x86
-  Vista x64 (logs/vista/64): prefix @0, compact @8, layout == Vista x86
-  Win7 x64  (logs/7/64):   prefix @0, compact @8, layout == Vista x64 (confirmed native)
-  Win8 x64  (logs/8/64):   prefix @0, compact @8, layout == Vista x64
-  Win8.1 x64 (logs/8.1/64): prefix @0, compact @8, layout == Win8 x64
-  Win10 x64 (logs/10/64):  prefix @0, compact @8, layout == Vista x64
-
-Heap classes expose the appropriate descriptor via _chunk_entry_class.
-
-All offset tuples follow the (x86_value, x64_value) convention used throughout
-the codebase.  The compact header layout is arch-independent (field positions
-are the same on x86 and x64); the arch difference is only the pointer-width
-prefix captured by _DATA_OFFSET.  Tuples therefore always have equal elements,
-but the consistent form lets callers use cls._arch_index uniformly.
-"""
-
-class MnNTXPChunkEntry:
-	"""
-	_HEAP_ENTRY compact header layout for Windows XP / 2003.
-
-	No XOR encoding on XP; the compact header is read plain from memory.
-
-	_HEAP_ENTRY (x86, 8 bytes total)
-	+0x000 Size             : Uint2B
-	+0x002 PreviousSize     : Uint2B
-	+0x000 SubSegmentCode   : Ptr32 Void  (union)
-	+0x004 SmallTagIndex    : UChar
-	+0x005 Flags            : UChar
-	+0x006 UnusedBytes      : UChar
-	+0x007 SegmentIndex     : UChar       (removed in Vista)
-
-	_HEAP_ENTRY (x64, 16 bytes total)
-	+0x000 PreviousBlockPrivateData : Ptr64 Void  (plain-text prefix, not in compact header)
-	+0x008 Size             : Uint2B       (compact header starts here)
-	+0x00a PreviousSize     : Uint2B
-	+0x00c SmallTagIndex    : UChar
-	+0x00d Flags            : UChar
-	+0x00e UnusedBytes      : UChar
-	+0x00f SegmentIndex     : UChar
-	+0x008 CompactHeader    : Uint8B  (union over above 8 bytes)
-	"""
-
-	_arch_index = 1 if arch == 64 else 0
-	_HEADER_SIZE = 8  # compact header is always 8 bytes
-	# Byte offset from chunk pointer to the compact header start.
-	# x86: no prefix (0).  x64: PreviousBlockPrivateData prefix (8 bytes).
-	_DATA_OFFSET = (0, 8)  # (x86, x64)
-
-	# Field offsets within the decoded 8-byte compact header: (x86, x64).
-	# The compact header layout is arch-independent; tuples are equal pairs.
-	_offsets = {
-		"Size":          (0x000, 0x000),  # Uint2B
-		"PreviousSize":  (0x002, 0x002),  # Uint2B
-		"SmallTagIndex": (0x004, 0x004),  # UChar  (passed as 'segment' / SegmentId in MnChunk)
-		"Flags":         (0x005, 0x005),  # UChar
-		"UnusedBytes":   (0x006, 0x006),  # UChar
-		"SegmentIndex":  (0x007, 0x007),  # UChar  (XP only — index into Segments[64] array)
-	}
-
-	@classmethod
-	def data_offset(cls):
-		"""Return the byte offset from the chunk pointer to the compact header."""
-		return cls._DATA_OFFSET[cls._arch_index]
-
-	@classmethod
-	def parse(cls, raw_bytes):
-		"""Parse an 8-byte compact header buffer.  Returns a field dict."""
-		ai = cls._arch_index
-		o = cls._offsets
-		return {
-			"Size":          struct.unpack('<H', raw_bytes[o["Size"][ai]:o["Size"][ai]+2])[0],
-			"PreviousSize":  struct.unpack('<H', raw_bytes[o["PreviousSize"][ai]:o["PreviousSize"][ai]+2])[0],
-			"SmallTagIndex": struct.unpack('<B', raw_bytes[o["SmallTagIndex"][ai]:o["SmallTagIndex"][ai]+1])[0],
-			"Flags":         struct.unpack('<B', raw_bytes[o["Flags"][ai]:o["Flags"][ai]+1])[0],
-			"UnusedBytes":   struct.unpack('<B', raw_bytes[o["UnusedBytes"][ai]:o["UnusedBytes"][ai]+1])[0],
-			"SegmentIndex":  struct.unpack('<B', raw_bytes[o["SegmentIndex"][ai]:o["SegmentIndex"][ai]+1])[0],
-		}
-
-
-class MnNTVistaChunkEntry:
-	"""
-	_HEAP_ENTRY compact header layout for Windows Vista / 7.
-
-	Vista introduced XOR encoding of the compact header (EncodeFlagMask / Encoding).
-	Win7 is byte-identical to Vista on both arches (confirmed from logs/7/32 and logs/7/64).
-
-	Key differences from XP:
-	  - Flags  moved from +0x005 (XP x86) / +0x00d (XP x64) → +0x002 / +0x00a
-	  - PreviousSize moved from +0x002 / +0x00a → +0x004 / +0x00c
-	  - SmallTagIndex moved from +0x004 / +0x00c → +0x003 / +0x00b
-	  - UnusedBytes moved from +0x006 / +0x00e → +0x007 / +0x00f
-	  - SegmentIndex (+0x007 XP) replaced by SegmentOffset (+0x006 / +0x00e)
-
-	_HEAP_ENTRY (x86, 8 bytes total)
-	+0x000 Size             : Uint2B
-	+0x002 Flags            : UChar
-	+0x003 SmallTagIndex    : UChar
-	+0x000 SubSegmentCode   : Ptr32 Void  (union)
-	+0x004 PreviousSize     : Uint2B
-	+0x006 SegmentOffset    : UChar       (overlaps LFHFlags)
-	+0x006 LFHFlags         : UChar
-	+0x007 UnusedBytes      : UChar
-	+0x000 AgregateCode     : Uint8B  (union)
-
-	_HEAP_ENTRY (x64, 16 bytes total)
-	+0x000 PreviousBlockPrivateData : Ptr64 Void  (plain-text prefix)
-	+0x008 Size             : Uint2B       (compact header starts here)
-	+0x00a Flags            : UChar
-	+0x00b SmallTagIndex    : UChar
-	+0x00c PreviousSize     : Uint2B
-	+0x00e SegmentOffset    : UChar
-	+0x00e LFHFlags         : UChar
-	+0x00f UnusedBytes      : UChar
-	+0x008 CompactHeader    : Uint8B  (union)
-	"""
-
-	_arch_index = 1 if arch == 64 else 0
-	_HEADER_SIZE = 8
-	_DATA_OFFSET = (0, 8)  # (x86, x64)
-
-	# Field offsets within the decoded 8-byte compact header: (x86, x64).
-	_offsets = {
-		"Size":          (0x000, 0x000),  # Uint2B
-		"Flags":         (0x002, 0x002),  # UChar  (was +0x005 on XP x86 / +0x00d on XP x64)
-		"SmallTagIndex": (0x003, 0x003),  # UChar  (was +0x004 / +0x00c)
-		"PreviousSize":  (0x004, 0x004),  # Uint2B (was +0x002 / +0x00a)
-		"SegmentOffset": (0x006, 0x006),  # UChar  (replaces XP's SegmentIndex; overlaps LFHFlags)
-		"UnusedBytes":   (0x007, 0x007),  # UChar  (was +0x006 / +0x00e)
-	}
-
-	@classmethod
-	def data_offset(cls):
-		return cls._DATA_OFFSET[cls._arch_index]
-
-	@classmethod
-	def parse(cls, raw_bytes):
-		ai = cls._arch_index
-		o = cls._offsets
-		return {
-			"Size":          struct.unpack('<H', raw_bytes[o["Size"][ai]:o["Size"][ai]+2])[0],
-			"Flags":         struct.unpack('<B', raw_bytes[o["Flags"][ai]:o["Flags"][ai]+1])[0],
-			"SmallTagIndex": struct.unpack('<B', raw_bytes[o["SmallTagIndex"][ai]:o["SmallTagIndex"][ai]+1])[0],
-			"PreviousSize":  struct.unpack('<H', raw_bytes[o["PreviousSize"][ai]:o["PreviousSize"][ai]+2])[0],
-			"SegmentOffset": struct.unpack('<B', raw_bytes[o["SegmentOffset"][ai]:o["SegmentOffset"][ai]+1])[0],
-			"UnusedBytes":   struct.unpack('<B', raw_bytes[o["UnusedBytes"][ai]:o["UnusedBytes"][ai]+1])[0],
-		}
-
-
-class MnNT8ChunkEntry(MnNTVistaChunkEntry):
-	"""
-	_HEAP_ENTRY compact header layout for Windows 8 / 8.1 / 10 / 11.
-
-	x86: Identical to Vista/7 — Code234 (Win8) and SubSegmentCode (Win8.1) are union
-	     aliases overlapping +0x000–0x003; Win10 ExtendedEntry/UnpackedEntry are outer
-	     union wrappers. Byte positions of Size, Flags, SmallTagIndex, PreviousSize,
-	     SegmentOffset, UnusedBytes are unchanged across all these versions.
-
-	x64: Identical to Vista/7 x64 in byte layout. SubSegmentCode (Win8.1) overlaps
-	     +0x008–0x00b; Win10 union wrappers do not shift any field offsets.
-
-	Inherits _offsets, parse(), and data_offset() unchanged from MnNTVistaChunkEntry.
-	"""
-
 
 """
 Chunk class
