@@ -545,6 +545,8 @@ def clearvars():
 	global InstructionCache
 	global PageSections
 	global ModuleCache
+	global currentPID
+	global currentTEBAddress
 	global cpebaddress
 	MemoryPages = None
 	AsmCache = None
@@ -554,6 +556,8 @@ def clearvars():
 	InstructionCache = None
 	PageSections = None
 	ModuleCache = None
+	currentPID = 0
+	currentTEBAddress = 0
 	cpebaddress = 0
 	return
 
@@ -567,8 +571,14 @@ def getTEBAddress():
 	dbgp(get_current_function_name())
 
 	global currentTEBAddress
-	if currentTEBAddress == 0:
-		currentTEBAddress = int(pykd.getImplicitThread())
+	global currentPID
+	global cpebaddress
+	new_teb = int(pykd.getImplicitThread())
+	if currentTEBAddress != new_teb:
+		currentTEBAddress = new_teb
+		# Context switched to another thread/process; drop dependent caches.
+		currentPID = 0
+		cpebaddress = 0
 	return currentTEBAddress
 
 
@@ -899,6 +909,9 @@ class Debugger:
 		kernel32.CloseHandle(hprocess)
 
 		if vaddr:
+			# Invalidate cached page map so subsequent page queries reflect
+			# the new allocation immediately.
+			self.MemoryPages = {}
 			return int(vaddr)
 		return 0
 
@@ -932,6 +945,9 @@ class Debugger:
 		)
 
 		kernel32.CloseHandle(hprocess)
+		if returnval:
+			# Invalidate cached page map so ACL changes are visible right away.
+			self.MemoryPages = {}
 		return returnval
 
 
@@ -3404,10 +3420,26 @@ class Debugger:
 		dbgp(get_current_function_name())
 
 		global currentPID
+		teb = self.get_teb_addr()
 
-		if currentPID == 0:
-			teb = self.get_teb_addr()
-			currentPID = pykd.ptrDWord(teb + TEB_CLIENT_ID_PROCESS[_arch_idx])
+		# Prefer debugger engine PID for the current implicit process.
+		try:
+			pid_from_engine = int(pykd.getProcessSystemID())
+		except:
+			pid_from_engine = 0
+
+		pid_from_teb = 0
+		try:
+			pid_from_teb = int(pykd.ptrDWord(teb + TEB_CLIENT_ID_PROCESS[_arch_idx]))
+		except:
+			pid_from_teb = 0
+
+		if pid_from_engine != 0:
+			currentPID = pid_from_engine
+		elif pid_from_teb != 0:
+			currentPID = pid_from_teb
+		else:
+			currentPID = 0
 
 		return currentPID
 
@@ -3577,46 +3609,47 @@ class Debugger:
 		dbgp(get_current_function_name())
 
 		if not self.MemoryPages:
-			address_output = pykd.dbgCommand("!address")
-			if address_output is None:
-				address_output = ""
-			address_output_lines = address_output.splitlines()
+			# Prefer VirtualQueryEx so recent VirtualAlloc/VirtualProtect changes
+			# are reflected immediately and independently from !address formatting.
+			self.MemoryPages = self._getMemoryPagesVQE()
 
-			row_regex = re.compile(
-				r'^\s*\+?\s*'                    # optional leading "+"
-				r'([0-9A-Fa-f`]+)\s+'            # BaseAddress
-				r'([0-9A-Fa-f`]+)\s+'            # EndAddress+1
-				r'([0-9A-Fa-f`]+)\s+'            # RegionSize
-				r'(\S*)\s+'                      # Type (may be blank)
-				r'(\S*)\s+'                      # State (may be blank)
-				r'(\S*)\s+'                      # Protect (may be blank)
-				r'(.+?)\s*$'                     # Usage (rest of line)
-			)
-
-			for memory_page_info in address_output_lines:
-				memory_page_info = memory_page_info.rstrip()
-				m = row_regex.match(memory_page_info)
-				if not m:
-					continue
-
-				starting_address = int(m.group(1).replace('`', ''), 16)
-				size = int(m.group(3).replace('`', ''), 16)
-				pageprotect = m.group(6).strip()
-				pageusage = m.group(7).strip()
-
-				page_obj = wpage(starting_address, size, pageusage)
-				self.MemoryPages[starting_address] = page_obj
-
-			# Fallback: VirtualQueryEx if !address returned nothing
+			# Fallback to !address parsing if VirtualQueryEx path fails.
 			if not self.MemoryPages:
-				self.MemoryPages = self._getMemoryPagesVQE()
+				address_output = pykd.dbgCommand("!address")
+				if address_output is None:
+					address_output = ""
+				address_output_lines = address_output.splitlines()
+
+				row_regex = re.compile(
+					r'^\s*\+?\s*'                    # optional leading "+"
+					r'([0-9A-Fa-f`]+)\s+'            # BaseAddress
+					r'([0-9A-Fa-f`]+)\s+'            # EndAddress+1
+					r'([0-9A-Fa-f`]+)\s+'            # RegionSize
+					r'(\S*)\s+'                      # Type (may be blank)
+					r'(\S*)\s+'                      # State (may be blank)
+					r'(\S*)\s+'                      # Protect (may be blank)
+					r'(.+?)\s*$'                     # Usage (rest of line)
+				)
+
+				for memory_page_info in address_output_lines:
+					memory_page_info = memory_page_info.rstrip()
+					m = row_regex.match(memory_page_info)
+					if not m:
+						continue
+
+					starting_address = int(m.group(1).replace('`', ''), 16)
+					size = int(m.group(3).replace('`', ''), 16)
+					pageusage = m.group(7).strip()
+
+					page_obj = wpage(starting_address, size, pageusage)
+					self.MemoryPages[starting_address] = page_obj
 
 		return self.MemoryPages
 
 	def _getMemoryPagesVQE(self):
 		"""Enumerate memory pages via VirtualQueryEx (ctypes).
 
-		Fallback for when !address fails (e.g. ntdll corrupted).
+		Enumerates all regions (Free/Reserve/Commit) and annotates a basic usage.
 		"""
 		dbgp(get_current_function_name())
 
@@ -3643,6 +3676,11 @@ class Debugger:
 			]
 
 		MEM_COMMIT = 0x1000
+		MEM_RESERVE = 0x2000
+		MEM_FREE = 0x10000
+		MEM_PRIVATE = 0x20000
+		MEM_MAPPED = 0x40000
+		MEM_IMAGE = 0x1000000
 		mbi = MEMORY_BASIC_INFORMATION()
 		mbi_size = ctypes.sizeof(mbi)
 		address = 0
@@ -3661,10 +3699,30 @@ class Debugger:
 				if result == 0:
 					break
 
-				if mbi.State == MEM_COMMIT and mbi.RegionSize > 0:
-					base = mbi.BaseAddress if mbi.BaseAddress else 0
-					page_obj = wpage(base, mbi.RegionSize, "")
-					page_obj.protect = mbi.Protect
+				if mbi.RegionSize > 0:
+					base = int(mbi.BaseAddress) if mbi.BaseAddress else 0
+					usage = ""
+					if mbi.State == MEM_FREE:
+						usage = "Free"
+					elif mbi.State == MEM_RESERVE:
+						usage = "Reserve"
+					elif mbi.State == MEM_COMMIT:
+						if mbi.Type == MEM_IMAGE:
+							usage = "Image"
+						elif mbi.Type == MEM_MAPPED:
+							usage = "Mapped"
+						elif mbi.Type == MEM_PRIVATE:
+							usage = "Private"
+						else:
+							usage = "Commit"
+
+					page_obj = wpage(base, int(mbi.RegionSize), usage)
+					if mbi.State == MEM_COMMIT and mbi.Protect != 0:
+						page_obj.protect = int(mbi.Protect)
+					elif mbi.State == MEM_RESERVE and mbi.AllocationProtect != 0:
+						page_obj.protect = int(mbi.AllocationProtect)
+					else:
+						page_obj.protect = 0x1
 					pages[base] = page_obj
 
 				address += mbi.RegionSize
