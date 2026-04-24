@@ -1308,6 +1308,32 @@ def bin2hex(binbytes):
 	return ' '.join(out)
 
 
+def fileToBin(filename):
+	"""
+	Read a file and return an array (list) of byte values (0-255).
+	Py2/Py3 compatible.
+	"""
+	bytearray_content = []
+	clean_filename = _to_text(filename).replace("'", "").replace('"', "")
+
+	dbgp("fileToBin() reading file: %s" % clean_filename)
+
+	if not os.path.isfile(clean_filename):
+		dbgp("fileToBin() error: file does not exist: %s" % clean_filename, highlight=True)
+		return bytearray_content
+
+	try:
+		with open(clean_filename, "rb") as infile:
+			content = infile.read()
+		bytearray_content = [_ord(c) for c in content]
+		dbgp("fileToBin() read %d bytes from %s" % (len(bytearray_content), clean_filename))
+	except Exception as e:
+		dbgp("fileToBin() error reading %s: %s" % (clean_filename, str(e)), highlight=True)
+		return []
+
+	return bytearray_content
+
+
 def bin2hexstr(binbytes):
 	"""
 	Converts bytes to a string with hex
@@ -18430,19 +18456,25 @@ def procPrintHeader(args):
 		return
 
 	filename = filename.replace("'","").replace('"',"")
-	content = ""
-	try:		
-		file = open(filename,"rb")
-		content = file.read()
-		file.close()
-	except:
+
+	if not os.path.isfile(filename):
 		dbg.log("Unable to read file %s" % filename,highlight=1)
 		return
-	# Python3 returns bytes; convert to a 1:1 text representation so this routine
-	# can safely use string operations while keeping original byte values intact.
-	if PY3 and isinstance(content, (bytes, bytearray)):
-		content = content.decode("latin1")
-	dbg.log("Read %d bytes from %s" % (len(content),filename))	
+
+	content_bytes = fileToBin(filename)
+	if len(content_bytes) == 0:
+		try:
+			if os.path.getsize(filename) > 0:
+				dbg.log("Unable to read file %s" % filename,highlight=1)
+				return
+		except:
+			dbg.log("Unable to read file %s" % filename,highlight=1)
+			return
+
+	# Existing logic below expects a text string with byte-for-byte mapping.
+	content = ''.join(chr(b) for b in content_bytes)
+
+	dbg.log("Read %d bytes from %s" % (len(content_bytes),filename))	
 	dbg.log("Output type: %s" % thistype)
 	cnt = 0
 	linecnt = 0	
@@ -21586,24 +21618,25 @@ def procLoad(args):
 		return
 
 	inputfile = inputfile.replace("'","").replace('"',"")
-	content = ""
-	try:		
-		file = open(inputfile,"rb")
-		content = file.read()
-		file.close()
-	except:
+
+	if not os.path.isfile(inputfile):
 		dbg.log("Unable to read file %s" % inputfile,highlight=1)
 		return
 
-	dbg.log("[+] Read %d bytes from %s" % (len(content),inputfile))	
+	bytes_list = fileToBin(inputfile)
+	total_len = len(bytes_list)
+
+	if total_len == 0:
+		try:
+			if os.path.getsize(inputfile) > 0:
+				dbg.log("Unable to read file %s" % inputfile,highlight=1)
+				return
+		except:
+			dbg.log("Unable to read file %s" % inputfile,highlight=1)
+			return
+
+	dbg.log("[+] Read %d bytes from %s" % (total_len,inputfile))	
 	dbg.log("[+] Attempting to write contents of file to %s (%s)" % (targetloc, (PTR_PRINT % addr)))
-
-	if sys.version_info[0] < 3:
-		bytes_list = [_ord(c) for c in content]
-	else:
-		bytes_list = list(content)
-
-	total_len = len(content)
 	
 	# Use appropriate method based on debugger type
 	if __DEBUGGERAPP__ == "WinDBG":
