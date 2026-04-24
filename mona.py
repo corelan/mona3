@@ -8238,6 +8238,7 @@ class MnProc:
 				# Heap-as-segment (segaddr == heapaddr) is always Segment00 on Vista+
 				# because the heap structure IS the first segment.  Additional segments
 				# are sorted by address and numbered from 01 onward.
+				vaaddrs = sorted(detail.get("va_blocks", {}).keys())
 				_all_seg_keys = list(detail["segments"].keys())
 				if heapaddr in detail["segments"]:
 					segaddrs = [heapaddr] + sorted(s for s in _all_seg_keys if s != heapaddr)
