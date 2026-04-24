@@ -431,7 +431,6 @@ def _ensureMnProc(entities=None):
 	MnProc instances, which would cause unbounded recursion.
 	"""
 	global mnproc, _creating_mnproc
-    
     if mnproc is None:
         if _creating_mnproc:
             return None
