@@ -6496,17 +6496,22 @@ class MnNTVistaHeap(MnNTHeap):
 			listhead = self.heapbase + getOsOffset("SegmentList")
 			entry = readPtrSizeBytes(listhead)
 
+			ptrsize = archValue(4, 8)
 			while entry != listhead:
 				segaddr = entry - sle_offset
 				seg = MnNTVistaSegment(segaddr)
+				flink_raw = readPtrSizeBytes(entry)
+				blink_raw = readPtrSizeBytes(entry + ptrsize)
 				self.SegmentList[segaddr] = {
 					"base": seg.BaseAddress,
 					"end": seg.end,
 					"pages": seg.NumberOfPages,
 					"firstentry": seg.FirstEntry,
 					"lastentry": seg.LastValidEntry,
+					"flink": flink_raw - sle_offset if flink_raw != listhead else None,
+					"blink": blink_raw - sle_offset if blink_raw != listhead else None,
 				}
-				entry = readPtrSizeBytes(entry)
+				entry = flink_raw
 		except:
 			pass
 
@@ -6653,17 +6658,22 @@ class MnNT8Heap(MnNTVistaHeap):
 			listhead = self.heapbase + getOsOffset("SegmentList")
 			entry = readPtrSizeBytes(listhead)
 
+			ptrsize = archValue(4, 8)
 			while entry != listhead:
 				segaddr = entry - sle_offset
 				seg = MnNTVistaSegment(segaddr)
+				flink_raw = readPtrSizeBytes(entry)
+				blink_raw = readPtrSizeBytes(entry + ptrsize)
 				self.SegmentList[segaddr] = {
 					"base": seg.BaseAddress,
 					"end": seg.end,
 					"pages": seg.NumberOfPages,
 					"firstentry": seg.FirstEntry,
 					"lastentry": seg.LastValidEntry,
+					"flink": flink_raw - sle_offset if flink_raw != listhead else None,
+					"blink": blink_raw - sle_offset if blink_raw != listhead else None,
 				}
-				entry = readPtrSizeBytes(entry)
+				entry = flink_raw
 		except:
 			pass
 
@@ -7744,12 +7754,28 @@ class MnProc:
 			if heapaddr in self.ntheapdetail:
 				detail = self.ntheapdetail[heapaddr]
 				hidx = int(idx) if str(idx).isdigit() else 0
-				segaddrs = sorted(detail["segments"].keys())
+				# Heap-as-segment (segaddr == heapaddr) is always Segment00 on Vista+
+				# because the heap structure IS the first segment.  Additional segments
+				# are sorted by address and numbered from 01 onward.
+				_all_seg_keys = list(detail["segments"].keys())
+				if heapaddr in detail["segments"]:
+					segaddrs = [heapaddr] + sorted(s for s in _all_seg_keys if s != heapaddr)
+				else:
+					segaddrs = sorted(_all_seg_keys)
+				_seg_idx = {s: j for j, s in enumerate(segaddrs)}
 				for i, segaddr in enumerate(segaddrs):
 					seg = detail["segments"][segaddr]
 					segname = "Segment%02d-%02d" % (i, hidx)
-					flink = "0x%s (%s)" % (toHex(segaddrs[i + 1]), "Segment%02d-%02d" % (i + 1, hidx)) if i < len(segaddrs) - 1 else "None"
-					blink = "0x%s (%s)" % (toHex(segaddrs[i - 1]), "Segment%02d-%02d" % (i - 1, hidx)) if i > 0 else "None"
+					_flink_addr = seg.get("flink")
+					_blink_addr = seg.get("blink")
+					if _flink_addr is not None:
+						flink = "0x%s (%s)" % (toHex(_flink_addr), "Segment%02d-%02d" % (_seg_idx[_flink_addr], hidx)) if _flink_addr in _seg_idx else "None"
+					else:
+						flink = "0x%s (%s)" % (toHex(segaddrs[i + 1]), "Segment%02d-%02d" % (i + 1, hidx)) if i < len(segaddrs) - 1 else "None"
+					if _blink_addr is not None:
+						blink = "0x%s (%s)" % (toHex(_blink_addr), "Segment%02d-%02d" % (_seg_idx[_blink_addr], hidx)) if _blink_addr in _seg_idx else "None"
+					else:
+						blink = "0x%s (%s)" % (toHex(segaddrs[i - 1]), "Segment%02d-%02d" % (i - 1, hidx)) if i > 0 else "None"
 					chunk_info = ""
 					if "total_chunks" in seg:
 						chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
