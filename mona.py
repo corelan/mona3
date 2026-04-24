@@ -1540,7 +1540,19 @@ def hexStrToInt(inputstr):
 	"""
 	valtoreturn = 0
 	try:
-		valtoreturn = int(inputstr, 16)
+		inputstr = str(inputstr).strip().lower()
+		sign = 1
+		if inputstr.startswith("-"):
+			sign = -1
+			inputstr = inputstr[1:].strip()
+		elif inputstr.startswith("+"):
+			inputstr = inputstr[1:].strip()
+		if inputstr.startswith("0x"):
+			inputstr = inputstr[2:]
+		if inputstr.endswith("h"):
+			inputstr = inputstr[:-1]
+		if len(inputstr) > 0:
+			valtoreturn = sign * int(inputstr, 16)
 	except:
 		valtoreturn = 0
 	return valtoreturn
@@ -10018,14 +10030,14 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 													#safeseh or not ?
 													if issafeseh:
 														if not stackpivotdistance in stackpivots_safeseh:
-															stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
+															stackpivots_safeseh[stackpivotdistance] = [[startptr,fullchain]]
 														else:
-															stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
+															stackpivots_safeseh[stackpivotdistance].append([startptr,fullchain])
 													else:
 														if not stackpivotdistance in stackpivots:
-															stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
+															stackpivots[stackpivotdistance] = [[startptr,fullchain]]
 														else:
-															stackpivots[stackpivotdistance] += [[startptr,fullchain]]
+															stackpivots[stackpivotdistance].append([startptr,fullchain])
 													dbgp("Added %s to interesting gadgets" % (PTR_PRINT % startptr))
 								
 											ropgadgets[startptr] = fullchain
@@ -10053,19 +10065,20 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							if isInterestingGadget(fullchain):
 								interestinggadgets[startptr] = fullchain
 								#this may be a good stackpivot too
-								stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
+								stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance)
+								dbgp("%s: stackivot distance %d" % (fullchain, stackpivotdistance))
 								if stackpivotdistance > 0:
 									#safeseh or not ?
 									if issafeseh:
 										if not stackpivotdistance in stackpivots_safeseh:
-											stackpivots_safeseh.setdefault(stackpivotdistance,[[startptr,fullchain]])
+											stackpivots_safeseh[stackpivotdistance] = [[startptr,fullchain]]
 										else:
-											stackpivots_safeseh[stackpivotdistance] += [[startptr,fullchain]]
+											stackpivots_safeseh[stackpivotdistance].append([startptr,fullchain])
 									else:
 										if not stackpivotdistance in stackpivots:
-											stackpivots.setdefault(stackpivotdistance,[[startptr,fullchain]])
+											stackpivots[stackpivotdistance] = [[startptr,fullchain]]
 										else:
-											stackpivots[stackpivotdistance] += [[startptr,fullchain]]	
+											stackpivots[stackpivotdistance].append([startptr,fullchain])	
 							else:
 								if not fast:
 									ropgadgets[startptr] = fullchain
@@ -14934,6 +14947,8 @@ def getStackPivotDistance(gadget,distance=0):
 
 	gadgets = filter(lambda x: x.strip(), gadget.split(" # "))
 
+	dbgp("Finding pivot distance in %s " % gadget)
+
 	if arch == 32:
 		for g in gadgets:
 			if "add esp," in g:
@@ -14971,6 +14986,8 @@ def getStackPivotDistance(gadget,distance=0):
 				offset -= 8
 			elif ("qword ptr" in g or "[" in g) and "fss" not in g:
 				return 0
+				
+	dbgp("   Distance found: %d" % offset)
 
 	if mindistance <= offset and offset <= maxdistance:
 		return offset
@@ -25751,7 +25768,14 @@ def main(args):
 			dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
 		if __DEBUGGERAPP__ == "WinDBG":
-			logopenfile = "%s-windbg_debug.log" % get_current_datetime_flat()
+			workingfolder = "C:\\"
+			try:
+				thisconfig = MnConfig()
+				workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
+				#dbgp("Workingfolder: %s" % workingfolder)
+			except:
+				workingfolder = "C:\\"
+			logopenfile = os.path.join(workingfolder, "%s-windbg_debug.log" % get_current_datetime_flat())
 			dbg.nativeCommand(".logclose")
 			dbg.nativeCommand(".logopen \"%s\"" % logopenfile)
 	else:
