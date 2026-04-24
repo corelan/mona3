@@ -124,6 +124,7 @@ import traceback
 import pickle
 import json
 from collections import OrderedDict
+import bisect
 import enum
 import math
 import argparse
@@ -5237,6 +5238,8 @@ def getNTSegmentInfo(heapbase, segaddr, segstart, segend, firstentry, lastentry)
 			"address": chunkaddr,
 			"size": csize,
 			"flag": chunk.flag,
+			"userptr": chunk.userptr,
+			"usersize": chunk.usersize,
 		}
 		if chunk.flag & 0x01:
 			busy += 1
@@ -5307,7 +5310,138 @@ def getNTHeapInfo(heapaddr):
 	except:
 		pass
 
+	# --- LFH subsegment ranges (for LFH chunk detection in procLayout) ---
+	try:
+		result["lfh_ranges"] = getLFHSubSegmentRanges(heapaddr)
+	except:
+		result["lfh_ranges"] = []
+
 	return result
+
+
+def _lfh_contains(addr, lfh_ranges, lfh_starts):
+	"""Return True if addr falls within any cached LFH subsegment range."""
+	if not lfh_starts:
+		return False
+	idx = bisect.bisect_right(lfh_starts, addr) - 1
+	if idx >= 0:
+		return addr < lfh_ranges[idx][1]
+	return False
+
+
+def getLFHSubSegmentRanges(heapaddr):
+	"""
+	Walk the LFH SegmentInfoArrays (Win8+) or embedded SegmentInfo (Vista/7)
+	and return a sorted list of (start, end) address tuples covering each
+	active/cached _HEAP_SUBSEGMENT's UserBlocks memory region.
+
+	These ranges are used in procLayout to tag chunks that are managed
+	by the LFH rather than the segment allocator.
+
+	Return: sorted list of (start, end) int tuples; [] if LFH is not
+	        active or the walk fails.
+	"""
+	ptrsize = archValue(4, 8)
+	ai = 1 if arch == 64 else 0
+	ranges = []
+
+	try:
+		mheap = MnHeap(heapaddr)
+		if not mheap.usesLFH():
+			return []
+		lfh_addr = mheap.getLFHAddress()
+		if lfh_addr == 0:
+			return []
+
+		# Select LFH descriptor class and subsegment field offsets.
+		# isinstance order: most-derived first (MnNT11Heap < MnNT10Heap < MnNT8Heap < MnNTVistaHeap).
+		if isinstance(mheap, (MnNT10Heap, MnNT11Heap)):
+			lfh_cls = MnNT10LFH
+			ss_blocksize_off  = (0x014, 0x024)
+			ss_blockcount_off = (0x018, 0x028)
+			use_ptr_array = True
+			n_buckets = 129
+		elif isinstance(mheap, MnNT8Heap):
+			lfh_cls = MnNT8LFH
+			ss_blocksize_off  = (0x014, 0x024)
+			ss_blockcount_off = (0x018, 0x028)
+			use_ptr_array = True
+			n_buckets = 129
+		else:
+			# Vista / 7
+			lfh_cls = MnNTVistaLFH
+			ss_blocksize_off  = (0x010, 0x018)
+			ss_blockcount_off = (0x014, 0x01c)
+			use_ptr_array = False
+			n_buckets = 128
+
+		ss_userblocks_off = (0x004, 0x008)  # same for all versions
+
+		seen_ss = set()
+
+		def _add_subsegment(ssptr):
+			if ssptr == 0 or ssptr in seen_ss:
+				return
+			seen_ss.add(ssptr)
+			try:
+				ub = readPtrSizeBytes(ssptr + ss_userblocks_off[ai])
+				if ub == 0:
+					return
+				bs = struct.unpack('<H', dbg.readMemory(ssptr + ss_blocksize_off[ai], 2))[0]
+				bc = struct.unpack('<H', dbg.readMemory(ssptr + ss_blockcount_off[ai], 2))[0]
+				if bs == 0 or bc == 0:
+					return
+				total = bs * bc * heapgranularity
+				ranges.append((ub, ub + total))
+			except:
+				pass
+
+		# Offsets within _HEAP_LOCAL_SEGMENT_INFO (same for all versions)
+		lsi_active_off = (0x004, 0x008)
+		lsi_cached_off = (0x008, 0x010)
+
+		if use_ptr_array:
+			# Win8+: SegmentInfoArrays is an array of n_buckets pointers at LFH base
+			sia_base = lfh_addr + lfh_cls._offsets["SegmentInfoArrays"][ai]
+			for i in range(n_buckets):
+				try:
+					lsi_ptr = readPtrSizeBytes(sia_base + i * ptrsize)
+				except:
+					continue
+				if lsi_ptr == 0:
+					continue
+				try:
+					active = readPtrSizeBytes(lsi_ptr + lsi_active_off[ai])
+					_add_subsegment(active)
+					cached_base = lsi_ptr + lsi_cached_off[ai]
+					for j in range(16):
+						item = readPtrSizeBytes(cached_base + j * ptrsize)
+						_add_subsegment(item)
+				except:
+					pass
+		else:
+			# Vista/7: SegmentInfo[128] is embedded (not pointers) in _HEAP_LOCAL_DATA
+			local_data_addr = lfh_addr + lfh_cls._offsets["LocalData"][ai]
+			seg_info_base_off = (0x018, 0x030)  # offset within _HEAP_LOCAL_DATA
+			seg_info_stride   = (0x064, 0x0b8)  # sizeof(_HEAP_LOCAL_SEGMENT_INFO)
+			seg_info_base = local_data_addr + seg_info_base_off[ai]
+			stride = seg_info_stride[ai]
+			for i in range(n_buckets):
+				lsi_addr = seg_info_base + i * stride
+				try:
+					active = readPtrSizeBytes(lsi_addr + lsi_active_off[ai])
+					_add_subsegment(active)
+					cached_base = lsi_addr + lsi_cached_off[ai]
+					for j in range(16):
+						item = readPtrSizeBytes(cached_base + j * ptrsize)
+						_add_subsegment(item)
+				except:
+					pass
+	except:
+		pass
+
+	ranges.sort()
+	return ranges
 
 
 #---------------------------------------#
@@ -6914,6 +7048,351 @@ class MnNTVistaSegment:
 		self.end                           = self.BaseAddress + (self.NumberOfPages * 0x1000)
 
 
+class MnNTVistaLFH:
+	"""
+	Represents _LFH_HEAP on Windows Vista/7.
+	Lock is _RTL_CRITICAL_SECTION (0x18 bytes x86 / 0x28 bytes x64).
+	Buckets array has 128 entries.
+	"""
+
+	# _LFH_HEAP field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"SubSegmentZones":      (0x018, 0x028),
+		"ZoneBlockSize":        (0x020, 0x038),
+		"Heap":                 (0x024, 0x040),
+		"SegmentChange":        (0x028, 0x048),
+		"SegmentCreate":        (0x02c, 0x04c),
+		"SegmentInsertInFree":  (0x030, 0x050),
+		"SegmentDelete":        (0x034, 0x054),
+		"CacheAllocs":          (0x038, 0x058),
+		"CacheFrees":           (0x03c, 0x05c),
+		"UserBlockCache":       (0x040, 0x060),
+		"Buckets":              (0x100, 0x1e0),
+		"LocalData":            (0x300, 0x3e0),
+	}
+
+	_arch_index = 1 if arch == 64 else 0
+
+	def __init__(self, lfhbase):
+		self.address = lfhbase
+		ai = self._arch_index
+		ptrsize = archValue(4, 8)
+
+		self.Heap                  = readPtrSizeBytes(lfhbase + self._offsets["Heap"][ai])
+		self.SubSegmentZones_Flink = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][ai])
+		self.SubSegmentZones_Blink = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][ai] + ptrsize)
+		self.ZoneBlockSize         = readPtrSizeBytes(lfhbase + self._offsets["ZoneBlockSize"][ai])
+		self.SegmentChange         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentChange"][ai], 4))[0]
+		self.SegmentCreate         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentCreate"][ai], 4))[0]
+		self.SegmentInsertInFree   = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentInsertInFree"][ai], 4))[0]
+		self.SegmentDelete         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentDelete"][ai], 4))[0]
+		self.CacheAllocs           = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheAllocs"][ai], 4))[0]
+		self.CacheFrees            = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheFrees"][ai], 4))[0]
+		self.Buckets               = lfhbase + self._offsets["Buckets"][ai]
+		self.LocalData             = lfhbase + self._offsets["LocalData"][ai]
+
+
+class MnNT8LFH:
+	"""
+	Represents _LFH_HEAP on Windows 8/8.1.
+	Lock changed to _RTL_SRWLOCK (4 bytes x86 / 8 bytes x64).
+	Buckets expanded to 129 entries; SegmentInfoArrays/AffinitizedInfoArrays added as pointer arrays.
+	No MemoryPolicies field.
+	"""
+
+	# _LFH_HEAP field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"SubSegmentZones":             (0x004, 0x008),
+		"Heap":                        (0x00c, 0x018),
+		"NextSegmentInfoArrayAddress": (0x010, 0x020),
+		"FirstUncommittedAddress":     (0x014, 0x028),
+		"ReservedAddressLimit":        (0x018, 0x030),
+		"SegmentCreate":               (0x01c, 0x038),
+		"SegmentDelete":               (0x020, 0x03c),
+		"MinimumCacheDepth":           (0x024, 0x040),
+		"CacheShiftThreshold":         (0x028, 0x044),
+		"SizeInCache":                 (0x02c, 0x048),
+		"RunInfo":                     (0x030, 0x050),
+		"UserBlockCache":              (0x038, 0x060),
+		"Buckets":                     (0x1b8, 0x2a0),
+		"SegmentInfoArrays":           (0x3bc, 0x4a8),
+		"AffinitizedInfoArrays":       (0x5c0, 0x8b0),
+		"LocalData":                   (0x7c8, 0xcc0),
+	}
+
+	_arch_index = 1 if arch == 64 else 0
+
+	def __init__(self, lfhbase):
+		self.address = lfhbase
+		ai = self._arch_index
+		ptrsize = archValue(4, 8)
+
+		self.Heap                        = readPtrSizeBytes(lfhbase + self._offsets["Heap"][ai])
+		self.SubSegmentZones_Flink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][ai])
+		self.SubSegmentZones_Blink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][ai] + ptrsize)
+		self.NextSegmentInfoArrayAddress = readPtrSizeBytes(lfhbase + self._offsets["NextSegmentInfoArrayAddress"][ai])
+		self.FirstUncommittedAddress     = readPtrSizeBytes(lfhbase + self._offsets["FirstUncommittedAddress"][ai])
+		self.ReservedAddressLimit        = readPtrSizeBytes(lfhbase + self._offsets["ReservedAddressLimit"][ai])
+		self.SegmentCreate               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentCreate"][ai], 4))[0]
+		self.SegmentDelete               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentDelete"][ai], 4))[0]
+		self.MinimumCacheDepth           = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["MinimumCacheDepth"][ai], 4))[0]
+		self.CacheShiftThreshold         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheShiftThreshold"][ai], 4))[0]
+		self.Buckets                     = lfhbase + self._offsets["Buckets"][ai]
+		self.SegmentInfoArrays           = lfhbase + self._offsets["SegmentInfoArrays"][ai]
+		self.AffinitizedInfoArrays       = lfhbase + self._offsets["AffinitizedInfoArrays"][ai]
+		self.LocalData                   = lfhbase + self._offsets["LocalData"][ai]
+
+
+class MnNT10LFH:
+	"""
+	Represents _LFH_HEAP on Windows 10/11.
+	MemoryPolicies field inserted before Buckets (+0x1b8/+0x2a0).
+	SegmentAllocator pointer added before LocalData.
+	"""
+
+	# _LFH_HEAP field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"SubSegmentZones":             (0x004, 0x008),
+		"Heap":                        (0x00c, 0x018),
+		"NextSegmentInfoArrayAddress": (0x010, 0x020),
+		"FirstUncommittedAddress":     (0x014, 0x028),
+		"ReservedAddressLimit":        (0x018, 0x030),
+		"SegmentCreate":               (0x01c, 0x038),
+		"SegmentDelete":               (0x020, 0x03c),
+		"MinimumCacheDepth":           (0x024, 0x040),
+		"CacheShiftThreshold":         (0x028, 0x044),
+		"SizeInCache":                 (0x02c, 0x048),
+		"RunInfo":                     (0x030, 0x050),
+		"UserBlockCache":              (0x038, 0x060),
+		"MemoryPolicies":              (0x1b8, 0x2a0),
+		"Buckets":                     (0x1bc, 0x2a4),
+		"SegmentInfoArrays":           (0x3c0, 0x4a8),
+		"AffinitizedInfoArrays":       (0x5c4, 0x8b0),
+		"SegmentAllocator":            (0x7c8, 0xcb8),
+		"LocalData":                   (0x7d0, 0xcc0),
+	}
+
+	_arch_index = 1 if arch == 64 else 0
+
+	def __init__(self, lfhbase):
+		self.address = lfhbase
+		ai = self._arch_index
+		ptrsize = archValue(4, 8)
+
+		self.Heap                        = readPtrSizeBytes(lfhbase + self._offsets["Heap"][ai])
+		self.SubSegmentZones_Flink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][ai])
+		self.SubSegmentZones_Blink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][ai] + ptrsize)
+		self.NextSegmentInfoArrayAddress = readPtrSizeBytes(lfhbase + self._offsets["NextSegmentInfoArrayAddress"][ai])
+		self.FirstUncommittedAddress     = readPtrSizeBytes(lfhbase + self._offsets["FirstUncommittedAddress"][ai])
+		self.ReservedAddressLimit        = readPtrSizeBytes(lfhbase + self._offsets["ReservedAddressLimit"][ai])
+		self.SegmentCreate               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentCreate"][ai], 4))[0]
+		self.SegmentDelete               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentDelete"][ai], 4))[0]
+		self.MinimumCacheDepth           = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["MinimumCacheDepth"][ai], 4))[0]
+		self.CacheShiftThreshold         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheShiftThreshold"][ai], 4))[0]
+		self.MemoryPolicies              = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["MemoryPolicies"][ai], 4))[0]
+		self.Buckets                     = lfhbase + self._offsets["Buckets"][ai]
+		self.SegmentInfoArrays           = lfhbase + self._offsets["SegmentInfoArrays"][ai]
+		self.AffinitizedInfoArrays       = lfhbase + self._offsets["AffinitizedInfoArrays"][ai]
+		self.SegmentAllocator            = readPtrSizeBytes(lfhbase + self._offsets["SegmentAllocator"][ai])
+		self.LocalData                   = lfhbase + self._offsets["LocalData"][ai]
+
+
+class MnNTVistaSubSegment:
+	"""
+	Represents _HEAP_SUBSEGMENT on Windows Vista/7.
+	No DelayFreeList field.
+
+	x86 layout (0x20 bytes):
+	+0x000 LocalInfo      : Ptr32
+	+0x004 UserBlocks     : Ptr32
+	+0x008 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
+	+0x010 BlockSize      : Uint2B  (union with Alignment[2] at +0x010)
+	+0x012 Flags          : Uint2B
+	+0x014 BlockCount     : Uint2B
+	+0x016 SizeIndex      : UChar
+	+0x017 AffinityIndex  : UChar
+	+0x018 SFreeListEntry : _SINGLE_LIST_ENTRY
+	+0x01c Lock           : Uint4B
+
+	x64 layout (0x30 bytes):
+	+0x000 LocalInfo      : Ptr64
+	+0x008 UserBlocks     : Ptr64
+	+0x010 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
+	+0x018 BlockSize      : Uint2B  (union with Alignment[2] at +0x018)
+	+0x01a Flags          : Uint2B
+	+0x01c BlockCount     : Uint2B
+	+0x01e SizeIndex      : UChar
+	+0x01f AffinityIndex  : UChar
+	+0x020 SFreeListEntry : _SINGLE_LIST_ENTRY
+	+0x028 Lock           : Uint4B
+	"""
+
+	# _HEAP_SUBSEGMENT field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"LocalInfo":      (0x000, 0x000),
+		"UserBlocks":     (0x004, 0x008),
+		"AggregateExchg": (0x008, 0x010),
+		"BlockSize":      (0x010, 0x018),
+		"Flags":          (0x012, 0x01a),
+		"BlockCount":     (0x014, 0x01c),
+		"SizeIndex":      (0x016, 0x01e),
+		"AffinityIndex":  (0x017, 0x01f),
+		"SFreeListEntry": (0x018, 0x020),
+		"Lock":           (0x01c, 0x028),
+	}
+
+	_arch_index = 1 if arch == 64 else 0
+
+	def __init__(self, ssbase):
+		self.address = ssbase
+		ai = self._arch_index
+
+		self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][ai])
+		self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][ai])
+		self.AggregateExchg = struct.unpack('<l', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][ai], 4))[0]
+		self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][ai], 2))[0]
+		self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][ai], 2))[0]
+		self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][ai], 2))[0]
+		self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][ai], 1))[0]
+		self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][ai], 1))[0]
+		self.SFreeListEntry = readPtrSizeBytes(ssbase + self._offsets["SFreeListEntry"][ai])
+		self.Lock           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["Lock"][ai], 4))[0]
+
+
+class MnNT8SubSegment:
+	"""
+	Represents _HEAP_SUBSEGMENT on Windows 8/8.1.
+	DelayFreeList (_SLIST_HEADER) added at +0x008/+0x010, shifting AggregateExchg.
+	SFreeListEntry is before Lock.
+
+	x86 layout (0x24 bytes):
+	+0x000 LocalInfo      : Ptr32
+	+0x004 UserBlocks     : Ptr32
+	+0x008 DelayFreeList  : _SLIST_HEADER (8 bytes)
+	+0x010 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
+	+0x014 BlockSize      : Uint2B  (union with Alignment[2] at +0x014)
+	+0x016 Flags          : Uint2B
+	+0x018 BlockCount     : Uint2B
+	+0x01a SizeIndex      : UChar
+	+0x01b AffinityIndex  : UChar
+	+0x01c SFreeListEntry : _SINGLE_LIST_ENTRY
+	+0x020 Lock           : Uint4B
+
+	x64 layout (0x40 bytes):
+	+0x000 LocalInfo      : Ptr64
+	+0x008 UserBlocks     : Ptr64
+	+0x010 DelayFreeList  : _SLIST_HEADER (16 bytes)
+	+0x020 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
+	+0x024 BlockSize      : Uint2B  (union with Alignment[2] at +0x024)
+	+0x026 Flags          : Uint2B
+	+0x028 BlockCount     : Uint2B
+	+0x02a SizeIndex      : UChar
+	+0x02b AffinityIndex  : UChar
+	+0x030 SFreeListEntry : _SINGLE_LIST_ENTRY
+	+0x038 Lock           : Uint4B
+	"""
+
+	# _HEAP_SUBSEGMENT field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"LocalInfo":      (0x000, 0x000),
+		"UserBlocks":     (0x004, 0x008),
+		"DelayFreeList":  (0x008, 0x010),
+		"AggregateExchg": (0x010, 0x020),
+		"BlockSize":      (0x014, 0x024),
+		"Flags":          (0x016, 0x026),
+		"BlockCount":     (0x018, 0x028),
+		"SizeIndex":      (0x01a, 0x02a),
+		"AffinityIndex":  (0x01b, 0x02b),
+		"SFreeListEntry": (0x01c, 0x030),
+		"Lock":           (0x020, 0x038),
+	}
+
+	_arch_index = 1 if arch == 64 else 0
+
+	def __init__(self, ssbase):
+		self.address = ssbase
+		ai = self._arch_index
+
+		self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][ai])
+		self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][ai])
+		self.DelayFreeList  = ssbase + self._offsets["DelayFreeList"][ai]
+		self.AggregateExchg = struct.unpack('<l', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][ai], 4))[0]
+		self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][ai], 2))[0]
+		self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][ai], 2))[0]
+		self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][ai], 2))[0]
+		self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][ai], 1))[0]
+		self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][ai], 1))[0]
+		self.SFreeListEntry = readPtrSizeBytes(ssbase + self._offsets["SFreeListEntry"][ai])
+		self.Lock           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["Lock"][ai], 4))[0]
+
+
+class MnNT10SubSegment:
+	"""
+	Represents _HEAP_SUBSEGMENT on Windows 10/11.
+	Lock and SFreeListEntry order swapped vs Win8 (Lock now before SFreeListEntry).
+	x64 struct is 8 bytes smaller than Win8 x64 as a result.
+
+	x86 layout (0x24 bytes):
+	+0x000 LocalInfo      : Ptr32
+	+0x004 UserBlocks     : Ptr32
+	+0x008 DelayFreeList  : _SLIST_HEADER (8 bytes)
+	+0x010 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
+	+0x014 BlockSize      : Uint2B  (union with Alignment[2] at +0x014)
+	+0x016 Flags          : Uint2B
+	+0x018 BlockCount     : Uint2B
+	+0x01a SizeIndex      : UChar
+	+0x01b AffinityIndex  : UChar
+	+0x01c Lock           : Uint4B
+	+0x020 SFreeListEntry : _SINGLE_LIST_ENTRY
+
+	x64 layout (0x38 bytes):
+	+0x000 LocalInfo      : Ptr64
+	+0x008 UserBlocks     : Ptr64
+	+0x010 DelayFreeList  : _SLIST_HEADER (16 bytes)
+	+0x020 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
+	+0x024 BlockSize      : Uint2B  (union with Alignment[2] at +0x024)
+	+0x026 Flags          : Uint2B
+	+0x028 BlockCount     : Uint2B
+	+0x02a SizeIndex      : UChar
+	+0x02b AffinityIndex  : UChar
+	+0x02c Lock           : Uint4B
+	+0x030 SFreeListEntry : _SINGLE_LIST_ENTRY
+	"""
+
+	# _HEAP_SUBSEGMENT field offsets: (offset_x86, offset_x64)
+	_offsets = {
+		"LocalInfo":      (0x000, 0x000),
+		"UserBlocks":     (0x004, 0x008),
+		"DelayFreeList":  (0x008, 0x010),
+		"AggregateExchg": (0x010, 0x020),
+		"BlockSize":      (0x014, 0x024),
+		"Flags":          (0x016, 0x026),
+		"BlockCount":     (0x018, 0x028),
+		"SizeIndex":      (0x01a, 0x02a),
+		"AffinityIndex":  (0x01b, 0x02b),
+		"Lock":           (0x01c, 0x02c),
+		"SFreeListEntry": (0x020, 0x030),
+	}
+
+	_arch_index = 1 if arch == 64 else 0
+
+	def __init__(self, ssbase):
+		self.address = ssbase
+		ai = self._arch_index
+
+		self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][ai])
+		self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][ai])
+		self.DelayFreeList  = ssbase + self._offsets["DelayFreeList"][ai]
+		self.AggregateExchg = struct.unpack('<l', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][ai], 4))[0]
+		self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][ai], 2))[0]
+		self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][ai], 2))[0]
+		self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][ai], 2))[0]
+		self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][ai], 1))[0]
+		self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][ai], 1))[0]
+		self.Lock           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["Lock"][ai], 4))[0]
+		self.SFreeListEntry = readPtrSizeBytes(ssbase + self._offsets["SFreeListEntry"][ai])
+
+
 """
 Low Fragmentation Heap
 """
@@ -7754,6 +8233,8 @@ class MnProc:
 			if heapaddr in self.ntheapdetail:
 				detail = self.ntheapdetail[heapaddr]
 				hidx = int(idx) if str(idx).isdigit() else 0
+				lfh_ranges = detail.get("lfh_ranges", [])
+				lfh_starts = [r[0] for r in lfh_ranges]
 				# Heap-as-segment (segaddr == heapaddr) is always Segment00 on Vista+
 				# because the heap structure IS the first segment.  Additional segments
 				# are sorted by address and numbered from 01 onward.
@@ -7788,16 +8269,16 @@ class MnProc:
 						all_seg_chunks = []
 						for state, chunklist in seg["chunks"].items():
 							for c in chunklist:
-								all_seg_chunks.append((c["address"], c["size"], c["flag"], state))
+								all_seg_chunks.append((c["address"], c["size"], c["flag"], state, c["userptr"], c["usersize"]))
 						all_seg_chunks.sort(key=lambda x: x[0])
-						for ci, (caddr, csize, cflag, cstate) in enumerate(all_seg_chunks):
+						for ci, (caddr, csize, cflag, cstate, cuserptr, cusersize) in enumerate(all_seg_chunks):
 							cend = caddr + csize
 							chunkname = "Chunk%04d-%03d-%02d" % (ci, i, hidx)
-							cdesc = "%s (Heap: %s | %s | Size: 0x%x | Flag: 0x%02x [%s])" % (
-								chunkname, heapname, segname, csize, cflag, cstate)
+							in_lfh = _lfh_contains(caddr, lfh_ranges, lfh_starts)
+							lfh_tag = " | LFH" if in_lfh else ""
+							cdesc = "%s (Heap: %s | %s | UserPtr: 0x%x | UserSize: 0x%x | State: %s | Flag: 0x%02x%s)" % (
+								chunkname, heapname, segname, cuserptr, cusersize, cstate, cflag, lfh_tag)
 							regions.append((caddr, cend, "Heap Chunk", cdesc))
-
-				vaaddrs = sorted(detail["va_blocks"].keys())
 				for i, vaaddr in enumerate(vaaddrs):
 					va = detail["va_blocks"][vaaddr]
 					vaend = vaaddr + va["commit_size"]
