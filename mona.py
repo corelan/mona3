@@ -424,33 +424,37 @@ def resetGlobals():
 _creating_mnproc = False
 
 def _ensureMnProc(entities=None):
-	"""Lazily create MnProc and optionally populate selected entities.
+    """Lazily create MnProc and optionally populate selected entities.
 
-	A module-level flag prevents re-entrant calls during MnProc.__init__
-	(e.g. from MnPEB -> MnModule -> ModInfoCached) from creating additional
-	MnProc instances, which would cause unbounded recursion.
-	"""
-	global mnproc, _creating_mnproc
-	if mnproc is None:
-		if _creating_mnproc:
-			# Re-entrant call during MnProc construction — return None safely.
-			# Callers that depend on the cache (ModInfoCached) will get a miss
-			# and fall through to the manual-parse path, which is correct here.
-			return None
-		_creating_mnproc = True
-		try:
-			mnproc = MnProc()
-		finally:
-			_creating_mnproc = False
-	if entities is not None:
-		mnproc.populate(
-			entities=entities,
-		)
-		except Exception as e:
-			dbg.log("[!] Are you connected to a process?", highlight=1)
-			dbgp("Error creating MnProc instance: %s" % str(e))
-			dbgp("Exception details:\n%s" % traceback.format_exc())
-	return mnproc
+    A module-level flag prevents re-entrant calls during MnProc.__init__
+    (e.g. from MnPEB -> MnModule -> ModInfoCached) from creating additional
+    MnProc instances, which would cause unbounded recursion.
+    """
+    global mnproc, _creating_mnproc
+    
+    if mnproc is None:
+        if _creating_mnproc:
+            # Re-entrant call during MnProc construction — return None safely.
+            return None
+            
+        _creating_mnproc = True
+        try:
+            mnproc = MnProc()
+        except Exception as e:
+            # Note: 'dbg' and 'dbgp' must be defined elsewhere in your code
+            dbg.log("[!] Are you connected to a process?", highlight=1)
+            dbgp("Error creating MnProc instance: %s" % str(e))
+            dbgp("Exception details:\n%s" % traceback.format_exc())
+            mnproc = None
+        finally:
+            _creating_mnproc = False
+
+    if mnproc is not None:
+        if entities is not None:
+            mnproc.populate(entities=entities)
+        return mnproc
+        
+    return None
 
 
 def getRegisters():
