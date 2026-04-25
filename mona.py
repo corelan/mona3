@@ -22348,7 +22348,7 @@ def procLayout(args):
 	else:
 		other_type = "base"
 	type_cmd = "!mona pl -s %s" % other_type
-	dbg.log("    You can sort by %s using the following command: %s" % (other_type, clickWinDBGCmd(type_cmd)))
+	dbg.log("    You can sort by '%s' using the following command: %s" % (other_type, clickWinDBGCmd(type_cmd)))
 	dbg.log("")
 	silent = False
 	return
