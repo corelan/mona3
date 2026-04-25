@@ -11795,7 +11795,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			dbg.log("[-] No modules selected, aborting search", highlight = 1)
 			return
 		if bypasscfg:
-			dbg.log("[+] Identify valid CFG target gadgets")
+			dbg.log("[+] Going to identify and log valid CFG target gadgets. (Will slow things down a bit)")
 		dbg.log("[+] Enumerating %d endings in %d module(s)..." % (len(search),len(modulestosearch)))
 		for thismodule in modulestosearch:
 			dbg.log("    - Querying module %s" % thismodule)
