@@ -12050,24 +12050,6 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 
 
 #------------------#
-# Heap state       #
-#------------------#
-
-def getCurrentHeapState():
-	heapstate = {}
-	allheaps = []
-	try:
-		allheaps = dbg.getHeapsAddress()
-	except:
-		allheaps = []
-	if len(allheaps) > 0:
-		for heap in allheaps:
-			objHeap = MnHeap(heap)
-			thisheapstate = objHeap.getState()
-			heapstate[heap] = thisheapstate
-	return heapstate
-
-#------------------#
 # Cyclic pattern   #
 #------------------#	
 
@@ -13186,6 +13168,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	for first_pattern in parsed["first_patterns"]:
 		dbg.log("    Searching for %s" % first_pattern)
 		for ranges in rangestosearch:
+			interruptMona()
 			mBase = ranges[0]
 			mTop = ranges[1]
 			# convert the first_pattern sequence to a bytesequence
@@ -17599,6 +17582,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 					#runfields = [fullname, shortname]
 					runfields = [fullname]
 					while (runcnt < len(runfields)) and (nrfound == 0):
+						interruptMona()
 						if (runcnt > 0):
 							dbg.log("        No results yet, expanding symbol search")
 						dbg.log("        Launching symbol query, run %d" % (runcnt+1))
@@ -18696,6 +18680,7 @@ def procJseh(args):
 		results += addys
 		for ptrtypes in addys:
 			for ad1 in addys[ptrtypes]:
+				interruptMona()
 				ptr = MnPointer(ad1)
 				module = ptr.belongsTo()
 				if not module:
@@ -25025,72 +25010,6 @@ def procEval(args):
 	return
 
 
-
-def procDiffHeap(args):
-
-	filenamebefore = "heapstate_before.db"
-	filenameafter = "heapstate_after.db"
-
-	statefilebefore = MnLog(filenamebefore)
-	thisstatefilebefore = statefilebefore.reset(clear=False)
-
-	statefileafter = MnLog(filenameafter)
-	thisstatefileafter = statefileafter.reset(clear=False)
-
-
-	beforestate = {}
-	afterstate = {}
-
-	#do we want to save states, or diff them?
-
-	if not "before" in args and not "after" in args and not "diff" in args:
-		dbg.log("*** Missing mandatory argument -before, -after or -diff ***", highlight=1)
-		return
-
-	if "diff" in args:
-		# check if before and after state file exists
-		if os.path.exists(thisstatefilebefore) and os.path.exists(thisstatefileafter):
-			# read contents from both states into dict
-			dbg.log("[+] Reading 'before' state from %s" % thisstatefilebefore)
-			beforestate = readPickleDict(thisstatefilebefore)
-			dbg.log("[+] Reading 'after' state from %s" % thisstatefileafter)
-			afterstate = readPickleDict(thisstatefileafter)
-			# compare
-			dbg.log("[+] Diffing heap states...")
-
-		else:
-			if not os.path.exists(thisstatefilebefore):
-				dbg.log("[-] Oops, unable to find 'before' state file %s" % thisstatefilebefore)
-			if not os.path.exists(thisstatefileafter):
-				dbg.log("[-] Oops, unable to find 'after' state file %s" % thisstatefileafter)
-		return
-
-	elif "before" in args:
-		thisstatefilebefore = statefilebefore.reset(showheader=False)
-		dbg.log("[+] Enumerating current heap layout, please wait...")
-		currentstate = getCurrentHeapState()
-		dbg.log("[+] Saving current heap layout to 'before' heap state file %s" % thisstatefilebefore)
-		# save dict to file
-		try:
-			writePickleDict(thisstatefilebefore, currentstate)
-			dbg.log("[+] Done")
-		except:
-			dbg.log("[-] Error while saving current state to file")
-		return
-
-	elif "after" in args:
-		thisstatefileafter = statefileafter.reset(showheader=False)
-		dbg.log("[+] Enumerating current heap layout, please wait...")
-		currentstate = getCurrentHeapState()
-		dbg.log("[+] Saving current heap layout to 'after' heap state file %s" % thisstatefileafter)
-		try:
-			writePickleDict(thisstatefileafter, currentstate)
-			dbg.log("[+] Done")
-		except:
-			dbg.log("[-] Error while saving current state to file")				
-		return			
-
-	return
 
 
 def procSym(args):
