@@ -21540,6 +21540,7 @@ def procLayout(args):
 				dbg.log("Unknown type '%s', ignoring" % tn, highlight=1)
 		if not added:
 			dbg.log("No valid types were added with -t '%s'" % typeval, highlight=1)
+			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
 
 	# Force chunk walking if chunks will be displayed
 	if "Heap Chunk" in show_categories:
