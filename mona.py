@@ -389,6 +389,14 @@ def dbgp(s, highlight=False):
 # Add WinDBG Clickable links to values
 ###
 
+
+def clickCategoryCmd(category_cmd = ""):
+	cmdoutstr = category_cmd
+	if __DEBUGGERAPP__ == "WinDBG":
+		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (category_cmd, category_cmd)
+	return cmdoutstr
+
+
 def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	chunktrstr = ""
 	fmtted_ptr = PTR_PRINT % chunkptr
@@ -904,12 +912,24 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 		else:
 			dbg.log("key %s not present" % key)
 			dbg.log("%s" % data)
-
 	col_widths = []
+
+	def _display_len(v):
+		txt = _ensure_text(v)
+		if "link cmd" in txt:
+			start = txt.find(">")
+			if start != -1:
+				end = txt.find("</cmd>", start + 1)
+				if end == -1:
+					end = txt.find("</link>", start + 1)
+				if end != -1:
+					return len(txt[start + 1:end])
+		return len(txt)
+
 	for i in range(expected_cols):
 		max_value_width = 0
 		for row in formatted_rows:
-			max_value_width = max(max_value_width, len(_ensure_text(row[i])))
+			max_value_width = max(max_value_width, _display_len(row[i]))
 		header_width = len(_ensure_text(headers[i]))
 		col_widths.append(max(max_value_width, header_width + 1))
 
@@ -21636,6 +21656,17 @@ def procLayout(args):
 		resetGlobals()
 		dbg.log("Cache flushed, re-walking process...")
 
+	category_mappings = {}
+	category_mappings["PEB"] = "dt _peb @$peb"
+	category_mappings["TEB"] = "!mona pl -f teb; !teb"
+	category_mappings["Stack"] = "!mona pl -f stack"
+	category_mappings["Heap"] = "!mona heap"
+	category_mappings["Heap Segment"] = "!mona pl -f heap"
+	category_mappings["Module"] = "!mona mod"
+	category_mappings["Heap Chunk"] = "!mona pl -f chunks"
+	category_mappings["Heap VA Block"] = "!mona pl -f vablocks"
+	category_mappings["Heap Chunk"] = "!mona pl -f chunks"
+
 	_ensureMnProc()
 	populate_entities = set()
 	if "PEB" in show_categories:
@@ -21719,6 +21750,37 @@ def procLayout(args):
 	dbg.log("")
 	dbg.log("Total: %d entities" % len(table_seq))
 	objfile.write("Total: %d entities" % len(table_seq), logfile)
+
+	# Summary
+	summaryDict = {}
+	summarySeq = []
+	for entry_key in table_seq:
+		if not entry_key in table_data:
+			continue
+		entry_data = table_data[entry_key]
+		if len(entry_data) < 3:
+			continue
+		category = entry_data[2]
+		if category in summaryDict:
+			currentcnt, currentcmd = summaryDict[category]
+			currentcnt += 1
+			summaryDict[category] = [currentcnt, currentcmd]
+		else:
+			category_cmd = ""
+			if category in category_mappings:
+				category_cmd = category_mappings[category]
+			summaryDict[category] = [1, clickCategoryCmd(category_cmd)]
+			summarySeq.append(category)
+
+	dbg.log("")
+	dbg.log("Summary:")
+	dbg.log("")
+	headers = ["Category", "Number", "More info"]
+	types   = ["string", "int", "string"]
+	print_dict_table(summaryDict, headers, types, itemsequence=summarySeq, padding="    ")
+
+	dbg.log("")
+	
 	silent = False
 	return
 
@@ -26669,7 +26731,7 @@ Optional arguments:
                  Example: -f "chunks"  (shows heaps, segments and chunks)
                  Example: -f "all"     (same as -a)
                When no -f is provided, detailed chunks and vablocks are hidden
-	-t <type>  : Add individual types to the default output 
+    -t <type>  : Add individual types to the default output 
                  Example: -t vablocks
 				 (this is the equivalent of -f "peb,teb,mod,stack,heap,vablocks")
 
