@@ -397,6 +397,12 @@ def clickCategoryCmd(category_cmd = ""):
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (category_cmd, category_cmd)
 	return cmdoutstr
 
+def clickWinDBGCmd(windbg_cmd = ""):
+	cmdoutstr = windbg_cmd
+	if __DEBUGGERAPP__ == "WinDBG":
+		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (windbg_cmd, windbg_cmd)
+	return cmdoutstr
+
 
 def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	chunktrstr = ""
@@ -22327,14 +22333,23 @@ def procLayout(args):
 			summarySeq.append(category)
 
 	dbg.log("")
-	dbg.log("Summary:")
+	dbg.log("[+] Summary:")
 	dbg.log("")
 	headers = ["Category", "Number", "More info"]
 	types   = ["string", "int", "string"]
 	print_dict_table(summaryDict, headers, types, itemsequence=summarySeq, padding="    ")
 
 	dbg.log("")
-	
+
+	dbg.log("[+] This process layout was sorted '%s'" % _sort_val)
+	other_type = ""
+	if _sort_val == "base":
+		other_type = "elements"
+	else:
+		other_type = "base"
+	type_cmd = "!mona pl -s %s" % other_type
+	dbg.log("    You can sort by %s using the following command: %s" % (other_type, clickWinDBGCmd(type_cmd)))
+	dbg.log("")
 	silent = False
 	return
 
