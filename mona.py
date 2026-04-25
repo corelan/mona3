@@ -10673,7 +10673,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 
 			if not silent:
 				dbg.log("")
-				dbg.log("[+] Results : ")
+				dbg.log("[+] Results: ")
 				dbg.log("")
 
 			messageshown = False
@@ -10765,7 +10765,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 		dbg.log("    Found a total of %d pointers" % ptrcnt)
 	else:
 		dbg.log("")
-		dbg.log("[+] Results :")
+		dbg.log("[+] Results: ")
 		dbg.log("")
 		dbg.log("    Found a total of 0 pointers")
 
@@ -11039,8 +11039,8 @@ def assemble(instructions,encoder=""):
 	Dictionary (pointers)
 	"""
 	if not silent:
-		dbg.log("Opcode results : ")
-		dbg.log("---------------- ")
+		dbg.log("Opcode results: ")
+		dbg.log("--------------- ")
 	allopcodes=""
 
 	instructions = instructions.replace('"',"").replace("'","").lower()
