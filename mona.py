@@ -22341,7 +22341,7 @@ def procLayout(args):
 
 	dbg.log("")
 
-	dbg.log("[+] This process layout was sorted '%s'" % _sort_val)
+	dbg.log("[+] This process layout was sorted by '%s'" % _sort_val)
 	other_type = ""
 	if _sort_val == "base":
 		other_type = "elements"
