@@ -21147,7 +21147,7 @@ def procEgg(args):
 	useboth = False
 	egg_size = 0
 	win_ver = "10"
-	win_vers = ["7","10"]
+	win_vers = ["7","10","11"]
 	checksumbyte = b""
 	extratext = b""
 	
@@ -21333,7 +21333,7 @@ def procEgg(args):
 				b"\x75\xe1"                                      #JNZ "inc edx"
 				)
 			incedxoffset = 13 # The offset in the egghunter to reach the #INC EDX
-		elif win_ver == "10":
+		elif win_ver == "10" or win_ver == "11":
 			egghunter += (
 			# _start:
 				# "\x8c\xcb"            #MOV EBX,CS
@@ -26996,7 +26996,7 @@ Optional parameters :
                                  (this may slow down the overall process a bit)
     -end <instruction(s)>       : specify one or more instructions that will be used as chain end. 
                                  (Separate instructions with #). Default ending is RETN
-    -f \"file1,file2,..filen\"  : use mona generated rop files as input instead of searching in memory
+    -f \"file1,file2,..filen\"    : use mona generated rop files as input instead of searching in memory
     -rva                        : use RVA's in rop chain
     -s <technique>              : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
     -sort                       : sort the output in rop.txt (sort on pointer value)"""
@@ -27259,9 +27259,9 @@ Optional arguments:
     -c : enable checksum routine. Only works in conjunction with parameter -f
     -f <filename> : file containing the shellcode
     -startreg <reg> : start searching at the address pointed by this reg
-    -wow64 : generate wow64 egghunter (Win7 and Win10). Default is traditional 32bit egghunter
-    -winver <ver> : indicate Windows version for wow64 egghunter. Default is Windows 10. 
-                    valid values are 7 and 10.	
+    -wow64 : generate wow64 egghunter (Win7 and Win11/10). Default is traditional 32bit egghunter
+    -winver <ver> : indicate Windows version for wow64 egghunter. Default is Windows 11/10. 
+                    valid values are 7, 10 and 11.	
 DEP Bypass options :
     -depmethod <method> : method can be "virtualprotect", "copy" or "copy_size"
     -depreg <reg> : sets the register that contains a pointer to the API function to bypass DEP. 
