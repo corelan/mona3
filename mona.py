@@ -385,6 +385,9 @@ def dbgp(s, highlight=False):
 			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)), highlight=True)
 			pass	
 
+###
+# Add WinDBG Clickable links to values
+###
 
 def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	chunktrstr = ""
@@ -401,10 +404,12 @@ def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 		chunkptrstr = fmtted_ptr
 	return chunkptrstr
 
-def clickModuleName(modname = ""):
+def clickModuleName(modname = "", displaytext = ""):
 	clickstr = modname
+	if displaytext == "":
+		displaytext = modname
 	if __DEBUGGERAPP__ == "WinDBG":
-		clickstr = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (modname, modname)
+		clickstr = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (modname, displaytext)
 	return clickstr
 
 def clickDisassemble(locstr = ""):
@@ -412,7 +417,6 @@ def clickDisassemble(locstr = ""):
 	if __DEBUGGERAPP__ == "WinDBG" and locstr != "":
 		clickstr = "<link cmd=\"u %s L 20\">%s</link>" % (locstr, locstr)
 	return clickstr
-
 
 
 def clickStackPtr(stackptr = 0):
@@ -433,6 +437,54 @@ def clickPageAcl(ptrinfo = 0):
 		infoptrstr = fmtted_ptr
 	return infoptrstr
 
+def clickPEB(pebstr = ""):
+	pebstrout = pebstr
+	if __DEBUGGERAPP__ == "WinDBG":
+		pebstrout = "<link cmd=\"dt _PEB @$peb\">%s</link>" % pebstr
+	return pebstrout
+
+def clickTEB(tebptr = 0, displaytext = ""):
+	tebptrstr = PTR_PRINT % tebptr
+	tebptrstr_display = displaytext
+	if tebptrstr_display == "":
+		tebptrstr_display = tebptrsr
+	tebstrout = ""
+	if __DEBUGGERAPP__ == "WinDBG":
+		tebstrout = "<link cmd=\"dt _TEB %s\">%s</link>" % (tebptrstr, tebptrstr_display)
+	return tebstrout
+
+def clickHeapWinDBG(heapbase, heaptype="nt", displaytext=""):
+	heapbasestr = PTR_PRINT % heapbase
+	heap_display = displaytext
+	if heap_display == "":
+		heap_display = heapbasestr
+	heapstrout = ""
+	if __DEBUGGERAPP__ == "WinDBG":
+		if heaptype == "nt":
+			heapstrout = "<link cmd=\"dt _HEAP %s\">%s</link>" % (heapbasestr, heap_display)
+		elif heaptype == "segment":
+			heapstrout = "<link cmd=\"dt _SEGMENT_HEAP %s\">%s</link>" % (heapbasestr, heap_display)
+	return heapstrout
+
+def clickSegmentWinDBG(segmentbase, heaptype="nt", displaytext=""):
+	segmentbasestr = PTR_PRINT % segmentbase
+	segment_display = displaytext
+	if segment_display == "":
+		segment_display = segmentbasestr
+	segmentstrout = ""
+	if __DEBUGGERAPP__ == "WinDBG":
+		if heaptype == "nt":
+			segmentstrout = "<link cmd=\"dt _HEAP_SEGMENT %s\">%s</link>" % (segmentbasestr, segment_display)
+		elif heaptype == "segment":
+			segmentstrout = "<link cmd=\"dt _SEGMENT_HEAP %s\">%s</link>" % (segmentbasestr, segment_display)
+	return segmentstrout
+
+	_HEAP_SEGMENT
+
+
+
+
+### Various utilities
 
 def checkKeystone():
 	pyversion = "%d.%d" % (sys.version_info[0], sys.version_info[1])
@@ -8220,7 +8272,7 @@ class MnProc:
 			if threads:
 				first_teb = next(iter(threads.values()))
 				pid = str(first_teb.ProcessId)
-			regions.append((peb_addr, peb_addr + peb_size, "PEB", "PEB (Process ID: %s)" % pid, static))
+			regions.append((peb_addr, peb_addr + peb_size, "PEB", "%s (Process ID: %s)" % (clickPEB("PEB"), pid), static))
 		# TEBs for all threads
 		teb_size = 0
 		if __DEBUGGERAPP__ == "WinDBG":
@@ -8233,9 +8285,9 @@ class MnProc:
 		if threads:
 			for tid, mteb in threads.items():
 				teb_addr = mteb.TEBAddress
-				desc = "TEB (Thread ID: %s)" % str(mteb.Id)
+				desc = "%s (Thread ID: %s)" % (clickTEB(teb_addr,"TEB"),str(mteb.Id))
 				if arch == 32:
-					desc = "TEB (Thread ID: %s | SEH Count: %s)" % (str(mteb.Id), str(mteb.SEHCount))
+					desc = "%s (Thread ID: %s | SEH Count: %s)" % (clickTEB(teb_addr,"TEB"), str(mteb.Id), str(mteb.SEHCount))
 				regions.append((teb_addr, teb_addr + teb_size, "TEB", desc, static))
 		elif self.teb is not None:
 			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB", static))
@@ -8292,7 +8344,8 @@ class MnProc:
 		fe_names = {0: "None", 1: "LAL", 2: "LFH"}
 		for heapaddr, htype, info in self.getAllHeapsSorted():
 			idx = info.get("index", "?")
-			heapname = "Heap %s" % idx
+			heapname = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
+			#heapname = "Heap %s" % idx
 			if heapaddr == self.peb.ProcessHeap:
 				heapname = "[Default] " + heapname
 			fe_label = ""
@@ -8334,6 +8387,7 @@ class MnProc:
 				for i, segaddr in enumerate(segaddrs):
 					seg = detail["segments"][segaddr]
 					segname = "Segment%02d-%02d" % (i, hidx)
+					segname = clickSegmentWinDBG(segaddr,"nt",segname)
 					_flink_addr = seg.get("flink")
 					_blink_addr = seg.get("blink")
 					if _flink_addr is not None:
@@ -21846,7 +21900,8 @@ def procHeap(args):
 			mHeap = MnHeap(heapbase)
 			heapbase_extra = ""
 			heapidx = allheaps.index(heapbase) if heapbase in allheaps else 0
-			heapname = "Heap %d" % heapidx
+			#heapname = "Heap %d" % heapidx
+			heapname = clickHeapWinDBG(heapbase, "nt", "Heap %d" % heapidx)
 			if heapbase == getDefaultProcessHeap():
 				heapname += " [Default]"
 			frontendinfo = []
@@ -23540,7 +23595,7 @@ def procPageACL(args):
 				if modbase > pagestart:
 					break
 				if pagestart >= modbase and pagestart <= modtop:
-					mod = modname
+					mod = clickModuleName(modname)
 					try:
 						sectionname = page.getSection().strip()
 					except:
@@ -23563,7 +23618,7 @@ def procPageACL(args):
 					for heap, segstart, seglast in mnproc.VACache["segments"]:
 						if pagestart >= heap and pagestart <= seglast:
 							in_heap = True
-							owner = "Heap Segment"
+							owner = clickSegmentWinDBG(segstart, "nt", "Heap Segment")
 							break
 					if not in_heap:
 						for vastart, vaend in mnproc.VACache["vablocks"]:
@@ -23590,13 +23645,10 @@ def procPageACL(args):
 				else:
 					pusage += "%s " % (sectionname)
 			pusage += "%s" % pageusage
-			pstart = "0x%08x" % pagestart
-			pend = "0x%08x" % (pagestart + pagesize)
-			psize = "0x%x" % pagesize	
-			if arch == 64:
-				pstart = "0x%016x" % pagestart
-				pend = "0x%016x" % (pagestart + pagesize)
-				psize = "0x%x" % pagesize
+
+			pstart = "%s" % PTR_PRINT % pagestart
+			pend = "%s" % PTR_PRINT % (pagestart + pagesize)
+			psize = "0x%x" % pagesize
 				
 			tolog = fmt % (pstart, pend, psize, acl, pusage.strip())
 
