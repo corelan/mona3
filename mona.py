@@ -27984,7 +27984,7 @@ def main(args):
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
 		dbg.log("")
-		dbg.log("[ -- END -- ] %s - This action took %s" % (get_current_datetime(), str(delta)))
+		dbg.log("[ -- END -- ] %s | mona.py took %s" % (get_current_datetime(), str(delta)))
 		if yesno():
 			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("!mona up"), highlight=True)
 		dbg.setStatusBar("Done")
