@@ -3366,6 +3366,8 @@ class Debugger:
 		if not address == None:
 			message = intToHex(address) + " | " + message
 		showdml = False
+		if "link cmd" in message:
+			showdml = True
 		if highlight == 1:
 			showdml = True
 			message = "<b>" + message + "</b>"

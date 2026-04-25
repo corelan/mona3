@@ -178,6 +178,10 @@ g_keystoneLoaded = False
 _sym_cache_dirs = None
 _heap_cmd_prefix = None
 
+mnproc = None
+
+
+
 try:
 	import keystone
 	g_keystoneLoaded = True
@@ -380,6 +384,19 @@ def dbgp(s, highlight=False):
 		except Exception as e:
 			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)), highlight=True)
 			pass	
+
+
+def clickChunkPtr(chunkptr = 0, chunksize = 0):
+	chunktrstr = ""
+	fmtted_ptr = PTR_PRINT % chunkptr
+	if __DEBUGGERAPP__ == "WinDBG":
+		sizearg = ""
+		if chunksize > 0:
+			sizearg = "-s 0x%x" % chunksize
+		chunkptrstr = "<link cmd=\"!mona do -a %s %s\">%s</link>" % (fmtted_ptr,sizearg,fmtted_ptr)
+	else:
+		chunkptrstr = fmtted_ptr
+	return chunkptrstr
 
 
 def checkKeystone():
@@ -8186,6 +8203,8 @@ class MnProc:
 		# Modules
 		for name, props in self.modules.items():
 			dispname = props.get("filename") or name
+			if __DEBUGGERAPP__ == "WinDBG":
+				dispname = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (dispname, dispname)
 			flags = []
 			if props.get("aslr"):
 				flags.append("ASLR")
@@ -8304,8 +8323,10 @@ class MnProc:
 							chunkname = "Chunk%04d-%03d-%02d" % (ci, i, hidx)
 							in_lfh = _lfh_contains(caddr, lfh_ranges, lfh_starts)
 							lfh_tag = " | LFH" if in_lfh else ""
-							cdesc = "%s (Heap: %s | %s | UserPtr: 0x%x | UserSize: 0x%x | State: %s | Flag: 0x%02x%s)" % (
-								chunkname, heapname, segname, cuserptr, cusersize, cstate, cflag, lfh_tag)
+							#cdesc = "%s (Heap: %s | %s | UserPtr: 0x%x | UserSize: 0x%x | State: %s | Flag: 0x%02x%s)" % (
+							#	chunkname, heapname, segname, cuserptr, cusersize, cstate, cflag, lfh_tag)
+							cdesc = "%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
+								chunkname, clickChunkPtr(cuserptr,cusersize), cusersize, cstate, heapname, segname, cflag, lfh_tag)
 							regions.append((caddr, cend, "Heap Chunk", cdesc))
 				for i, vaaddr in enumerate(vaaddrs):
 					va = detail["va_blocks"][vaaddr]
@@ -8318,7 +8339,8 @@ class MnProc:
 		regions.sort(key=lambda x: x[0])
 		return regions
 
-mnproc = None
+
+
 
 #---------------------------------------#
 #  Class to access pointer properties   #
