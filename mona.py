@@ -21512,8 +21512,10 @@ def procLayout(args):
 
 	show_all = "a" in args or "all" in args
 
-	if "f" in args or "filter" in args or "t" in args or "type" in args:
-		filterval = args.get("f", args.get("filter", args.get("t", args.get("type", ""))))
+	# Base selection: -f/-filter replaces categories, -a/all shows everything,
+	# default shows broad view (without chunks/VA blocks).
+	if "f" in args or "filter" in args:
+		filterval = args.get("f", args.get("filter", ""))
 		if type(filterval).__name__.lower() == "bool":
 			dbg.log("Please provide a comma-separated list of types to show with -f", highlight=1)
 			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
@@ -21535,6 +21537,28 @@ def procLayout(args):
 		show_categories = set(all_internal)
 	else:
 		show_categories = set(default_categories)
+
+	# Additive selection: -t/-type expands the currently selected categories.
+	# "all" is excluded here — use -a or -f all for that.
+	additive_filters = sorted(k for k in filter_map if k != "all")
+	if "t" in args or "type" in args:
+		typeval = args.get("t", args.get("type", ""))
+		if type(typeval).__name__.lower() == "bool":
+			dbg.log("Please provide a comma-separated list of types to add with -t", highlight=1)
+			dbg.log("Valid types: %s" % ", ".join(additive_filters), highlight=1)
+			silent = False
+			return
+		type_names = [x.strip().lower() for x in typeval.split(",")]
+		added = False
+		for tn in type_names:
+			if tn in filter_map and tn != "all":
+				show_categories |= filter_map[tn]
+				added = True
+			else:
+				dbg.log("Unknown type '%s', ignoring (use -a or -f all to show everything)" % tn if tn == "all" else "Unknown type '%s', ignoring" % tn, highlight=1)
+		if not added:
+			dbg.log("No valid types were added with -t '%s'" % typeval, highlight=1)
+			dbg.log("Valid types: %s" % ", ".join(additive_filters), highlight=1)
 
 	# Force chunk walking if chunks will be displayed
 	if "Heap Chunk" in show_categories:
