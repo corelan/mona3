@@ -4178,7 +4178,9 @@ class MnModule:
 			self.entry_size = 0
 			self.extra_size = 0
 			self.entries = []
-			self.bucket_maps = {}
+			self.bucket_hits = {}
+			self.bucket_first_entries = {}
+			self.compat_cache = {}
 
 		def reset(self, module_base=None):
 			if module_base is not None:
@@ -4192,16 +4194,19 @@ class MnModule:
 			self.entry_size = 0
 			self.extra_size = 0
 			self.entries = []
-			self.bucket_maps = {}
+			self.bucket_hits = {}
+			self.bucket_first_entries = {}
+			self.compat_cache = {}
 
 		def add_entry(self, rva, flag_byte, flags):
 			self.entries.append(MnModule.CFGTableEntry(rva, flag_byte, flags, self.module_base))
 
-		def get_bucket_map(self, granularity=16):
-			if granularity in self.bucket_maps:
-				return self.bucket_maps[granularity]
+		def get_bucket_hits(self, granularity=16):
+			if granularity in self.bucket_hits:
+				return self.bucket_hits[granularity]
 
-			buckets = {}
+			buckets = set()
+			first_entries = {}
 			module_base = self.module_base
 
 			for entry in self.entries:
@@ -4210,13 +4215,24 @@ class MnModule:
 					entry_va = module_base + entry_va
 
 				bucket = entry_va // granularity
-				if bucket not in buckets:
-					buckets[bucket] = []
+				buckets.add(bucket)
+				if bucket not in first_entries:
+					first_entries[bucket] = entry
 
-				buckets[bucket].append(entry)
-
-			self.bucket_maps[granularity] = buckets
+			self.bucket_hits[granularity] = buckets
+			self.bucket_first_entries[granularity] = first_entries
+			self.compat_cache[granularity] = {}
 			return buckets
+
+		def get_bucket_first_entries(self, granularity=16):
+			if granularity not in self.bucket_first_entries:
+				self.get_bucket_hits(granularity)
+			return self.bucket_first_entries[granularity]
+
+		def get_compat_cache(self, granularity=16):
+			if granularity not in self.compat_cache:
+				self.get_bucket_hits(granularity)
+			return self.compat_cache[granularity]
 
 		def __len__(self):
 			return len(self.entries)
@@ -4725,7 +4741,7 @@ class MnModule:
 			return cfg_table
 
 
-	def checkCFGCompatible(self, ptr, granularity=16, return_entry=False):
+	def checkCFGCompatible(self, ptr, granularity=16, return_entry=False, return_reason=False):
 		"""
 		Check whether ptr is likely CFG-compatible for this module.
 
@@ -4739,24 +4755,39 @@ class MnModule:
 			If True, return (bool, matching_entry).
 			If False, return bool.
 
+		return_reason:
+			If True, include a short explanation describing why the address
+			was or was not considered CFG-compatible.
+
 		Important:
 			This is a static approximation based on the GuardCFFunctionTable.
 			Runtime CFG uses a bitmap, so addresses in the same bitmap slot as a
 			valid CFG target may pass, even if they are not exact table entries.
 		"""
 
+		def _ret(is_compatible, entry=None, reason=""):
+			if return_entry and return_reason:
+				return (is_compatible, entry, reason)
+			if return_entry:
+				return (is_compatible, entry)
+			if return_reason:
+				return (is_compatible, reason)
+			return is_compatible
+
 		if not ptr:
-			return (False, None) if return_entry else False
+			return _ret(False, None, "Address is null or zero.")
 
 		cfg_table = self.moduleCFGTable
 		if not cfg_table or not cfg_table.entries:
 			cfg_table = self.getCFGTable()
 
 		if not cfg_table or not cfg_table.entries:
-			return (False, None) if return_entry else False
+			return _ret(False, None, "Module has no cached CFG entries.")
 
 		module_base = self.moduleBase or cfg_table.module_base
-		cfg_bucket_map = cfg_table.get_bucket_map(granularity)
+		cfg_bucket_hits = cfg_table.get_bucket_hits(granularity)
+		cfg_first_entries = cfg_table.get_bucket_first_entries(granularity)
+		cfg_compat_cache = cfg_table.get_compat_cache(granularity)
 
 		# Normalize ptr to VA.
 		# If ptr looks like an RVA, convert it to VA.
@@ -4766,11 +4797,20 @@ class MnModule:
 			ptr_va = ptr
 
 		ptr_bucket = ptr_va // granularity
-		entries = cfg_bucket_map.get(ptr_bucket, [])
-		if entries:
-			return (True, entries[0]) if return_entry else True
+		if ptr_bucket in cfg_compat_cache:
+			cached_entry = cfg_compat_cache[ptr_bucket]
+			if cached_entry is False:
+				return _ret(False, None, "Address bucket 0x%x was previously checked and is not present in the module CFG table." % ptr_bucket)
+			return _ret(True, cached_entry, "Address bucket 0x%x was previously matched against CFG entry RVA 0x%x." % (ptr_bucket, cached_entry.rva))
 
-		return (False, None) if return_entry else False
+		if ptr_bucket in cfg_bucket_hits:
+			entry = cfg_first_entries.get(ptr_bucket)
+			cfg_compat_cache[ptr_bucket] = entry
+			return _ret(True, entry, "Address bucket 0x%x matches CFG entry RVA 0x%x." % (ptr_bucket, entry.rva if entry else 0))
+
+		cfg_compat_cache[ptr_bucket] = False
+
+		return _ret(False, None, "Address bucket 0x%x is not present in the module CFG table." % ptr_bucket)
 
 
 
@@ -11856,7 +11896,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								
 											ropgadgets[startptr] = fullchain
 											dbgp("Added %s to ropgadgets " % (PTR_PRINT % startptr))
-											if bypasscfg:
+											if bypasscfg and cfg_compatible_pointer:
 												valid_cfg_target_gadgets[startptr] = fullchain
 												dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
 
@@ -19755,7 +19795,17 @@ def procInfo(args):
 					iatlist = modinfo.getIAT()
 					if address in iatlist:
 						iatentry = iatlist[address]
-						dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)				
+						dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)		
+
+				# if the module is CFG, check if this address would be a viable target
+				if modinfo.isCFG:
+					cfg_compat, reason = modinfo.checkCFGCompatible(address, return_reason=True)
+					if cfg_compat:
+						dbg.log("    This address would likely be a valid CFG Target")
+					else:
+						dbg.log("    This address is not a valid CFG Target")	
+					dbg.log("    -> %s" % reason)
+							
 	else:
 		output = ""
 		if ptr.isInHeap():
