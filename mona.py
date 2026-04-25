@@ -26255,11 +26255,22 @@ def getBanner():
 
     www.corelan.be 
     www.corelan-training.com  
-    www.corelan-certified.com
-                                         
-"""
+    www.corelan-certified.com"""
+
 	banners[5] = bannertext
 
+	bannertext = """
+     __  __   ___   _   _     _       ____   __   __
+    |  \/  | / _ \ | \ | |   / \     |  _ \  \ \ / /
+    | |\/| || | | ||  \| |  / _ \    | |_) |  \ V / 
+    | |  | || |_| || |\  | / ___ \   |  __/    | |  
+    |_|  |_| \___/ |_| \_|/_/   \_\  |_|       |_|  
+
+          exploit development swiss army knife
+"""
+	banners[6] = bannertext
+
+	
 
 	# pick random banner
 	bannerlist = []
