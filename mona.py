@@ -1007,8 +1007,9 @@ def getAddyArg(argaddy):
 			if hexpart.endswith("h") and len(hexpart) > 1 and hexpart[0].isdigit():
 				dbgp("  Detected hex suffix h, normalized %s -> %s" % (hexpart, hexpart[:-1]))
 				hexpart = hexpart[:-1]
-
+			dbgp("Check if hexparts %s is an address" % hexparts)
 			if isAddress(hexpart):
+				dbgp("Yes, returning %s, True" % (PTR_PRINT % hexStrToInt(hexparts)))
 				return hexStrToInt(hexpart), True
 
 		m = getModuleObj(partclean)
@@ -1031,7 +1032,8 @@ def getAddyArg(argaddy):
 						return hexStrToInt(symboladdy), True
 			except:
 				pass
-
+		
+		dbgp("Unable to resolve part %s as register, module, symbol or address. Return False" % partclean)
 		return 0, False
 
 	if str(argaddy).strip().lower() in regs:
@@ -20429,53 +20431,67 @@ def procUpdate(args):
 
 #----- GetPC -----#
 def procgetPC(args):
-	r32 = ""
+	pc_targetreg = ""
 	output = ""
 	if "r" in args:
 		if type(args["r"]).__name__.lower() != "bool":	
-			r32 = args["r"].lower()
+			pc_targetreg = args["r"].lower()
 					
-	if r32 == "" or not "r" in args:
+	if pc_targetreg == "" or not "r" in args:
 		dbg.log("Missing argument -r <register>",highlight=1)
 		return
 
 	valid_regs_32 = [x.lower() for x in Registers32BitsOrder]
 	valid_regs_64 = [x.lower() for x in Registers64BitsOrder]
 
-	if r32 not in valid_regs_32 and r32 not in valid_regs_64:
-		dbg.log("Invalid register '%s'." % r32, highlight=1)
+	if pc_targetreg not in valid_regs_32 and pc_targetreg not in valid_regs_64:
+		dbg.log("Invalid register '%s'." % pc_targetreg, highlight=1)
 		dbg.log("Valid 32-bit registers: %s" % ", ".join(valid_regs_32))
 		dbg.log("Valid 64-bit registers: %s" % ", ".join(valid_regs_64))
 		return
 
-	opcodes = {}
-	opcodes["eax"] = "\\x58"
-	opcodes["ecx"] = "\\x59"
-	opcodes["edx"] = "\\x5a"
-	opcodes["ebx"] = "\\x5b"				
-	opcodes["esp"] = "\\x5c"
-	opcodes["ebp"] = "\\x5d"
-	opcodes["esi"] = "\\x5e"
-	opcodes["edi"] = "\\x5f"
+	if arch == 32:
+		opcodes = {}
+		opcodes["eax"] = "\\x58"
+		opcodes["ecx"] = "\\x59"
+		opcodes["edx"] = "\\x5a"
+		opcodes["ebx"] = "\\x5b"				
+		opcodes["esp"] = "\\x5c"
+		opcodes["ebp"] = "\\x5d"
+		opcodes["esi"] = "\\x5e"
+		opcodes["edi"] = "\\x5f"
 
-	calls = {}
-	calls["eax"] = "\\xd0"
-	calls["ecx"] = "\\xd1"
-	calls["edx"] = "\\xd2"
-	calls["ebx"] = "\\xd3"				
-	calls["esp"] = "\\xd4"
-	calls["ebp"] = "\\xd5"
-	calls["esi"] = "\\xd6"
-	calls["edi"] = "\\xd7"
-
-	if r32 not in opcodes:
-		dbg.log("GetPC routines are currently only supported for 32-bit registers: %s" % ", ".join(valid_regs_32), highlight=1)
-		return
+		calls = {}
+		calls["eax"] = "\\xd0"
+		calls["ecx"] = "\\xd1"
+		calls["edx"] = "\\xd2"
+		calls["ebx"] = "\\xd3"				
+		calls["esp"] = "\\xd4"
+		calls["ebp"] = "\\xd5"
+		calls["esi"] = "\\xd6"
+		calls["edi"] = "\\xd7"
+		
+		output  = "\n" + pc_targetreg + "|  jmp short back:\n\"\\xeb\\x03" + opcodes[pc_targetreg] + "\\xff" + calls[pc_targetreg] + "\\xe8\\xf8\\xff\\xff\\xff\"\n"
+		output += pc_targetreg + "|  call + 4:\n\"\\xe8\\xff\\xff\\xff\\xff\\xc3" + opcodes[pc_targetreg] + "\"\n"
+		output += pc_targetreg + "|  fstenv:\n\"\\xd9\\xeb\\x9b\\xd9\\x74\\x24\\xf4" + opcodes[pc_targetreg] + "\"\n"
 	
-	output  = "\n" + r32 + "|  jmp short back:\n\"\\xeb\\x03" + opcodes[r32] + "\\xff" + calls[r32] + "\\xe8\\xf8\\xff\\xff\\xff\"\n"
-	output += r32 + "|  call + 4:\n\"\\xe8\\xff\\xff\\xff\\xff\\xc3" + opcodes[r32] + "\"\n"
-	output += r32 + "|  fstenv:\n\"\\xd9\\xeb\\x9b\\xd9\\x74\\x24\\xf4" + opcodes[r32] + "\"\n"
-				
+	if arch == 64:
+		output = ""
+		asms = []
+		# 7 bytes, but null bytes
+		asms.append("lea %s, [7]" % pc_targetreg)
+		# some variations
+		asms.append("lea %s, [6]\nadd rax,5" % pc_targetreg)
+		asms.append("lea %s, [5]\nadd rax,6" % pc_targetreg)
+		asms.append("lea %s, [8]\nnop" % pc_targetreg)
+		for asmstr in asms:
+			assembled = dbg.assemble(asmstr)
+			dbgp("[+] Assembled instruction '%s' into bytes: %s" % (asmstr.replace('\n',";"), bin2hex(assembled)))
+			# join the bytes together
+			bytelist = bin2hexstr(assembled)
+			output += "\n" + pc_targetreg + "| %s: %s\n" % ( asmstr.replace('\n',';'), bytelist)
+
+
 	getpcfilename="getpc.txt"
 	objgetpcfile = MnLog(getpcfilename)
 	getpcfile = objgetpcfile.reset(skipModuleTable=True)
@@ -23831,6 +23847,82 @@ def procMacro(args):
 	return
 
 
+def procWrite(args):
+	"""
+	Write bytes to a destination address
+	"""
+	targetloc = 0
+	addyok = False
+	byteerror = True
+	bytestocopy = b""
+
+	if "a" in args and type(args["a"]).__name__.lower() != "bool":
+		targetloc, addyok = getAddyArg(args["a"])
+
+	if not addyok:
+		dbg.log("** Please provide a valid address with -a **", highlight = True)
+
+	if "s" in args:
+		if type(args["s"]).__name__.lower() != "bool":
+			# -s can be bytes (\\xNN...) or assembly (instr#instr#...)
+			raw_s = args["s"]
+			normalized = normalizeHexBytesArg(raw_s)
+			if normalized is not None and normalized != "":
+				bytestocopystr = normalized
+				s_input_type = "bytes"
+			else:
+				s_input_asm = raw_s
+				s_input_type = "asm"
+			byteerror = False
+
+	if byteerror:
+		dbg.log("** Please provide bytes or assembly with argument -s **", highlight = True)
+
+	if byteerror or not addyok:
+		return
+
+	if bytestocopy == "" and s_input_asm == "":
+			byteerror = True
+	else:
+		try:
+			if s_input_type == "asm" and s_input_asm != "":
+				#checkKeystone()
+				asmtext = _to_text(s_input_asm).replace('"', "").replace("'", "")
+				asmparts = [p.strip() for p in re.split(r'[;#]', asmtext) if p and p.strip()]
+				if len(asmparts) == 0:
+					byteerror = True
+				else:
+					dbgp("[+] Assembling the following instructions:\n%s" % "\n".join(asmparts))
+					asmjoined = "\n".join(asmparts)
+					assembled = dbg.assemble(asmjoined)
+					dbgp("[+] Assembled bytes: %s" % bin2hex(assembled))
+					dbg.log("[+] Assembled the instruction to %s" % bin2hexstr(assembled))
+					# dbg.assemble should return raw bytes (py3) or str (py2). Coerce for safety.
+					if isinstance(assembled, bytearray):
+						assembled = bytes(assembled) if PY3 else ''.join(chr(b & 0xff) for b in assembled)
+					elif PY3 and isinstance(assembled, (list, tuple)):
+						assembled = bytes([b & 0xff for b in assembled])
+					bytestocopy = _to_bytes(assembled)
+					byteerror = (bytestocopy == b"")
+			else:
+				normalized = normalizeHexBytesArg(bytestocopystr)
+				if normalized is None or normalized == "":
+					byteerror = True
+				else:
+					bytestocopy = hex2bin(normalized)
+					byteerror = False
+		except:
+			byteerror = True
+
+	if len(bytestocopy) > 0:
+		# copy the bytes
+		dbg.log("[+] Writing %d bytes to %s" % (len(bytestocopy), PTR_PRINT % targetloc))
+		dbg.writeMemory(targetloc, bytestocopy)
+		dbg.log("[+] Done")
+	return
+
+
+
 def procEnc(args):
 	validencoders = ['alphanum']
 	encodertyperror = True
@@ -26670,6 +26762,13 @@ Arguments:
     -dst <address>    : The destination address
     -n <number>       : The number of bytes to copy""" 
 
+	writeUsage = """Write a byte sequence to a memory location.
+
+Arguments:
+    -a <address>      : the destination address
+    -s <bytes|asm>    : bytes to write"""
+
+
 	dumpobjUsage = """Dump the contents of an object.
 
 Arguments:
@@ -26789,7 +26888,7 @@ Arguments:
 	commands["bytearray"]		= MnCommand("bytearray","Creates a byte array, can be used to find bad characters",bytearrayUsage,procByteArray,"ba", [32,64])
 	commands["header"]			= MnCommand("header","Read a binary file and convert content to a nice 'header' string",headerUsage,procPrintHeader,"",[32,64])
 	commands["update"]			= MnCommand("update","Update mona to the latest version",updateUsage,procUpdate,"up", [32, 64])
-	commands["getpc"]			= MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC)	
+	commands["getpc"]			= MnCommand("getpc","Show getpc routines for specific registers",getpcUsage,procgetPC,"",[32, 64])	
 	commands["egghunter"]		= MnCommand("egghunter","Create egghunter code",eggUsage,procEgg,"egg")
 	commands["stacks"]			= MnCommand("stacks","Show all stacks for all threads in the running application",stacksUsage,procStacks,"",[32,64])
 	commands["proclayout"]		= MnCommand("proclayout","Show unified process memory layout map",proclayoutUsage,procLayout,"pl",[32,64])
@@ -26812,6 +26911,7 @@ Arguments:
 	commands["teb"]				= MnCommand("teb","Show TEB related information",tebUsage,procTEB,"teb",[32,64])
 	commands["string"]			= MnCommand("string","Read or write a string from/to memory",stringUsage,procString,"str",[32,64])
 	commands["copy"]			= MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp",[32,64])
+	commands["write"]           = MnCommand("write","Write a byte sequence to a location",writeUsage,procWrite,"w",[32,64])
 	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])	
 	commands["fillchunk"]	    = MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 	if __DEBUGGERAPP__ == "Immunity Debugger":
