@@ -941,18 +941,23 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 		header_width = len(_ensure_text(headers[i]))
 		col_widths.append(max(max_value_width, header_width + 1))
 
-	fmt = "   ".join(["%%-%ds" % w for w in col_widths])
+	def _pad_cell(v, width):
+		txt = _ensure_text(v)
+		return txt + (" " * max(0, width - _display_len(txt)))
+
+	def _render_row(values):
+		return "   ".join([_pad_cell(values[i], col_widths[i]) for i in range(expected_cols)])
 
 	def _p(line):
 		dbg.log("%s%s" % (padding, line))
 		if logobj is not None and logfile is not None:
 			logobj.write("%s%s" % (padding, line), logfile)
 
-	_p(fmt % tuple([_ensure_text(h) for h in headers]))
-	_p(fmt % tuple([("-" * w) for w in col_widths]))
+	_p(_render_row([_ensure_text(h) for h in headers]))
+	_p(_render_row([("-" * w) for w in col_widths]))
 
 	for raw_row, row in zip(raw_rows, formatted_rows):
-		line = fmt % tuple([_ensure_text(c) for c in row])
+		line = _render_row([_ensure_text(c) for c in row])
 		if len(types) > 0 and types[0].lower() == "pointer" and not __DEBUGGERAPP__ == "WinDBG":
 			addr_val = _pointer_to_int(raw_row[0])
 			if addr_val is not None:
@@ -26273,9 +26278,9 @@ def procHelp(args, helpForCommand=None):
 	dbg.log("    Python version : %s" % (getPythonVersion()))
 	if __DEBUGGERAPP__ == "WinDBG":
 		pykdversion = dbg.getPyKDVersionNr()
-		dbg.log("    PyKD version %s" % pykdversion)
+		dbg.log("    PyKD version <b>%s</b>" % pykdversion)
 		if g_keystoneLoaded:
-			dbg.log("    keystone-engine version : %s " % (keystone.__version__))
+			dbg.log("    keystone-engine version : <b>%s</b> " % (keystone.__version__))
 	dbg.log("    Written by Corelan - https://www.corelan.be")
 	dbg.log("    Project page : https://github.com/corelan/mona3")
 	dbg.logLines(getBanner(),highlight=1)
