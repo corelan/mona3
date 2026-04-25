@@ -21586,6 +21586,7 @@ def procLayout(args):
 	if "Heap Chunk" in show_categories:
 		populate_entities.add("chunks")
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
+	dbg.log("")
 	mnproc.populate(include_chunks=include_chunks, entities=sorted(populate_entities))
 	regions = mnproc.getAllSorted()
 
@@ -26599,10 +26600,12 @@ Optional arguments:
                  Example: -f "heap,stack"
                  Example: -f "chunks"  (shows heaps, segments and chunks)
                  Example: -f "all"     (same as -a)
+               When no -f is provided, detailed chunks and vablocks are hidden
+	-t <type>  : Add individual types to the default output 
+                 Example: -t vablocks
+				 (this is the equivalent of -f "peb,teb,mod,stack,heap,vablocks")
 
-By default, Heap Chunks and Heap VA Blocks are hidden.
-Use -a to show everything, or -f to pick specific types.
-    -walk   : Flush cached data and re-walk the process (pick up changes)"""
+Use -a to show everything, or -f to pick specific types."""
 	
 	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
 
