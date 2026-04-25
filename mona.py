@@ -4650,14 +4650,15 @@ class MnModule:
 				lc_struct_size = struct.unpack('<L', dbg.readMemory(lc, 4))[0]
 				if is_pe64_2:
 					# IMAGE_LOAD_CONFIG_DIRECTORY64 offsets
-					# GuardFlags at lc+0x80, last CFG field ends at lc+0x84
-					min_cfg_size = 0x84
+					# SEHandlerTable/Count occupy lc+0x60 and lc+0x68.
+					# GuardFlags sit at lc+0x90, so the last CFG field ends at lc+0x94.
+					min_cfg_size = 0x94
 					if lc_struct_size >= min_cfg_size:
-						cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x60, 8))[0]
-						cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x68, 8))[0]
-						cfg_table_va   = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
-						cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
-						guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x80, 4))[0]
+						cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
+						cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
+						cfg_table_va   = struct.unpack('<Q', dbg.readMemory(lc + 0x80, 8))[0]
+						cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x88, 8))[0]
+						guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x90, 4))[0]
 					else:
 						cfg_check_fp = cfg_dispatch_fp = cfg_table_va = cfg_count = guard_flags = None
 				else:
@@ -19013,14 +19014,15 @@ def procModuleInfo(args):
 			lc_struct_size = struct.unpack('<L', dbg.readMemory(lc, 4))[0]
 			if is_pe64_2:
 				# IMAGE_LOAD_CONFIG_DIRECTORY64 offsets
-				# GuardFlags at lc+0x80, last CFG field ends at lc+0x84
-				min_cfg_size = 0x84
+				# SEHandlerTable/Count occupy lc+0x60 and lc+0x68.
+				# GuardFlags sit at lc+0x90, so the last CFG field ends at lc+0x94.
+				min_cfg_size = 0x94
 				if lc_struct_size >= min_cfg_size:
-					cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x60, 8))[0]
-					cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x68, 8))[0]
-					cfg_table_rva  = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
-					cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
-					guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x80, 4))[0]
+					cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
+					cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
+					cfg_table_rva  = struct.unpack('<Q', dbg.readMemory(lc + 0x80, 8))[0]
+					cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x88, 8))[0]
+					guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x90, 4))[0]
 				else:
 					cfg_check_fp = cfg_dispatch_fp = cfg_table_rva = cfg_count = guard_flags = None
 			else:
