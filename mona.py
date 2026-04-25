@@ -1508,6 +1508,11 @@ def bin2hex(binbytes):
 	return ' '.join(out)
 
 
+def yesno():
+	"""Return a random boolean, favoring False roughly 3:1."""
+	return random.randint(1, 4) == 4
+
+
 def fileToBin(filename):
 	"""
 	Read a file and return an array (list) of byte values (0-255).
@@ -27979,8 +27984,9 @@ def main(args):
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
 		dbg.log("")
-		dbg.log("[ -- END -- ] This mona.py action took %s" % str(delta))	
-		dbg.log("[ -- END -- ] Current date/time: %s" % get_current_datetime())
+		dbg.log("[ -- END -- ] %s - This action took %s" % (get_current_datetime(), str(delta)))
+		if yesno():
+			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("!mona up"), highlight=True)
 		dbg.setStatusBar("Done")
 		if DEBUG_MODE and __DEBUGGERAPP__ == "WinDBG":
 			dbg.nativeCommand(".logclose")
