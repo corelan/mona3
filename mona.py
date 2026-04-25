@@ -4816,7 +4816,7 @@ class MnModule:
 				next_distance = (next_bucket - bucket) * granularity
 				next_txt = "0x%x [0x%x-0x%x], distance %d byte(s)" % (next_bucket, next_start, next_end, next_distance)
 
-			return "Address bucket 0x%x is not present in the module CFG table. Nearest previous valid bucket: %s. Nearest next valid bucket: %s." % (bucket, prev_txt, next_txt)
+			return "Address falls in bucket index 0x%x, which is not present in the module CFG table.\nNearest previous valid bucket: %s.\nNearest next valid bucket: %s." % (bucket, prev_txt, next_txt)
 
 		# Normalize ptr to VA.
 		# If ptr looks like an RVA, convert it to VA.
@@ -4831,13 +4831,13 @@ class MnModule:
 			if cached_entry is False:
 				return _ret(False, None, _miss_reason(ptr_bucket))
 			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
-			return _ret(True, cached_entry, "Address bucket %s [%s-%s] was previously matched against CFG entry RVA 0x%x (VA %s)." % (PTR_PRINT % ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, cached_entry.rva, PTR_PRINT % cached_entry.va))
+			return _ret(True, cached_entry, "Address falls in bucket index 0x%x [%s-%s], which was previously matched against CFG entry RVA 0x%x (VA %s)." % (ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, cached_entry.rva, PTR_PRINT % cached_entry.va))
 
 		if ptr_bucket in cfg_bucket_hits:
 			entry = cfg_first_entries.get(ptr_bucket)
 			cfg_compat_cache[ptr_bucket] = entry
 			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
-			return _ret(True, entry, "Address bucket %s [%s-%s] matches CFG entry RVA 0x%x (VA %s)." % (PTR_PRINT % ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, entry.rva if entry else 0, PTR_PRINT % (entry.va if entry else 0)))
+			return _ret(True, entry, "Address falls in bucket index 0x%x [%s-%s], matching CFG entry RVA 0x%x (VA %s)." % (ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, entry.rva if entry else 0, PTR_PRINT % (entry.va if entry else 0)))
 
 		cfg_compat_cache[ptr_bucket] = False
 
@@ -19877,11 +19877,13 @@ def procInfo(args):
 					cfg_compat, reason = modinfo.checkCFGCompatible(address, return_reason=True)
 					if cfg_compat:
 						dbg.log("")
-						dbg.log("    This address would likely be a valid CFG Target")
+						dbg.log("    Address %s would likely be a valid CFG Target" % PTR_PRINT % address)
 					else:
 						dbg.log("")
-						dbg.log("    This address is not a valid CFG Target")	
-					dbg.log("    -> %s" % reason)
+						dbg.log("    Address %s is not a valid CFG Target" % PTR_PRINT % address)
+					reasonlines = reason.split('\n')
+					for reasonline in reasonlines:
+						dbg.log("    -> %s" % reasonline)
 							
 	else:
 		output = ""
