@@ -11031,12 +11031,41 @@ def get_eta(startmoment, done, total):
 	if percent_done < 10.0:
 		return "Reporting ETA as soon as we get to 10%"
 
-	rate = float(done) / elapsed
+	# Blend the overall average speed with the most recent observed speed.
+	# This reduces pessimistic early ETAs caused by startup overhead while
+	# still damping sudden fluctuations from short update windows.
+	state_key = (int(startmoment), int(total))
+	if not hasattr(get_eta, "_state"):
+		get_eta._state = {}
+
+	state = get_eta._state.get(state_key)
+	global_rate = float(done) / elapsed
+	recent_rate = 0.0
+
+	if state:
+		prev_done = state.get("done", 0)
+		prev_time = state.get("time", 0.0)
+		delta_done = done - prev_done
+		delta_time = now - prev_time
+		if delta_done > 0 and delta_time > 0:
+			recent_rate = float(delta_done) / delta_time
+
+	get_eta._state[state_key] = {"done": done, "time": now}
+
+	if recent_rate > 0:
+		rate = (recent_rate * 0.7) + (global_rate * 0.3)
+	else:
+		rate = global_rate
+
 	if rate <= 0:
 		return "calculating eta..."
 
 	remaining = total - done
 	if remaining <= 0:
+		try:
+			del get_eta._state[state_key]
+		except Exception:
+			pass
 		return get_current_datetime()
 
 	eta_seconds = remaining / rate
@@ -11109,7 +11138,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if technique != "" and technique in valid_techniques:
 		dbg.log("[+] Only creating rop chain for '%s'" % technique)
 	else:
-		dbg.log("[+] Going to create rop chains for all relevant/supported techniques: %s" % technique)
+		if technique != "":
+			dbg.log("[+] Going to create rop chains for all relevant/supported techniques: %s" % technique)
 	usefiles = False
 	filestouse = []
 	vplogtxt = ""
@@ -21632,11 +21662,13 @@ def procHeap(args):
 			showdata = False
 		
 		if searchtype == "" and not "stat" in args:
-			dbg.log("Please specify a valid searchtype -t",highlight=1)
+			dbg.log("You can further refine your search by specifying a valid searchtype -t",highlight=1)
 			dbg.log("Valid values are :",highlight=1)
+			vallist = []
 			for val in searchtypes:
 				if val != "blocks":	
-					dbg.log("   %s" % val,highlight=1)
+					vallist.append(val)
+			dbg.log("   %s" % ','.join(vallist),highlight=1)
 			error = True
 
 		if "h" in args and heapbase == 0:
