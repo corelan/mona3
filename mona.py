@@ -4180,6 +4180,7 @@ class MnModule:
 			self.entries = []
 			self.bucket_hits = {}
 			self.bucket_first_entries = {}
+			self.sorted_buckets = {}
 			self.compat_cache = {}
 
 		def reset(self, module_base=None):
@@ -4196,6 +4197,7 @@ class MnModule:
 			self.entries = []
 			self.bucket_hits = {}
 			self.bucket_first_entries = {}
+			self.sorted_buckets = {}
 			self.compat_cache = {}
 
 		def add_entry(self, rva, flag_byte, flags):
@@ -4221,6 +4223,7 @@ class MnModule:
 
 			self.bucket_hits[granularity] = buckets
 			self.bucket_first_entries[granularity] = first_entries
+			self.sorted_buckets[granularity] = sorted(buckets)
 			self.compat_cache[granularity] = {}
 			return buckets
 
@@ -4233,6 +4236,11 @@ class MnModule:
 			if granularity not in self.compat_cache:
 				self.get_bucket_hits(granularity)
 			return self.compat_cache[granularity]
+
+		def get_sorted_buckets(self, granularity=16):
+			if granularity not in self.sorted_buckets:
+				self.get_bucket_hits(granularity)
+			return self.sorted_buckets[granularity]
 
 		def __len__(self):
 			return len(self.entries)
@@ -4789,6 +4797,37 @@ class MnModule:
 		cfg_first_entries = cfg_table.get_bucket_first_entries(granularity)
 		cfg_compat_cache = cfg_table.get_compat_cache(granularity)
 
+		def _bucket_bounds(bucket):
+			start = bucket * granularity
+			end = start + granularity - 1
+			return start, end
+
+		def _miss_reason(bucket):
+			if not return_reason:
+				return ""
+
+			sorted_buckets = cfg_table.get_sorted_buckets(granularity)
+			if not sorted_buckets:
+				return "Address bucket 0x%x is not present in the module CFG table, and the module has no valid CFG buckets." % bucket
+
+			idx = bisect.bisect_left(sorted_buckets, bucket)
+			prev_txt = "none"
+			next_txt = "none"
+
+			if idx > 0:
+				prev_bucket = sorted_buckets[idx - 1]
+				prev_start, prev_end = _bucket_bounds(prev_bucket)
+				prev_distance = (bucket - prev_bucket) * granularity
+				prev_txt = "0x%x [0x%x-0x%x], distance %d byte(s)" % (prev_bucket, prev_start, prev_end, prev_distance)
+
+			if idx < len(sorted_buckets):
+				next_bucket = sorted_buckets[idx]
+				next_start, next_end = _bucket_bounds(next_bucket)
+				next_distance = (next_bucket - bucket) * granularity
+				next_txt = "0x%x [0x%x-0x%x], distance %d byte(s)" % (next_bucket, next_start, next_end, next_distance)
+
+			return "Address bucket 0x%x is not present in the module CFG table. Nearest previous valid bucket: %s. Nearest next valid bucket: %s." % (bucket, prev_txt, next_txt)
+
 		# Normalize ptr to VA.
 		# If ptr looks like an RVA, convert it to VA.
 		if module_base and ptr < module_base:
@@ -4800,17 +4839,19 @@ class MnModule:
 		if ptr_bucket in cfg_compat_cache:
 			cached_entry = cfg_compat_cache[ptr_bucket]
 			if cached_entry is False:
-				return _ret(False, None, "Address bucket 0x%x was previously checked and is not present in the module CFG table." % ptr_bucket)
-			return _ret(True, cached_entry, "Address bucket 0x%x was previously matched against CFG entry RVA 0x%x." % (ptr_bucket, cached_entry.rva))
+				return _ret(False, None, _miss_reason(ptr_bucket))
+			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
+			return _ret(True, cached_entry, "Address bucket %s [%s-%s] was previously matched against CFG entry RVA 0x%x (VA %s)." % (PTR_PRINT % ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, cached_entry.rva, PTR_PRINT % cached_entry.va))
 
 		if ptr_bucket in cfg_bucket_hits:
 			entry = cfg_first_entries.get(ptr_bucket)
 			cfg_compat_cache[ptr_bucket] = entry
-			return _ret(True, entry, "Address bucket 0x%x matches CFG entry RVA 0x%x." % (ptr_bucket, entry.rva if entry else 0))
+			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
+			return _ret(True, entry, "Address bucket %s [%s-%s] matches CFG entry RVA 0x%x (VA %s)." % (PTR_PRINT % ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, entry.rva if entry else 0, PTR_PRINT % (entry.va if entry else 0)))
 
 		cfg_compat_cache[ptr_bucket] = False
 
-		return _ret(False, None, "Address bucket 0x%x is not present in the module CFG table." % ptr_bucket)
+		return _ret(False, None, _miss_reason(ptr_bucket))
 
 
 
@@ -11956,6 +11997,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
 			# another round of filtering
+			dbg.log("")
 			updatetext = "[+] Creating suggestions list"
 			dbg.log(updatetext)
 			objprogressfile.write(updatetext.strip(),progressfile)
@@ -12103,10 +12145,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 
 
 		if bypasscfg:
+			dbg.log("")
 			logfile = MnLog("rop_cfg.txt")
 			thislog = logfile.reset()
 			objprogressfile.write("Gathering CFG Compatible targets", progressfile)
-			dbg.log("")
 			dbg.log("[+] Writing results to file " + thislog + " (" + str(len(valid_cfg_target_gadgets))+" cfg compatible target gadgets)")
 			logfile.write("CFG Compatible target gadgets",thislog)
 			logfile.write("-----------------------------",thislog)
@@ -12136,6 +12178,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			
 
 		if not split:
+			dbg.log("")
 			logfile = MnLog("rop.txt")
 			thislog = logfile.reset()
 			objprogressfile.write("Gathering interesting gadgets",progressfile)
@@ -19801,8 +19844,10 @@ def procInfo(args):
 				if modinfo.isCFG:
 					cfg_compat, reason = modinfo.checkCFGCompatible(address, return_reason=True)
 					if cfg_compat:
+						dbg.log("")
 						dbg.log("    This address would likely be a valid CFG Target")
 					else:
+						dbg.log("")
 						dbg.log("    This address is not a valid CFG Target")	
 					dbg.log("    -> %s" % reason)
 							
