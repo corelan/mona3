@@ -386,14 +386,17 @@ def dbgp(s, highlight=False):
 			pass	
 
 
-def clickChunkPtr(chunkptr = 0, chunksize = 0):
+def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	chunktrstr = ""
 	fmtted_ptr = PTR_PRINT % chunkptr
+	displaystr = fmtted_ptr
+	if not displaytext == "":
+		displaystr = displaytext 
 	if __DEBUGGERAPP__ == "WinDBG":
 		sizearg = ""
 		if chunksize > 0:
 			sizearg = "-s 0x%x" % chunksize
-		chunkptrstr = "<link cmd=\"!mona do -a %s %s\">%s</link>" % (fmtted_ptr,sizearg,fmtted_ptr)
+		chunkptrstr = "<link cmd=\"!mona do -a %s %s\">%s</link>" % (fmtted_ptr,sizearg,displaystr)
 	else:
 		chunkptrstr = fmtted_ptr
 	return chunkptrstr
@@ -403,6 +406,24 @@ def clickModuleName(modname = ""):
 	if __DEBUGGERAPP__ == "WinDBG":
 		clickstr = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (modname, modname)
 	return clickstr
+
+def clickStackPtr(stackptr = 0):
+	stackptrstr = ""
+	fmtted_ptr = PTR_PRINT % stackptr
+	if __DEBUGGERAPP__ == "WinDBG":
+		stackptrstr = "<link cmd=\"!mona pageacl -a %s \">%s</link>" % (fmtted_ptr, fmtted_ptr)
+	else:
+		stackptrstr = fmtted_ptr
+	return stackptrstr
+
+def clickPageAcl(ptrinfo = 0):
+	infoptrstr = ""
+	fmtted_ptr = PTR_PRINT % ptrinfo
+	if __DEBUGGERAPP__ == "WinDBG":
+		infoptrstr = "<link cmd=\"!mona pageacl -a %s \">Info</link>" % (fmtted_ptr)
+	else:
+		infoptrstr = fmtted_ptr
+	return infoptrstr
 
 
 def checkKeystone():
@@ -9224,8 +9245,11 @@ class MnPointer:
 
 		memloc = ptrx.memLocation()
 		if not "??" in memloc:
-			if "Stack" in memloc or "Heap" in memloc:
+			if "Stack" in memloc:
 				extra = "(%s) " % memloc
+			elif "Heap" in memloc:
+				memloctxt = clickChunkPtr(addy, displaytext = "Heap")
+				extra = "(%s) " % memloctxt
 			else:
 				detailmemloc = ptrx.getPtrFunction()
 				extra = " (%s.%s)" % (memloc,detailmemloc)
@@ -21408,8 +21432,8 @@ def procStacks(args):
 		dbg.log("--------")
 
 		stackDict = {}
-		headers = ["Thread ID", "Start", "End", "Size"]
-		types = ["string", "pointer", "pointer", "pointer"]
+		headers = ["Thread ID", "Start", "End", "Size", "Info"]
+		types = ["string", "pointer", "pointer", "pointer", "string"]
 		alreadyPrinted = False
 		for threadid in stacks:
 			s = stacks[threadid]
@@ -21418,10 +21442,14 @@ def procStacks(args):
 					str(threadid), toHex(s["teb"]), toHex(s["size"])))
 				alreadyPrinted = True
 			else:
+
 				startaddress = s[0]
 				endaddress = s[1]
 				size = s[1] - s[0]
-				stackDict[str(threadid)] = [startaddress, endaddress, size]
+				info = ""
+				if __DEBUGGERAPP__ == "WinDBG":
+					info = clickPageAcl(startaddress)
+				stackDict[str(threadid)] = [startaddress, endaddress, size, info]
 
 		if not alreadyPrinted:
 			print_dict_table(stackDict, headers, types, padding = "    ", itemsequence = [])	
@@ -21506,7 +21534,7 @@ def procLayout(args):
 		populate_entities.add("ntheapdetail")
 	if "Heap Chunk" in show_categories:
 		populate_entities.add("chunks")
-	dbg.log("Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
+	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
 	mnproc.populate(include_chunks=include_chunks, entities=sorted(populate_entities))
 	regions = mnproc.getAllSorted()
 
