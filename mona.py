@@ -422,7 +422,7 @@ def interruptMona():
 			except Exception:
 				pass
 			dbg.log("")
-			dbg.log("[!] Script interrupted by user intervention, file found: %s" % interrupt_file, highlight=True)
+			dbg.log("[!] Script interrupted by user intervention, file found: %s" % interrupt_path, highlight=True)
 			dbg.log("")
 			sys.exit(0)
 
@@ -22511,6 +22511,7 @@ def procFwptr(args):
 			dbg.log("[+] Analysing .text/.code sections")
 			dbg.updateLog()
 		for modname in pagestoquery:
+			interruptMona()
 			tmodcnt = 0
 			nr_sizematch = 0
 			pagestart = pagestoquery[modname][0]
