@@ -11223,7 +11223,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				if adcnt > done:
 					thistimestamp=get_current_datetime()
 					eta = get_eta(startmoment, done, tp)
-					updatetext = "      - Progress update : {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
+					updatetext = "      - {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
 						done=done,
 						total=tp,
 						ts=thistimestamp,
@@ -11370,7 +11370,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					step += 1
 	
 	thistimestamp = get_current_datetime()
-	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
+	updatetext = "      - " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
 	dbg.updateLog()
@@ -11782,7 +11782,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 					adcnt = adcnt - 0.5
 				if adcnt > (tc*1000):
 					thistimestamp=get_current_datetime()
-					updatetext = "      - Progress update : " + str(tc*1000) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*1000*100)/tp)+"%)"
+					updatetext = "      - " + str(tc*1000) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*1000*100)/tp)+"%)"
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
 					dbg.updateLog()
@@ -11826,7 +11826,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 					startptr = startptr+1
 	
 	thistimestamp=get_current_datetime()
-	updatetext = "      - Progress update : " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
+	updatetext = "      - " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
 	dbg.updateLog()
