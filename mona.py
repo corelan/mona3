@@ -403,6 +403,30 @@ def checkKeystone():
 		return True 
 
 
+def interruptMona():
+	"""
+	Stops mona when a user-created interrupt file is present next to mona.py.
+	"""
+	if '__file__' in globals():
+		script_path = os.path.abspath(__file__)
+	elif len(sys.argv) > 0 and sys.argv[0]:
+		script_path = os.path.abspath(sys.argv[0])
+	else:
+		script_path = os.path.join(os.getcwd(), "mona.py")
+	script_folder = os.path.dirname(script_path)
+	for interrupt_file in ("stop", "break", "interrupt"):
+		interrupt_path = os.path.join(script_folder, interrupt_file)
+		if os.path.isfile(interrupt_path):
+			try:
+				os.remove(interrupt_path)
+			except Exception:
+				pass
+			dbg.log("")
+			dbg.log("[!] Script interrupted by user intervention, file found: %s" % interrupt_file, highlight=True)
+			dbg.log("")
+			sys.exit(0)
+
+
 def resetGlobals():
 	"""
 	Clears all process-level caches and resets mona globals.
@@ -9537,6 +9561,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 		had_unreadable_pages = False
 		for a in dbg.MemoryPages.keys():
 
+			interruptMona()
+
 			if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
 		
 				# get end address of the page
@@ -10990,6 +11016,9 @@ def get_eta(startmoment, done, total):
 	Return:
 	string
 	"""
+
+	# do we need to interrupt mona?
+	interruptMona()
 
 	now = time.time()
 	elapsed = now - startmoment
@@ -23972,130 +24001,7 @@ def procString(args):
 	return
 
 
-def procKb(args):
-	validcommands = ['set','list','del']
-	validcommandfound = False
-	selectedcommand = ""
-	selectedid = ""
-	selectedvalue = ""
-	for command in validcommands:
-		if command in args:
-			validcommandfound = True
-			selectedcommand = command
-			break
-	dbg.log("")
-	if not validcommandfound:
-		dbg.log("*** Please specify a valid command. Valid commands are :")
-		for command in validcommands:
-			dbg.log("    -%s" % command)
-		return
 
-	if "id" in args:
-		if type(args["id"]).__name__.lower() != "bool":
-			selectedid = args["id"]
-
-	if "value" in args:
-		if type(args["value"]).__name__.lower() != "bool":
-			selectedvalue = args["value"]
-
-	dbg.log("Knowledgebase database : %s" % dbg.getKBDB())
-	kb = dbg.listKnowledge()
-	if selectedcommand == "list":
-		dbg.log("Number of IDs in Knowledgebase : %d" % len(kb))
-		if len(kb) > 0:
-			if selectedid == "":
-				dbg.log("IDs :")
-				dbg.log("-----")
-				for kbid in kb:
-					dbg.log(kbid)
-			else:
-				if selectedid in kb:
-					kbid = dbg.getKnowledge(selectedid)
-					kbtype = kbid.__class__.__name__
-					kbtitle = "Entries for ID %s (type %s) :" % (selectedid,kbtype)
-					dbg.log(kbtitle)
-					dbg.log("-" * (len(kbtitle)+2))
-					if selectedvalue != "":
-						dbg.log("  (Filter : %s)" % selectedvalue)
-					nrentries = 0
-					if kbtype == "dict":
-						for dictkey in kbid:
-							if selectedvalue == "" or selectedvalue in dictkey:
-								logline = ""
-								if kbid[dictkey].__class__.__name__ == "int" or kb[dictkey].__class__.__name__ == "long":
-									logline = "  %s : %d (0x%x)" % (str(dictkey),kbid[dictkey],kbid[dictkey])
-								else:
-									logline = "  %s : %s" % (str(dictkey),kbid[dictkey])
-								dbg.log(logline)
-								nrentries += 1
-					if kbtype == "list":
-						cnt = 0
-						for entry in kbid:
-							dbg.log("  %d : %s" % (cnt,kbid[entry]))
-							cnt += 1
-							nrentries += 1
-					if kbtype == "str":
-						dbg.log("  %s" % kbid)
-						nrentries += 1
-					if kbtype == "int" or kbtype == "long":
-						dbg.log("  %d (0x%08x)" % (kbid,kbid))
-						nrentries += 1
-
-					dbg.log("")
-					filtertxt = ""
-					if selectedvalue != "":
-						filtertxt="filtered "
-					dbg.log("Number of %sentries for ID %s : %d" % (filtertxt,selectedid,nrentries))
-				else:
-					dbg.log("ID %s was not found in the Knowledgebase" % selectedid)
-
-	if selectedcommand == "set":
-		# we need an ID and a value argument
-		if selectedid == "":
-			dbg.log("*** Please enter a valid ID with -id",highlight=1)
-			return
-		if selectedvalue == "":
-			dbg.log("*** Please enter a valid value",highlight=1)
-			return
-		if selectedid in kb:
-			# vtableCache
-			if selectedid == "vtableCache":
-				# split on command
-				valueparts = selectedvalue.split(",")
-				if len(valueparts) == 2:
-					vtablename = valueparts[0].strip(" ")
-					vtablevalue = 0
-					if "0x" in valueparts[1].lower():
-						vtablevalue = int(valueparts[1],16)
-					else:
-						vtablevalue = int(valueparts[1])
-					kbadd = {}
-					kbadd[vtablename] = vtablevalue
-					dbg.addKnowledge(selectedid,kbadd)
-				else:
-					dbg.log("*** Please provide a valid value for -value")
-					dbg.log("*** KB %s contains a list, please use a comma")
-					dbg.log("*** to separate entries. First entry should be a string,")
-					dbg.log("*** Second entry should be an integer.")
-					return
-			else:
-				dbg.addKnowledge(selectedid,selectedvalue)
-			dbg.log(" ")
-			dbg.log("ID %s updated." % selectedid)
-		else:
-			dbg.log("ID %s was not found in the Knowledgebase" % selectedid)
-
-	if selectedcommand == "del":
-		if selectedid == "" or selectedid not in kb:
-			dbg.log("*** Please enter a valid ID with -id",highlight=1)
-			return
-		else:
-			dbg.forgetKnowledge(selectedid,selectedvalue)
-		if selectedvalue == "":
-			dbg.log("*** Entire ID %s removed from Knowledgebase" % selectedid)
-		else:
-			dbg.log("*** Object %s in ID %s removed from Knowledgebase" % (selectedvalue,selectedid))
-	return
 
 def procBPSeh(self):
 	sehchain = dbg.getSehChain()
@@ -26112,6 +26018,11 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("  -debug                 : Enable debug routines in mona/windbglib.")
 		dbg.log("                           Don't use this option unless you've been asked to do so")
 		dbg.log("")
+		dbg.log("  Interrupting mona execution:", highlight=1)
+		dbg.log("")
+		dbg.log("  You can interrupt a long-running search by creating a file 'stop'")
+		dbg.log("  and placing it in the same folder as mona.py")
+		dbg.log("  Next time mona intends to calculate an eta, it will interrupt the script instead")
 		dbg.log("-" * 120)
 	scriptname = get_script_name()
 	launchcmd = "!" + scriptname		
@@ -26863,7 +26774,6 @@ Arguments:
 	commands["geteat"]          = MnCommand("geteat","Show EAT of selected module(s)",geteatUsage,procGetEAT,"eat", [32,64])
 	commands["pageacl"]         = MnCommand("pageacl","Show ACL associated with mapped pages",getpageACLUsage,procPageACL,"pacl",[32,64] )
 	commands["bpseh"]           = MnCommand("bpseh","Set a breakpoint on all current SEH Handler function pointers",bpsehUsage,procBPSeh,"sehbp")
-	commands["kb"]				= MnCommand("kb","Manage Knowledgebase data",kbUsage,procKb,"kb")
 	commands["encode"]			= MnCommand("encode","Encode a series of bytes",encUsage,procEnc,"enc")
 	commands["unicodealign"]	= MnCommand("unicodealign","Generate venetian alignment code for unicode stack buffer overflow",unicodealignUsage,procUnicodeAlign,"ua")
 	commands["load"]		= MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
@@ -27259,9 +27169,6 @@ if __name__ == "__main__":
 	if __DEBUGGERAPP__ == "WinDBG":
 		dbglib.clearvars()
 	try:
-	#	allvars = [var for var in globals() if var[0] != "_"]
-	#	for var in allvars:
-	#		del globals()[var]
 		resetGlobals()
 		dbg = None
 	except:
