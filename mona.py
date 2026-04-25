@@ -560,7 +560,7 @@ def resetGlobals():
 
 _creating_mnproc = False
 
-def _ensureMnProc(entities=None):
+def _ensureMnProc(entities=None, include_chunks=False):
     """Lazily create MnProc and optionally populate selected entities.
 
     A module-level flag prevents re-entrant calls during MnProc.__init__
@@ -568,12 +568,12 @@ def _ensureMnProc(entities=None):
     MnProc instances, which would cause unbounded recursion.
     """
     global mnproc, _creating_mnproc
-    
+
     if mnproc is None:
         if _creating_mnproc:
             # Re-entrant call during MnProc construction — return None safely.
             return None
-            
+
         _creating_mnproc = True
         try:
             mnproc = MnProc()
@@ -588,9 +588,9 @@ def _ensureMnProc(entities=None):
 
     if mnproc is not None:
         if entities is not None:
-            mnproc.populate(entities=entities)
+            mnproc.populate(entities=entities, include_chunks=include_chunks)
         return mnproc
-        
+
     return None
 
 
@@ -2385,8 +2385,7 @@ def splitToPtrInstr(input):
 			return thispointer, thisinstruction
 	else:
 		return thispointer, thisinstruction
-		
-		
+
 def getNrOfDictElements(thisdict):
 	"""
 	Will get the total number of entries in a given dictionary
@@ -2398,7 +2397,7 @@ def getNrOfDictElements(thisdict):
 		for dictval in thisdict[dicttype]:
 			total += 1
 	return total
-	
+
 def get_teb_addr():
 	"""
 	Return the TEB address for the current thread.
@@ -2423,33 +2422,6 @@ def get_teb_addr():
 	if _teb_addr_cache is None:
 		_teb_addr_cache = 0
 	return int(_teb_addr_cache)
-
-
-def get_peb_addr():
-	"""
-	Return the PEB address.
-	Cached at mona level (_peb_addr_cache) and at the windbglib Debugger
-	instance level (self._peb_addr).
-	"""
-	global _peb_addr_cache
-	if _peb_addr_cache is not None:
-		return int(_peb_addr_cache)
-	try:
-		_peb_addr_cache = dbg.get_peb_addr()
-	except Exception:
-		teb = get_teb_addr()
-		if teb != 0:
-			if arch == 32:
-				_peb_addr_cache = struct.unpack('<L', dbg.readMemory(teb + 0x30, 4))[0]
-			else:
-				_peb_addr_cache = struct.unpack('<Q', dbg.readMemory(teb + 0x60, 8))[0]
-			if _peb_addr_cache is None:
-				_peb_addr_cache = 0
-		else:
-			_peb_addr_cache = 0
-	if _peb_addr_cache is None:
-		_peb_addr_cache = 0
-	return int(_peb_addr_cache)
 
 
 class MnPEB:
@@ -2499,8 +2471,9 @@ class MnPEB:
 	# Architecture index: 0 for x86, 1 for x64
 	_arch_index = 1 if arch == 64 else 0
 
+	# TODO: move part of procHideDebug here, we want patching to be done via MnPEB
 	def __init__(self):
-		self.PEBAddress = get_peb_addr()
+		self.PEBAddress = MnPEB.get_address()
 		if self.PEBAddress == 0:
 			raise Exception("Unable to determine PEB address")
 
@@ -2527,6 +2500,33 @@ class MnPEB:
 		# MnModule construction (which calls _ensureMnProc) while MnProc.__init__
 		# is still on the stack — which would cause unbounded recursion.
 		self._ldr_list = None
+
+	@staticmethod
+	def get_address():
+		"""
+		Return the PEB address.
+		Cached at mona level (_peb_addr_cache) and at the windbglib Debugger
+		instance level (self._peb_addr).
+		"""
+		global _peb_addr_cache
+		if _peb_addr_cache is not None:
+			return int(_peb_addr_cache)
+		try:
+			_peb_addr_cache = dbg.get_peb_addr()
+		except Exception:
+			teb = get_teb_addr()
+			if teb != 0:
+				if arch == 32:
+					_peb_addr_cache = struct.unpack('<L', dbg.readMemory(teb + 0x30, 4))[0]
+				else:
+					_peb_addr_cache = struct.unpack('<Q', dbg.readMemory(teb + 0x60, 8))[0]
+				if _peb_addr_cache is None:
+					_peb_addr_cache = 0
+			else:
+				_peb_addr_cache = 0
+		if _peb_addr_cache is None:
+			_peb_addr_cache = 0
+		return int(_peb_addr_cache)
 
 	@staticmethod
 	def _raw_walk(list_name="InLoadOrderModuleList"):
@@ -2558,7 +2558,7 @@ class MnPEB:
 			raw = dbg.readMemory(buf_ptr, length)
 			return raw.decode('utf-16-le', errors='replace')
 
-		peb_addr = get_peb_addr()
+		peb_addr = MnPEB.get_address()
 		if peb_addr == 0:
 			return
 		ldr = _read_ptr(peb_addr + MnPEB._offsets["Ldr"][MnPEB._arch_index])
@@ -2674,7 +2674,6 @@ class MnPEB:
 		except Exception:
 			return ""
 
-
 class MnTEB:
 	"""
 	Class representing a Thread Environment Block (TEB).
@@ -2731,7 +2730,6 @@ class MnTEB:
 			if mteb.TEBAddress == teb_addr:
 				return mteb
 		return None
-
 
 def getModuleObj(modname):
 	"""
@@ -3517,7 +3515,6 @@ class MnEncoder:
 #---------------------------------------#
 #   Class to set deferred BP Hooks      #
 #---------------------------------------#
-
 class MnDeferredHook(LogBpHook):
 	def __init__(self, loadlibraryptr, targetptr):
 		LogBpHook.__init__(self)
@@ -3527,7 +3524,6 @@ class MnDeferredHook(LogBpHook):
 #---------------------------------------#
 #   Class for conditional BP Hooks      #
 #---------------------------------------#
-
 class MnConditionalHook(LogBpHook):
 	def __init__(self, condition):
 		LogBpHook.__init__(self)
@@ -3585,7 +3581,6 @@ class MnConditionalHook(LogBpHook):
 #---------------------------------------#
 #   Class to access config file         #
 #---------------------------------------#
-
 class MnConfig:
 	"""
 	Class to perform config file operations
@@ -3855,8 +3850,6 @@ class MnConfig:
 
 		return ""
 
-
-	
 #---------------------------------------#
 #   Class to log entries to file        #
 #---------------------------------------#
@@ -3868,7 +3861,7 @@ class MnLog:
 		dbgp(get_current_function_name())
 		self.filename = filename
 		self.numbered = numbered
-		
+
 	def _get_timestamped_filename(self, logfile, max_suffix=9999):
 		"""
 		Return a unique timestamped filename for logfile.
@@ -3916,7 +3909,6 @@ class MnLog:
 			pid = 0
 		return "%s-%s-%d-%s%s" % (root, timestamp, pid, rnd, ext)
 		
-			
 	def reset(self,clear=True,showheader=True,skipModuleTable=False):
 		"""
 		Optionally clears a log file, write a header to the log file and return filename
@@ -4075,7 +4067,6 @@ class MnLog:
 		except:
 			pass
 		return True
-	
 
 #---------------------------------------#
 #  Simple Queue class                   #
@@ -4110,7 +4101,6 @@ class MnQueue:
 		if len(self.holder) == 0:
 			result = True
 		return result	
-
 
 #---------------------------------------#
 #  Class to access module properties    #
@@ -4473,7 +4463,7 @@ class MnModule:
 
 
 	# ------------------------------------------------------------------
-	# VS_VERSION_INFO parsing — inlined from windbglib so MnModule has
+	# VS_VERSIONINFO parsing — inlined from windbglib so MnModule has
 	# no dbglib dependency for OS-module detection.
 	# ------------------------------------------------------------------
 
@@ -5165,21 +5155,18 @@ class MnModule:
 	def getShortName(self):
 		return stripExtension(self.moduleKey)
 
-
-
 def getNtGlobalFlag():
 	_ensureMnProc(entities=["peb"])
 	flagoffset = 0x68
 	if arch == 64:
 		flagoffset = 0xBC
-	pebaddress = get_peb_addr()
+	pebaddress = MnPEB.get_address()
 	if mnproc.NtGlobalFlag == -1:
 		try:
 			mnproc.NtGlobalFlag = struct.unpack('<L',dbg.readMemory(pebaddress+flagoffset,4))[0]
 		except:
 			mnproc.NtGlobalFlag = 0
 	return mnproc.NtGlobalFlag
-
 
 def getNtGlobalFlagDefinitions():
 	definitions = {}
@@ -5228,8 +5215,6 @@ def getNtGlobalFlagDefinitions():
 	
 	return definitions
 
-
-
 def getNtGlobalFlagValues(flag):
 	allvalues = []
 	for defvalue in getNtGlobalFlagDefinitions():
@@ -5261,7 +5246,6 @@ def getNtGlobalFlagValueData(flagvalue):
 		toreturn = getNtGlobalFlagDefinitions()[flagvalue]
 	return toreturn
 
-
 def getActiveFlagNames(flagvalue):
 	currentflags = getNtGlobalFlagValues(flagvalue)
 	flagdefs = getNtGlobalFlagDefinitions()
@@ -5274,7 +5258,6 @@ def getActiveFlagNames(flagvalue):
 			flagnames.append(flagdata[0])
 	return ",".join(flagnames)
 
-
 def getNtGlobalFlagValueName(flagvalue):
 	data = getNtGlobalFlagValueData(flagvalue)
 	toreturn = ""
@@ -5285,7 +5268,6 @@ def getNtGlobalFlagValueName(flagvalue):
 	toreturn += " - "
 	toreturn += data[1]
 	return toreturn
-
 
 def getProcessHeapsInfo():
 	"""
@@ -5311,7 +5293,7 @@ def getProcessHeapsInfo():
 
 	# Read PEB address
 	try:
-		peb = get_peb_addr()
+		peb = MnPEB.get_address()
 	except:
 		return results
 
@@ -5362,7 +5344,6 @@ def getProcessHeapsInfo():
 			results["Unknown"][heapaddr] = {"index": idx, "nt_signature": nt_sig, "seg_signature": seg_sig}
 
 	return results
-
 
 def getNTSegmentInfo(heapbase, segaddr, segstart, segend, firstentry, lastentry):
 	"""
@@ -5435,7 +5416,6 @@ def getNTSegmentInfo(heapbase, segaddr, segstart, segend, firstentry, lastentry)
 		"max_free": max_free,
 	}
 
-
 def getNTHeapInfo(heapaddr):
 	"""
 	Enumerates Segments and VirtualAllocd Blocks for a single NT heap
@@ -5489,7 +5469,6 @@ def getNTHeapInfo(heapaddr):
 
 	return result
 
-
 def _lfh_contains(addr, lfh_ranges, lfh_starts):
 	"""Return True if addr falls within any cached LFH subsegment range."""
 	if not lfh_starts:
@@ -5498,7 +5477,6 @@ def _lfh_contains(addr, lfh_ranges, lfh_starts):
 	if idx >= 0:
 		return addr < lfh_ranges[idx][1]
 	return False
-
 
 def getLFHSubSegmentRanges(heapaddr):
 	"""
@@ -5613,7 +5591,6 @@ def getLFHSubSegmentRanges(heapaddr):
 
 	ranges.sort()
 	return ranges
-
 
 #---------------------------------------#
 #  Class for heap structures            #
@@ -7983,6 +7960,8 @@ class MnProc:
 		"PAGE_WRITECOMBINE": ["PAGE_WRITECOMBINE", 0x400],
 	}
 
+	_FE_NAMES = {0: "None", 1: "LAL", 2: "LFH"}
+
 	def __init__(self):
 		dbgp(get_current_function_name())
 
@@ -8000,7 +7979,8 @@ class MnProc:
 		self._is_populating_modules = False
 
 		# --- populated by populate() ---
-		self.peb = MnPEB()
+		self.peb = None
+		self.peb = self.getPEB()
 		self.teb = None
 		self.threads = {}      # {tid: MnTEB} — populated by getThreads()
 		self.modules = {}      # {name: {"base","top","size",...}} from g_modules
@@ -8008,6 +7988,27 @@ class MnProc:
 		self.heapinfo = {}     # from getProcessHeapsInfo(): {"NT":{}, "Segment":{}, "Unknown":{}}
 		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
 		self.defaultheap = 0   # default process heap address
+
+	def getPEB(self):
+		"""Return the cached MnPEB, populating if needed."""
+		if self.peb is None:
+			self.peb = MnPEB()
+		return self.peb
+
+	def getCurrentTEB(self):
+		"""Return the MnTEB for the current thread."""
+		addr = self.teb if self.teb else get_teb_addr()
+		if not addr:
+			return None
+		# Prefer the already-constructed instance from the threads cache
+		for mteb in self.threads.values():
+			if mteb.TEBAddress == addr:
+				return mteb
+		return MnTEB(addr, peb=self.peb)
+
+	def getTEBs(self):
+		"""Return a list of MnTEB objects for all threads in the process."""
+		return list(self.getThreads().values())
 
 	def getThreads(self):
 		"""
@@ -8035,7 +8036,6 @@ class MnProc:
 					"teb":   teb.TEBAddress,
 				}
 		return self.stacks
-		return self.threads
 
 	def getTEBForStackAddress(self, addr):
 		"""
@@ -8147,7 +8147,7 @@ class MnProc:
 		# PEB / TEB
 		if "peb" in selected and self.peb is None:
 			try:
-				self.peb = get_peb_addr()
+				self.peb = self.getPEB()
 			except:
 				pass
 		if "teb" in selected and self.teb is None:
@@ -8280,206 +8280,238 @@ class MnProc:
 		else:
 			return (0x210, 0x1000)
 
-	def getAllSorted(self):
-		"""
-		Return a unified view of all process structures sorted by start address.
-		Each item: (start, end, category, description)
+	# --- Private region-building helpers ---
 
-		Categories: "PEB", "TEB", "Module", "Stack", "Heap", "Heap Segment",
-		            "Heap VA Block"
-		"""
-		regions = []
-
-		# PEB / TEB
+	def _struct_sizes(self):
+		"""Return (peb_size, teb_size) for the current debugger and architecture."""
 		static = __DEBUGGERAPP__ == "Immunity Debugger"
-		if self.peb is not None:
-			peb_addr = self.peb.PEBAddress
-			peb_size = 0
-			if __DEBUGGERAPP__ == "WinDBG":
-				peb_size = dbg.getTypeSize("ntdll!_PEB")
-			elif static:
-				peb_size = self._getImmunityStructSizes()[0]
-			if peb_size == 0:
-				peb_size = archValue(0x480, 0x7C8)
-			# Get process ID from the first available thread's TEB
-			pid = ""
-			threads = self.getThreads()
-			if threads:
-				first_teb = next(iter(threads.values()))
-				pid = str(first_teb.ProcessId)
-			regions.append((peb_addr, peb_addr + peb_size, "PEB", "%s (PID: %s)" % (clickPEB("PEB"), pid), static))
-		# TEBs for all threads
-		teb_size = 0
 		if __DEBUGGERAPP__ == "WinDBG":
+			peb_size = dbg.getTypeSize("ntdll!_PEB")
 			teb_size = dbg.getTypeSize("ntdll!_TEB")
 		elif static:
-			teb_size = self._getImmunityStructSizes()[1]
+			peb_size, teb_size = self._getImmunityStructSizes()
+		else:
+			peb_size = teb_size = 0
+		if peb_size == 0:
+			peb_size = archValue(0x480, 0x7C8)
 		if teb_size == 0:
 			teb_size = archValue(0x1000, 0x1838)
+		return peb_size, teb_size
+
+	def _peb_entry(self, peb_size):
+		"""Return (start, end, "PEB", desc) from self.peb (MnPEB)."""
+		peb     = self.peb
 		threads = self.getThreads()
-		current_teb = get_teb_addr()
+		pid     = str(next(iter(threads.values())).ProcessId) if threads else ""
+		return (peb.PEBAddress, peb.PEBAddress + peb_size, "PEB",
+				"%s (PID: %s)" % (clickPEB("PEB"), pid))
+
+	def _teb_entry(self, tid, mteb, teb_size, current_teb_addr):
+		"""Return (start, end, "TEB", desc) from an MnTEB instance."""
+		teb_addr = mteb.TEBAddress
+		cur      = "*" if teb_addr == current_teb_addr else ""
+		if arch == 32:
+			desc = "%s%s (TID: %s | SEH Count: %s)" % (cur, clickTEB(teb_addr, "TEB"), str(mteb.Id), str(mteb.SEHCount))
+		else:
+			desc = "%s%s (TID: %s)" % (cur, clickTEB(teb_addr, "TEB"), str(mteb.Id))
+		return (teb_addr, teb_addr + teb_size, "TEB", desc)
+
+	def _stack_entry(self, tid, mteb, sinfo, stackaddy):
+		"""Return (start, end, "Stack", desc) for a thread's stack, using MnTEB.SEHChain."""
+		stack_low  = sinfo["limit"]
+		stack_high = sinfo["base"]
+		cur        = "*" if stack_low <= stackaddy <= stack_high else ""
+		seh_info   = ""
+		if arch == 32 and hasattr(mteb, "SEHChain") and len(mteb.SEHChain) > 0:
+			records, overwritten = _walkSehChain(mteb.SEHChain)
+			if overwritten:
+				smash_parts = []
+				for recaddr, odata in overwritten.items():
+					smashoffset = int(odata[1])
+					if odata[0] == "unicode":
+						smashoffset += 2
+					smash_parts.append("0x%s at offset %d%s" % (
+						toHex(recaddr), smashoffset,
+						" [unicode]" if odata[0] == "unicode" else ""))
+				seh_info = " | SEH: %d records, <b>SMASHED: %s</b>" % (len(records), "; ".join(smash_parts))
+			else:
+				seh_info = " | SEH: %d records" % len(records)
+		return (stack_low, stack_high, "Stack", "%sStack (TID: %s)%s" % (cur, tid, seh_info))
+
+	def _module_entry(self, mod):
+		"""Return (start, end, "Module", desc) from an MnModule instance."""
+		dispname = mod.moduleFilename or mod.internalname
+		if __DEBUGGERAPP__ == "WinDBG":
+			dispname = clickModuleName(dispname)
+		flags = [label for label, val in [
+			("ASLR", mod.isAslr), ("Rebase", mod.isRebase), ("SafeSEH", mod.isSafeSEH),
+			("NX", mod.isNX), ("CFG", mod.isCFG), ("OS", mod.isOS),
+		] if val]
+		flagstr = ", ".join(flags) if flags else "None"
+		return (mod.moduleBase, mod.moduleTop, "Module",
+				"%s (%s | %s)" % (dispname, flagstr, mod.modulePath))
+
+	def _heap_internals(self, heapaddr, htype, info):
+		"""
+		Return (heap_entry, seg_pairs, va_entries) for one heap.
+		  heap_entry : (start, end, "Heap", desc)
+		  seg_pairs  : [(seg_entry, [chunk_entries]), ...]
+		  va_entries : [(start, end, "Heap VA Block", desc), ...]
+		Returns (corrupted_entry, [], []) when the heap signature is invalid.
+		"""
+		idx      = info.get("index", "?")
+		heapname = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
+		if heapaddr == self.peb.ProcessHeap:
+			heapname = "[Default] " + heapname
+		mheap     = None
+		corrupted = False
+		try:
+			mheap     = MnHeap(heapaddr)
+			corrupted = mheap.isCorrupted()
+		except Exception:
+			corrupted = True
+		heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted and mheap else 0)
+		if corrupted:
+			return ((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heapname), [], [])
+		fe_label  = ""
+		seg_count = va_count = 0
+		if heapaddr in self.ntheapdetail:
+			fe_type   = self.ntheapdetail[heapaddr].get("frontend_type", 0)
+			fe_label  = " | FrontEnd: %s" % self._FE_NAMES.get(fe_type, "0x%x" % fe_type)
+			seg_count = len(self.ntheapdetail[heapaddr].get("segments", {}))
+			va_count  = len(self.ntheapdetail[heapaddr].get("va_blocks", {}))
+		heap_entry = (heapaddr, heap_end, "Heap",
+					  "%s (%s%s | Segments: %d | VA Blocks: %d)" % (heapname, htype, fe_label, seg_count, va_count))
+		seg_pairs  = []
+		va_entries = []
+		if heapaddr not in self.ntheapdetail:
+			return (heap_entry, seg_pairs, va_entries)
+		detail     = self.ntheapdetail[heapaddr]
+		hidx       = int(idx) if str(idx).isdigit() else 0
+		lfh_ranges = detail.get("lfh_ranges", [])
+		lfh_starts = [r[0] for r in lfh_ranges]
+		vaaddrs    = sorted(detail.get("va_blocks", {}).keys())
+		_all_seg_keys = list(detail["segments"].keys())
+		# Heap-as-segment (segaddr == heapaddr) is Segment00 on Vista+.
+		if heapaddr in detail["segments"]:
+			segaddrs = [heapaddr] + sorted(s for s in _all_seg_keys if s != heapaddr)
+		else:
+			segaddrs = sorted(_all_seg_keys)
+		_seg_idx = {s: j for j, s in enumerate(segaddrs)}
+		for i, segaddr in enumerate(segaddrs):
+			seg     = detail["segments"][segaddr]
+			segname = clickSegmentWinDBG(segaddr, "nt", "Segment%02d-%02d" % (i, hidx))
+			_flink  = seg.get("flink")
+			_blink  = seg.get("blink")
+			if _flink is not None:
+				flink = "0x%s (%s)" % (toHex(_flink), "Segment%02d-%02d" % (_seg_idx[_flink], hidx)) if _flink in _seg_idx else "None"
+			else:
+				flink = "0x%s (%s)" % (toHex(segaddrs[i + 1]), "Segment%02d-%02d" % (i + 1, hidx)) if i < len(segaddrs) - 1 else "None"
+			if _blink is not None:
+				blink = "0x%s (%s)" % (toHex(_blink), "Segment%02d-%02d" % (_seg_idx[_blink], hidx)) if _blink in _seg_idx else "None"
+			else:
+				blink = "0x%s (%s)" % (toHex(segaddrs[i - 1]), "Segment%02d-%02d" % (i - 1, hidx)) if i > 0 else "None"
+			chunk_info = ""
+			if "total_chunks" in seg:
+				chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
+					seg["total_chunks"], seg["busy_chunks"], seg["free_chunks"], seg["max_free"])
+			seg_entry     = (seg["base"], seg["end"], "Heap Segment",
+							 "%s (Heap: %s | FLink: %s | BLink: %s%s)" % (segname, heapname, flink, blink, chunk_info))
+			chunk_entries = []
+			if "chunks" in seg:
+				all_chunks = sorted(
+					(c["address"], c["size"], c["flag"], state, c["userptr"], c["usersize"])
+					for state, chunklist in seg["chunks"].items()
+					for c in chunklist
+				)
+				for ci, (caddr, csize, cflag, cstate, cuserptr, cusersize) in enumerate(all_chunks):
+					lfh_tag = " | LFH" if _lfh_contains(caddr, lfh_ranges, lfh_starts) else ""
+					cdesc   = "%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
+						"Chunk%04d-%03d-%02d" % (ci, i, hidx),
+						clickChunkPtr(cuserptr, cusersize), cusersize,
+						cstate, heapname, segname, cflag, lfh_tag)
+					chunk_entries.append((caddr, caddr + csize, "Heap Chunk", cdesc))
+			seg_pairs.append((seg_entry, chunk_entries))
+		for i, vaaddr in enumerate(vaaddrs):
+			va    = detail["va_blocks"][vaaddr]
+			vaend = vaaddr + va["commit_size"]
+			flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
+			blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
+			va_entries.append((vaaddr, vaend, "Heap VA Block",
+				"VirtualAllocdBlock%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
+					hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])))
+		return (heap_entry, seg_pairs, va_entries)
+
+	# --- Public view methods ---
+
+	def getAllSorted(self):
+		"""
+		Return a unified flat view of all process structures sorted by start address.
+		Each item: (start, end, category, description)
+		Categories: "PEB", "TEB", "Stack", "Module", "Heap", "Heap Segment", "Heap VA Block", "Heap Chunk"
+		"""
+		regions  = []
+		peb_size, teb_size = self._struct_sizes()
+		if self.peb is not None:
+			regions.append(self._peb_entry(peb_size))
+		current_teb_addr = get_teb_addr()
+		stackaddy        = dbg.getRegs().get(STACK_POINTER, 0)
+		threads          = self.getThreads()
+		stacks           = self.getStacks()
 		if threads:
 			for tid, mteb in threads.items():
-				teb_addr = mteb.TEBAddress
-				current_teb_indicator = "*" if teb_addr == current_teb else ""	
-				desc = "%s%s (TID: %s)" % (current_teb_indicator, clickTEB(teb_addr,"TEB"),str(mteb.Id))
-				if arch == 32:
-					desc = "%s%s (TID: %s | SEH Count: %s)" % (current_teb_indicator,clickTEB(teb_addr,"TEB"), str(mteb.Id), str(mteb.SEHCount))
-				regions.append((teb_addr, teb_addr + teb_size, "TEB", desc, static))
+				regions.append(self._teb_entry(tid, mteb, teb_size, current_teb_addr))
+				sinfo = stacks.get(tid)
+				if sinfo:
+					regions.append(self._stack_entry(tid, mteb, sinfo, stackaddy))
 		elif self.teb is not None:
-			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB", static))
-
-		# Modules
-		for name, props in self.modules.items():
-			dispname = props.get("filename") or name
-			if __DEBUGGERAPP__ == "WinDBG":
-				dispname = clickModuleName(dispname)
-			flags = []
-			if props.get("aslr"):
-				flags.append("ASLR")
-			if props.get("rebase"):
-				flags.append("Rebase")
-			if props.get("safeseh"):
-				flags.append("SafeSEH")
-			if props.get("nx"):
-				flags.append("NX")
-			if props.get("cfg"):
-				flags.append("CFG")
-			if props.get("os"):
-				flags.append("OS")
-			flagstr = ", ".join(flags) if flags else "None"
-			modpath = props.get("path", "")
-			dispname = "%s (%s | %s)" % (dispname, flagstr, modpath)
-			regions.append((props["base"], props["top"], "Module", dispname))
-
-		# Stacks
-		for tid, sinfo in self.stacks.items():
-			seh_info = ""
-			regs = dbg.getRegs()
-			stackaddy = 0
-			if STACK_POINTER in regs:
-				stackaddy = regs[STACK_POINTER]
-			stacklow = sinfo["limit"]
-			stackhigh = sinfo["base"]
-			current_stack_indicator = ""
-			if stackaddy >= stacklow and stackaddy <= stackhigh:
-				current_stack_indicator = "*"
-			if arch == 32:
-				threads = self.getThreads()
-				mteb = threads.get(tid)
-				if mteb and hasattr(mteb, "SEHChain") and len(mteb.SEHChain) > 0:
-					records, overwritten = _walkSehChain(mteb.SEHChain)
-					if len(overwritten) > 0:
-						smash_parts = []
-						for recaddr, odata in overwritten.items():
-							smashoffset = int(odata[1])
-							otype = odata[0]
-							if otype == "unicode":
-								smashoffset += 2
-							smash_parts.append("0x%s at offset %d%s" % (
-								toHex(recaddr), smashoffset,
-								" [unicode]" if otype == "unicode" else ""))
-						seh_info = " | SEH: %d records, <b>SMASHED: %s</b>" % (len(records), "; ".join(smash_parts))
-					else:
-						seh_info = " | SEH: %d records" % len(records)
-			dispname = "%sStack (TID: %s)%s" % (
-				current_stack_indicator, tid, seh_info)
-			regions.append((sinfo["limit"], sinfo["base"], "Stack", dispname))
-
-		# Heaps (base entries) + segments + VA blocks
-		fe_names = {0: "None", 1: "LAL", 2: "LFH"}
+			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB"))
+		for name in self.modules:
+			regions.append(self._module_entry(MnModule(name)))
 		for heapaddr, htype, info in self.getAllHeapsSorted():
-			idx = info.get("index", "?")
-			heapname = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
-			#heapname = "Heap %s" % idx
-			if heapaddr == self.peb.ProcessHeap:
-				heapname = "[Default] " + heapname
-			fe_label = ""
-			seg_count = 0
-			va_count = 0
-			# Check heap signature validity
-			corrupted = False
-			try:
-				mheap = MnHeap(heapaddr)
-				corrupted = mheap.isCorrupted()
-			except:
-				corrupted = True
-			heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted else 0)
-			if corrupted:
-				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heapname))
-				continue
-			if heapaddr in self.ntheapdetail:
-				fe_type = self.ntheapdetail[heapaddr].get("frontend_type", 0)
-				fe_label = " | FrontEnd: %s" % fe_names.get(fe_type, "0x%x" % fe_type)
-				seg_count = len(self.ntheapdetail[heapaddr].get("segments", {}))
-				va_count = len(self.ntheapdetail[heapaddr].get("va_blocks", {}))
-			regions.append((heapaddr, heap_end, "Heap", "%s (%s%s | Segments: %d | VA Blocks: %d)" % (heapname, htype, fe_label, seg_count, va_count)))
-
-			if heapaddr in self.ntheapdetail:
-				detail = self.ntheapdetail[heapaddr]
-				hidx = int(idx) if str(idx).isdigit() else 0
-				lfh_ranges = detail.get("lfh_ranges", [])
-				lfh_starts = [r[0] for r in lfh_ranges]
-				# Heap-as-segment (segaddr == heapaddr) is always Segment00 on Vista+
-				# because the heap structure IS the first segment.  Additional segments
-				# are sorted by address and numbered from 01 onward.
-				vaaddrs = sorted(detail.get("va_blocks", {}).keys())
-				_all_seg_keys = list(detail["segments"].keys())
-				if heapaddr in detail["segments"]:
-					segaddrs = [heapaddr] + sorted(s for s in _all_seg_keys if s != heapaddr)
-				else:
-					segaddrs = sorted(_all_seg_keys)
-				_seg_idx = {s: j for j, s in enumerate(segaddrs)}
-				for i, segaddr in enumerate(segaddrs):
-					seg = detail["segments"][segaddr]
-					segname = "Segment%02d-%02d" % (i, hidx)
-					segname = clickSegmentWinDBG(segaddr,"nt",segname)
-					_flink_addr = seg.get("flink")
-					_blink_addr = seg.get("blink")
-					if _flink_addr is not None:
-						flink = "0x%s (%s)" % (toHex(_flink_addr), "Segment%02d-%02d" % (_seg_idx[_flink_addr], hidx)) if _flink_addr in _seg_idx else "None"
-					else:
-						flink = "0x%s (%s)" % (toHex(segaddrs[i + 1]), "Segment%02d-%02d" % (i + 1, hidx)) if i < len(segaddrs) - 1 else "None"
-					if _blink_addr is not None:
-						blink = "0x%s (%s)" % (toHex(_blink_addr), "Segment%02d-%02d" % (_seg_idx[_blink_addr], hidx)) if _blink_addr in _seg_idx else "None"
-					else:
-						blink = "0x%s (%s)" % (toHex(segaddrs[i - 1]), "Segment%02d-%02d" % (i - 1, hidx)) if i > 0 else "None"
-					chunk_info = ""
-					if "total_chunks" in seg:
-						chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
-							seg["total_chunks"], seg["busy_chunks"], seg["free_chunks"], seg["max_free"])
-					desc = "%s (Heap: %s | FLink: %s | BLink: %s%s)" % (segname, heapname, flink, blink, chunk_info)
-					regions.append((seg["base"], seg["end"], "Heap Segment", desc))
-
-					# Individual chunks within this segment
-					if "chunks" in seg:
-						all_seg_chunks = []
-						for state, chunklist in seg["chunks"].items():
-							for c in chunklist:
-								all_seg_chunks.append((c["address"], c["size"], c["flag"], state, c["userptr"], c["usersize"]))
-						all_seg_chunks.sort(key=lambda x: x[0])
-						for ci, (caddr, csize, cflag, cstate, cuserptr, cusersize) in enumerate(all_seg_chunks):
-							cend = caddr + csize
-							chunkname = "Chunk%04d-%03d-%02d" % (ci, i, hidx)
-							in_lfh = _lfh_contains(caddr, lfh_ranges, lfh_starts)
-							lfh_tag = " | LFH" if in_lfh else ""
-							#cdesc = "%s (Heap: %s | %s | UserPtr: 0x%x | UserSize: 0x%x | State: %s | Flag: 0x%02x%s)" % (
-							#	chunkname, heapname, segname, cuserptr, cusersize, cstate, cflag, lfh_tag)
-							cdesc = "%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
-								chunkname, clickChunkPtr(cuserptr,cusersize), cusersize, cstate, heapname, segname, cflag, lfh_tag)
-							regions.append((caddr, cend, "Heap Chunk", cdesc))
-				for i, vaaddr in enumerate(vaaddrs):
-					va = detail["va_blocks"][vaaddr]
-					vaend = vaaddr + va["commit_size"]
-					flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
-					blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
-					desc = "VirtualAllocdBlock%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])
-					regions.append((vaaddr, vaend, "Heap VA Block", desc))
-
+			heap_entry, seg_pairs, va_entries = self._heap_internals(heapaddr, htype, info)
+			regions.append(heap_entry)
+			for seg_entry, chunk_entries in seg_pairs:
+				regions.append(seg_entry)
+				regions.extend(chunk_entries)
+			regions.extend(va_entries)
 		regions.sort(key=lambda x: x[0])
 		return regions
 
-
+	def getSortedByElement(self):
+		"""
+		Return a unified hierarchical view of all process structures sorted by start address.
+		Each item: (start, end, category, description, children)
+		Top categories: "PEB", "TEB", "Module", "Heap"
+		Children:
+		  - TEB  \u2192 [Stack]
+		  - Heap \u2192 [Heap Segment (\u2192 [Heap Chunk]), Heap VA Block]
+		"""
+		regions  = []
+		peb_size, teb_size = self._struct_sizes()
+		if self.peb is not None:
+			regions.append(self._peb_entry(peb_size) + ([],))
+		current_teb_addr = get_teb_addr()
+		stackaddy        = dbg.getRegs().get(STACK_POINTER, 0)
+		threads          = self.getThreads()
+		stacks           = self.getStacks()
+		for tid, mteb in threads.items():
+			children = []
+			sinfo = stacks.get(tid)
+			if sinfo:
+				children.append(self._stack_entry(tid, mteb, sinfo, stackaddy) + ([],))
+			regions.append(self._teb_entry(tid, mteb, teb_size, current_teb_addr) + (children,))
+		for name in self.modules:
+			regions.append(self._module_entry(MnModule(name)) + ([],))
+		for heapaddr, htype, info in self.getAllHeapsSorted():
+			heap_entry, seg_pairs, va_entries = self._heap_internals(heapaddr, htype, info)
+			children = (
+				[seg_entry + ([c + ([],) for c in chunk_entries],) for seg_entry, chunk_entries in seg_pairs] +
+				[va + ([],) for va in va_entries]
+			)
+			regions.append(heap_entry + (children,))
+		regions.sort(key=lambda x: x[0])
+		return regions
 
 
 #---------------------------------------#
@@ -9491,7 +9523,7 @@ class MnPointer:
 #  Various functions                    #
 #---------------------------------------#
 def getDefaultProcessHeap():
-	peb = get_peb_addr()
+	peb = MnPEB.get_address()
 	defprocheap = struct.unpack('<L',dbg.readMemory(peb+0x18,4))[0]
 	return defprocheap
 
@@ -21692,6 +21724,13 @@ def procLayout(args):
 	if "Heap Chunk" in show_categories:
 		include_chunks = True
 
+	# -s elements / -sort elements: use getSortedByElement (hierarchical, indents baked in)
+	# -s base / -sort base or default: use getAllSorted (flat, category-transition indents)
+	_sort_val   = args.get("s", args.get("sort", "base"))
+	if type(_sort_val).__name__.lower() == "bool":
+		_sort_val = "base"
+	element_mode = _sort_val.strip().lower() == "elements"
+
 	# Flush cache if -walk is specified
 	if "walk" in args:
 		resetGlobals()
@@ -21708,7 +21747,6 @@ def procLayout(args):
 	category_mappings["Heap VA Block"] = "!mona pl -f vablocks"
 	category_mappings["Heap Chunk"] = "!mona pl -f chunks"
 
-	_ensureMnProc()
 	populate_entities = set()
 	if "PEB" in show_categories:
 		populate_entities.add("peb")
@@ -21718,18 +21756,32 @@ def procLayout(args):
 		populate_entities.add("stacks")
 	if "Module" in show_categories:
 		populate_entities.add("modules")
-	if ("Heap" in show_categories) or ("Heap Segment" in show_categories) or ("Heap VA Block" in show_categories) or ("Heap Chunk" in show_categories):
+	if show_categories & {"Heap", "Heap Segment", "Heap VA Block", "Heap Chunk"}:
 		populate_entities.add("heaps")
 		populate_entities.add("defaultheap")
 		populate_entities.add("ntheapdetail")
 	if "Heap Chunk" in show_categories:
 		populate_entities.add("chunks")
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
-	mnproc.populate(include_chunks=include_chunks, entities=sorted(populate_entities))
-	regions = mnproc.getAllSorted()
-
-	# Filter regions
-	regions = [r for r in regions if r[2] in show_categories]
+	_ensureMnProc(entities=sorted(populate_entities), include_chunks=include_chunks)
+	
+	# Build the flat region list for display.
+	# element_mode uses getSortedByElement: the hierarchy is walked recursively and
+	# indentation is baked directly into the description string before filtering.
+	# flat mode uses getAllSorted: indentation is inferred from category transitions
+	# in the display loop below.
+	if element_mode:
+		_indent_by_level = ["", "  \\_ ", "    \\_ "]
+		def _flatten_hierarchical(items, level=0):
+			prefix = _indent_by_level[min(level, len(_indent_by_level) - 1)]
+			out = []
+			for s, e, cat, desc, children in items:
+				out.append((s, e, cat, prefix + desc))
+				out.extend(_flatten_hierarchical(children, level + 1))
+			return out
+		regions = [r for r in _flatten_hierarchical(mnproc.getSortedByElement()) if r[2] in show_categories]
+	else:
+		regions = [r for r in mnproc.getAllSorted() if r[2] in show_categories]
 
 	if len(regions) == 0:
 		dbg.log("No regions found!", highlight=1)
@@ -21752,26 +21804,22 @@ def procLayout(args):
 	prev_category = ""
 	for idx, region in enumerate(regions):
 		start, end, category, description = region[0], region[1], region[2], region[3]
-		static_size = region[4] if len(region) > 4 else False
-		if end > start:
-			size = end - start
-		else:
-			size = 0
-		psize = "(static) 0x%x" % size if static_size else "0x%x" % size
+		size  = end - start if end > start else 0
+		psize = "0x%x" % size
+		# In element_mode indentation is already baked into description; in flat mode
+		# infer it from category transitions so heap children are visually nested.
 		indent = ""
-		if category == "Heap":
-			in_heap_chain = True
-		elif category in ("Heap Segment", "Heap VA Block"):
-			if in_heap_chain:
+		if not element_mode:
+			# Infer visual nesting from category transitions (flat list has no
+			# explicit depth, so track heap chain state across iterations).
+			# Segments and VA Blocks sit at the same level as their Heap;
+			# only Chunks are indented to show they belong to a Segment.
+			if category in ("Heap", "Heap Segment", "Heap VA Block"):
+				in_heap_chain = True
+			elif category == "Heap Chunk":
 				indent = "  \\_ "
-		elif category == "Heap Chunk":
-			if prev_category in ("Heap Segment", "Heap Chunk"):
-				if in_heap_chain:
-					indent = "    \\_ "
-				else:
-					indent = "  \\_ "
-		else:
-			in_heap_chain = False
+			else:
+				in_heap_chain = False
 		prev_category = category
 		# Deduplicate truly identical (start, category) pairs (e.g. a segment
 		# walked twice). Different categories at the same start are kept
@@ -21839,7 +21887,7 @@ def procHeap(args):
 		allheaps = dbg.getHeapsAddress()
 	except:
 		allheaps = []
-	dbg.log("Peb : %s, NtGlobalFlag : 0x%08x" % (PTR_PRINT % get_peb_addr(),getNtGlobalFlag()))
+	dbg.log("Peb : %s, NtGlobalFlag : 0x%08x" % (PTR_PRINT % MnPEB.get_address(),getNtGlobalFlag()))
 	dbg.log("Heaps:")
 	dbg.log("------")
 	if len(allheaps) > 0:
@@ -23589,7 +23637,7 @@ def procPEB(args):
 	"""
 	Show the address of the PEB
 	"""
-	pebaddy = get_peb_addr()
+	pebaddy = MnPEB.get_address()
 	dbg.log("PEB is located at " + PTR_PRINT % pebaddy, address=pebaddy)
 	return
 
@@ -24038,7 +24086,6 @@ def procMacro(args):
 				dbg.log("[+] Done, deleted macro '%s'" % macroname)
 	return
 
-
 def procWrite(args):
 	"""
 	Write bytes to a destination address
@@ -24112,8 +24159,6 @@ def procWrite(args):
 		dbg.writeMemory(targetloc, bytestocopy)
 		dbg.log("[+] Done")
 	return
-
-
 
 def procEnc(args):
 	validencoders = ['alphanum']
@@ -24376,9 +24421,6 @@ def procString(args):
 			dbg.logLines(traceback.format_exc(),highlight=True)			
 	return
 
-
-
-
 def procBPSeh(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
@@ -24473,7 +24515,6 @@ def _walkSehChain(sehchain):
 		records[recaddress] = [nsehvalue, sehandler, funcname, recinfo]
 	return records, overwritten
 
-
 def procSehChain(self):
 	sehchain = dbg.getSehChain()
 	dbg.log("Nr of SEH records : %d" % len(sehchain))
@@ -24502,7 +24543,6 @@ def procSehChain(self):
 					overwrittenoffset += 2
 					dbg.log("[Junk * %d][nseh - walkover][unicode p/p/r][venetian alignment][shellcode][more junk if needed]" % overwrittenoffset)
 	return
-
 
 def procDumpLog(args):
 	logfile = ""
@@ -24662,7 +24702,6 @@ def procDumpLog(args):
 
 	return
 
-
 def procDumpObj(args):
 	addy = 0
 	levels = 0
@@ -24752,7 +24791,6 @@ def procDumpObj(args):
 
 	return
 
-
 # routine to copy bytes from one location to another
 def procCopy(args):
 	src = 0
@@ -24811,8 +24849,6 @@ def procCopy(args):
 			dbg.log("    *** %s" % str(e))
 			dbgp("    *** Traceback: %s" % traceback.format_exc())
 	return
-
-
 
 # unicode alignment routines written by floyd (http://www.floyd.ch, twitter: @floyd_ch)
 def procUnicodeAlign(args):
@@ -24911,7 +24947,6 @@ def procUnicodeAlign(args):
 					logfile.write("",thislog)
 	return alignresults
 
-
 def prepareAlignment(leaks, address, bufferRegister, timeToRun, registers):
 
 	def getRegister(registerName):
@@ -24997,7 +25032,6 @@ def prepareAlignment(leaks, address, bufferRegister, timeToRun, registers):
 	alignresults = generateAlignment(address, bufferRegister, registers, timeToRun, prefix, postfix, additionalLength)
 
 	return alignresults
-
 
 def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, prefix, postfix, additionalLength):
 
@@ -25292,7 +25326,6 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 	return alignresults
 # end unicode alignment routines
 
-
 def procHeapCookie(args):
 	# first find all writeable pages
 	allpages = dbg.getMemoryPages()
@@ -25364,7 +25397,6 @@ def procHeapCookie(args):
 		dbg.log("Bad luck, no results.")			
 	return
 
-
 def procFlags(args):
 	currentflag = getNtGlobalFlag()
 	dbg.log("[+] NtGlobalFlag: 0x%08x" % currentflag)
@@ -25375,7 +25407,6 @@ def procFlags(args):
 		for flagvalue in flagvalues:
 			dbg.log("    0x%08x : %s" % (flagvalue,getNtGlobalFlagValueName(flagvalue)))
 	return
-
 
 def procEval(args):
 	# put all args together
@@ -25398,9 +25429,6 @@ def procEval(args):
 	else:
 		dbg.log("    *** No expression found***")	
 	return
-
-
-
 
 def procSym(args):
 	"""Manage symbols: list status, fetch from server, or clean cache. WinDBG only."""
@@ -25425,7 +25453,6 @@ def procSym(args):
 		dbg.log("    -l / -list   : Show symbol availability for all modules")
 		dbg.log("    -f / -fetch  : Download symbols from symbol server")
 		dbg.log("    -c / -clean  : Remove .error files from symbol cache folders")
-
 
 def _sym_list(args):
 	modulecriteria = {}
@@ -25518,7 +25545,6 @@ def _sym_list(args):
 	dbg.log("")
 	dbg.log("[+] Cached: %d | Missing: %d | Total: %d" % (found_count, missing_count, found_count + missing_count))
 
-
 def _http_fetch_symbol(pdbname, guidage, cache_dir, servers):
 	"""Download a PDB from a symbol server via HTTP.
 
@@ -25573,7 +25599,6 @@ def _http_fetch_symbol(pdbname, guidage, cache_dir, servers):
 			continue
 
 	return False, "", "Not found on any server"
-
 
 def _sym_load(args):
 	modulecriteria = {}
@@ -25697,7 +25722,6 @@ def _sym_load(args):
 	dbg.log("")
 	dbg.log("[+] Loaded: %d | Failed: %d | Total: %d" % (loaded, failed, loaded + failed))
 
-
 def _sym_clean(args):
 	folders_to_clean = []
 	seen_folders = set()
@@ -25757,7 +25781,6 @@ def _sym_clean(args):
 		dbg.log("[+] Total space recovered: %.2f Mb" % (float(total_recovered) / (1024.0 * 1024.0)))
 	
 	dbg.log("=" * 60)
-
 
 def procChangeACL(args):
 	size = 1
@@ -25819,7 +25842,6 @@ def procChangeACL(args):
 		else:
 			dbg.log("[+] No changes needed")
 	return
-
 
 def procToBp(args):
 	"""
@@ -25941,7 +25963,6 @@ def procToBp(args):
 		dbg.log("> Breakpoint set at 0x%08x" % addy)
 	return
 
-
 def procAllocMem(args):
 	size = 0x1000
 	addy = 0
@@ -26062,9 +26083,8 @@ def procAllocMem(args):
 			dbg.log("[+] Wrote %d times \\x%s to chunk at %s" % (written,bin2hex(fillbyte),PTR_PRINT % addy))
 	return
 
-
-def procHideDebug(args):
-	peb = get_peb_addr()			
+def procHideDebug(args): #bananas bananas
+	peb = MnPEB.get_address()
 	dbg.log("[+] Patching PEB (0x%08x)" % peb)
 	if peb == 0:
 		dbg.log("** Unable to find PEB **")
@@ -26772,7 +26792,14 @@ DEP Bypass options :
 	proclayoutUsage = """Show a unified process memory layout map (PEB, TEB, modules, stacks, heaps)
 
 Optional arguments:
-    -a      : Show all region types (including chunks and VA blocks)
+    -a         : Show all region types (including chunks and VA blocks)
+    -s <mode>  : Sort/layout mode. Valid values:
+                   base    (default) Flat list sorted by address; heap nesting is
+                                     inferred from category order (getAllSorted).
+                   elements          Hierarchical layout; indentation reflects explicit
+                                     parent/child relationships — TEB→Stack,
+                                     Heap→Segment→Chunk (getSortedByElement).
+                 Example: -s elements
     -f <types> : Filter by comma-separated types to display
                  Valid types: peb, teb, mod, stack, heap, chunks, vablocks, all
                  Each type expands to include related regions:
@@ -26784,11 +26811,11 @@ Optional arguments:
                  Example: -f "chunks"  (shows heaps, segments and chunks)
                  Example: -f "all"     (same as -a)
                When no -f is provided, detailed chunks and vablocks are hidden
-    -t <type>  : Add individual types to the default output 
+    -t <type>  : Add individual types to the default output
                  Example: -t vablocks
 				 (this is the equivalent of -f "peb,teb,mod,stack,heap,vablocks")
 
-Use -a to show everything, or -f to pick specific types."""
+Use -a to show everything, -f to pick specific types, or -s elements for hierarchical mode."""
 	
 	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
 
