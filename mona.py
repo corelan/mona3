@@ -26273,14 +26273,15 @@ def getBanner():
 def procHelp(args, helpForCommand=None):
 	global commands
 	global scriptname
-	dbg.log("    'mona' - Exploit Development Swiss Army Knife - %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
-	dbg.log("    Plugin version : %s r%s" % (__VERSION__,__REV__))
-	dbg.log("    Python version : %s" % (getPythonVersion()))
+	dbg.log("    mona.py - Exploit Development Swiss Army Knife")
+	dbg.log("    Debugger        : %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
+	dbg.log("    Plugin version  : %s r%s" % (__VERSION__,__REV__))
+	dbg.log("    Python version  : %s" % (getPythonVersion()))
 	if __DEBUGGERAPP__ == "WinDBG":
 		pykdversion = dbg.getPyKDVersionNr()
-		dbg.log("    PyKD version <b>%s</b>" % pykdversion)
+		dbg.log("    PyKD version    : %s" % pykdversion)
 		if g_keystoneLoaded:
-			dbg.log("    keystone-engine version : <b>%s</b> " % (keystone.__version__))
+			dbg.log("    keystone-engine : %s" % (keystone.__version__))
 	dbg.log("    Written by Corelan - https://www.corelan.be")
 	dbg.log("    Project page : https://github.com/corelan/mona3")
 	dbg.logLines(getBanner(),highlight=1)
