@@ -168,6 +168,7 @@ MemoryPageACL={}
 disasmLowerChecked = False
 disasmIsLower = False
 configFileCache = {}
+CFGTableCache = {}
 configwarningshown = False
 _excluded_modules_list = None
 ptr_counter = 0
@@ -517,7 +518,7 @@ def checkKeystone():
 		return True 
 
 
-def interruptMona():
+def interruptMona(cleanup = False):
 	"""
 	Stops mona when a user-created interrupt file is present next to mona.py.
 	"""
@@ -535,10 +536,11 @@ def interruptMona():
 				os.remove(interrupt_path)
 			except Exception:
 				pass
-			dbg.log("")
-			dbg.log("[!] Script interrupted by user intervention, file found: %s" % interrupt_path, highlight=True)
-			dbg.log("")
-			sys.exit(0)
+			if not cleanup:
+				dbg.log("")
+				dbg.log("[!] Script interrupted by user intervention, file found: %s" % interrupt_path, highlight=True)
+				dbg.log("")
+				sys.exit(0)
 
 
 def resetGlobals():
@@ -550,11 +552,13 @@ def resetGlobals():
 	global disasmLowerChecked
 	global mnproc
 	global _excluded_modules_list
+	global CFGTableCache
 
 	mnproc = None
 	currentArgs = None
 	disasmLowerChecked = False
 	_excluded_modules_list = None
+	CFGTableCache = {}
 	return
 
 
@@ -4154,6 +4158,72 @@ class MnModule:
 	_DD_DEBUG       = 6
 	_DD_LOAD_CONFIG = 10
 
+	class CFGTableEntry:
+		def __init__(self, rva=0, flag_byte=0, flags=None, module_base=0):
+			self.rva = rva
+			self.va = module_base + rva if module_base else rva
+			self.flag_byte = flag_byte
+			self.flags = flags or []
+			self.flags_text = ", ".join(self.flags) if self.flags else "-"
+
+	class CFGTable:
+		def __init__(self, module_base=0):
+			self.module_base = module_base
+			self.cfg_check_fp = 0
+			self.cfg_dispatch_fp = 0
+			self.cfg_table_va = 0
+			self.cfg_count = 0
+			self.guard_flags = 0
+			self.guard_flag_names = []
+			self.entry_size = 0
+			self.extra_size = 0
+			self.entries = []
+			self.bucket_maps = {}
+
+		def reset(self, module_base=None):
+			if module_base is not None:
+				self.module_base = module_base
+			self.cfg_check_fp = 0
+			self.cfg_dispatch_fp = 0
+			self.cfg_table_va = 0
+			self.cfg_count = 0
+			self.guard_flags = 0
+			self.guard_flag_names = []
+			self.entry_size = 0
+			self.extra_size = 0
+			self.entries = []
+			self.bucket_maps = {}
+
+		def add_entry(self, rva, flag_byte, flags):
+			self.entries.append(MnModule.CFGTableEntry(rva, flag_byte, flags, self.module_base))
+
+		def get_bucket_map(self, granularity=16):
+			if granularity in self.bucket_maps:
+				return self.bucket_maps[granularity]
+
+			buckets = {}
+			module_base = self.module_base
+
+			for entry in self.entries:
+				entry_va = entry.va
+				if module_base and entry_va < module_base:
+					entry_va = module_base + entry_va
+
+				bucket = entry_va // granularity
+				if bucket not in buckets:
+					buckets[bucket] = []
+
+				buckets[bucket].append(entry)
+
+			self.bucket_maps[granularity] = buckets
+			return buckets
+
+		def __len__(self):
+			return len(self.entries)
+
+		def __iter__(self):
+			return iter(self.entries)
+
 	def __init__(self, modulename):
 		#if DEBUG_MODE:
 		dbgp(get_current_function_name())
@@ -4401,8 +4471,6 @@ class MnModule:
 								break
 				except Exception:
 					modisos = False
-	
-
 		else:
 			# should never be hit
 			return None
@@ -4470,12 +4538,248 @@ class MnModule:
 
 		self.modulePdbGuidAge = mpdbguidage
 
+		self.moduleCFGTable = MnModule.CFGTable(self.moduleBase)
+
+
+	def getCFGTable(self):
+
+		global CFGTableCache
+		module_key = self.moduleKey or self.internalname
+		if module_key in CFGTableCache:
+			self.moduleCFGTable = CFGTableCache[module_key]
+			dbgp("Returning CFG Table for %s from cache" % module_key)
+			return self.moduleCFGTable
+
+		dbgp("Creating CFG Table for %s from memory" % module_key)
+		
+		cfg_table = self.moduleCFGTable
+		cfg_table.reset(self.moduleBase)
+
+		def parse_cfg_flags(flag_byte):
+			flags = []
+
+			if flag_byte & IMAGE_GUARD_FLAG_FID_SUPPRESSED:
+				flags.append("FID_SUPPRESSED")
+
+			if flag_byte & IMAGE_GUARD_FLAG_EXPORT_SUPPRESSED:
+				flags.append("EXPORT_SUPPRESSED")
+
+			if flag_byte & IMAGE_GUARD_FLAG_FID_LANGEXCPTHANDLER:
+				flags.append("LANGEXCPTHANDLER")
+
+			if flag_byte & IMAGE_GUARD_FLAG_FID_XFG:
+				flags.append("XFG")
+
+			if not flags:
+				flags.append("-")
+
+			return flags
+
+		def _u32(data):
+			return struct.unpack("<I", _to_bytes(data[:4]))[0]
+
+		# CFG detail — parse IMAGE_LOAD_CONFIG_DIRECTORY from memory
+		GUARD_FLAGS = [
+			(0x00000100, "CF_INSTRUMENTED",              "module performs CF checks"),
+			(0x00000200, "CFW_INSTRUMENTED",             "module performs CF + write checks"),
+			(0x00000400, "CF_FUNCTION_TABLE_PRESENT",    "guard function table present"),
+			(0x00000800, "SECURITY_COOKIE_UNUSED",       "security cookie not used by CF"),
+			(0x00001000, "PROTECT_DELAYLOAD_IAT",        "delay-load IAT protected"),
+			(0x00002000, "DELAYLOAD_IAT_IN_OWN_SECTION", "delay-load IAT in its own section"),
+			(0x00004000, "CF_EXPORT_SUPPRESSION_PRESENT","export suppression info present"),
+			(0x00008000, "CF_ENABLE_EXPORT_SUPPRESSION", "export suppression enabled"),
+			(0x00010000, "CF_LONGJUMP_TABLE_PRESENT",    "longjmp targets table present"),
+			(0x00020000, "RF_INSTRUMENTED",              "retpoline instrumented"),
+			(0x00040000, "RF_ENABLE",                    "retpoline enabled"),
+			(0x00080000, "RF_STRICT",                    "retpoline strict mode"),
+			(0x00100000, "RETPOLINE_PRESENT",            "retpoline present"),
+			(0x00200000, "EH_CONTINUATION_TABLE_PRESENT","EH continuation table present"),
+			(0x00800000, "XFG_ENABLED",                  "eXtended Flow Guard (XFG) enabled"),
+			(0x01000000, "CASTGUARD_PRESENT",            "CastGuard present"),
+			(0x02000000, "MEMKM_PRESENT",                "MemKM present"),
+		]
+
+		IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK  = 0xF0000000
+		IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT = 28
+
+		IMAGE_GUARD_FLAG_FID_SUPPRESSED          = 0x01
+		IMAGE_GUARD_FLAG_EXPORT_SUPPRESSED       = 0x02
+		IMAGE_GUARD_FLAG_FID_LANGEXCPTHANDLER    = 0x04
+		IMAGE_GUARD_FLAG_FID_XFG                 = 0x08
+
+		try:
+			pe_off2   = struct.unpack('<L', dbg.readMemory(self.moduleBase + 0x3c, 4))[0]
+			pe_base2  = self.moduleBase + pe_off2
+			magic2    = struct.unpack('<H', dbg.readMemory(pe_base2 + 0x18, 2))[0]
+			is_pe64_2 = (magic2 == 0x20b)
+			# IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10
+			if is_pe64_2:
+				dd_off2 = pe_base2 + 0x18 + 0x70   # PE32+ optional header DataDirectory
+			else:
+				dd_off2 = pe_base2 + 0x18 + 0x60   # PE32 optional header DataDirectory
+			lc_rva2  = struct.unpack('<L', dbg.readMemory(dd_off2 + 8 * 10,     4))[0]
+			lc_size2 = struct.unpack('<L', dbg.readMemory(dd_off2 + 8 * 10 + 4, 4))[0]
+			if lc_rva2 and lc_size2:
+				lc = self.moduleBase + lc_rva2
+				# Read the struct's own Size DWORD (first field) — more reliable than DataDirectory size
+				lc_struct_size = struct.unpack('<L', dbg.readMemory(lc, 4))[0]
+				if is_pe64_2:
+					# IMAGE_LOAD_CONFIG_DIRECTORY64 offsets
+					# GuardFlags at lc+0x80, last CFG field ends at lc+0x84
+					min_cfg_size = 0x84
+					if lc_struct_size >= min_cfg_size:
+						cfg_check_fp   = struct.unpack('<Q', dbg.readMemory(lc + 0x60, 8))[0]
+						cfg_dispatch_fp= struct.unpack('<Q', dbg.readMemory(lc + 0x68, 8))[0]
+						cfg_table_va   = struct.unpack('<Q', dbg.readMemory(lc + 0x70, 8))[0]
+						cfg_count      = struct.unpack('<Q', dbg.readMemory(lc + 0x78, 8))[0]
+						guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x80, 4))[0]
+					else:
+						cfg_check_fp = cfg_dispatch_fp = cfg_table_va = cfg_count = guard_flags = None
+				else:
+					# IMAGE_LOAD_CONFIG_DIRECTORY32 offsets
+					# GuardCFFunctionCount is DWORD (not ULONGLONG) in 32-bit struct
+					# GuardFlags at lc+0x58, last CFG field ends at lc+0x5c
+					min_cfg_size = 0x5c
+					if lc_struct_size >= min_cfg_size:
+						cfg_check_fp   = struct.unpack('<L', dbg.readMemory(lc + 0x48, 4))[0]
+						cfg_dispatch_fp= struct.unpack('<L', dbg.readMemory(lc + 0x4c, 4))[0]
+						cfg_table_va   = struct.unpack('<L', dbg.readMemory(lc + 0x50, 4))[0]
+						cfg_count      = struct.unpack('<L', dbg.readMemory(lc + 0x54, 4))[0]
+						guard_flags    = struct.unpack('<L', dbg.readMemory(lc + 0x58, 4))[0]
+					else:
+						cfg_check_fp = cfg_dispatch_fp = cfg_table_va = cfg_count = guard_flags = None
+				if not guard_flags is None:
+					set_gflags = [(bit, name, desc) for bit, name, desc in GUARD_FLAGS if guard_flags & bit]
+					cfg_table.cfg_check_fp = cfg_check_fp or 0
+					cfg_table.cfg_dispatch_fp = cfg_dispatch_fp or 0
+					cfg_table.cfg_table_va = cfg_table_va or 0
+					cfg_table.cfg_count = cfg_count or 0
+					cfg_table.guard_flags = guard_flags or 0
+					cfg_table.guard_flag_names = [name for bit, name, desc in set_gflags]
+					dbgp("   GuardFlags       : 0x%08x" % guard_flags)
+					for bit, name, desc in set_gflags:
+						dbgp("     [+] %-40s %s" % (name, desc))
+					if cfg_count:
+						if arch == 64:
+							dbgp("   CFG table        : 0x%016x  (%d entries)" % (cfg_table_va, cfg_count))
+							dbgp("   CF check fptr    : 0x%016x" % cfg_check_fp)
+							dbgp("   CF dispatch fptr : 0x%016x" % cfg_dispatch_fp)
+						else:
+							dbgp("   CFG table        : 0x%08x  (%d entries)" % (cfg_table_va, cfg_count))
+							dbgp("   CF check fptr    : 0x%08x" % cfg_check_fp)
+							dbgp("   CF dispatch fptr : 0x%08x" % cfg_dispatch_fp)
+
+						# read the entires in the table
+						extra_size = (guard_flags & IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK) >> IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT
+						entry_size = 4 + extra_size
+
+						if entry_size < 4:
+							entry_size = 4
+
+						cfg_table.extra_size = extra_size
+						cfg_table.entry_size = entry_size
+
+						total_size = cfg_count * entry_size
+						content = dbg.readMemory(cfg_table_va, total_size)
+						content = _to_bytes(content)
+
+						dbgp("CFG Table content: %d bytes" % len(content))
+
+						#print("[+] CFG function table")
+						#print("    Table VA    : 0x%08x" % cfg_table_va)
+						#print("    Image base  : 0x%08x" % self.moduleBase)
+						#print("    Entries     : %d" % cfg_count)
+						#print("    Entry size  : %d" % entry_size)
+						#print("")
+
+						for i in range(cfg_count):
+							off = i * entry_size
+							entry = content[off:off + entry_size]
+							#dbgp("  %s" % bin2hex(entry))
+
+							if len(entry) < 4:
+								break
+
+							rva = _u32(entry)
+							va = self.moduleBase + rva
+
+							flag_byte = 0
+							flags = ["-"]
+
+							if entry_size > 4 and len(entry) > 4:
+								flag_byte = struct.unpack("B", _to_bytes(entry[4:5]))[0]
+								flags = parse_cfg_flags(flag_byte)
+
+							cfg_table.add_entry(rva, flag_byte, flags)
+
+					CFGTableCache[module_key] = cfg_table
+					dbgp("Added CFGTable to cache for module %s" % module_key)
+					return cfg_table
+				
+				CFGTableCache[module_key] = cfg_table
+			return cfg_table
+
+		except Exception as e:
+			dbgp("Error - unable to get CFG Table for module %s: %s" % (module_key, str(e)))
+			CFGTableCache[module_key] = cfg_table
+			return cfg_table
+
+
+	def checkCFGCompatible(self, ptr, granularity=16, return_entry=False):
+		"""
+		Check whether ptr is likely CFG-compatible for this module.
+
+		ptr:
+			Address of the gadget / target you want to test.
+
+		granularity:
+			CFG bitmap granularity. 16 is the practical default.
+
+		return_entry:
+			If True, return (bool, matching_entry).
+			If False, return bool.
+
+		Important:
+			This is a static approximation based on the GuardCFFunctionTable.
+			Runtime CFG uses a bitmap, so addresses in the same bitmap slot as a
+			valid CFG target may pass, even if they are not exact table entries.
+		"""
+
+		if not ptr:
+			return (False, None) if return_entry else False
+
+		cfg_table = self.moduleCFGTable
+		if not cfg_table or not cfg_table.entries:
+			cfg_table = self.getCFGTable()
+
+		if not cfg_table or not cfg_table.entries:
+			return (False, None) if return_entry else False
+
+		module_base = self.moduleBase or cfg_table.module_base
+		cfg_bucket_map = cfg_table.get_bucket_map(granularity)
+
+		# Normalize ptr to VA.
+		# If ptr looks like an RVA, convert it to VA.
+		if module_base and ptr < module_base:
+			ptr_va = module_base + ptr
+		else:
+			ptr_va = ptr
+
+		ptr_bucket = ptr_va // granularity
+		entries = cfg_bucket_map.get(ptr_bucket, [])
+		if entries:
+			return (True, entries[0]) if return_entry else True
+
+		return (False, None) if return_entry else False
+
 
 
 	# ------------------------------------------------------------------
 	# VS_VERSION_INFO parsing — inlined from windbglib so MnModule has
 	# no dbglib dependency for OS-module detection.
 	# ------------------------------------------------------------------
+
+
 
 	class _FixedFileInfo:
 		"""Mirrors VS_FIXEDFILEINFO (winver.h). Signature must be 0xFEEF04BD."""
@@ -11328,7 +11632,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	filestouse = []
 	vplogtxt = ""
 	suggestions = {}
+	bypasscfg = False
 
+	if "cfg" in criteria:
+		bypasscfg = criteria["cfg"]
 	if "f" in criteria:
 		if criteria["f"] != "":
 			if type(criteria["f"]).__name__.lower() != "bool":		
@@ -11363,7 +11670,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		if len(modulestosearch) == 0:
 			dbg.log("[-] No modules selected, aborting search", highlight = 1)
 			return
-
+		if bypasscfg:
+			dbg.log("[+] Identify valid CFG target gadgets")
 		dbg.log("[+] Enumerating %d endings in %d module(s)..." % (len(search),len(modulestosearch)))
 		for thismodule in modulestosearch:
 			dbg.log("    - Querying module %s" % thismodule)
@@ -11412,6 +11720,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	dbg.updateLog()
 	ropgadgets = {}
 	interestinggadgets = {}
+	valid_cfg_target_gadgets = {}
 	stackpivots = {}
 	stackpivots_safeseh = {}
 	adcnt = 0
@@ -11474,6 +11783,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					currentmodulename = MnPointer(thisptr).belongsTo()
 					modinfo = MnModule(currentmodulename)
 					issafeseh = modinfo.isSafeSEH
+					iscfg = modinfo.isCFG
+					dbgp("Enumerating gadgets from module %s. CFG: %s" % (currentmodulename, str(iscfg)))
 
 					while startptr <= endingtypeptr and startptr != 0x0:
 
@@ -11484,6 +11795,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							thisopcodebytes = ""
 							chainptr = startptr
 							if isGoodGadgetPtr(startptr,criteria): 
+								if bypasscfg and iscfg:
+									# only allow CFG Compatible pointers 
+									cfg_compatible_pointer = modinfo.checkCFGCompatible(startptr)
+									dbgp("Is %s CFG compatible? %s " % (PTR_PRINT % startptr, cfg_compatible_pointer))
+										
 								# only lookup if it's a good gadget
 								if not startptr in ropgadgets and not startptr in interestinggadgets:
 									#if DEBUG_MODE:
@@ -11540,11 +11856,15 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								
 											ropgadgets[startptr] = fullchain
 											dbgp("Added %s to ropgadgets " % (PTR_PRINT % startptr))
+											if bypasscfg:
+												valid_cfg_target_gadgets[startptr] = fullchain
+												dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
 
 							startptr = startptr+1
 						except Exception as ropex:
 							dbgp("Error while looking for gadgets: %s" % str(ropex))
 							dbgp(traceback.format_exc())
+							interruptMona()
 							continue
 				else:
 					if step == 0:
@@ -11590,7 +11910,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	dbg.updateLog()
 	dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
 	dbgp("Final Number of stackpivots: %d" % len(stackpivots))
-	dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
+	dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))
+	dbgp("Final Number of valid CFG target gadgets: %d" % len(valid_cfg_target_gadgets))			
 
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
@@ -11739,6 +12060,40 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				fh.write("\n")
 			nrsugg = len(suggtowrite.split("\n"))
 			dbg.log("    Wrote %d suggestions to file" % nrsugg)
+
+
+		if bypasscfg:
+			logfile = MnLog("rop_cfg.txt")
+			thislog = logfile.reset()
+			objprogressfile.write("Gathering CFG Compatible targets", progressfile)
+			dbg.log("")
+			dbg.log("[+] Writing results to file " + thislog + " (" + str(len(valid_cfg_target_gadgets))+" cfg compatible target gadgets)")
+			logfile.write("CFG Compatible target gadgets",thislog)
+			logfile.write("-----------------------------",thislog)
+			dbg.updateLog()
+			try:
+				with open(thislog, "a") as fh:
+					arrtowrite = ""
+					flipover = 0
+					gcount = 0
+					startmoment = time.time()
+					for gadget in valid_cfg_target_gadgets:
+						ptrx = MnPointer(gadget)
+						modname = ptrx.belongsTo()
+						ptrinfo = "0x" + toHex(gadget) + " : " + valid_cfg_target_gadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
+						arrtowrite += ptrinfo
+						flipover += 1
+						gcount += 1
+						if flipover > 5000:
+							eta = get_eta(startmoment, gcount , len(valid_cfg_target_gadgets))
+							dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(valid_cfg_target_gadgets)))
+							flipover = 0
+					objprogressfile.write("Writing results to file " + thislog + " (" + str(len(valid_cfg_target_gadgets))+" CFG Compatible target gadgets)",progressfile)
+					fh.writelines(arrtowrite)
+				dbg.log("    Wrote %d CFG Compatible target gadgets to file" % len(valid_cfg_target_gadgets))
+			except:
+				pass
+			
 
 		if not split:
 			logfile = MnLog("rop.txt")
@@ -18396,6 +18751,13 @@ def procModuleInfo(args):
 		return
 
 	p = mnproc.g_modules[target_key]
+	thismod = MnModule(target_key)
+	isCFG = getModuleProperty(target_key, "cfg")
+	if isCFG:
+		cfgTable = thismod.getCFGTable()
+		if len(cfgTable) > 0:
+			dbgp("Module %s is CFG Enabled. Table at %s, %d entries" % (target_key, PTR_PRINT % cfgTable.cfg_table_va, cfgTable.cfg_count))
+
 	base     = p["base"]
 	top      = p["top"]
 	size     = p["size"]
@@ -18804,6 +19166,7 @@ def procROP(args,mode="all"):
 	split = False
 	fast = False
 	sortedprint = False
+	bypasscfg = False
 	endingstr = ""
 	endings = []
 	technique = ""            
@@ -18832,6 +19195,9 @@ def procROP(args,mode="all"):
 	if "split" in args:
 		if type(args["split"]).__name__.lower() == "bool":
 			split = args["split"]
+
+	if "cfg" in args:
+		bypasscfg = True
 
 	if "s" in args:
 		if type(args["s"]).__name__.lower() != "bool":
@@ -18862,6 +19228,8 @@ def procROP(args,mode="all"):
 		split = False
 	else:
 		mode = "all"
+
+	criteria["cfg"] = bypasscfg
 	
 	findROPGADGETS(modulecriteria,criteria,endings,maxoffset,depth,split,thedistance,fast,mode,sortedprint,technique)
 	
@@ -26481,18 +26849,20 @@ Mandatory argument (one of):
 
 	ropUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
-    -offset <value> : define the maximum offset for RET instructions (integer, default : 40)
-    -distance <value> : define the minimum distance for stackpivots (integer, default : 8).
-                        If you want to specify a min and max distance, set the value to min,max
-    -depth <value> : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 6)
-    -split : write gadgets to individual files, grouped by the module the gadget belongs to
-    -fast : skip the 'non-interesting' gadgets
-    -end <instruction(s)> : specify one or more instructions that will be used as chain end. 
-                               (Separate instructions with #). Default ending is RETN
-    -f \"file1,file2,..filen\" : use mona generated rop files as input instead of searching in memory
-    -rva : use RVA's in rop chain
-    -s <technique> : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
-    -sort : sort the output in rop.txt (sort on pointer value)"""
+    -offset <value>             : define the maximum offset for RET instructions (integer, default : 40)
+    -distance <value>           : define the minimum distance for stackpivots (integer, default : 8).
+                                  If you want to specify a min and max distance, set the value to min,max
+    -depth <value>              : define the maximum nr of instructions (not ending instruction) in each gadget (integer, default : 6)
+    -split                      : write gadgets to individual files, grouped by the module the gadget belongs to
+    -fast                       : skip the 'non-interesting' gadgets
+    -cfg                        : Identify valid CFG target gadgets and write them to a separate output file
+                                 (this may slow down the overall process a bit)
+    -end <instruction(s)>       : specify one or more instructions that will be used as chain end. 
+                                 (Separate instructions with #). Default ending is RETN
+    -f \"file1,file2,..filen\"  : use mona generated rop files as input instead of searching in memory
+    -rva                        : use RVA's in rop chain
+    -s <technique>              : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
+    -sort                       : sort the output in rop.txt (sort on pointer value)"""
 	
 	jopUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
@@ -27318,6 +27688,8 @@ def main(args):
 	global commands
 	global DEBUG_MODE
 	commands = {}
+	# remove a stop file if it exists
+	interruptMona(cleanup=True)
 
 	currentArgs = copy.copy(args)
 	if ("-debug" in args):
