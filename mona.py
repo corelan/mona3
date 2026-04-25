@@ -398,6 +398,12 @@ def clickChunkPtr(chunkptr = 0, chunksize = 0):
 		chunkptrstr = fmtted_ptr
 	return chunkptrstr
 
+def clickModuleName(modname = ""):
+	clickstr = modname
+	if __DEBUGGERAPP__ == "WinDBG":
+		clickstr = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (modname, modname)
+	return clickstr
+
 
 def checkKeystone():
 	pyversion = "%d.%d" % (sys.version_info[0], sys.version_info[1])
@@ -8204,7 +8210,7 @@ class MnProc:
 		for name, props in self.modules.items():
 			dispname = props.get("filename") or name
 			if __DEBUGGERAPP__ == "WinDBG":
-				dispname = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (dispname, dispname)
+				dispname = clickModuleName(dispname)
 			flags = []
 			if props.get("aslr"):
 				flags.append("ASLR")
@@ -10482,6 +10488,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	sort_keys  - list of (key, reverse) tuples from _parse_sort_spec(), or empty list
 	"""	
 	thistable = ""
+	thistable_display = ""
 	populateModuleInfo()
 
 	filtertext = criteriaToText(modulecriteria, True)
@@ -10527,6 +10534,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
 	thistable += ("-" * linelength) + "\n"
 
+	thistable_display = thistable
 
 	for thismodule,modproperties in items:
 		if (len(modules) > 0 and modproperties["name"] in modules or len(logfile)>0):
@@ -10541,7 +10549,8 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			isos 	= toSize(str(modproperties["os"]),7)
 			version = str(modproperties["version"])
 			path 	= str(modproperties["path"])
-			name	= str(modproperties["filename"] or modproperties["name"])
+			name = str(modproperties["filename"] or modproperties["name"])
+			name_click	= clickModuleName(str(modproperties["filename"] or modproperties["name"]))
 			dllflag = "0x%x" % modproperties["dllcharacteristics"]
 			sym_tag = ""
 			if show_sym:
@@ -10549,12 +10558,16 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				sym_tag = " {%s}" % str(bool(has_sym))
 			if arch == 32:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
+				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 			if arch == 64:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
+				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 	thistable += ("-" * linelength) + "\n"
+	thistable_display += ("-" * linelength) + "\n"
 	tableinfo = thistable.split('\n')
+	tableinfo_display = thistable_display.split('\n')
 	if logfile == "":
-		for tline in tableinfo:
+		for tline in tableinfo_display:
 			dbg.log(tline)
 	else:
 		dbgp("showModuleTable: writing %d chars to %s" % (len(thistable), logfile))
