@@ -479,9 +479,11 @@ def clickSegmentWinDBG(segmentbase, heaptype="nt", displaytext=""):
 			segmentstrout = "<link cmd=\"dt _SEGMENT_HEAP %s\">%s</link>" % (segmentbasestr, segment_display)
 	return segmentstrout
 
-	_HEAP_SEGMENT
-
-
+def clickMnCommand(commandname=""):
+	commandstrout = commandname
+	if __DEBUGGERAPP__ == "WinDBG" and commandname != "":
+		commandstrout = "<link cmd=\"!mona %s -h\">%s</link>" % (commandname, commandname)
+	return commandstrout
 
 
 ### Various utilities
@@ -26240,10 +26242,14 @@ def procHelp(args, helpForCommand=None):
 		for item in items:
 			if arch in commands[item[0]].supportedarchs:
 				if commands[item[0]].usage != "":
+					commandpart = clickMnCommand(commands[item[0]].name)
 					aliastxt = ""
+					textlen = len(commands[item[0]].name)					
 					if commands[item[0]].alias != "":
-						aliastxt = " / " + commands[item[0]].alias
-					dbg.logLines("  %s | %s" % (item[0] + aliastxt + (" " * (20 - len(item[0]+aliastxt))), commands[item[0]].description))
+						aliastxt = " / " + clickMnCommand(commands[item[0]].alias)
+						textlen += len(commands[item[0]].alias) + 3
+					commandpart += aliastxt
+					dbg.logLines("  %s | %s" % (commandpart + (" " * (20 - textlen)), commands[item[0]].description))
 		dbg.log("")
 		dbg.log("  If you would like to get help about a specific command,", highlight=True)
 		dbg.log("  run the command with the -h option.", highlight=True)
