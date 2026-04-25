@@ -881,6 +881,12 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 		else:
 			return _ensure_text(v)
 
+	def _format_cell(v, vtype, col_idx):
+		formatted = _format_value(v, vtype)
+		if __DEBUGGERAPP__ == "WinDBG" and col_idx == 0:
+			return "<b>%s</b>" % formatted
+		return formatted
+
 	def _normalize_row(key, value):
 		if isinstance(value, (list, tuple)):
 			return [key] + list(value)
@@ -907,7 +913,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 
 			raw_rows.append(row)
 			formatted_rows.append([
-				_format_value(row[i], types[i]) for i in range(expected_cols)
+				_format_cell(row[i], types[i], i) for i in range(expected_cols)
 			])
 		else:
 			dbg.log("key %s not present" % key)
@@ -916,6 +922,8 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 
 	def _display_len(v):
 		txt = _ensure_text(v)
+		if txt.startswith("<b>") and txt.endswith("</b>"):
+			txt = txt[3:-4]
 		if "link cmd" in txt:
 			start = txt.find(">")
 			if start != -1:
@@ -8294,7 +8302,7 @@ class MnProc:
 			if threads:
 				first_teb = next(iter(threads.values()))
 				pid = str(first_teb.ProcessId)
-			regions.append((peb_addr, peb_addr + peb_size, "PEB", "%s (Process ID: %s)" % (clickPEB("PEB"), pid), static))
+			regions.append((peb_addr, peb_addr + peb_size, "PEB", "%s (PID: %s)" % (clickPEB("PEB"), pid), static))
 		# TEBs for all threads
 		teb_size = 0
 		if __DEBUGGERAPP__ == "WinDBG":
@@ -8309,9 +8317,9 @@ class MnProc:
 			for tid, mteb in threads.items():
 				teb_addr = mteb.TEBAddress
 				current_teb_indicator = "*" if teb_addr == current_teb else ""	
-				desc = "%s%s (Thread ID: %s)" % (current_teb_indicator, clickTEB(teb_addr,"TEB"),str(mteb.Id))
+				desc = "%s%s (TID: %s)" % (current_teb_indicator, clickTEB(teb_addr,"TEB"),str(mteb.Id))
 				if arch == 32:
-					desc = "%s%s (Thread ID: %s | SEH Count: %s)" % (current_teb_indicator,clickTEB(teb_addr,"TEB"), str(mteb.Id), str(mteb.SEHCount))
+					desc = "%s%s (TID: %s | SEH Count: %s)" % (current_teb_indicator,clickTEB(teb_addr,"TEB"), str(mteb.Id), str(mteb.SEHCount))
 				regions.append((teb_addr, teb_addr + teb_size, "TEB", desc, static))
 		elif self.teb is not None:
 			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB", static))
@@ -8366,11 +8374,11 @@ class MnProc:
 							smash_parts.append("0x%s at offset %d%s" % (
 								toHex(recaddr), smashoffset,
 								" [unicode]" if otype == "unicode" else ""))
-						seh_info = " | SEH: %d records, SMASHED: %s" % (len(records), "; ".join(smash_parts))
+						seh_info = " | SEH: %d records, <b>SMASHED: %s</b>" % (len(records), "; ".join(smash_parts))
 					else:
 						seh_info = " | SEH: %d records" % len(records)
-			dispname = "%sStack (Thread ID: %s | TEB: 0x%s%s)" % (
-				current_stack_indicator, str(tid), toHex(sinfo["teb"]), seh_info)
+			dispname = "%sStack (TID: %s)%s" % (
+				current_stack_indicator, tid, seh_info)
 			regions.append((sinfo["limit"], sinfo["base"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
@@ -17071,23 +17079,29 @@ def goFindMSP(distance=0, args=None):
 			for ptrtypes in pointers:
 				for ptr in pointers[ptrtypes]:
 					# get size
+
+					thisptr = MnPointer(ptr)
+					ptrinfo = ""
+					if thisptr.isOnStack():
+						ptrinfo = "[<b>Stack</b>]"
+					elif thisptr.isInHeap():
+						ptrinfo = "[<b>Heap</b>]"
 					thissize = getPatternLength(ptr, pattype, args)
 					if thissize > 0:
 						if not silent:
-							dbg.log("    Cyclic pattern (%s) found at 0x%s (length %d bytes)" % (pattype, toHex(ptr), thissize))
-						tofile += "    Cyclic pattern (%s) found at 0x%s (length %d bytes)\n" % (pattype, toHex(ptr), thissize)
+							dbg.log("    Cyclic pattern (%s) found at 0x%s (length %d bytes) %s" % (pattype, toHex(ptr), thissize, ptrinfo))
+						tofile += "    Cyclic pattern (%s) found at 0x%s (length %d bytes) %s \n" % (pattype, toHex(ptr), thissize, ptrinfo)
 						if ptr not in memory:
 							memory[ptr] = [thissize, pattype]
 
 					# get distance from SP
 					if STACK_POINTER in regs:
 						thissp = regs[STACK_POINTER]
-						thisptr = MnPointer(ptr)
 						if thisptr.isOnStack():
 							if ptr > thissp:
 								if not silent:
-									dbg.log("    - Stack pivot between %d & %d bytes needed to land in this pattern" % (ptr - thissp, ptr - thissp + thissize))
-								tofile += "    - Stack pivot between %d & %d bytes needed to land in this pattern\n" % (ptr - thissp, ptr - thissp + thissize)
+									dbg.log("    \\_ Add between %d & %d bytes to %s in order to land in this pattern" % (ptr - thissp, ptr - thissp + thissize, STACK_POINTER))
+								tofile += "    \\_ Add between %d & %d bytes to %s in order to land in this pattern\n" % (ptr - thissp, ptr - thissp + thissize, STACK_POINTER)
 
 			if "memory" not in results:
 				results["memory"] = memory
@@ -17137,16 +17151,21 @@ def goFindMSP(distance=0, args=None):
 					if pattype == "unicode":
 						offset = offset // 2
 
+					regname = reg
+					if reg == PROGRAM_COUNTER:
+						regname = "<b>%s</b>" % reg
+
 					if not silent:
 						if is_reversed:
-							dbg.log("    %s contains %s pattern (reversed) : 0x%s (offset %d)" % (reg, pattype, toHex(regs[reg]), offset))
+							dbg.log("    %s contains %s pattern (reversed) : 0x%s (offset %d)" % (regname, pattype, toHex(regs[reg]), offset))
 						else:
-							dbg.log("    %s contains %s pattern : 0x%s (offset %d)" % (reg, pattype, toHex(regs[reg]), offset))
+							dbg.log("    %s contains %s pattern : 0x%s (offset %d)" % (regname, pattype, toHex(regs[reg]), offset))
+
 
 					if is_reversed:
-						tofile += "    %s contains %s pattern (reversed) : 0x%s (offset %d)\n" % (reg, pattype, toHex(regs[reg]), offset)
+						tofile += "    %s contains %s pattern (reversed) : 0x%s (offset %d)\n" % (regname, pattype, toHex(regs[reg]), offset)
 					else:
-						tofile += "    %s contains %s pattern : 0x%s (offset %d)\n" % (reg, pattype, toHex(regs[reg]), offset)
+						tofile += "    %s contains %s pattern : 0x%s (offset %d)\n" % (regname, pattype, toHex(regs[reg]), offset)
 
 					if reg not in registers:
 						registers[reg] = [regs[reg], offset, pattype]
@@ -17180,7 +17199,7 @@ def goFindMSP(distance=0, args=None):
 					thissize = getPatternLength(regs[reg], pattype, args)
 					if thissize > 0:
 						if not silent:
-							dbg.log("    %s (0x%s) points at offset %d in %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+							dbg.log("    <b>%s</b> (0x%s) points at offset <b>%d</b> in %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
 						tofile += "    %s (0x%s) points at offset %d in %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 						registers_to[reg] = [regs[reg], offset, thissize, pattype]
 				else:
@@ -17193,7 +17212,7 @@ def goFindMSP(distance=0, args=None):
 						thissize = getPatternLength(regs[reg], pattype, args)
 						if thissize > 0:
 							if not silent:
-								dbg.log("    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+								dbg.log("    <b>%s</b> (0x%s) points at offset <b>%d</b> in (reversed) %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
 							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 							registers_to[reg] = [regs[reg], offset, thissize, pattype]
 
@@ -17221,14 +17240,14 @@ def goFindMSP(distance=0, args=None):
 				total_adjust = adjust_rsp + extra_adjust
 				dbgp("Extra adjustment for retn offset instruction: %d" % total_adjust)
 
-				warningline = "    That means we control %s, and %s will be adjusted with 0x%x bytes after the '%s' instruction" % (PROGRAM_COUNTER, STACK_POINTER, total_adjust, opc_instruction)
+				warningline = "    That means we control <b>%s</b>, and %s will be adjusted with 0x%x bytes after the '%s' instruction" % (PROGRAM_COUNTER, STACK_POINTER, total_adjust, opc_instruction)
 				dbg.log(warningline)
 				tofile += "%s\n" % warningline	
 
 				try:
 					value_on_stack = struct.unpack(PTR_FMT,dbg.readMemory(rsp_val,PTR_SIZE))[0]
 					registers[PROGRAM_COUNTER] = [value_on_stack, rip_offset, rip_patterntype]
-					warningline = "      -> We control %s at offset %d in %s pattern" % (PROGRAM_COUNTER, rip_offset, rip_patterntype)
+					warningline = "      -> We control <b>%s</b> at offset <b>%d</b> in %s pattern" % (PROGRAM_COUNTER, rip_offset, rip_patterntype)
 					dbg.log(warningline)
 					tofile += "%s\n" % warningline		
 					# the stack pointer itself will change, and this its position and length also
@@ -17236,7 +17255,7 @@ def goFindMSP(distance=0, args=None):
 					rsp_val = regs[STACK_POINTER] + total_adjust
 					rsp_size = registers_to[STACK_POINTER][2] - total_adjust
 					registers_to[STACK_POINTER] = [rsp_val, rsp_offset, rsp_size, rip_patterntype]
-					warningline = "      -> %s will become %s, and then points at offset %d in %s pattern (length %d) <- trampoline?" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
+					warningline = "      -> <b>%s will become %s, and then points at offset <b>%d</b> in %s pattern (length %d) <- trampoline?" % (STACK_POINTER, (PTR_PRINT % rsp_val), rsp_offset, rip_patterntype,  rsp_size)
 					dbg.log(warningline)
 					tofile += "%s\n" % warningline
 				except Exception as e:
@@ -17255,8 +17274,7 @@ def goFindMSP(distance=0, args=None):
 	seh = {}
 	if PTR_SIZE == 4:
 		if not silent:
-			dbg.log("")
-			dbg.log("[+] Examining SEH chain")
+			dbg.logLines("\n[+] Examining SEH chain")
 		tofile += "\n[+] Examining SEH chain\n"
 		thissehchain = dbg.getSehChain()
 
@@ -17307,7 +17325,7 @@ def goFindMSP(distance=0, args=None):
 									offset = offset // 2
 
 								if not silent:
-									dbg.log("    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler" % (toHex(chainentry[0]), pattype, nseh, offset, thissize))
+									dbg.log("    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset <b>%d</b>), followed by %d bytes of cyclic data after the handler" % (toHex(chainentry[0]), pattype, nseh, offset, thissize))
 								tofile += "    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler\n" % (toHex(chainentry[0]), pattype, nseh, offset, thissize)
 
 								if (chainentry[0] + 4) not in seh:
