@@ -9713,8 +9713,6 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 		had_unreadable_pages = False
 		for a in dbg.MemoryPages.keys():
 
-			interruptMona()
-
 			if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
 		
 				# get end address of the page
@@ -9754,9 +9752,22 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 
 				# If a full region read fails (common when a region contains an unreadable sub-page),
 				# fall back to smaller reads and scan those chunks. This prevents skipping the entire
-				# region and missing hits (e.g. `mona jmp -r esp`).
 				if not mem:
 					had_unreadable_pages = True
+
+					if __DEBUGGERAPP__ == "WinDBG":
+						try:
+							probe_cmd = "db %s L1" % (PTR_PRINT % page_start)
+							probe_output = dbg.nativeCommand(probe_cmd)
+						except Exception as e:
+							probe_output = ""
+							dbgp("      !WinDBG probe failed for %s: %s" % ((PTR_PRINT % page_start), str(e)))
+
+						if "??" in probe_output:
+							dbgp("      !WinDBG db probe reports unreadable memory at %s, skipping page fast" %
+								 (PTR_PRINT % page_start))
+							continue
+
 					dbgp("      !Failed to read full range %s-%s, falling back to chunked reads" %
 						 ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 
@@ -9855,6 +9866,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 						cursor += read_len
 					if page_fallback_chunk_ok > 0:
 						fallback_pages_with_reads += 1
+						dbgp("      [+] Chunked fallback recovered readable bytes for %s-%s. Nice." %
+							 ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 					if page_fallback_hits > 0:
 						fallback_pages_with_hits += 1
 					dbgp("      !Fallback result for range %s-%s: readable chunks %d/%d, hits=%d" %
@@ -10761,7 +10774,6 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 			if not silent:
 				dbg.log("")
 				dbg.log("[+] Results: ")
-				dbg.log("")
 
 			messageshown = False
 			display_order = []
@@ -17031,6 +17043,9 @@ def goFindMSP(distance=0, args=None):
 	for pattype in pattypes:
 		dbg.updateLog()
 		searchPattern = []
+		interruptMona()
+		dbg.log("")
+		dbg.log("    Searching for %s pattern:" % pattype)
 
 		# create search pattern (TEXT, not bytes)
 		if pattype == "normal":
@@ -17071,8 +17086,8 @@ def goFindMSP(distance=0, args=None):
 						if thisptr.isOnStack():
 							if ptr > thissp:
 								if not silent:
-									dbg.log("    -  Stack pivot between %d & %d bytes needed to land in this pattern" % (ptr - thissp, ptr - thissp + thissize))
-								tofile += "    -  Stack pivot between %d & %d bytes needed to land in this pattern\n" % (ptr - thissp, ptr - thissp + thissize)
+									dbg.log("    - Stack pivot between %d & %d bytes needed to land in this pattern" % (ptr - thissp, ptr - thissp + thissize))
+								tofile += "    - Stack pivot between %d & %d bytes needed to land in this pattern\n" % (ptr - thissp, ptr - thissp + thissize)
 
 			if "memory" not in results:
 				results["memory"] = memory
@@ -17236,6 +17251,7 @@ def goFindMSP(distance=0, args=None):
 
 	# 3. SEH record overwritten ?
 	# SEH chain logic is x86-only in this form, so skip entirely on x64
+
 	seh = {}
 	if PTR_SIZE == 4:
 		if not silent:
@@ -17422,6 +17438,7 @@ def goFindMSP(distance=0, args=None):
 			stackcounter += stepsize
 
 		# stack has pointer into cyclic pattern ?
+		interruptMona()
 		if not silent:
 			if distance == 0:
 				extratxt = "(entire stack)"
@@ -17448,6 +17465,7 @@ def goFindMSP(distance=0, args=None):
 		stackcounter = thisstackbase
 		sign = ""
 
+		interruptMona()
 		if not silent:
 			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter)))
 		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter))

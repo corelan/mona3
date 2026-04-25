@@ -4797,9 +4797,10 @@ class wpage():
 						 (PTR_PRINT % self.begin, PTR_PRINT % self.end))
 					return bytes(bytearray(outbuf))
 
-				data2 = _resilient_read_full_region()
-				if data2 is not None:
-					return data2
+				if "Memory exception at" not in str(e):
+					data2 = _resilient_read_full_region()
+					if data2 is not None:
+						return data2
 
 				dbgp("Error accessing memory: %s" % str(e))
 				return None
