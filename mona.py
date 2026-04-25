@@ -407,6 +407,14 @@ def clickModuleName(modname = ""):
 		clickstr = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (modname, modname)
 	return clickstr
 
+def clickDisassemble(locstr = ""):
+	clickstr = locstr
+	if __DEBUGGERAPP__ == "WinDBG" and locstr != "":
+		clickstr = "<link cmd=\"u %s L 20\">%s</link>" % (locstr, locstr)
+	return clickstr
+
+
+
 def clickStackPtr(stackptr = 0):
 	stackptrstr = ""
 	fmtted_ptr = PTR_PRINT % stackptr
@@ -4586,7 +4594,7 @@ class MnModule:
 
 	# ------------------------------------------------------------------
 
-	def __str__(self):
+	def __str__(self, clickable=False):
 		#return general info about the module
 		#modulename + info
 		"""
@@ -4600,13 +4608,16 @@ class MnModule:
 		"""			
 		outstring = ""
 		if self.moduleKey != "":
+			modname = self.moduleKey
+			if clickable:
+				modname = clickModuleName(modname)
 			if arch == 32:
-				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
+				outstring = "[" + modname + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 			else:
 				dbgp("Module %s" % self.moduleKey)
 				dbgp(" ModuleCharacteristics: 0x%x" % self.moduleDllCharacteristics)
 				dbgp(" Version: %s" % self.moduleVersion)
-				outstring = "[" + self.moduleKey + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
+				outstring = "[" + modname+ "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 		else:
 			outstring = "[None]"
 		return outstring
@@ -19235,7 +19246,7 @@ def procInfo(args):
 	
 	if modinfo:
 		dbg.log("    Address is part of a module:")
-		dbg.log("    %s" % modinfo.__str__())
+		dbg.log("    %s" % modinfo.__str__(clickable=True))
 		if rva != 0:
 			dbg.log("    Offset from module base: 0x%x" % rva)
 			if modinfo:
@@ -19261,7 +19272,7 @@ def procInfo(args):
 		symname = funcinfo.addressToSymbol()
 		if symname != "":
 			dbg.log("")
-			dbg.log("[+] Function found at 0x%08x, Symbol name: %s" % (address,symname))
+			dbg.log("[+] Function found at 0x%08x, Symbol name: %s" % (address, clickDisassemble(symname)))
 
 	try:
 		dbg.log("")
