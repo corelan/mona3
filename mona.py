@@ -1007,9 +1007,9 @@ def getAddyArg(argaddy):
 			if hexpart.endswith("h") and len(hexpart) > 1 and hexpart[0].isdigit():
 				dbgp("  Detected hex suffix h, normalized %s -> %s" % (hexpart, hexpart[:-1]))
 				hexpart = hexpart[:-1]
-			dbgp("Check if hexparts %s is an address" % hexparts)
+			dbgp("Check if hexparts %s is an address" % hexpart)
 			if isAddress(hexpart):
-				dbgp("Yes, returning %s, True" % (PTR_PRINT % hexStrToInt(hexparts)))
+				dbgp("Yes, returning %s, True" % (PTR_PRINT % hexStrToInt(hexpart)))
 				return hexStrToInt(hexpart), True
 
 		m = getModuleObj(partclean)
