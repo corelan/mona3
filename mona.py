@@ -8284,12 +8284,14 @@ class MnProc:
 		if teb_size == 0:
 			teb_size = archValue(0x1000, 0x1838)
 		threads = self.getThreads()
+		current_teb = get_teb_addr()
 		if threads:
 			for tid, mteb in threads.items():
 				teb_addr = mteb.TEBAddress
-				desc = "%s (Thread ID: %s)" % (clickTEB(teb_addr,"TEB"),str(mteb.Id))
+				current_teb_indicator = "*" if teb_addr == current_teb else ""	
+				desc = "%s%s (Thread ID: %s)" % (current_teb_indicator, clickTEB(teb_addr,"TEB"),str(mteb.Id))
 				if arch == 32:
-					desc = "%s (Thread ID: %s | SEH Count: %s)" % (clickTEB(teb_addr,"TEB"), str(mteb.Id), str(mteb.SEHCount))
+					desc = "%s%s (Thread ID: %s | SEH Count: %s)" % (current_teb_indicator,clickTEB(teb_addr,"TEB"), str(mteb.Id), str(mteb.SEHCount))
 				regions.append((teb_addr, teb_addr + teb_size, "TEB", desc, static))
 		elif self.teb is not None:
 			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB", static))
@@ -8320,6 +8322,15 @@ class MnProc:
 		# Stacks
 		for tid, sinfo in self.stacks.items():
 			seh_info = ""
+			regs = dbg.getRegs()
+			stackaddy = 0
+			if STACK_POINTER in regs:
+				stackaddy = regs[STACK_POINTER]
+			stacklow = sinfo["limit"]
+			stackhigh = sinfo["base"]
+			current_stack_indicator = ""
+			if stackaddy >= stacklow and stackaddy <= stackhigh:
+				current_stack_indicator = "*"
 			if arch == 32:
 				threads = self.getThreads()
 				mteb = threads.get(tid)
@@ -8338,8 +8349,8 @@ class MnProc:
 						seh_info = " | SEH: %d records, SMASHED: %s" % (len(records), "; ".join(smash_parts))
 					else:
 						seh_info = " | SEH: %d records" % len(records)
-			dispname = "Stack (Thread ID: %s | TEB: 0x%s%s)" % (
-				str(tid), toHex(sinfo["teb"]), seh_info)
+			dispname = "%sStack (Thread ID: %s | TEB: 0x%s%s)" % (
+				current_stack_indicator, str(tid), toHex(sinfo["teb"]), seh_info)
 			regions.append((sinfo["limit"], sinfo["base"], "Stack", dispname))
 
 		# Heaps (base entries) + segments + VA blocks
@@ -21642,7 +21653,6 @@ def procLayout(args):
 	if "Heap Chunk" in show_categories:
 		populate_entities.add("chunks")
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
-	dbg.log("")
 	mnproc.populate(include_chunks=include_chunks, entities=sorted(populate_entities))
 	regions = mnproc.getAllSorted()
 
@@ -21657,7 +21667,7 @@ def procLayout(args):
 	filename = "proclayout.txt"
 	objfile = MnLog(filename)
 	logfile = objfile.reset()
-
+	dbg.log("")
 	# Use sequential idx as dict key to avoid address collisions (e.g. Heap
 	# header and first Heap Segment share the same start address). The actual
 	# start address is conveyed to print_dict_table via key_col.
@@ -21681,13 +21691,13 @@ def procLayout(args):
 			in_heap_chain = True
 		elif category in ("Heap Segment", "Heap VA Block"):
 			if in_heap_chain:
-				indent = "  \\_"
+				indent = "  \\_ "
 		elif category == "Heap Chunk":
 			if prev_category in ("Heap Segment", "Heap Chunk"):
 				if in_heap_chain:
-					indent = "    \\_"
+					indent = "    \\_ "
 				else:
-					indent = "  \\_"
+					indent = "  \\_ "
 		else:
 			in_heap_chain = False
 		prev_category = category
