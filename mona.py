@@ -5879,12 +5879,11 @@ def getNTHeapInfo(heapaddr):
 
 	# --- Segments ---
 	try:
-		seglist = mheap.getHeapSegmentList()
-		for segaddr, seg in seglist.items():
-			result["segments"][segaddr] = getNTSegmentInfo(
-				heapaddr, segaddr,
-				seg["base"], seg["end"],
-				seg["firstentry"], seg["lastentry"]
+		for seg in mheap.iterSegments():
+			result["segments"][seg.address] = getNTSegmentInfo(
+				heapaddr, seg.address,
+				seg.BaseAddress, seg.end,
+				seg.FirstEntry, seg.LastValidEntry,
 			)
 	except:
 		pass
@@ -7104,6 +7103,27 @@ class MnNTXPHeap(MnNTHeap):
 
 		return self.SegmentList
 
+	def _seg_walk(self):
+		"""Return [(segaddr, flink_segaddr, blink_segaddr, is_corrupted)] in array order.
+
+		For pre-Vista heaps the Segments array has no circular links, so adjacent
+		entries are used as flink/blink.  The heap's SegmentList address is used as
+		the boundary sentinel so callers can apply uniform display logic.
+		Corruption is always False here — XP segments have no signature to check.
+		"""
+		listhead = self.heapbase + getOsOffset("SegmentList")
+		addrs    = list(self.getHeapSegmentList().keys())
+		result   = []
+		for i, a in enumerate(addrs):
+			result.append((
+				a,
+				addrs[i + 1] if i < len(addrs) - 1 else listhead,
+				addrs[i - 1] if i > 0          else listhead,
+				False,
+			))
+		return result
+
+
 class MnNTVistaHeap(MnNTHeap):
 	"""
 	NT Heap implementation for Windows Vista / 7.
@@ -7234,6 +7254,56 @@ class MnNTVistaHeap(MnNTHeap):
 			pass
 
 		return self.SegmentList
+
+	def iterSegments(self):
+		"""Walk _HEAP.SegmentList forward and yield one MnNTVistaSegment per entry.
+
+		Reads the Flink of the SegmentList list head to reach the first segment,
+		then advances via each entry's own Flink.  The list is circular: traversal
+		ends when Flink equals the original SegmentList address (list head).
+
+		Yields: MnNTVistaSegment
+		"""
+		sle_offset = MnNTVistaSegment._offsets["SegmentListEntry"][MnNTVistaSegment._arch_index]
+		listhead   = self.heapbase + getOsOffset("SegmentList")
+		try:
+			entry = readPtrSizeBytes(listhead)  # Flink of list head → first segment
+			while entry != listhead:
+				yield MnNTVistaSegment(entry - sle_offset)
+				entry = readPtrSizeBytes(entry)  # Flink of current SegmentListEntry
+		except Exception:
+			return
+
+	def _seg_walk(self):
+		"""Return [(segaddr, flink_segaddr, blink_segaddr, is_corrupted)] via _HEAP.SegmentList.
+
+		Reads the raw SegmentListEntry Flink/Blink pointers from memory and
+		converts them to segment base addresses.  When a pointer equals the list
+		head (the heap's SegmentList field), that sentinel is returned as-is.
+		Each entry's SegmentSignature is validated; on mismatch the entry is marked
+		corrupted and the walk stops (subsequent Flink values are untrustworthy).
+		"""
+		sle_offset = MnNTVistaSegment._offsets["SegmentListEntry"][MnNTVistaSegment._arch_index]
+		ptrsize    = archValue(4, 8)
+		listhead   = self.heapbase + getOsOffset("SegmentList")
+		result = []
+		for seg_obj in self.iterSegments():
+			corrupted = seg_obj.SegmentSignature != MnNTVistaSegment._VALID_SEGMENT_SIGNATURE
+			entry = seg_obj.address + sle_offset
+			try:
+				flink_raw = readPtrSizeBytes(entry)
+				flink_addr = flink_raw - sle_offset if flink_raw != listhead else listhead
+			except Exception:
+				flink_addr = listhead
+			try:
+				blink_raw = readPtrSizeBytes(entry + ptrsize)
+				blink_addr = blink_raw - sle_offset if blink_raw != listhead else listhead
+			except Exception:
+				blink_addr = listhead
+			result.append((seg_obj.address, flink_addr, blink_addr, corrupted))
+			if corrupted:
+				break  # Flink may be garbage; stop to avoid runaway walk
+		return result
 
 	def usesLFH(self):
 		"""Check if this NT heap has LFH enabled.
@@ -7594,6 +7664,8 @@ class MnNTVistaSegment:
 	+0x05a Reserved                       : Uint2B
 	+0x060 UCRSegmentList                 : _LIST_ENTRY
 	"""
+
+	_VALID_SEGMENT_SIGNATURE = 0xFFEEFFEE  # expected _HEAP_SEGMENT.SegmentSignature
 
 	# _HEAP_SEGMENT field offsets: (offset_x86, offset_x64)
 	_offsets = {
@@ -8647,15 +8719,13 @@ class MnProc:
 						except:
 							pass
 						try:
-							seglist = mheap.getHeapSegmentList()
-							for segaddr, seg in seglist.items():
-								segdetail = {
-									"base": seg["base"],
-									"end": seg["end"],
-									"firstentry": seg["firstentry"],
-									"lastentry": seg["lastentry"],
+							for seg in mheap.iterSegments():
+								detail["segments"][seg.address] = {
+									"base":       seg.BaseAddress,
+									"end":        seg.end,
+									"firstentry": seg.FirstEntry,
+									"lastentry":  seg.LastValidEntry,
 								}
-								detail["segments"][segaddr] = segdetail
 						except:
 							pass
 						try:
@@ -8792,7 +8862,7 @@ class MnProc:
 		Return (heap_entry, seg_pairs, va_entries) for one heap.
 		  heap_entry : (start, end, "Heap", desc)
 		  seg_pairs  : [(seg_entry, [chunk_entries]), ...]
-		  va_entries : [(start, end, "Heap VA Block", desc), ...]
+		  va_entries : [(start, end, "VAD Block", desc), ...]
 		Returns (corrupted_entry, [], []) when the heap signature is invalid.
 		"""
 		idx      = info.get("index", "?")
@@ -8827,32 +8897,22 @@ class MnProc:
 		lfh_ranges = detail.get("lfh_ranges", [])
 		lfh_starts = [r[0] for r in lfh_ranges]
 		vaaddrs    = sorted(detail.get("va_blocks", {}).keys())
-		_all_seg_keys = list(detail["segments"].keys())
-		# Heap-as-segment (segaddr == heapaddr) is Segment00 on Vista+.
-		if heapaddr in detail["segments"]:
-			segaddrs = [heapaddr] + sorted(s for s in _all_seg_keys if s != heapaddr)
-		else:
-			segaddrs = sorted(_all_seg_keys)
-		_seg_idx = {s: j for j, s in enumerate(segaddrs)}
-		for i, segaddr in enumerate(segaddrs):
-			seg     = detail["segments"][segaddr]
+		listhead     = heapaddr + getOsOffset("SegmentList")
+		listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
+		seg_walk  = MnHeap(heapaddr)._seg_walk()
+		_seg_name = {segaddr: "Segment%02d-%02d" % (i, hidx) for i, (segaddr, _, _, _) in enumerate(seg_walk)}
+		for i, (segaddr, flink_addr, blink_addr, seg_corrupted) in enumerate(seg_walk):
+			seg     = detail["segments"].get(segaddr, {})
 			segname = clickSegmentWinDBG(segaddr, "nt", "Segment%02d-%02d" % (i, hidx))
-			_flink  = seg.get("flink")
-			_blink  = seg.get("blink")
-			if _flink is not None:
-				flink = "0x%s (%s)" % (toHex(_flink), "Segment%02d-%02d" % (_seg_idx[_flink], hidx)) if _flink in _seg_idx else "None"
-			else:
-				flink = "0x%s (%s)" % (toHex(segaddrs[i + 1]), "Segment%02d-%02d" % (i + 1, hidx)) if i < len(segaddrs) - 1 else "None"
-			if _blink is not None:
-				blink = "0x%s (%s)" % (toHex(_blink), "Segment%02d-%02d" % (_seg_idx[_blink], hidx)) if _blink in _seg_idx else "None"
-			else:
-				blink = "0x%s (%s)" % (toHex(segaddrs[i - 1]), "Segment%02d-%02d" % (i - 1, hidx)) if i > 0 else "None"
+			flink   = listhead_str if flink_addr == listhead else "0x%s (%s)" % (toHex(flink_addr), _seg_name.get(flink_addr, "?"))
+			blink   = listhead_str if blink_addr == listhead else "0x%s (%s)" % (toHex(blink_addr), _seg_name.get(blink_addr, "?"))
 			chunk_info = ""
 			if "total_chunks" in seg:
 				chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
 					seg["total_chunks"], seg["busy_chunks"], seg["free_chunks"], seg["max_free"])
-			seg_entry     = (seg["base"], seg["end"], "Heap Segment",
-							 "%s (Heap: %s | FLink: %s | BLink: %s%s)" % (segname, heapname, flink, blink, chunk_info))
+			corrupt_tag = " ** CORRUPTED **" if seg_corrupted else ""
+			seg_entry     = (seg.get("base", segaddr), seg.get("end", segaddr), "Segment",
+							 "%s%s (Heap: %s | FLink: %s | BLink: %s%s)" % (segname, corrupt_tag, heapname, flink, blink, chunk_info))
 			chunk_entries = []
 			if "chunks" in seg:
 				all_chunks = sorted(
@@ -8866,14 +8926,14 @@ class MnProc:
 						"Chunk%04d-%03d-%02d" % (ci, i, hidx),
 						clickChunkPtr(cuserptr, cusersize), cusersize,
 						cstate, heapname, segname, cflag, lfh_tag)
-					chunk_entries.append((caddr, caddr + csize, "Heap Chunk", cdesc))
+					chunk_entries.append((caddr, caddr + csize, "Chunk", cdesc))
 			seg_pairs.append((seg_entry, chunk_entries))
 		for i, vaaddr in enumerate(vaaddrs):
 			va    = detail["va_blocks"][vaaddr]
 			vaend = vaaddr + va["commit_size"]
 			flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
 			blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
-			va_entries.append((vaaddr, vaend, "Heap VA Block",
+			va_entries.append((vaaddr, vaend, "VAD Block",
 				"VirtualAllocdBlock%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
 					hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])))
 		return (heap_entry, seg_pairs, va_entries)
@@ -8884,7 +8944,7 @@ class MnProc:
 		"""
 		Return a unified flat view of all process structures sorted by start address.
 		Each item: (start, end, category, description)
-		Categories: "PEB", "TEB", "Stack", "Module", "Heap", "Heap Segment", "Heap VA Block", "Heap Chunk"
+		Categories: "PEB", "TEB", "Stack", "Module", "Heap", "Segment", "VAD Block", "Chunk"
 		"""
 		regions  = []
 		peb_size, teb_size = self._struct_sizes()
@@ -8921,7 +8981,7 @@ class MnProc:
 		Top categories: "PEB", "TEB", "Module", "Heap"
 		Children:
 		  - TEB  \u2192 [Stack]
-		  - Heap \u2192 [Heap Segment (\u2192 [Heap Chunk]), Heap VA Block]
+		  - Heap \u2192 [Segment (\u2192 [Chunk]), VAD Block]
 		"""
 		regions  = []
 		peb_size, teb_size = self._struct_sizes()
@@ -9226,7 +9286,7 @@ class MnPointer:
 		# Check segments
 		for heap, segstart, seglast in mnproc.VACache["segments"]:
 			if self.address >= heap and self.address <= seglast:
-				self.ownerName = "Heap Segment"
+				self.ownerName = "Segment"
 				return True
 
 		# Check VA blocks
@@ -22087,14 +22147,14 @@ def procLayout(args):
 		"teb":       set(["TEB"]),
 		"mod":       set(["Module"]),
 		"stack":     set(["Stack"]),
-		"heap":      set(["Heap", "Heap Segment"]),
-		"chunks":    set(["Heap", "Heap Segment", "Heap Chunk"]),
-		"vablocks":  set(["Heap", "Heap Segment", "Heap VA Block"]),
-		"all":       set(["PEB", "TEB", "Module", "Stack", "Heap", "Heap Segment", "Heap Chunk", "Heap VA Block"]),
+		"heap":      set(["Heap", "Segment"]),
+		"chunks":    set(["Heap", "Segment", "Chunk"]),
+		"vablocks":  set(["Heap", "Segment", "VAD Block"]),
+		"all":       set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VAD Block"]),
 	}
-	all_internal = set(["PEB", "TEB", "Module", "Stack", "Heap", "Heap Segment", "Heap Chunk", "Heap VA Block"])
+	all_internal = set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VAD Block"])
 	# By default, hide chunks and VA blocks
-	default_categories = all_internal - set(["Heap Chunk", "Heap VA Block"])
+	default_categories = all_internal - set(["Chunk", "VAD Block"])
 	valid_filters = sorted(filter_map.keys())
 
 	show_all = "a" in args or "all" in args
@@ -22148,7 +22208,7 @@ def procLayout(args):
 			dbg.log("Valid types: %s" % ", ".join(additive_filters), highlight=1)
 
 	# Force chunk walking if chunks will be displayed
-	if "Heap Chunk" in show_categories:
+	if "Chunk" in show_categories:
 		include_chunks = True
 
 	# -s elements / -sort elements: use getSortedByElement (hierarchical, indents baked in)
@@ -22171,11 +22231,11 @@ def procLayout(args):
 	category_mappings["TEB"] = "%s pl -f teb; !teb" % getAliasName()
 	category_mappings["Stack"] = "%s pl -f stack" % getAliasName()
 	category_mappings["Heap"] = "%s heap" % getAliasName()
-	category_mappings["Heap Segment"] = "%s pl -f heap" % getAliasName()
+	category_mappings["Segment"] = "%s pl -f heap" % getAliasName()
 	category_mappings["Module"] = "%s mod" % getAliasName()
-	category_mappings["Heap Chunk"] = "%s pl -f chunks" % getAliasName()
-	category_mappings["Heap VA Block"] = "%s pl -f vablocks" % getAliasName()
-	category_mappings["Heap Chunk"] = "%s pl -f chunks" % getAliasName()
+	category_mappings["Chunk"] = "%s pl -f chunks" % getAliasName()
+	category_mappings["VAD Block"] = "%s pl -f vablocks" % getAliasName()
+	category_mappings["Chunk"] = "%s pl -f chunks" % getAliasName()
 
 	populate_entities = set()
 	if "PEB" in show_categories:
@@ -22186,11 +22246,11 @@ def procLayout(args):
 		populate_entities.add("stacks")
 	if "Module" in show_categories:
 		populate_entities.add("modules")
-	if show_categories & {"Heap", "Heap Segment", "Heap VA Block", "Heap Chunk"}:
+	if show_categories & {"Heap", "Segment", "VAD Block", "Chunk"}:
 		populate_entities.add("heaps")
 		populate_entities.add("defaultheap")
 		populate_entities.add("ntheapdetail")
-	if "Heap Chunk" in show_categories:
+	if "Chunk" in show_categories:
 		populate_entities.add("chunks")
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
 	dbg.log("    Sort mode: %s" % _sort_val)
@@ -22245,9 +22305,9 @@ def procLayout(args):
 			# explicit depth, so track heap chain state across iterations).
 			# Segments and VA Blocks sit at the same level as their Heap;
 			# only Chunks are indented to show they belong to a Segment.
-			if category in ("Heap", "Heap Segment", "Heap VA Block"):
+			if category in ("Heap", "Segment", "VAD Block"):
 				in_heap_chain = True
-			elif category == "Heap Chunk":
+			elif category == "Chunk":
 				indent = "  \\_ "
 			else:
 				in_heap_chain = False
@@ -23871,7 +23931,7 @@ def procFillChunk(args):
 			if len(region) < 4:
 				continue
 			start, end, category, description = region[:4]
-			if category == "Heap Chunk" and refvalue >= start and refvalue < end:
+			if category == "Chunk" and refvalue >= start and refvalue < end:
 				chunk_start = start
 				chunk_end = end
 				break
@@ -24221,7 +24281,7 @@ def procPageACL(args):
 					for heap, segstart, seglast in mnproc.VACache["segments"]:
 						if pagestart >= heap and pagestart <= seglast:
 							in_heap = True
-							owner = clickSegmentWinDBG(segstart, "nt", "Heap Segment")
+							owner = clickSegmentWinDBG(segstart, "nt", "Segment")
 							break
 					if not in_heap:
 						for vastart, vaend in mnproc.VACache["vablocks"]:
