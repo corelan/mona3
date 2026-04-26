@@ -19,7 +19,8 @@
     - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
     - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
     - [3.3. Running Mona in WinDBG Classic on Windows 7](#33-running-mona-in-windbg-classic-on-windows-7)
-    - [3.4. Running Mona in Immunity](#34-running-mona-in-immunity)
+    - [3.4. Helping Python find its libraries](#34-helping-python-find-its-libraries)
+    - [3.5. Running Mona in Immunity](#35-running-mona-in-immunity)
 - [Thank you](#thank-you)
 - [Found a bug?](#found-a-bug)
 - [Want to contribute?](#want-to-contribute)
@@ -235,13 +236,21 @@ Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
 You could create a small batch file inside the WinDBG Program folders (both `x86` and `x64`) that has all the required command line arguments:
 
-For example, create `w.bat` with the following contents:
+For example, create `w.bat`in the x86 folder,  with the following contents:
 
 ```batch
 set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9 C:\Tools\mona3\mona.py' "
 
 %WINDBG_CMD% %*
 ```
+Or, to launch a 64bit version of Python in WinDBG Classic 64bit:
+
+```batch
+set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9-64 C:\Tools\mona3\mona.py' "
+
+%WINDBG_CMD% %*
+```
+
 
 **For WinDBGX:**
 
@@ -301,7 +310,60 @@ SET PYTHONPATH=
 
 <br> 
 
-### 3.4. Running Mona in Immunity
+
+### 3.4. Helping Python find its libraries
+
+You can use similar batch files in Windows 11 as well.
+This may be helpful in case you have various different Python versions installed on your system.
+Although WinDBG(X) may be able to find a certain Python version, it still may fail to locate/load basic libraries (such as `socket` etc)
+
+This is what the problem looks like:
+```batch
+0:000> !pykd.info
+
+pykd bootstrapper version: 2.0.0.24
+
+Installed python:
+
+Version:        Status:     Image:
+------------------------------------------------------------------------------
+  2.7 x86-64    Unloaded    C:\Windows\SYSTEM32\python27.dll
+  3.9 x86-64    Unloaded    C:\Users\corelan\AppData\Local\Programs\Python\Python39\python39.dll
+* 3.14 x86-64   Unloaded    C:\Users\corelan\AppData\Local\Programs\Python\Python314\python314.dll
+
+0:000> !py -2.7
+Python 2.7.18 (v2.7.18:8d21aa21f2, Apr 20 2020, 13:25:05) [MSC v.1500 64 bit (AMD64)] on win32
+Type "help", "copyright", "credits" or "license" for more information.
+(InteractiveConsole)
+>>> import socket
+Traceback (most recent call last):
+  File "<console>", line 1, in <module>
+  File "C:\Python27\Lib\socket.py", line 47, in <module>
+    import _socket
+ImportError: DLL load failed: %1 is not a valid Win32 application.
+>>> ```
+
+For instance, on one of my Windows 11 VMs, I had to create the following file to run WinDBG Classic and have it use Python 2.7.18 64bit (installed under c:\Python27-64):
+
+```batch
+@echo off
+set ORIGPATH=%PATH%
+set PYTHONHOME=C:\Python27-64
+set PATH=%PYTHONHOME%;%PATH%
+set PYTHONPATH=%PYTHONHOME%\Lib
+
+set WINDBG_CMD=windbg.exe -hd -c '!load pykd;as !mona !py -2.7 C:\Tools\mona3\mona.py'
+
+%WINDBG_CMD% %*
+
+set PATH=%ORIGPATH%
+SET PYTHONHOME=
+SET PYTHONPATH=
+```
+
+
+
+### 3.5. Running Mona in Immunity
 
 **If Python 2.7 is in your system PATH:**
 
