@@ -175,6 +175,7 @@ ptr_to_get = -1
 silent = False
 noheader = False
 g_keystoneLoaded = False
+g_windbgflavor = ""
 _sym_cache_dirs = None
 _heap_cmd_prefix = None
 
@@ -199,16 +200,141 @@ except:
 dbg = dbglib.Debugger()
 
 
+commands = {}
+
+
 
 def isWinDBG():
 	if __DEBUGGERAPP__ == "WinDBG":
 		return True
 	return False
 
+
 def isImmunity():
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		return True
 	return False
+
+
+
+def dbgp(s, highlight=False, errormode = False):
+	# print debug information
+	msgprefix = ""
+	if errormode:
+		msgprefix = " - ERR"
+		highlight = True
+	if DEBUG_MODE:
+		try:
+			dbg.log("[MONA DEBUG%s] %s | %s" % (msgprefix, get_current_datetime(),s), highlight=highlight)
+		except Exception as e:
+			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)), highlight=True)
+			pass
+
+
+
+def getWinDBGVersion():
+	"""
+	Determine whether the current debugger host appears to be WinDBGX.
+
+	Returns:
+		dict with:
+			is_windbgx : True/False
+			debugger   : "windbgx", "windbg_classic", or "unknown"
+			reason     : short explanation of the detection result
+
+	Detection logic:
+		WinDBG Classic is normally launched as windbg.exe from the Windows Kits
+		Debuggers folder.
+
+		WinDBGX does not run the debugger engine directly as windbg.exe.
+		The engine host runs via EngHost.exe from the WindowsApps package path,
+		for example:
+
+			C:\\Program Files\\WindowsApps\\Microsoft.WinDbg_...\\x86\\EngHost.exe
+
+		Therefore, we detect WinDBGX by looking for strong indicators in the
+		'version' output:
+			- WindowsApps\\Microsoft.WinDbg_
+			- EngHost.exe
+			- npipe:pipe=DbgX_
+
+		These are much better indicators than the dbgeng version number,
+		because both Classic and WinDBGX report a Microsoft Windows Debugger
+		engine version in the 10.x range.
+	"""
+
+	if isWinDBG():
+
+		global g_windbgflavor
+
+		version_lines = []
+
+		try:
+			output = dbg.nativeCommand("version")
+			version_lines = output.split("\n")
+		except:
+			dbgp("Unable to execute command to get WinDBG version")
+
+		if not version_lines:
+			# assume it's windbg classic
+			g_windbgflavor = "windbg"
+			return {
+				"is_windbgx": False,
+				"debugger": "unknown",
+				"reason": "No version output was provided"
+			}
+
+		text = "\n".join([str(line) for line in version_lines])
+		text_l = text.lower()
+
+		windbgx_indicators = [
+			"windowsapps\\microsoft.windbg_",
+			"enghost.exe",
+			"npipe:pipe=dbgx_"
+		]
+
+		classic_indicators = [
+			"windbg.exe",
+			"\\windows kits\\10\\debuggers\\",
+			"\\windows kits\\8.1\\debuggers\\",
+			"\\windows kits\\8.0\\debuggers\\"
+		]
+
+		matched_windbgx = []
+		for indicator in windbgx_indicators:
+			if indicator in text_l:
+				matched_windbgx.append(indicator)
+
+		if matched_windbgx:
+			g_windbgflavor = "windbgx"
+			return {
+				"is_windbgx": True,
+				"debugger": "windbgx",
+				"reason": "Detected WinDBGX indicator(s): %s" % ", ".join(matched_windbgx)
+			}
+
+		matched_classic = []
+		for indicator in classic_indicators:
+			if indicator in text_l:
+				matched_classic.append(indicator)
+
+		if matched_classic:
+			g_windbgflavor = "windbg"
+			return {
+				"is_windbgx": False,
+				"debugger": "windbg",
+				"reason": "Detected WinDBG Classic indicator(s): %s" % ", ".join(matched_classic)
+			}
+
+	g_windbgflavor = "unknown"
+	return {
+		"is_windbgx": False,
+		"debugger": "unknown",
+		"reason": "No reliable WinDBGX or WinDBG Classic indicators were found"
+	}
+
+
+
 
 
 def _ensureSymbolCache(auto_fix=False):
@@ -223,12 +349,17 @@ def _ensureSymbolCache(auto_fix=False):
 	if not isWinDBG():
 		return []
 
+	# this will initialize g_windbgflavor to either "windbg" or "windbgx"
+	getWinDBGVersion()
+	dbgp("Active Debugger Flavor: %s" % g_windbgflavor)
+
 	raw = dbglib.getSymbolPath().replace(" ", "")
+	ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
 	if raw == "":
 		if auto_fix:
 			dbg.log("")
 			dbg.log("** Warning, no symbol path set ! ** ", highlight=1)
-			sympath = "srv*c:\\symbols*https://msdl.microsoft.com/download/symbols"
+			sympath = "srv*c:\\symbols*%s" % ms_symbol_server
 			dbg.log("   I'll set the symbol path to %s" % sympath)
 			dbglib.setSymbolPath(sympath)
 			dbg.log("   Symbol path set, now reloading symbols...")
@@ -238,11 +369,29 @@ def _ensureSymbolCache(auto_fix=False):
 		else:
 			dbg.log("[!] No symbol path configured", highlight=1)
 			dbg.log("    Configure a symbol path first, e.g.:")
-			dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+			dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
 			return []
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+
+	if g_windbgflavor == "windbgx":
+		programdata_dbg = os.path.abspath(os.path.expandvars(r"%PROGRAMDATA%\Dbg\Sym"))
+		if programdata_dbg and "%" not in programdata_dbg:
+			seen_cache_dirs = set(d.lower() for d in cache_dirs)
+			if programdata_dbg.lower() not in seen_cache_dirs:
+				cache_dirs.append(programdata_dbg)
+				sym_entries.append({
+					"cache": programdata_dbg,
+					"server": ms_symbol_server,
+					"raw": r"srv*%s*%s" % (programdata_dbg, ms_symbol_server),
+				})
+			if ms_symbol_server.lower() not in [s.lower() for s in servers]:
+				servers.append(ms_symbol_server)
+
+	dbgp("Cache_dirs: %s" % cache_dirs)
+	for d in cache_dirs:
+		dbgp("%s" % d)
 
 	if cache_dirs:
 		_sym_cache_dirs = cache_dirs
@@ -250,7 +399,7 @@ def _ensureSymbolCache(auto_fix=False):
 	if not cache_dirs and not auto_fix:
 		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
 		dbg.log("    Configure a symbol path with a local cache, e.g.:")
-		dbg.log("    .sympath srv*c:\\symbols*https://msdl.microsoft.com/download/symbols")
+		dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
 
 	return cache_dirs
 
@@ -293,7 +442,6 @@ def _hasSymbolsCached(modprops):
 	path, _ = _findSymbolsCached(modprops)
 	return path is not None
 
-commands = {}
 
 if isWinDBG():
 	_ensureSymbolCache(auto_fix=True)
@@ -390,20 +538,6 @@ offsets = {
 
 
 
-def dbgp(s, highlight=False, errormode = False):
-	# print debug information
-	msgprefix = ""
-	if errormode:
-		msgprefix = " - ERR"
-		highlight = True
-	if DEBUG_MODE:
-		try:
-			dbg.log("[MONA DEBUG%s] %s | %s" % (msgprefix, get_current_datetime(),s), highlight=highlight)
-		except Exception as e:
-			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)), highlight=True)
-			pass
-
-
 def getAliasName():
 	aliasname = "!mona"
 	monaConfig = MnConfig()
@@ -411,6 +545,9 @@ def getAliasName():
 	if len(configalias) > 0:
 		aliasname = configalias
 	return aliasname
+
+
+
 
 ###
 # Add WinDBG Clickable links to values
@@ -25950,10 +26087,6 @@ def procEval(args):
 def procSym(args):
 	"""Manage symbols: list status, fetch from server, or clean cache. WinDBG only."""
 
-	if not isWinDBG():
-		dbg.log("*** Sorry, command 'sym' is not supported in %s ***" % __DEBUGGERAPP__, highlight=1)
-		return
-
 	# Require at least one valid filesystem cache directory
 	cache_dirs = _ensureSymbolCache(auto_fix=False)
 	if not cache_dirs:
@@ -25989,6 +26122,20 @@ def _sym_list(args):
 
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+
+	if g_windbgflavor == "windbgx":
+		ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
+		programdata_dbg = os.path.abspath(os.path.expandvars(r"%PROGRAMDATA%\Dbg\Sym"))
+		if programdata_dbg and "%" not in programdata_dbg:
+			seen_cache_dirs = set(d.lower() for d in cache_dirs)
+			if programdata_dbg.lower() not in seen_cache_dirs:
+				cache_dirs.append(programdata_dbg)
+				sym_entries.append({
+					"cache": programdata_dbg,
+					"server": ms_symbol_server,
+					"raw": r"srv*%s*%s" % (programdata_dbg, ms_symbol_server),
+				})
+		dbgp("Cache dirs: %s" % cache_dirs)
 
 	filtertext = criteriaToText(modulecriteria, True)
 	if filtertext:
