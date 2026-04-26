@@ -955,12 +955,21 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 		header_width = len(_ensure_text(headers[i]))
 		col_widths.append(max(max_value_width, header_width + 1))
 
-	def _pad_cell(v, width):
+	def _pad_cell(v, width, align_right=False):
 		txt = _ensure_text(v)
-		return txt + (" " * max(0, width - _display_len(txt)))
+		padding = " " * max(0, width - _display_len(txt))
+		if align_right:
+			return padding + txt
+		return txt + padding
 
-	def _render_row(values):
-		return "   ".join([_pad_cell(values[i], col_widths[i]) for i in range(expected_cols)])
+	def _render_row(values, align_right_cols=None):
+		if align_right_cols is None:
+			align_right_cols = set()
+		return "   ".join([
+			_pad_cell(values[i], col_widths[i], i in align_right_cols) for i in range(expected_cols)
+		])
+
+	right_align_cols = set([i for i in range(expected_cols) if types[i].lower() == "size"])
 
 	def _p(line):
 		dbg.log("%s%s" % (padding, line))
@@ -971,7 +980,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	_p(_render_row([("-" * w) for w in col_widths]))
 
 	for raw_row, row in zip(raw_rows, formatted_rows):
-		line = _render_row([_ensure_text(c) for c in row])
+		line = _render_row([_ensure_text(c) for c in row], align_right_cols=right_align_cols)
 		if len(types) > 0 and types[0].lower() == "pointer" and not __DEBUGGERAPP__ == "WinDBG":
 			addr_val = _pointer_to_int(raw_row[0])
 			if addr_val is not None:
@@ -22320,7 +22329,7 @@ def procLayout(args):
 		table_starts.append(start)
 
 	headers = ["Start", "End", "Size", "Type", "Description"]
-	types   = ["pointer", "pointer", "string", "string", "string"]
+	types   = ["pointer", "pointer", "Size", "string", "string"]
 	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts)
 
 	dbg.log("")
