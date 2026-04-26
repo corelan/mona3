@@ -9627,21 +9627,21 @@ class MnPointer:
 		silent = False
 		return funcinfo
 
-	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile=""):
+	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg=""):
 		dumpdata = {}
 		origdumpdata = {} 
 		if __DEBUGGERAPP__ == "WinDBG":
 			addy = self.address
 			if not silent:
 				dbg.log("")
-				dbg.log("----------------------------------------------------")
-				if (size < 0x500):
-					dbg.log("[+] Dumping object at %s, 0x%02x bytes" % ((PTR_PRINT % addy),size))
-				else:
-					dbg.log("[+] Dumping object at %s, 0x%02x bytes (output below will be limited to the first 0x500 bytes !)" % ((PTR_PRINT % addy),size))
+				dbg.log("-" * 70)
+				dbg.log("[+] Dumping allocation at %s %s" % (PTR_PRINT % addy), custommsg)
+				dbg.log("    Size: 0x%02x bytes" % size)
+				if (size > 0x500):
+					dbg.log("    Output below will be limited to the first 0x500 bytes")
 					size = 0x500
 				if levels > 0:
-					dbg.log("[+] Also dumping up to %d levels deep, max size of nested objects: 0x%02x bytes" % (levels, nestedsize))
+					dbg.log("    Also dumping up to %d levels deep, max size of nested objects: 0x%02x bytes" % (levels, nestedsize))
 				dbg.log("")
 
 			parentlist = []
@@ -25193,12 +25193,33 @@ def procDumpLog(args):
 			for allocsizeaddy in allocsizegroups[allocsize]:
 				logfile.write("  %s (%s)" % (allocsizeaddy, logdata[allocsizeaddy]), thislog)
 			
+		maxnr = len(logdata)
+		curnr = 1
+		# show eta every 20 objects
+		flipcnt = 1
+		flipmax = 20
+		startmoment = get_current_datetime()
 		for addy in logdata:
+			seqtxt = "(%d/%d)" % (curnr, maxnr)
 			asize = logdata[addy]
 			ptrx = MnPointer(int(addy,16))
 			size = int(asize,16)
-			dumpdata = ptrx.dumpObjectAtLocation(size,levels,nestedsize,thislog,logfile)
-			
+			#dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg="")
+			dumpdata = ptrx.dumpObjectAtLocation(size,levels=levels,nestedsize=nestedsize,customthislog=thislog,customlogfile=logfile,custommsg=seqtxt)
+			if flipcnt > flipmax:
+				flipcnt = 1
+				thistimestamp = get_current_datetime()
+				eta = get_eta(startmoment, curnr, maxnr)
+				updatetext = ">> Update: {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
+					done=curnr,
+					total=maxnr,
+					ts=thistimestamp,
+					pct=(curnr * 100.0) / maxnr,
+					eta=eta
+				)
+				dbg.log(updatetext)
+			curnr += 1			
+			interruptMona()
 	except:
 		dbg.log(" *** Unable to open logfile %s ***" % logfile,highlight=1)
 		dbg.log(traceback.format_exc())
