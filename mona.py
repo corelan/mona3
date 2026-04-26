@@ -404,6 +404,14 @@ def dbgp(s, highlight=False, errormode = False):
 			pass
 
 
+def getAliasName():
+	aliasname = "!mona"
+	monaConfig = MnConfig()
+	configalias = monaConfig.get("alias")
+	if len(configalias) > 0:
+		aliasname = configalias
+	return aliasname
+
 ###
 # Add WinDBG Clickable links to values
 ###
@@ -424,7 +432,8 @@ def clickWinDBGCmd(windbg_cmd = ""):
 def clickFetchSym(modname, displaytext = ""):
 	cmdoutstr = displaytext
 	if isWinDBG():
-		cmdoutstr = "<link cmd=\"%s\">%s</link>" % ("!mona sym -f -m %s" % modname, displaytext)
+		cmd = "%s sym -f -m %s" % (getAliasName(), modname)
+		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
 	return cmdoutstr
 
 
@@ -438,7 +447,7 @@ def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 		sizearg = ""
 		if chunksize > 0:
 			sizearg = "-s 0x%x" % chunksize
-		chunkptrstr = "<link cmd=\"!mona do -a %s %s\">%s</link>" % (fmtted_ptr,sizearg,displaystr)
+		chunkptrstr = "<link cmd=\"%s do -a %s %s\">%s</link>" % (getAliasName(), fmtted_ptr,sizearg,displaystr)
 	else:
 		chunkptrstr = fmtted_ptr
 	return chunkptrstr
@@ -448,7 +457,7 @@ def clickModuleName(modname = "", displaytext = ""):
 	if displaytext == "":
 		displaytext = modname
 	if isWinDBG():
-		clickstr = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (modname, displaytext)
+		clickstr = "<link cmd=\"%s modinfo -m %s\">%s</link>" % (getAliasName(), modname, displaytext)
 	return clickstr
 
 def clickDisassemble(locstr = ""):
@@ -462,7 +471,7 @@ def clickStackPtr(stackptr = 0):
 	stackptrstr = ""
 	fmtted_ptr = PTR_PRINT % stackptr
 	if isWinDBG():
-		stackptrstr = "<link cmd=\"!mona pageacl -a %s \">%s</link>" % (fmtted_ptr, fmtted_ptr)
+		stackptrstr = "<link cmd=\"%s pageacl -a %s \">%s</link>" % (getAliasName(), fmtted_ptr, fmtted_ptr)
 	else:
 		stackptrstr = fmtted_ptr
 	return stackptrstr
@@ -471,7 +480,7 @@ def clickPageAcl(ptrinfo = 0):
 	infoptrstr = ""
 	fmtted_ptr = PTR_PRINT % ptrinfo
 	if isWinDBG():
-		infoptrstr = "<link cmd=\"!mona pageacl -a %s \">Info</link>" % (fmtted_ptr)
+		infoptrstr = "<link cmd=\"%s pageacl -a %s \">Info</link>" % (getAliasName(), fmtted_ptr)
 	else:
 		infoptrstr = fmtted_ptr
 	return infoptrstr
@@ -521,7 +530,7 @@ def clickSegmentWinDBG(segmentbase, heaptype="nt", displaytext=""):
 def clickMnCommand(commandname=""):
 	commandstrout = commandname
 	if __DEBUGGERAPP__ == "WinDBG" and commandname != "":
-		commandstrout = "<link cmd=\"!mona %s -h\">%s</link>" % (commandname, commandname)
+		commandstrout = "<link cmd=\"%s %s -h\">%s</link>" % (getAliasName(), commandname, commandname)
 	return commandstrout
 
 
@@ -18529,6 +18538,8 @@ def procConfig(args):
 			configvalue = args["set"][0+len(configparam):len(args["set"])]
 			if configparam.lower() == "excluded_modules":
 				configvalue = configvalue.replace(";", ",")
+			if configparam.lower() == "alias":
+				configvalue = configvalue.replace("#", "!")
 			monaConfig.set(configparam,configvalue)
 			configDict = {}
 			headers = ["Parameter", "New value"]
@@ -22157,14 +22168,14 @@ def procLayout(args):
 
 	category_mappings = {}
 	category_mappings["PEB"] = "dt _peb @$peb"
-	category_mappings["TEB"] = "!mona pl -f teb; !teb"
-	category_mappings["Stack"] = "!mona pl -f stack"
-	category_mappings["Heap"] = "!mona heap"
-	category_mappings["Heap Segment"] = "!mona pl -f heap"
-	category_mappings["Module"] = "!mona mod"
-	category_mappings["Heap Chunk"] = "!mona pl -f chunks"
-	category_mappings["Heap VA Block"] = "!mona pl -f vablocks"
-	category_mappings["Heap Chunk"] = "!mona pl -f chunks"
+	category_mappings["TEB"] = "%s pl -f teb; !teb" % getAliasName()
+	category_mappings["Stack"] = "%s pl -f stack" % getAliasName()
+	category_mappings["Heap"] = "%s heap" % getAliasName()
+	category_mappings["Heap Segment"] = "%s pl -f heap" % getAliasName()
+	category_mappings["Module"] = "%s mod" % getAliasName()
+	category_mappings["Heap Chunk"] = "%s pl -f chunks" % getAliasName()
+	category_mappings["Heap VA Block"] = "%s pl -f vablocks" % getAliasName()
+	category_mappings["Heap Chunk"] = "%s pl -f chunks" % getAliasName()
 
 	populate_entities = set()
 	if "PEB" in show_categories:
@@ -22296,7 +22307,7 @@ def procLayout(args):
 		other_type = "elements"
 	else:
 		other_type = "base"
-	type_cmd = "!mona pl -s %s" % other_type
+	type_cmd = "%s pl -s %s" % (getAliasName(), other_type)
 	dbg.log("    You can sort by '%s' using the following command: %s" % (other_type, clickWinDBGCmd(type_cmd)))
 	dbg.log("")
 	silent = False
@@ -25895,7 +25906,7 @@ def procSym(args):
 	elif "c" in args or "clean" in args:
 		_sym_clean(args)
 	else:
-		dbg.log("[!] Usage: !mona sym -list | -fetch | -clean")
+		dbg.log("[!] Usage: %s sym -list | -fetch | -clean" % getAliasName())
 		dbg.log("    -l / -list   : Show symbol availability for all modules")
 		dbg.log("    -f / -fetch  : Download symbols from symbol server")
 		dbg.log("    -c / -clean  : Remove .error files from symbol cache folders")
@@ -26786,7 +26797,7 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("                           You can enable or disable a certain criterium by setting it to true or false")
 		dbg.log("                           Example :  -cm aslr=true,safeseh=false")
 		dbg.log("                           Suppose you want to search for p/p/r in aslr enabled modules, you could call")
-		dbg.log("                           !mona seh -cm aslr")
+		dbg.log("                           %s seh -cm aslr" % getAliasName())
 		dbg.log("  -cmp <regex>           : Only include modules whose full path matches the given regex (case-insensitive)")
 		dbg.log("                           Example : -cmp kernel32  -cmp \"C:\\\\Windows\"  -cmp \"\\.dll$\"")
 		dbg.logLines("\n  Global options affecting addresses:\n", highlight=1)
@@ -26828,7 +26839,7 @@ def procHelp(args, helpForCommand=None):
 			dbg.log("<b>!py %s &lt;command&gt; &lt;parameter&gt;</b>" % scriptname)
 			dbg.logLines("\nAvailable commands and parameters for <b>%sbit</b> architecture:\n" % str(arch))
 		else:
-			dbg.log("!mona <command> <parameter>")
+			dbg.log("%s <command> <parameter>" % getAliasName())
 			dbg.logLines("\nAvailable commands and parameters for %sbit architecture:\n" % str(arch))
 
 		items = sorted(commands.items(), key=itemgetter(0))
@@ -26893,12 +26904,23 @@ Available options are :
 If you run 'config' without options, it will show the list of options currently set.
 	
 Mona uses the following parameters:
-  workingfolder
-  excluded_modules
-  author
+   workingfolder
+   excluded_modules
+   author
+   alias
 
 The exclude_modules parameter takes a comma-separated list of module names. 
 You can add items to the parameter using the -add option, and remove items using -del
+
+The alias variable allow you to set the command you're using to launch mona.
+This will affect clickable links and help output.
+
+For example, in WinDBG:
+   !load pykd
+   !py -3.9 c:\Tools\mona3\mona.py config -set alias #mona
+	as !py -3.9 c:\Tools\mona3\mona.py !mona
+
+   (note: the # (hashtag) will be replaced with !)
 
 """
 	
@@ -27847,7 +27869,7 @@ def main(args):
 			dbg.log("[+] Command used: <b>%s</b>" % aline)
 		else:
 			scriptname = "mona"
-			aline = "!mona " + aline
+			aline = ("%s " % getAliasName()) + aline
 			dbg.log("[+] Command used: %s" % aline)
 
 		if DEBUG_MODE:
@@ -27945,7 +27967,7 @@ def main(args):
 		dbg.log("")
 		dbg.log("[ -- END -- ] %s | mona.py took %s" % (get_current_datetime(), str(delta)))
 		if yesno():
-			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("!mona up"), highlight=True)
+			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
 		dbg.setStatusBar("Done")
 		if DEBUG_MODE and __DEBUGGERAPP__ == "WinDBG":
 			dbg.nativeCommand(".logclose")
