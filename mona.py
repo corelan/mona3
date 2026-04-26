@@ -9635,7 +9635,7 @@ class MnPointer:
 			if not silent:
 				dbg.log("")
 				dbg.log("-" * 70)
-				dbg.log("[+] Dumping allocation at %s %s" % (PTR_PRINT % addy), custommsg)
+				dbg.log("[+] Dumping allocation at %s %s" % (PTR_PRINT % addy, custommsg))
 				dbg.log("    Size: 0x%02x bytes" % size)
 				if (size > 0x500):
 					dbg.log("    Output below will be limited to the first 0x500 bytes")
