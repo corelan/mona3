@@ -22029,7 +22029,7 @@ def procStacks(args):
 
 		stackDict = {}
 		headers = ["Thread ID", "Start", "End", "Size", "Info"]
-		types = ["string", "pointer", "pointer", "pointer", "string"]
+		types = ["string", "pointer", "pointer", "size", "string"]
 		alreadyPrinted = False
 		for threadid in stacks:
 			s = stacks[threadid]
@@ -24801,8 +24801,9 @@ def procString(args):
 			dbg.log("[+] Reading string%sat %s:" % (extra,PTR_PRINT % addy))
 			dbg.log("")
 			dbg.log("    %s" % stringinmemory, highlight=True)
-		except:
+		except Exception as e:
 			dbg.log("    Unable to read string at %s" % PTR_PRINT % addy, highlight=True)
+			dbgp("Unable to read string at %s: %s" % (PTR_PRINT % addy, str(e)), errormode=True)
 	if mode == "write":
 		origstring = stringtowrite
 		writtendata = ""
