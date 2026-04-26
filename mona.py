@@ -73,7 +73,6 @@ __DEBUGGERAPP__ = ''
 arch = 32
 win7mode = False
 
-
 try:
 	import immlib as dbglib
 	from immlib import LogBpHook
@@ -200,6 +199,13 @@ except:
 dbg = dbglib.Debugger()
 
 
+
+def isWinDBG():
+	if __DEBUGGERAPP__ == "WinDBG":
+		return True
+	return False
+
+
 def _ensureSymbolCache(auto_fix=False):
 	"""Check that WinDBG has a valid local symbol cache configured.
 
@@ -209,7 +215,7 @@ def _ensureSymbolCache(auto_fix=False):
 	Also populates _sym_cache_dirs for use by showModuleTable.
 	"""
 	global _sym_cache_dirs
-	if __DEBUGGERAPP__ != "WinDBG":
+	if not isWinDBG():
 		return []
 
 	raw = dbglib.getSymbolPath().replace(" ", "")
@@ -284,7 +290,7 @@ def _hasSymbolsCached(modprops):
 
 commands = {}
 
-if __DEBUGGERAPP__ == "WinDBG":
+if isWinDBG():
 	_ensureSymbolCache(auto_fix=True)
 
 osver = dbg.getOsVersion()
@@ -377,6 +383,8 @@ offsets = {
 #  Utility functions                    #
 #---------------------------------------#	
 
+
+
 def dbgp(s, highlight=False, errormode = False):
 	# print debug information
 	msgprefix = ""
@@ -397,20 +405,20 @@ def dbgp(s, highlight=False, errormode = False):
 
 def clickCategoryCmd(category_cmd = ""):
 	cmdoutstr = category_cmd
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (category_cmd, category_cmd)
 	return cmdoutstr
 
 def clickWinDBGCmd(windbg_cmd = ""):
 	cmdoutstr = windbg_cmd
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (windbg_cmd, windbg_cmd)
 	return cmdoutstr
 
 
 def clickFetchSym(modname, displaytext = ""):
 	cmdoutstr = displaytext
-	if __DEBUGGER_APP__ == "WinDBG":
+	if isWinDBG():
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % ("!mona sym -f -m %s" % modname, displaytext)
 	return cmdoutstr
 
@@ -421,7 +429,7 @@ def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	displaystr = fmtted_ptr
 	if not displaytext == "":
 		displaystr = displaytext 
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		sizearg = ""
 		if chunksize > 0:
 			sizearg = "-s 0x%x" % chunksize
@@ -434,7 +442,7 @@ def clickModuleName(modname = "", displaytext = ""):
 	clickstr = modname
 	if displaytext == "":
 		displaytext = modname
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		clickstr = "<link cmd=\"!mona modinfo -m %s\">%s</link>" % (modname, displaytext)
 	return clickstr
 
@@ -448,7 +456,7 @@ def clickDisassemble(locstr = ""):
 def clickStackPtr(stackptr = 0):
 	stackptrstr = ""
 	fmtted_ptr = PTR_PRINT % stackptr
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		stackptrstr = "<link cmd=\"!mona pageacl -a %s \">%s</link>" % (fmtted_ptr, fmtted_ptr)
 	else:
 		stackptrstr = fmtted_ptr
@@ -457,7 +465,7 @@ def clickStackPtr(stackptr = 0):
 def clickPageAcl(ptrinfo = 0):
 	infoptrstr = ""
 	fmtted_ptr = PTR_PRINT % ptrinfo
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		infoptrstr = "<link cmd=\"!mona pageacl -a %s \">Info</link>" % (fmtted_ptr)
 	else:
 		infoptrstr = fmtted_ptr
@@ -465,7 +473,7 @@ def clickPageAcl(ptrinfo = 0):
 
 def clickPEB(pebstr = ""):
 	pebstrout = pebstr
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		pebstrout = "<link cmd=\"dt _PEB @$peb\">%s</link>" % pebstr
 	return pebstrout
 
@@ -475,7 +483,7 @@ def clickTEB(tebptr = 0, displaytext = ""):
 	if tebptrstr_display == "":
 		tebptrstr_display = tebptrsr
 	tebstrout = ""
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		tebstrout = "<link cmd=\"dt _TEB %s\">%s</link>" % (tebptrstr, tebptrstr_display)
 	return tebstrout
 
@@ -485,7 +493,7 @@ def clickHeapWinDBG(heapbase, heaptype="nt", displaytext=""):
 	if heap_display == "":
 		heap_display = heapbasestr
 	heapstrout = ""
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		if heaptype == "nt":
 			heapstrout = "<link cmd=\"dt _HEAP %s\">%s</link>" % (heapbasestr, heap_display)
 		elif heaptype == "segment":
@@ -498,7 +506,7 @@ def clickSegmentWinDBG(segmentbase, heaptype="nt", displaytext=""):
 	if segment_display == "":
 		segment_display = segmentbasestr
 	segmentstrout = ""
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		if heaptype == "nt":
 			segmentstrout = "<link cmd=\"dt _HEAP_SEGMENT %s\">%s</link>" % (segmentbasestr, segment_display)
 		elif heaptype == "segment":
@@ -1140,7 +1148,7 @@ def getAddyArg(argaddy):
 				if funcaddy > 0:
 					return funcaddy, True
 
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			try:
 				symboladdy = dbg.resolveSymbol(partclean)
 				if symboladdy != "":
@@ -2787,7 +2795,7 @@ def getModuleObj(modname):
 		modname_search = modname + suf	
 		
 		#WinDBG optimized
-		if __DEBUGGERAPP__ == "WinDBG":	
+		if isWinDBG():	
 			for tmod_s in allmod:
 				tmod = dbg.getModule(tmod_s)
 				if not tmod == None:
@@ -6339,7 +6347,7 @@ class MnHeap(object):
 		Uses ntdll symbols via getTypeSize when available (WinDBG only).
 		Returns 0 if symbols are not available or on Immunity Debugger.
 		"""
-		if __DEBUGGERAPP__ != "WinDBG":
+		if not isWinDBG():
 			return 0
 		try:
 			sz = dbg.getTypeSize("ntdll!_HEAP")
@@ -8706,7 +8714,7 @@ class MnProc:
 	def _struct_sizes(self):
 		"""Return (peb_size, teb_size) for the current debugger and architecture."""
 		static = __DEBUGGERAPP__ == "Immunity Debugger"
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			peb_size = dbg.getTypeSize("ntdll!_PEB")
 			teb_size = dbg.getTypeSize("ntdll!_TEB")
 		elif static:
@@ -8762,7 +8770,7 @@ class MnProc:
 	def _module_entry(self, mod):
 		"""Return (start, end, "Module", desc) from an MnModule instance."""
 		dispname = mod.moduleFilename or mod.internalname
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			dispname = clickModuleName(dispname)
 		flags = [label for label, val in [
 			("ASLR", mod.isAslr), ("Rebase", mod.isRebase), ("SafeSEH", mod.isSafeSEH),
@@ -9234,7 +9242,7 @@ class MnPointer:
 
 	def showObjectInfo(self):
 		# check if chunk is a DOM object
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			cmdtorun = "dps %s L 1" % (PTR_PRINT % self.address)
 			output = dbg.nativeCommand(cmdtorun)
 			outputlower = output.lower()
@@ -9565,7 +9573,7 @@ class MnPointer:
 
 	def showHeapStackTrace(self,thischunk):
 		# show stacktrace if any
-		if __DEBUGGERAPP__ == "WinDBG": 
+		if isWinDBG(): 
 			stacktrace_address = thischunk.dph_block_information_stacktrace
 			stacktrace_index = thischunk.dph_block_information_traceindex
 			stacktrace_startstamp = 0xabcdaaaa
@@ -9610,7 +9618,7 @@ class MnPointer:
 		funcinfo = ""
 		global silent
 		silent = True
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			lncmd = "ln %s" % (PTR_PRINT % self.address)
 			lnoutput = dbg.nativeCommand(lncmd)
 			for line in lnoutput.split("\n"):
@@ -9640,7 +9648,7 @@ class MnPointer:
 	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg=""):
 		dumpdata = {}
 		origdumpdata = {} 
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			addy = self.address
 			if not silent:
 				dbg.log("")
@@ -10221,7 +10229,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 				if not mem:
 					had_unreadable_pages = True
 
-					if __DEBUGGERAPP__ == "WinDBG":
+					if isWinDBG():
 						try:
 							probe_cmd = "db %s L1" % (PTR_PRINT % page_start)
 							probe_output = dbg.nativeCommand(probe_cmd)
@@ -10988,7 +10996,7 @@ def populateModuleInfo(from_memory=False, peb_order="load"):
 			#dbg.updateLog()
 		mnproc.g_modules={}
 		dbgp("Enumerating modules via getAllModules")
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			allmodules=dbg.getAllModules(from_memory=from_memory, peb_order=peb_order)
 		else:
 			allmodules=dbg.getAllModules()
@@ -18304,7 +18312,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 								if not ptr in bpfuncs:
 									bpfuncs[ptr] = funcs[func]
 
-			if __DEBUGGERAPP__ == "WinDBG":
+			if isWinDBG():
 				# let's do a few searches
 				for crit in namecrit:
 					if crit.find("*") == -1:
@@ -19931,7 +19939,7 @@ def procInfo(args):
 		else:
 			dbg.log("    Module: None")	
 
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		funcinfo = dbglib.Function(dbg,address)
 		symname = funcinfo.addressToSymbol()
 		if symname != "":
@@ -19946,7 +19954,7 @@ def procInfo(args):
 		dbg.log("    Instruction at %s : %s" % (toHex(address),opstring))
 	except:
 		pass
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		dbg.log("")
 		dbg.log("Output of !address 0x%08x:" % address)
 		output = dbg.nativeCommand("!address 0x%08x" % address)
@@ -20094,7 +20102,7 @@ def procBp(args):
 
 	if "c" in args:
 		if type(args["c"]).__name__.lower() != "bool":
-			if __DEBUGGERAPP__ == "WinDBG":
+			if isWinDBG():
 				extracmd = args["c"]
 
 	if "t" not in args:
@@ -20314,7 +20322,7 @@ def procBf(args):
 
 	if "c" in args:
 		if type(args["c"]).__name__.lower() != "bool":
-			if __DEBUGGERAPP__ == "WinDBG":
+			if isWinDBG():
 				extracmd = args["c"]
 
 	if "t" in args:
@@ -20917,7 +20925,7 @@ def procUpdate(args):
 		}
 	]
 
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		windbg_path = _locate_windbglib()
 		if windbg_path == "":
 			dbgp("[!] Unable to locate windbglib.py. Will update mona.py only.")
@@ -22136,7 +22144,7 @@ def procStacks(args):
 				endaddress = s[1]
 				size = s[1] - s[0]
 				info = ""
-				if __DEBUGGERAPP__ == "WinDBG":
+				if isWinDBG():
 					info = clickPageAcl(startaddress)
 				stackDict[str(threadid)] = [startaddress, endaddress, size, info]
 
@@ -22833,7 +22841,7 @@ def procHeap(args):
 							# again, just store offset
 							objects = {}
 							orderedobj = []
-							if __DEBUGGERAPP__ == "WinDBG":
+							if isWinDBG():
 								nrlines = int(float(blocksize) / 4)
 								cmd2run = "dds 0x%08x L 0x%x" % ((block + headersize),nrlines)
 								output = dbg.nativeCommand(cmd2run)
@@ -23824,7 +23832,7 @@ def procLoad(args):
 	dbg.log("[+] Attempting to write contents of file to %s (%s)" % (targetloc, (PTR_PRINT % addr)))
 	
 	# Use appropriate method based on debugger type
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		# WinDBG: use nativeCommand with eb (edit byte) command
 		batch_size = 16
 		log_every = True
@@ -23873,7 +23881,7 @@ def procLoad(args):
 	dbg.log("[+] Finished writing %d bytes to %s" % (total_len, (PTR_PRINT % addr)))
 
 	# let's make that location RWX to be sure
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		dbg.rVirtualProtect(addr,1,0x40)
 		dbg.log("[+] Changed ACL to RWX")
 		dbg.log("[+] Done.")
@@ -24264,7 +24272,7 @@ def procPageACL(args):
 			pagestart = page.getBaseAddress()
 			pagesize = page.getSize()
 			pageusage = ""
-			if __DEBUGGERAPP__ == "WinDBG":
+			if isWinDBG():
 				pageusage = page.getUsage().strip()
 			mod = ""
 			sectionname = ""
@@ -24953,7 +24961,7 @@ def procBPSeh(self):
 				nsehvalue = 0
 			bpsuccess = True
 			try:
-				if __DEBUGGERAPP__ == "WinDBG":
+				if isWinDBG():
 					bpsuccess = dbg.setBreakpoint(sehandler)
 				else:
 					dbg.setBreakpoint(sehandler)
@@ -25943,7 +25951,7 @@ def procEval(args):
 	# put all args together
 	argline = ""
 	if len(currentArgs) > 1:
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			for a in currentArgs[2:]:
 				argline += a
 		else:
@@ -25964,7 +25972,7 @@ def procEval(args):
 def procSym(args):
 	"""Manage symbols: list status, fetch from server, or clean cache. WinDBG only."""
 
-	if __DEBUGGERAPP__ != "WinDBG":
+	if not isWinDBG():
 		dbg.log("*** Sorry, command 'sym' is not supported in %s ***" % __DEBUGGERAPP__, highlight=1)
 		return
 
@@ -26841,7 +26849,7 @@ def procHelp(args, helpForCommand=None):
 	dbg.log("    Debugger        : %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
 	dbg.log("    Plugin version  : %s r%s" % (__VERSION__,__REV__))
 	dbg.log("    Python version  : %s" % (getPythonVersion()))
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		pykdversion = dbg.getPyKDVersionNr()
 		dbg.log("    PyKD version    : %s" % pykdversion)
 		if g_keystoneLoaded:
@@ -26901,7 +26909,7 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("-" * 120)
 	scriptname = get_script_name()
 	launchcmd = "!" + scriptname		
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		launchcmd = "!py " + scriptname
 
 	if helpForCommand == None:
@@ -26909,7 +26917,7 @@ def procHelp(args, helpForCommand=None):
 
 		dbg.logLines("\n\nUsage :")
 		dbg.logLines("-------\n")
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			dbg.log("<b>!py %s &lt;command&gt; &lt;parameter&gt;</b>" % scriptname)
 			dbg.logLines("\nAvailable commands and parameters for <b>%sbit</b> architecture:\n" % str(arch))
 		else:
@@ -27629,7 +27637,7 @@ Arguments:
 	global scriptname
 	scriptname = get_script_name()
 	launchcmd = scriptname
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		launchcmd = "!py " + scriptname
 
 	commands["help"] 			= MnCommand("help", "Show help", "%s help [command]" % launchcmd,procHelp,"h",[32,64])
@@ -27688,7 +27696,7 @@ Arguments:
 	commands["fillchunk"]	    = MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 	if __DEBUGGERAPP__ == "Immunity Debugger":
 		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
 		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
@@ -27886,10 +27894,10 @@ def main(args):
 	currentArgs = copy.copy(args)
 	if ("-debug" in args):
 		DEBUG_MODE = True
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			# prepare an empty log file
 			# so WinDBG can write its output to it
 			windbglogfile = MnLog("%s-mona-windbg-debug.log" % get_current_datetime_flat())
@@ -27909,7 +27917,7 @@ def main(args):
 		thisversion = thisversion.replace("'","")
 		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (get_current_datetime(),thisversion,thisrevision, arch))
 		dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			dbg.log("[ -- START -- ] PyKD: %s " % dbg.getPyKDVersionNr())
 			if not g_keystoneLoaded and arch==64:
 				dbg.log("[ -- START -- ] Keystone-engine NOT loaded")
@@ -27930,7 +27938,7 @@ def main(args):
 
 		aline = " ".join(a for a in argcopy)
 
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			scriptname = get_script_name()
 			aline = "!py " + aline
 			dbg.log("[+] Command used: <b>%s</b>" % aline)
@@ -27985,7 +27993,7 @@ def main(args):
 
 		scriptname = get_script_name()
 		launchcmd = "!" + scriptname		
-		if __DEBUGGERAPP__ == "WinDBG":
+		if isWinDBG():
 			launchcmd = "!py " + scriptname
 
 		if command == "":
@@ -28067,7 +28075,7 @@ if __name__ == "__main__":
 		dbg.log(" ***** TIME *****")
 		p.sort_stats('time', 'cum').print_stats(30)
 	# clear memory
-	if __DEBUGGERAPP__ == "WinDBG":
+	if isWinDBG():
 		dbglib.clearvars()
 	try:
 		resetGlobals()
