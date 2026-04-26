@@ -1146,6 +1146,9 @@ def getAddyArg(argaddy):
 		dbgp("Unable to resolve part %s as register, module, symbol or address. Return False" % partclean)
 		return 0, False
 
+	if str(argaddy).strip().lower() == "stack":
+		argaddy = STACK_POINTER
+
 	if str(argaddy).strip().lower() in regs:
 		thisreg = str(argaddy).strip().lower()
 		dbgp("Argument %s is a register, value: %s" % (argaddy, PTR_PRINT % regs[thisreg]))
@@ -24180,7 +24183,7 @@ def procPageACL(args):
 					dbg.log("     %s (%s = 0x%02x)" % (toSize(acltype,10),MnProc.memProtConstants[acltype][0],MnProc.memProtConstants[acltype][1]))
 				return
 	if findaddy > 0:
-		dbg.log("Displaying page information around address 0x%08x" % findaddy)
+		dbg.log("Displaying page information around address %s" % (PTR_PRINT % findaddy))
 	# Force a fresh memory map snapshot for each pageacl invocation.
 	# This avoids stale output after allocmem/changeacl commands.
 	try:
