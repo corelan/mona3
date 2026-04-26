@@ -341,9 +341,15 @@ Traceback (most recent call last):
   File "C:\Python27\Lib\socket.py", line 47, in <module>
     import _socket
 ImportError: DLL load failed: %1 is not a valid Win32 application.
->>> ```
+>>>
+```
 
-For instance, on one of my Windows 11 VMs, I had to create the following file to run WinDBG Classic and have it use Python 2.7.18 64bit (installed under c:\Python27-64):
+As you can see, although WinDBG loaded the correct Python version/architecture (2.7.8 64bit), it still references libraries from the 32bit Python installation in `C:\Python27\Lib` instead of `C:\Python27-64\Lib`.
+
+The fix is relatively easy. Set the `PYTHONHOME` and `PYTHONPATH`environment variables, and insert the correct folder into the `PATH`.
+
+For example: Open WinDBG Classic and use Python 2.7.18 64bit (installed under `C:\Python27-64`):
+
 
 ```batch
 @echo off
