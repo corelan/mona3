@@ -205,6 +205,11 @@ def isWinDBG():
 		return True
 	return False
 
+def isImmunity():
+	if __DEBUGGERAPP__ == "Immunity Debugger":
+		return True
+	return False
+
 
 def _ensureSymbolCache(auto_fix=False):
 	"""Check that WinDBG has a valid local symbol cache configured.
@@ -635,7 +640,7 @@ def getAllRegisters():
 	Makes a dict of all valid registers and their values on the current architecture
 	"""
 	dbgp(get_current_function_name())
-	if __DEBUGGERAPP__ == "Immunity Debugger":
+	if isImmunity():
 		return getRegisters()
 	else:
 		return dbg.getRegs()
@@ -3558,14 +3563,7 @@ class MnEncoder:
 		return newvals		
 		
 				
-#---------------------------------------#
-#   Class to set deferred BP Hooks      #
-#---------------------------------------#
-class MnDeferredHook(LogBpHook):
-	def __init__(self, loadlibraryptr, targetptr):
-		LogBpHook.__init__(self)
-		self.targetptr = targetptr
-		self.loadlibraryptr = loadlibraryptr
+
 
 #---------------------------------------#
 #   Class for conditional BP Hooks      #
@@ -3667,7 +3665,7 @@ class MnConfig:
 
 		dbgp("MnConfig using config file: %s" % self.fullpath)
 
-		if __DEBUGGERAPP__ == "Immunity Debugger":
+		if isImmunity():
 			try:
 				immunity_path = dbg.getImmunityPath()
 				expected_path = os.path.join(immunity_path, "PyCommands")
@@ -20113,7 +20111,7 @@ def procBp(args):
 		if extracmd:
 			dbg.log("[*] Extra command on hit: %s" % extracmd)
 		try:
-			if __DEBUGGERAPP__ == "Immunity Debugger":
+			if isImmunity():
 				dbg.setBreakpoint(a)
 				if condition:
 					hook = MnConditionalHook(condition)
@@ -20147,7 +20145,7 @@ def procBp(args):
 
 	bpflag = bpflags[thistype][0]
 	
-	if __DEBUGGERAPP__ == "Immunity Debugger":
+	if isImmunity():
 		# Immunity setHardwareBreakpoint(address, type, size)
 		# From immlib: HB_CODE=1 (Execute), HB_ACCESS=2 (R/W), HB_WRITE=3 (Write)
 		# Execute must use size 1. Read/Write use size 4 if aligned, else 2 if aligned, else 1.
@@ -20189,106 +20187,7 @@ def procBp(args):
 		dbg.log("[+] Hardware breakpoint set on %s of 0x%s" % (thistype, toHex(a)))
 
 
-	
-# ----- bu: set a deferred breakpoint ---- #
-def procBu(args):
-	if not "a" in args:
-		dbg.log("No targets defined. (-a)",highlight=1)
-		return
-	else:
-		allargs = args["a"]
-		bpargs = allargs.split(",")
-		breakpoints = {}
-		dbg.log("")
-		dbg.log("Received %d addresses//functions to process" % len(bpargs))
-		# set a breakpoint right away for addresses and functions that are mapped already
-		for tbparg in bpargs:
-			bparg = tbparg.replace(" ","")
-			# address or module.function ?
-			if bparg.find(".") > -1:
-				functionaddress = dbg.getAddress(bparg)
-				if functionaddress > 0:
-					# module.function is already mapped, we can set a bp right away
-					dbg.setBreakpoint(functionaddress)
-					breakpoints[bparg] = True
-					dbg.log("Breakpoint set at 0x%08x (%s), was already mapped" % (functionaddress,bparg), highlight=1)
-				else:
-					breakpoints[bparg] = False # no breakpoint set yet
-			elif bparg.find("+") > -1:
-				ptrparts = bparg.split("+")
-				modname = ptrparts[0]
-				if not modname.lower().endswith(".dll"):
-					modname += ".dll" 
-				themodule = getModuleObj(modname)												
-				if themodule != None and len(ptrparts) > 1:
-					address = themodule.getBase() + int(ptrparts[1],16)
-					if address > 0:
-						dbg.log("Breakpoint set at %s (0x%08x), was already mapped" % (bparg,address),highlight=1)
-						dbg.setBreakpoint(address)
-						breakpoints[bparg] = True
-					else:
-						breakpoints[bparg] = False
-				else:
-					breakpoints[bparg] = False
-			if bparg.find(".") == -1 and bparg.find("+") == -1:
-				# address, see if it is mapped, by reading one byte from that location
-				address = -1
-				try:
-					address = int(bparg,16)
-				except:
-					pass
-				thispage = dbg.getMemoryPageByAddress(address)
-				if thispage != None:
-					dbg.setBreakpoint(address)
-					dbg.log("Breakpoint set at 0x%08x, was already mapped" % address, highlight=1)
-					breakpoints[bparg] = True
-				else:
-					breakpoints[bparg] = False
 
-		# get the correct addresses to put hook on
-		loadlibraryA = dbg.getAddress("kernel32.LoadLibraryA")
-		loadlibraryW = dbg.getAddress("kernel32.LoadLibraryW")
-
-		if loadlibraryA > 0 and loadlibraryW > 0:
-		
-			# find end of function for each
-			endAfound = False
-			endWfound = False
-			cnt = 1
-			while not endAfound:
-				objInstr = dbg.disasmForward(loadlibraryA, cnt)
-				strInstr = getDisasmInstruction(objInstr)
-				if strInstr.startswith("retn"):
-					endAfound = True
-					loadlibraryA = objInstr.getAddress()
-				cnt += 1
-			
-			cnt = 1
-			while not endWfound:
-				objInstr = dbg.disasmForward(loadlibraryW, cnt)
-				strInstr = getDisasmInstruction(objInstr)
-				if strInstr.startswith("retn"):
-					endWfound = True
-					loadlibraryW = objInstr.getAddress()
-				cnt += 1	
-			
-			# if addresses/functions are left, throw them into their own hooks,
-			# one for each LoadLibrary type.
-			hooksplaced = False
-			for bptarget in breakpoints:
-				if not breakpoints[bptarget]:
-					myhookA = MnDeferredHook(loadlibraryA, bptarget)
-					myhookA.add("HOOK_A_%s" % bptarget, loadlibraryA)
-					myhookW = MnDeferredHook(loadlibraryW, bptarget)
-					myhookW.add("HOOK_W_%s" % bptarget, loadlibraryW)
-					dbg.log("Hooks for %s installed" % bptarget)
-					hooksplaced = True
-			if not hooksplaced:
-				dbg.log("No hooks placed")
-		else:
-			dbg.log("** Unable to place hooks, make sure kernel32.dll is loaded",highlight=1)
-		return "Done"							
-	
 # ----- bf: Set a breakpoint on exported functions of a module ----- #
 def procBf(args):
 
@@ -27660,7 +27559,6 @@ Arguments:
 	commands["info"] 			= MnCommand("info", "Show information about a given address in the context of the loaded application",infoUsage,procInfo,"", [32,64])
 	commands["dump"] 			= MnCommand("dump", "Dump the specified range of memory to a file", dumpUsage,procDump,"dmp", [32,64])
 	commands["offset"]          = MnCommand("offset", "Calculate the number of bytes between two addresses", offsetUsage, procOffset, "os", [32,64])		
-	#commands["compare"]			= MnCommand("compare","Compare contents of a binary file with a copy in memory", compareUsage, procCompare,"cmp")
 	commands["compare"]			= MnCommand("compare","Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory", compareUsage, procCompare,"cmp", [32,64])
 	commands["breakpoint"]		= MnCommand("bp","Set a breakpoint (software or hardware) at a given address", bpUsage, procBp,"bp", [32,64])
 	commands["findmsp"]			= MnCommand("findmsp","Find cyclic pattern in memory", findmspUsage,procFindMSP,"findmsf", [32,64])
@@ -27681,7 +27579,7 @@ Arguments:
 	commands["bpseh"]           = MnCommand("bpseh","Set a breakpoint on all current SEH Handler function pointers",bpsehUsage,procBPSeh,"sehbp")
 	commands["encode"]			= MnCommand("encode","Encode a series of bytes",encUsage,procEnc,"enc")
 	commands["unicodealign"]	= MnCommand("unicodealign","Generate venetian alignment code for unicode stack buffer overflow",unicodealignUsage,procUnicodeAlign,"ua")
-	commands["load"]		= MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
+	commands["load"]		    = MnCommand("load","Copy bytes from file to a memory location",loadUsage,procLoad,"ld",[32,64])
 	commands["fwptr"]			= MnCommand("fwptr", "Find Writeable Pointers that get called", fwptrUsage, procFwptr, "fwp")
 	commands["sehchain"]		= MnCommand("sehchain","Show the current SEH chain",sehchainUsage,procSehChain,"exchain",[32])
 	commands["hidedebug"]		= MnCommand("hidedebug","Attempt to hide the debugger",hidedebugUsage,procHideDebug,"hd",[32,64])
@@ -27694,8 +27592,6 @@ Arguments:
 	commands["write"]           = MnCommand("write","Write a byte sequence to a location",writeUsage,procWrite,"w",[32,64])
 	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])	
 	commands["fillchunk"]	    = MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
-	if __DEBUGGERAPP__ == "Immunity Debugger":
-		commands["deferbp"]		= MnCommand("deferbp","Set a deferred breakpoint",deferUsage,procBu,"bu")
 	if isWinDBG():
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
 		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
@@ -27704,7 +27600,6 @@ Arguments:
 		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
 		commands["sym"]				= MnCommand("sym","Manage symbols: list status or clean cache", symUsage, procSym,"",[32,64])
 	return
-
 
 #
 # Argument parsing routine
