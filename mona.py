@@ -4881,7 +4881,7 @@ class MnModule:
 			entry = cfg_first_entries.get(ptr_bucket)
 			cfg_compat_cache[ptr_bucket] = entry
 			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
-			return _ret(True, entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA %x (VA %s)." % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, PTR_PRINT % (entry.rva if entry else 0), PTR_PRINT % (entry.va if entry else 0)))
+			return _ret(True, entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA %s (VA %s)." % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, PTR_PRINT % (entry.rva if entry else 0), PTR_PRINT % (entry.va if entry else 0)))
 
 		cfg_compat_cache[ptr_bucket] = False
 
