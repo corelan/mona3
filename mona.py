@@ -25195,9 +25195,9 @@ def procDumpLog(args):
 			
 		maxnr = len(logdata)
 		curnr = 1
-		# show eta every 20 objects
+		# show eta every 10%
 		flipcnt = 1
-		flipmax = 20
+		flipmax = maxnr // 10
 		startmoment = get_current_datetime()
 		for addy in logdata:
 			seqtxt = "(%d/%d)" % (curnr, maxnr)
@@ -25206,8 +25206,8 @@ def procDumpLog(args):
 			size = int(asize,16)
 			#dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg="")
 			dumpdata = ptrx.dumpObjectAtLocation(size,levels=levels,nestedsize=nestedsize,customthislog=thislog,customlogfile=logfile,custommsg=seqtxt)
-			if flipcnt > flipmax:
-				flipcnt = 1
+			if flipcnt >= flipmax:
+				flipcnt = 0
 				thistimestamp = get_current_datetime()
 				eta = get_eta(startmoment, curnr, maxnr)
 				updatetext = ">> Update: {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
@@ -25218,7 +25218,8 @@ def procDumpLog(args):
 					eta=eta
 				)
 				dbg.log(updatetext)
-			curnr += 1			
+			curnr += 1
+			flipcnt += 1		
 			interruptMona()
 	except:
 		dbg.log(" *** Unable to open logfile %s ***" % logfile,highlight=1)
