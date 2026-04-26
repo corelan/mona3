@@ -9748,13 +9748,13 @@ class MnPointer:
 
 			line = "Offset  Address      Contents    Info"
 			if arch == 64:
-				line = "Offset  Address          Contents            Info"
+				line = "Offset  Address              Contents            Info"
 			logfile.write(line,thislog)
 			if not silent:
 				dbg.log(line)
 			line = "------  -------      --------    -----"
 			if arch == 64:
-				line = "------  -------          --------            -----"
+				line = "------  -------              --------            -----"
 			logfile.write(line,thislog)
 			if not silent:
 				dbg.log(line)
