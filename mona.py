@@ -25198,7 +25198,7 @@ def procDumpLog(args):
 		# show eta every 10%
 		flipcnt = 1
 		flipmax = maxnr // 10
-		startmoment = get_current_datetime()
+		startmoment = time.time()
 		for addy in logdata:
 			seqtxt = "(%d/%d)" % (curnr, maxnr)
 			asize = logdata[addy]
