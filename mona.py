@@ -26797,7 +26797,7 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("                           numeric,alphanum,nonull,startswithnull,unicoderev")
 		dbg.log("                           Note : Multiple criteria will be evaluated using 'AND', ")
 		dbg.log("                                  except if you are looking for unicode + one crit")
-		dbg.log("  -cpb '\\x00\\x01'      : Provide list with bad chars, applies to pointers")
+		dbg.log("  -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
 		dbg.log("                           You can use .. to indicate a range of bytes (in between 2 bad chars)")
 		dbg.log("  -x <access>            : Specify desired access level of the returning pointers. If not specified,")
 		dbg.log("                           only executable pointers will be returned.")
