@@ -19399,9 +19399,7 @@ def procJseh(args):
 	if "all" in args:
 		showall = True
 	nrfound = 0
-	dbg.log("-----------------------------------------------------------------------")
-	dbg.log("Search for jmp/call dword[ebp/esp+nn] (and other) combinations started ")
-	dbg.log("-----------------------------------------------------------------------")
+	dbg.log("[+] Search for jmp/call dword[ebp/esp+nn] (and other combinations) started ")
 	opcodej=["\xff\x54\x24\x08", #call dword ptr [esp+08]
 			"\xff\x64\x24\x08", #jmp dword ptr [esp+08]
 			"\xff\x54\x24\x14", #call dword ptr [esp+14]
