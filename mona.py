@@ -377,19 +377,23 @@ offsets = {
 #  Utility functions                    #
 #---------------------------------------#	
 
-def dbgp(s, highlight=False):
+def dbgp(s, highlight=False, errormode = False):
 	# print debug information
+	msgprefix = ""
+	if errormode:
+		msgprefix = " - ERR"
+		highlight = True
 	if DEBUG_MODE:
 		try:
-			dbg.log("[MONA DEBUG] %s | %s" % (get_current_datetime(),s), highlight=highlight)
+			dbg.log("[MONA DEBUG%s] %s | %s" % (msgprefix, get_current_datetime(),s), highlight=highlight)
 		except Exception as e:
 			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)), highlight=True)
-			pass	
+			pass
+
 
 ###
 # Add WinDBG Clickable links to values
 ###
-
 
 def clickCategoryCmd(category_cmd = ""):
 	cmdoutstr = category_cmd
@@ -590,8 +594,8 @@ def _ensureMnProc(entities=None, include_chunks=False):
         except Exception as e:
             # Note: 'dbg' and 'dbgp' must be defined elsewhere in your code
             dbg.log("[!] Are you connected to a process?", highlight=1)
-            dbgp("Error creating MnProc instance: %s" % str(e))
-            dbgp("Exception details:\n%s" % traceback.format_exc())
+            dbgp("Error creating MnProc instance: %s" % str(e), errormode=False)
+            dbgp("Exception details:\n%s" % traceback.format_exc(), errormode=False)
             mnproc = None
         finally:
             _creating_mnproc = False
@@ -1080,7 +1084,7 @@ def getAddyArg(argaddy):
 					dbgp("Dereferenced address %s, got value %s" % ((PTR_PRINT % ptraddy), (PTR_PRINT % ptrval)))
 					return ptrval, True
 				except Exception:
-					dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE))
+					dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE), errormode=False)
 					return 0, False
 			return 0, False
 
@@ -1533,7 +1537,7 @@ def fileToBin(filename):
 		bytearray_content = [_ord(c) for c in content]
 		dbgp("fileToBin() read %d bytes from %s" % (len(bytearray_content), clean_filename))
 	except Exception as e:
-		dbgp("fileToBin() error reading %s: %s" % (clean_filename, str(e)), highlight=True)
+		dbgp("fileToBin() error reading %s: %s" % (clean_filename, str(e)), highlight=True, errormode=False)
 		return []
 
 	return bytearray_content
@@ -3685,7 +3689,7 @@ class MnConfig:
 				print_dict_table(configFileCache, headers, types, padding="      ", itemsequence=[])
 
 			except Exception as e:
-				dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
+				dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
 
 	def get(self, parameter):
 		"""
@@ -3735,7 +3739,7 @@ class MnConfig:
 								toreturn = thisvalue
 
 				except Exception as e:
-					dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)))
+					dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
 					toreturn = ""
 			else:
 				dbgp("Config file %s does not seem to exist" % self.fullpath)
@@ -4034,8 +4038,8 @@ class MnLog:
 				if not skipModuleTable:
 					showModuleTable(logfile)
 			except Exception as e:
-				dbgp("showModuleTable failed: %s" % str(e))
-				dbgp(traceback.format_exc())
+				dbgp("showModuleTable failed: %s" % str(e), errormode=False)
+				dbgp(traceback.format_exc(), errormode=False)
 		return logfile
 		
 	def write(self,entry,logfile):
@@ -4746,7 +4750,7 @@ class MnModule:
 			return cfg_table
 
 		except Exception as e:
-			dbgp("Error - unable to get CFG Table for module %s: %s" % (module_key, str(e)))
+			dbgp("Error - unable to get CFG Table for module %s: %s" % (module_key, str(e)), errormode=False)
 			CFGTableCache[module_key] = cfg_table
 			return cfg_table
 
@@ -5541,9 +5545,9 @@ class MnModule:
 
 				self.EAT = eatlist
 			except Exception as e:
-				dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)))
-				dbgp("%s" % traceback.format_exc())
-				dbgp("eatlist: %s" % eatlist)
+				dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)), errormode=False)
+				dbgp("%s" % traceback.format_exc(), errormode=False)
+				dbgp("eatlist: %s" % eatlist, errormode=False)
 				return eatlist
 		else:
 			eatlist = self.EAT
@@ -6220,7 +6224,7 @@ class MnHeap(object):
 		try:
 			sig_offset = getOsOffset("Signature")
 		except Exception as e:
-			dbgp("_detectHeapType: getOsOffset('Signature') failed: %s" % str(e))
+			dbgp("_detectHeapType: getOsOffset('Signature') failed: %s" % str(e), errormode=False)
 			sig_offset = archValue(0x008, 0x008)
 		dbgp("_detectHeapType: sig_offset=0x%x" % sig_offset)
 		try:
@@ -6229,14 +6233,14 @@ class MnHeap(object):
 			if sig_val == 0xeeffeeff:
 				return "NT"
 		except Exception as e:
-			dbgp("_detectHeapType: NT sig read failed: %s" % str(e))
+			dbgp("_detectHeapType: NT sig read failed: %s" % str(e), errormode=False)
 		try:
 			seg_val = struct.unpack('<L', dbg.readMemory(address + 0x010, 4))[0]
 			dbgp("_detectHeapType: Segment sig at 0x%x = 0x%08x" % (address + 0x010, seg_val))
 			if seg_val == 0xddeeddee:
 				return "Segment"
 		except Exception as e:
-			dbgp("_detectHeapType: Segment sig read failed: %s" % str(e))
+			dbgp("_detectHeapType: Segment sig read failed: %s" % str(e), errormode=False)
 		dbgp("_detectHeapType: returning Unknown")
 		return "Unknown"
 
@@ -9961,9 +9965,9 @@ def getSegmentsForHeap(heapbase):
 			]
 	except Exception as e:
 		if DEBUG_MODE:
-			dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)))
+			dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)), errormode=False)
 			import traceback
-			dbgp(traceback.format_exc())
+			dbgp(traceback.format_exc(), errormode=False)
 	dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
 	mnproc.segmentlistCache[heapbase] = segmentinfo
 	return segmentinfo
@@ -10204,7 +10208,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 							probe_output = dbg.nativeCommand(probe_cmd)
 						except Exception as e:
 							probe_output = ""
-							dbgp("      !WinDBG probe failed for %s: %s" % ((PTR_PRINT % page_start), str(e)))
+							dbgp("      !WinDBG probe failed for %s: %s" % ((PTR_PRINT % page_start), str(e)), errormode=False)
 
 						if "??" in probe_output:
 							dbgp("      !WinDBG db probe reports unreadable memory at %s, skipping page fast" %
@@ -11155,7 +11159,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			with open(logfile,"a") as fh:
 				fh.write(thistable)
 		except Exception as e:
-			dbgp("showModuleTable: write failed: %s" % str(e))
+			dbgp("showModuleTable: write failed: %s" % str(e), errormode=False)
 		
 #-----------------------------------------------------------------------#
 # This is where the action is
@@ -11610,7 +11614,7 @@ def assemble(instructions,encoder=""):
 			if not silent:
 				dbg.log("   Could not assemble %s " % instruct)
 				dbg.log("   %s" % str(e))
-				dbgp(traceback.format_exc())
+				dbgp(traceback.format_exc(), errormode=False)
 			pass
 	if not silent:
 		dbg.log(" Full opcode : %s " % allopcodes)
@@ -11846,7 +11850,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	dbg.updateLog()
 	ropgadgets = {}
 	interestinggadgets = {}
-	valid_cfg_target_gadgets = {}
+	# won't store chain details, we can pick them up from ropgadgets
+	valid_cfg_target_gadgets = []
 	stackpivots = {}
 	stackpivots_safeseh = {}
 	adcnt = 0
@@ -11899,7 +11904,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						thisptr = thisopcode.getAddress()
 					except:
 						dbg.log("        ** Unable to backward disassemble at 0x%0x, depth %d, skipping location\n" % (endingtypeptr, depth+1))
-						dbgp(traceback.format_exc())
+						dbgp(traceback.format_exc(), errormode=False)
 						thisopcode = ""
 						thisptr = 0
 
@@ -11976,20 +11981,20 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 													dbgp("Added %s to interesting gadgets" % (PTR_PRINT % startptr))
 								
 											ropgadgets[startptr] = fullchain
-
 											dbgp("Added %s to ropgadgets " % (PTR_PRINT % startptr))
+
 											if bypasscfg and iscfg:
 												# only allow CFG Compatible pointers 
 												cfg_compatible_pointer = modinfo.checkCFGCompatible(startptr)
-												dbgp("Is % (%s)s CFG compatible? %s " % (currentmodulename, PTR_PRINT % startptr, cfg_compatible_pointer))											
+												dbgp("Is %s (%s) CFG compatible? %s " % (PTR_PRINT % startptr,currentmodulename, cfg_compatible_pointer))											
 												if cfg_compatible_pointer:
-													valid_cfg_target_gadgets[startptr] = fullchain
+													valid_cfg_target_gadgets.append(startptr)
 													dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
 
 							startptr = startptr+1
 						except Exception as ropex:
-							dbgp("Error while looking for gadgets: %s" % str(ropex))
-							dbgp(traceback.format_exc())
+							dbgp("Error while looking for gadgets: %s" % str(ropex), errormode=False)
+							dbgp(traceback.format_exc(), errormode=False)
 							interruptMona()
 							continue
 				else:
@@ -12103,8 +12108,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					dbg.log(updatetext)
 					objprogressfile.write(updatetext.strip(),progressfile)
 
-		
-
 	#done, write to log files
 	dbg.setStatusBar("Writing to logfiles...")
 	dbg.log("")
@@ -12207,7 +12210,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					for gadget in valid_cfg_target_gadgets:
 						ptrx = MnPointer(gadget)
 						modname = ptrx.belongsTo()
-						ptrinfo = "0x" + toHex(gadget) + " : " + valid_cfg_target_gadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
+						# pick up the details in ropgadgets
+						ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 						arrtowrite += ptrinfo
 						flipover += 1
 						gcount += 1
@@ -14609,7 +14613,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 
 		dbg.log("    Read %d bytes from file" % len(srcdata_normal))
 	except Exception as e:
-		dbgp("Error reading file %s: %s" % (filename, str(e)))
+		dbgp("Error reading file %s: %s" % (filename, str(e)), errormode=False)
 		dbg.log("Error while reading file %s" % filename, highlight=1)
 		return
 
@@ -18275,7 +18279,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 								#read pointer of imported function
 								ptr=struct.unpack(PTR_FMT,dbg.readMemory(func,PTR_SIZE))[0]
 							except Exception as e:
-								dbgp("Unable to read IAT entry at %s" % (PTR_PRINT % func))
+								dbgp("Unable to read IAT entry at %s" % (PTR_PRINT % func), errormode=False)
 								pass
 							if ptr > 0:
 								if not ptr in bpfuncs:
@@ -20709,7 +20713,7 @@ def procUpdate(args):
 				os.remove(filename)
 				dbgp("Removed temporary file %s" % filename)
 		except Exception as e:
-			dbgp("Unable to remove temporary file %s : %s" % (filename, str(e)))
+			dbgp("Unable to remove temporary file %s : %s" % (filename, str(e)), errormode=False)
 
 	def _check_connectivity():
 		hostnames = [
@@ -20725,7 +20729,7 @@ def procUpdate(args):
 				dbgp("Connectivity check succeeded for %s:%d" % (host, port))
 				return True
 			except Exception as e:
-				dbgp("Connectivity check failed for %s:%d : %s" % (host, port, str(e)))
+				dbgp("Connectivity check failed for %s:%d : %s" % (host, port, str(e)), errormode=False)
 
 		return False
 
@@ -20782,7 +20786,7 @@ def procUpdate(args):
 				return True, url
 			except Exception as e:
 				last_error = str(e)
-				dbgp("Download failed for %s from %s : %s" % (label, url, str(e)))
+				dbgp("Download failed for %s from %s : %s" % (label, url, str(e)), errormode=False)
 				_safe_remove(destfile)
 
 		if last_error != "":
@@ -20805,7 +20809,7 @@ def procUpdate(args):
 			with open(releasenotes_file, "rb") as fh:
 				lines = fh.readlines()
 		except Exception as e:
-			dbgp("Unable to read release notes file %s : %s" % (releasenotes_file, str(e)))
+			dbgp("Unable to read release notes file %s : %s" % (releasenotes_file, str(e)), errormode=False)
 			return header_to_find, ""
 
 		found = False
@@ -21012,7 +21016,7 @@ def procUpdate(args):
 				except Exception as e:
 					dbg.log("    [-] Unable to force update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
-					dbgp("Force copy failed for %s : %s" % (name, str(e)))
+					dbgp("Force copy failed for %s : %s" % (name, str(e)), errormode=False)
 		elif _is_newer(current_version, current_revision, new_version, new_revision):
 			dbg.log("    [+] Newer version found for %s" % name, highlight=1)
 
@@ -21029,7 +21033,7 @@ def procUpdate(args):
 				except Exception as e:
 					dbg.log("    [-] Unable to update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
-					dbgp("Copy failed for %s : %s" % (name, str(e)))
+					dbgp("Copy failed for %s : %s" % (name, str(e)), errormode=False)
 		else:
 			dbg.log("    [+] You are already running the latest version of %s" % name)
 			if simulate_only:
@@ -25335,7 +25339,7 @@ def procCopy(args):
 		except Exception as e:
 			dbg.log("    *** Copy failed, check if both locations are accessible/mapped",highlight=1)
 			dbg.log("    *** %s" % str(e))
-			dbgp("    *** Traceback: %s" % traceback.format_exc())
+			dbgp("    *** Traceback: %s" % traceback.format_exc(), errormode=False)
 	return
 
 # unicode alignment routines written by floyd (http://www.floyd.ch, twitter: @floyd_ch)

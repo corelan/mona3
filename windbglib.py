@@ -138,11 +138,14 @@ def set_debug_mode(enabled):
     global DEBUG_MODE
     DEBUG_MODE = bool(enabled)
 
-def dbgp(s):
+def dbgp(s, errormode=False):
 	# print debug information
+	msgprefix = ""
+	if errormode:
+		msgprefix = " - ERR"
 	if DEBUG_MODE:
 		try:
-			print("[WINDBGLIB DEBUG] %s | %s" % (get_current_datetime(),s))
+			print("[WINDBGLIB DEBUG%s] %s | %s" % (msgprefix, get_current_datetime(),s))
 		except Exception as e:
 			print("[WINDBGLIB DEBUG - error] %s | %s" % (get_current_datetime(), str(e)))
 			pass
@@ -532,7 +535,7 @@ def getNtHeaders(modulebase):
 	try:
 		nth = pykd.module("ntdll").typedVar(ntheaders, modulebase + pykd.ptrDWord(modulebase + 0x3c))
 	except Exception as e:
-		dbgp("ERROR: %s" % str(e))
+		dbgp("ERROR: %s" % str(e), errormode=False)
 	return nth
 
 
@@ -3514,8 +3517,8 @@ class Debugger:
 			dbgp("returning '%s'" % output)
 			return output
 		except Exception as e:
-			dbgp("Error executing command '%s': %s" % (cmd2run, str(e)))
-			dbgp("%s" % traceback.format_exc())
+			dbgp("Error executing command '%s': %s" % (cmd2run, str(e)), errormode=False)
+			dbgp("%s" % traceback.format_exc(), errormode=False)
 			return ""
 
 	"""
@@ -4047,8 +4050,8 @@ class Debugger:
 		except Exception as e:
 			# probably invalid instruction, so fake by returning itself
 			# caller should check if address is different than what was provided
-			dbgp("Error disasmForward for 0x%x: %s" % (address, str(e)))
-			dbgp(traceback.format_exc())
+			dbgp("Error disasmForward for 0x%x: %s" % (address, str(e)), errormode=False)
+			dbgp(traceback.format_exc(), errormode=False)
 			return self.getOpcode(address)
 
 
@@ -4075,13 +4078,13 @@ class Debugger:
 				else:
 					return self.getOpcode(address)
 			except Exception as e:
-				dbgp("Error disassembling backwards, %s" % str(e))
-				dbgp(traceback.format_exc())
-				dbgp("Depth: %d" % depth)
+				dbgp("Error disassembling backwards, %s" % str(e), errormode=False)
+				dbgp(traceback.format_exc(), errormode=False)
+				dbgp("Depth: %d" % depth, errormode=False)
 				# probably invalid instruction, so fake by returning itself
 				# caller should check if address is different than what was provided
 				if depth == 1:
-					dbgp("Depth 1, returning opcode at 0x%x" % address)
+					dbgp("Depth 1, returning opcode at 0x%x" % address, errormode=False)
 					return self.getOpcode(address)
 			depth -= 1
 
@@ -4162,7 +4165,7 @@ class Debugger:
 						dbgp("Successfully made a backup of the original bytes at address %s" % (PTR_PRINT % address))
 						read_success = True
 					except Exception as e:
-						dbgp("Failed to read from valid address %s: %s" % (PTR_PRINT % address, str(e)))
+						dbgp("Failed to read from valid address %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 						# If read fails, use fallback address
 						read_success = False
 				else:
@@ -4188,7 +4191,7 @@ class Debugger:
 						dbgp("Successfully read from fallback address %s" % (PTR_PRINT % address))
 						read_success = True
 					except Exception as e:
-						dbgp("Failed to read from fallback address %s: %s" % (PTR_PRINT % address, str(e)))
+						dbgp("Failed to read from fallback address %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 						origbytes = b""
 				attempts += 1
 
@@ -4228,9 +4231,9 @@ class Debugger:
 						allbytes += thesebytes
 						self.AsmCache[ascii_instruction] = thesebytes
 					except Exception as e:
-						dbgp("Error using keystone to assemble '%s'" % ascii_instruction)
-						dbgp("%s" % str(e))
-						dbgp(traceback.format_exc())
+						dbgp("Error using keystone to assemble '%s'" % ascii_instruction, errormode=False)
+						dbgp("%s" % str(e), errormode=False)
+						dbgp(traceback.format_exc(), errormode=False)
 				else:
 					dbgp("Keystone not installed, fallback to using pykd")
 					objdisasm = pykd.disasm(address)
@@ -4252,7 +4255,7 @@ class Debugger:
 						dbgp("Added opcode for '%s' to cache" % ascii_instruction)
 
 					except Exception as e:
-						dbgp("Unable to assemble instruction '%s'" % ascii_instruction)
+						dbgp("Unable to assemble instruction '%s'" % ascii_instruction, errormode=False)
 
 		# restore origbytes if needed 
 		if origbytes != b"":
@@ -4325,8 +4328,8 @@ class Debugger:
 				cmd2run = 'bp 0x%x %s' % (address, extracmd)
 			self.nativeCommand(cmd2run)
 		except Exception as e:
-			dbgp("Error setting breakpoint: %s " % str(e))
-			dbgp("   bp command: %s" % cmd2run)
+			dbgp("Error setting breakpoint: %s " % str(e), errormode=False)
+			dbgp("   bp command: %s" % cmd2run, errormode=False)
 			return False
 		return True
 
@@ -4406,8 +4409,8 @@ class Debugger:
 						bpcommand = '%s %s' % (bpcommand, extracmd)
 					output = pykd.dbgCommand(bpcommand)
 				else:
-					dbgp("Error setting memory breakpoint with command: %s" % bpcommand)
-					dbgp("Output: %s" % output)
+					dbgp("Error setting memory breakpoint with command: %s" % bpcommand, errormode=False)
+					dbgp("Output: %s" % output, errormode=False)
 					self.log("** Unable to set memory breakpoint. Check alignment,")
 					self.log("   and try to run the following command to get more information:")
 					self.log("   %s" % bpcommand)
@@ -4597,8 +4600,8 @@ class wmodule:
 						if "!" in symbolName:
 							iatlist[iatAddr + i*pSize] = symbolName
 				except Exception as e:
-					dbgp("Error while getting IAT: %s" % str(e))
-					dbgp(traceback.format_exc())
+					dbgp("Error while getting IAT: %s" % str(e), errormode=False)
+					dbgp(traceback.format_exc(), errormode=False)
 					continue
 		return iatlist
 
@@ -4668,7 +4671,7 @@ class wpage():
 			except Exception as e:
 				# pykd.loadBytes() may fail for large reads or when the region contains an unreadable sub-page.
 				# Before bailing out, try to reconstruct the region using 0x1000 chunk reads.
-				dbgp("wpage.getMemory: direct read failed for page %s-%s: %s" % (PTR_PRINT % self.begin, PTR_PRINT % self.end, str(e)))
+				dbgp("wpage.getMemory: direct read failed for page %s-%s: %s" % (PTR_PRINT % self.begin, PTR_PRINT % self.end, str(e)), errormode=False)
 
 				def _parse_db_output_tokens(out, max_tokens=0):
 					"""Parse db/db$ output tokens into [0..255] or None (for ??)."""
@@ -4746,7 +4749,7 @@ class wpage():
 						this_len = page_chunk if remaining > page_chunk else remaining
 						addr = self.begin + offset
 						dbgp("wpage.getMemory: trying chunk read at %s len=0x%x (page %s-%s)" %
-							 (PTR_PRINT % addr, this_len, PTR_PRINT % self.begin, PTR_PRINT % self.end))
+							 (PTR_PRINT % addr, this_len, PTR_PRINT % self.begin, PTR_PRINT % self.end), errormode=False)
 						try:
 							chunk = bytes(bytearray(pykd.loadBytes(addr, this_len)))
 							if len(chunk) < this_len:
@@ -4758,29 +4761,29 @@ class wpage():
 							continue
 						except Exception:
 							dbgp("wpage.getMemory: chunk read failed at %s len=0x%x; probing with db" %
-								 (PTR_PRINT % addr, this_len))
+								 (PTR_PRINT % addr, this_len), errormode=False)
 
 						db_probe = _windbg_db_has_real_bytes(addr, this_len)
 						if db_probe is False:
 							dbgp("wpage.getMemory: db shows only ?? at %s len=0x%x; giving up page %s-%s" %
-								 (PTR_PRINT % addr, this_len, PTR_PRINT % self.begin, PTR_PRINT % self.end))
+								 (PTR_PRINT % addr, this_len, PTR_PRINT % self.begin, PTR_PRINT % self.end), errormode=False)
 							return None
 						if db_probe is None:
 							dbgp("wpage.getMemory: db probe inconclusive at %s len=0x%x; giving up page" %
-								 (PTR_PRINT % addr, this_len))
+								 (PTR_PRINT % addr, this_len), errormode=False)
 							return None
 
 						dbgp("wpage.getMemory: db shows concrete bytes at %s len=0x%x; reading with db$" %
-							 (PTR_PRINT % addr, this_len))
+							 (PTR_PRINT % addr, this_len), errormode=False)
 						dbbytes = _windbg_db_read_bytes(addr, this_len, use_db_dollar=True)
 						if dbbytes is None:
 							# If db$ is not available/parseable, fallback to db parsing as compatibility path.
 							dbgp("wpage.getMemory: db$ read failed at %s len=0x%x; trying db parser fallback" %
-								 (PTR_PRINT % addr, this_len))
+								 (PTR_PRINT % addr, this_len), errormode=False)
 							dbbytes = _windbg_db_read_bytes(addr, this_len, use_db_dollar=False)
 						if dbbytes is None:
 							dbgp("wpage.getMemory: unable to recover chunk via db$/db at %s len=0x%x; giving up page" %
-								 (PTR_PRINT % addr, this_len))
+								 (PTR_PRINT % addr, this_len), errormode=False)
 							return None
 						if len(dbbytes) < this_len:
 							dbbytes += b"\x00" * (this_len - len(dbbytes))
@@ -4794,7 +4797,7 @@ class wpage():
 					elif len(outbuf) > self.size:
 						outbuf = outbuf[:self.size]
 					dbgp("wpage.getMemory: reconstructed page %s-%s using chunk/db$ path" %
-						 (PTR_PRINT % self.begin, PTR_PRINT % self.end))
+						 (PTR_PRINT % self.begin, PTR_PRINT % self.end), errormode=False)
 					return bytes(bytearray(outbuf))
 
 				if "Memory exception at" not in str(e):
@@ -4802,7 +4805,7 @@ class wpage():
 					if data2 is not None:
 						return data2
 
-				dbgp("Error accessing memory: %s" % str(e))
+				dbgp("Error accessing memory: %s" % str(e), errormode=False)
 				return None
 		else:
 			#dbgp("Page at %s has no access, cannot read memory" % (PTR_PRINT % self.begin))
