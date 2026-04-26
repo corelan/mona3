@@ -274,7 +274,7 @@ def _get_default_downstream_store():
 	return _default_downstream_store
 
 
-def getSymPaths():
+def getSymPaths(windbgflavor=None):
 	"""Parse the WinDBG symbol path and return (cache_dirs, servers, entries).
 
 	cache_dirs : list of str   -- unique local directories where symbols are stored
@@ -374,10 +374,26 @@ def getSymPaths():
 
 		entries.append({"cache": e_cache, "server": e_server, "raw": entry})
 
+	if windbgflavor == "windbgx":
+		ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
+		programdata_dbg = os.path.abspath(os.path.expandvars(r"%PROGRAMDATA%\Dbg\Sym"))
+		if programdata_dbg and "%" not in programdata_dbg:
+			if programdata_dbg.lower() not in seen_dirs:
+				seen_dirs.add(programdata_dbg.lower())
+				cache_dirs.append(programdata_dbg)
+				entries.append({
+					"cache": programdata_dbg,
+					"server": ms_symbol_server,
+					"raw": r"srv*%s*%s" % (programdata_dbg, ms_symbol_server),
+				})
+			if ms_symbol_server.lower() not in seen_srvs:
+				seen_srvs.add(ms_symbol_server.lower())
+				servers.append(ms_symbol_server)
+
 	return cache_dirs, servers, entries
 
 
-def fetchSymbol(module_name, pdbname="", guidage="", cache_dir=None):
+def fetchSymbol(module_name, pdbname="", guidage="", cache_dir=None, windbgflavor=None):
 	"""Force WinDBG to download symbols for a loaded module.
 
 	Uses '.reload /f <module>' which triggers WinDBG's built-in symbol
@@ -404,7 +420,7 @@ def fetchSymbol(module_name, pdbname="", guidage="", cache_dir=None):
 
 	# Resolve cache dir for verification
 	if cache_dir is None and pdbname and guidage:
-		_dirs, _srvs, _ = getSymPaths()
+		_dirs, _srvs, _ = getSymPaths(windbgflavor)
 		if _dirs:
 			cache_dir = _dirs[0]
 
@@ -428,7 +444,7 @@ def fetchSymbol(module_name, pdbname="", guidage="", cache_dir=None):
 
 	# Also scan all cache dirs in case it landed in a different one
 	if pdbname and guidage:
-		_dirs, _, _ = getSymPaths()
+		_dirs, _, _ = getSymPaths(windbgflavor)
 		for cdir in _dirs:
 			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
 			if os.path.isfile(candidate):
@@ -450,7 +466,7 @@ def fetchSymbol(module_name, pdbname="", guidage="", cache_dir=None):
 
 	# Re-check cache
 	if pdbname and guidage:
-		_dirs, _, _ = getSymPaths()
+		_dirs, _, _ = getSymPaths(windbgflavor)
 		for cdir in _dirs:
 			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
 			if os.path.isfile(candidate):

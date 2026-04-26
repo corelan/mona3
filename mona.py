@@ -267,72 +267,57 @@ def getWinDBGVersion():
 
 		global g_windbgflavor
 
-		version_lines = []
+		if g_windbgflavor == "" or g_windbgflavor == "unknown":
 
-		try:
-			output = dbg.nativeCommand("version")
-			version_lines = output.split("\n")
-		except:
-			dbgp("Unable to execute command to get WinDBG version")
+			version_lines = []
 
-		if not version_lines:
-			# assume it's windbg classic
-			g_windbgflavor = "windbg"
-			return {
-				"is_windbgx": False,
-				"debugger": "unknown",
-				"reason": "No version output was provided"
-			}
+			try:
+				output = dbg.nativeCommand("version")
+				version_lines = output.split("\n")
+			except:
+				dbgp("Unable to execute command to get WinDBG version")
 
-		text = "\n".join([str(line) for line in version_lines])
-		text_l = text.lower()
+			if not version_lines:
+				# assume it's windbg classic
+				g_windbgflavor = "windbg"
+				return
+				
 
-		windbgx_indicators = [
-			"windowsapps\\microsoft.windbg_",
-			"enghost.exe",
-			"npipe:pipe=dbgx_"
-		]
+			text = "\n".join([str(line) for line in version_lines])
+			text_l = text.lower()
 
-		classic_indicators = [
-			"windbg.exe",
-			"\\windows kits\\10\\debuggers\\",
-			"\\windows kits\\8.1\\debuggers\\",
-			"\\windows kits\\8.0\\debuggers\\"
-		]
+			windbgx_indicators = [
+				"windowsapps\\microsoft.windbg_",
+				"enghost.exe",
+				"npipe:pipe=dbgx_"
+			]
 
-		matched_windbgx = []
-		for indicator in windbgx_indicators:
-			if indicator in text_l:
-				matched_windbgx.append(indicator)
+			classic_indicators = [
+				"windbg.exe",
+				"\\windows kits\\10\\debuggers\\",
+				"\\windows kits\\8.1\\debuggers\\",
+				"\\windows kits\\8.0\\debuggers\\"
+			]
 
-		if matched_windbgx:
-			g_windbgflavor = "windbgx"
-			return {
-				"is_windbgx": True,
-				"debugger": "windbgx",
-				"reason": "Detected WinDBGX indicator(s): %s" % ", ".join(matched_windbgx)
-			}
+			matched_windbgx = []
+			for indicator in windbgx_indicators:
+				if indicator in text_l:
+					matched_windbgx.append(indicator)
 
-		matched_classic = []
-		for indicator in classic_indicators:
-			if indicator in text_l:
-				matched_classic.append(indicator)
+			if matched_windbgx:
+				g_windbgflavor = "windbgx"
+				return
 
-		if matched_classic:
-			g_windbgflavor = "windbg"
-			return {
-				"is_windbgx": False,
-				"debugger": "windbg",
-				"reason": "Detected WinDBG Classic indicator(s): %s" % ", ".join(matched_classic)
-			}
+			matched_classic = []
+			for indicator in classic_indicators:
+				if indicator in text_l:
+					matched_classic.append(indicator)
 
-	g_windbgflavor = "unknown"
-	return {
-		"is_windbgx": False,
-		"debugger": "unknown",
-		"reason": "No reliable WinDBGX or WinDBG Classic indicators were found"
-	}
+			if matched_classic:
+				g_windbgflavor = "windbg"
+				return
 
+			g_windbgflavor = "unknown"
 
 
 
@@ -372,22 +357,8 @@ def _ensureSymbolCache(auto_fix=False):
 			dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
 			return []
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
-
-	if g_windbgflavor == "windbgx":
-		programdata_dbg = os.path.abspath(os.path.expandvars(r"%PROGRAMDATA%\Dbg\Sym"))
-		if programdata_dbg and "%" not in programdata_dbg:
-			seen_cache_dirs = set(d.lower() for d in cache_dirs)
-			if programdata_dbg.lower() not in seen_cache_dirs:
-				cache_dirs.append(programdata_dbg)
-				sym_entries.append({
-					"cache": programdata_dbg,
-					"server": ms_symbol_server,
-					"raw": r"srv*%s*%s" % (programdata_dbg, ms_symbol_server),
-				})
-			if ms_symbol_server.lower() not in [s.lower() for s in servers]:
-				servers.append(ms_symbol_server)
 
 	dbgp("Cache_dirs: %s" % cache_dirs)
 	for d in cache_dirs:
@@ -26120,22 +26091,10 @@ def _sym_list(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
-	if g_windbgflavor == "windbgx":
-		ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
-		programdata_dbg = os.path.abspath(os.path.expandvars(r"%PROGRAMDATA%\Dbg\Sym"))
-		if programdata_dbg and "%" not in programdata_dbg:
-			seen_cache_dirs = set(d.lower() for d in cache_dirs)
-			if programdata_dbg.lower() not in seen_cache_dirs:
-				cache_dirs.append(programdata_dbg)
-				sym_entries.append({
-					"cache": programdata_dbg,
-					"server": ms_symbol_server,
-					"raw": r"srv*%s*%s" % (programdata_dbg, ms_symbol_server),
-				})
-		dbgp("Cache dirs: %s" % cache_dirs)
+	dbgp("Cache dirs: %s" % cache_dirs)
 
 	filtertext = criteriaToText(modulecriteria, True)
 	if filtertext:
@@ -26273,7 +26232,7 @@ def _sym_load(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	# Parse -s for specific server/cache index
@@ -26364,7 +26323,7 @@ def _sym_load(args):
 			else:
 				# WinDBG .reload /f
 				success, local_path, message = dbglib.fetchSymbol(
-					reload_name, pdbname, guidage)
+					reload_name, pdbname, guidage, windbgflavor=g_windbgflavor)
 
 			if success:
 				loaded += 1
@@ -26397,7 +26356,7 @@ def _sym_clean(args):
 			folders_to_clean.append(args["p"])
 
 	if len(folders_to_clean) == 0:
-		cache_dirs, servers, sym_entries = dbglib.getSymPaths()
+		cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
 		for cdir in cache_dirs:
 			ckey = cdir.lower()
 			if ckey not in seen_folders:
