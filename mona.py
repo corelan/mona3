@@ -28018,7 +28018,7 @@ def main(args):
 		else:
 			dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
 			dbg.log("")
-			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (launchcmd, str(arch)), highlight=True)
+			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (getAliasName(), str(arch)), highlight=True)
 
 		
 		# ----- report ----- #
