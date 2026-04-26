@@ -24840,20 +24840,13 @@ def procString(args):
 		#dbg.log("*** Error: you must indicate if you want to read (-r) or write (-w) ***",highlight=True)
 		mode = "read"
 
-	addresserror = False
 	if not "a" in args:
-		addresserror = True
+		addressok = False
 	else:
 		if type(args["a"]).__name__.lower() != "bool":
-			# check if it's a register or not
-			if str(args["a"]).lower() in regs:
-				addy = regs[str(args["a"].lower())]
-			else:
-				addy = int(args["a"],16)
-		else:
-			addresserror = True
+			addy, addressok = getAddyArg(args["a"])
 
-	if addresserror:
+	if not addressok:
 		dbg.log("*** Error: you must specify a valid address with -a ***",highlight=True)
 		return
 
@@ -24891,10 +24884,11 @@ def procString(args):
 			else:
 				stringinmemory = dbg.readWString(addy)
 				extra = " (unicode) "
-			dbg.log("String%sat 0x%08x:" % (extra,addy))
-			dbg.log("%s" % stringinmemory)
+			dbg.log("[+] Reading string%sat %s:" % (extra,PTR_PRINT % addy))
+			dbg.log("")
+			dbg.log("    %s" % stringinmemory, highlight=True)
 		except:
-			dbg.log("Unable to read string at 0x%08x" % addy)
+			dbg.log("    Unable to read string at %s" % PTR_PRINT % addy, highlight=True)
 	if mode == "write":
 		origstring = stringtowrite
 		writtendata = ""
@@ -24907,7 +24901,7 @@ def procString(args):
 					byteswritten += " %s" % bin2hex(c)
 				dbg.writeMemory(addy,stringtowrite)
 				writtendata = dbg.readString(addy)
-				dbg.log("Wrote string (%d bytes) to 0x%08x:" % (len(stringtowrite),addy))
+				dbg.log("Wrote string (%d bytes) to %s" % (len(stringtowrite),PTR_PRINT % addy))
 				dbg.log("%s" % byteswritten)
 			else:
 				newstring = ""
@@ -24916,7 +24910,7 @@ def procString(args):
 				if terminatestring:
 					newstring += "\x00\x00"
 				dbg.writeMemory(addy,newstring)
-				dbg.log("Wrote unicode string (%d bytes) to 0x%08x" % (len(newstring),addy))
+				dbg.log("Wrote unicode string (%d bytes) to %s" % (len(newstring),PTR_PRINT % addy))
 				writtendata = dbg.readWString(addy)
 				byteswritten = ""
 				for c in newstring:
