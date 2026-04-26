@@ -4810,7 +4810,7 @@ class MnModule:
 
 			sorted_buckets = cfg_table.get_sorted_buckets(granularity)
 			if not sorted_buckets:
-				return "Address bucket 0x%x is not present in the module CFG table, and the module has no valid CFG buckets." % bucket
+				return "The module does not seem to have valid CFG buckets."
 
 			idx = bisect.bisect_left(sorted_buckets, bucket)
 			prev_txt = "none"
@@ -4828,7 +4828,8 @@ class MnModule:
 				next_distance = (next_bucket - bucket) * granularity
 				next_txt = "0x%x [0x%x-0x%x], distance %d byte(s)" % (next_bucket, next_start, next_end, next_distance)
 
-			return "Address falls in bucket index 0x%x, which is not present in the module CFG table.\nNearest previous valid bucket: %s.\nNearest next valid bucket: %s." % (bucket, prev_txt, next_txt)
+			#return "Address falls in bucket index 0x%x, which is not present in the module CFG table.\nNearest previous valid bucket: %s.\nNearest next valid bucket: %s." % (bucket, prev_txt, next_txt)
+			return "Address is not part of a valid CFG target range. \nNearest previous valid bucket: %s.\nNearest next valid bucket: %s." % (prev_txt, next_txt)
 
 		# Normalize ptr to VA.
 		# If ptr looks like an RVA, convert it to VA.
@@ -4843,13 +4844,13 @@ class MnModule:
 			if cached_entry is False:
 				return _ret(False, None, _miss_reason(ptr_bucket))
 			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
-			return _ret(True, cached_entry, "Address falls in bucket index 0x%x [%s-%s], which was previously matched against CFG entry RVA 0x%x (VA %s)." % (ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, cached_entry.rva, PTR_PRINT % cached_entry.va))
+			return _ret(True, cached_entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA 0x%x (VA %s).\n(cached)" % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, cached_entry.rva, PTR_PRINT % cached_entry.va))
 
 		if ptr_bucket in cfg_bucket_hits:
 			entry = cfg_first_entries.get(ptr_bucket)
 			cfg_compat_cache[ptr_bucket] = entry
 			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
-			return _ret(True, entry, "Address falls in bucket index 0x%x [%s-%s], matching CFG entry RVA 0x%x (VA %s)." % (ptr_bucket, PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, entry.rva if entry else 0, PTR_PRINT % (entry.va if entry else 0)))
+			return _ret(True, entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA 0x%x (VA %s)." % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, entry.rva if entry else 0, PTR_PRINT % (entry.va if entry else 0)))
 
 		cfg_compat_cache[ptr_bucket] = False
 
