@@ -22212,7 +22212,10 @@ def procLayout(args):
 	_sort_val   = args.get("s", args.get("sort", "base"))
 	if type(_sort_val).__name__.lower() == "bool":
 		_sort_val = "base"
-	element_mode = _sort_val.strip().lower() == "elements"
+	_sort_val = _sort_val.strip().lower()
+	if _sort_val in ["elem", "element"]:
+		_sort_val = "elements"
+	element_mode = _sort_val == "elements"
 
 	# Flush cache if -walk is specified
 	if "walk" in args:
@@ -22246,6 +22249,7 @@ def procLayout(args):
 	if "Heap Chunk" in show_categories:
 		populate_entities.add("chunks")
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
+	dbg.log("    Sort mode: %s" % _sort_val)
 	_ensureMnProc(entities=sorted(populate_entities), include_chunks=include_chunks)
 	
 	# Build the flat region list for display.
@@ -27000,9 +27004,9 @@ Optional parameters :
     -split                      : write gadgets to individual files, grouped by the module the gadget belongs to
     -fast                       : skip the 'non-interesting' gadgets
     -cfg                        : Identify valid CFG target gadgets and write them to a separate output file
-                                 (this may slow down the overall process a bit)
+                                  (this may slow down the overall process a bit)
     -end <instruction(s)>       : specify one or more instructions that will be used as chain end. 
-                                 (Separate instructions with #). Default ending is RETN
+                                  (Separate instructions with #). Default ending is RETN
     -f \"file1,file2,..filen\"    : use mona generated rop files as input instead of searching in memory
     -rva                        : use RVA's in rop chain
     -s <technique>              : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
@@ -27296,6 +27300,7 @@ Optional arguments:
                  Example: -s elements
     -f <types> : Filter by comma-separated types to display
                  Valid types: peb, teb, mod, stack, heap, chunks, vablocks, all
+				 (no -f provided: chunks & vablocks are hidden)
                  Each type expands to include related regions:
                    heap     = Heap + Heap Segments
                    chunks   = Heap + Heap Segments + Heap Chunks
@@ -27304,7 +27309,6 @@ Optional arguments:
                  Example: -f "heap,stack"
                  Example: -f "chunks"  (shows heaps, segments and chunks)
                  Example: -f "all"     (same as -a)
-               When no -f is provided, detailed chunks and vablocks are hidden
     -t <type>  : Add individual types to the default output
                  Example: -t vablocks
 				 (this is the equivalent of -f "peb,teb,mod,stack,heap,vablocks")
