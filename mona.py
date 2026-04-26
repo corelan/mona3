@@ -11889,10 +11889,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				if adcnt > done:
 					thistimestamp=get_current_datetime()
 					eta = get_eta(startmoment, done, tp)
-					updatetext = "      - {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
+					updatetext = "      - ({ts}) Processed {done} / {total} ({pct:.2f}%) - ETA: {eta}".format(
+						ts=thistimestamp,
 						done=done,
 						total=tp,
-						ts=thistimestamp,
 						pct=(done * 100.0) / tp,
 						eta=eta
 					)
