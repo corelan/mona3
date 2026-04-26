@@ -408,6 +408,13 @@ def clickWinDBGCmd(windbg_cmd = ""):
 	return cmdoutstr
 
 
+def clickFetchSym(modname, displaytext = ""):
+	cmdoutstr = displaytext
+	if __DEBUGGER_APP__ == "WinDBG":
+		cmdoutstr = "<link cmd=\"%s\">%s</link>" % ("!mona sym -f -m %s" % modname, displaytext)
+	return cmdoutstr
+
+
 def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	chunktrstr = ""
 	fmtted_ptr = PTR_PRINT % chunkptr
@@ -26054,7 +26061,9 @@ def _sym_list(args):
 				table_data[base] = (modname, pdbname, "Yes (%s)" % label, pdb_size, pdb_path)
 				found_count += 1
 			else:
-				table_data[base] = (modname, pdbname, "No", "", "")
+				# no, add clickable link to fetch
+				cachetext = clickFetchSym(modname, "No")
+				table_data[base] = (modname, pdbname, cachetext, "", "")
 				missing_count += 1
 		row_order.append(base)
 
