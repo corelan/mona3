@@ -19934,6 +19934,10 @@ def procInfo(args):
 			ptr.showHeapBlockInfo()
 		else:
 			dbg.log("    Module: None")	
+		
+		strataddress = dbg.readString(address)
+		if len(strataddress) > 0:
+			dbg.log("    String at %s: %s" % (PTR_PRINT % address, strataddress))
 
 	if isWinDBG():
 		funcinfo = dbglib.Function(dbg,address)

@@ -3563,14 +3563,58 @@ class Debugger:
 			return ensure_bytes(b"")
 
 	def readString(self,location):
+		dbgp("readString(%s) called" % (PTR_PRINT % location))
 		if pykd.isValid(location):
 			try:
-				return pykd.loadCStr(location)
-			except pykd.MemoryException:
-				return pykd.loadChars(location, 0x100)
-			except:
-				return ""
+				result = pykd.loadCStr(location)
+				dbgp("readString(%s) loadCStr returned %r" % (PTR_PRINT % location, result))
+				return result
+			except pykd.MemoryException as e:
+				dbgp("readString(%s) loadCStr MemoryException: %s" % (PTR_PRINT % location, str(e)))
+				try:
+					result = pykd.loadChars(location, 0x100)
+					dbgp("readString(%s) loadChars returned %r" % (PTR_PRINT % location, result))
+					return result
+				except Exception as inner_e:
+					dbgp("readString(%s) loadChars exception: %s" % (PTR_PRINT % location, str(inner_e)))
+					rawbytes = bytearray()
+					nextloc = location
+					while pykd.isValid(nextloc):
+						chunk = self.readMemory(nextloc, 4)
+						dbgp("readString(%s) chunk @ %s -> %s" % (PTR_PRINT % location, PTR_PRINT % nextloc, binascii.hexlify(chunk).decode('ascii') if chunk else "<empty>"))
+						if not chunk:
+							break
+						for thisbyte in iter_byte_values(chunk):
+							if thisbyte < 0x20 or thisbyte > 0x7e:
+								result = ensure_text(bytes(rawbytes))
+								dbgp("readString(%s) terminated on byte 0x%02x, returning %r" % (PTR_PRINT % location, thisbyte, result))
+								return result
+							rawbytes.append(thisbyte)
+						nextloc += len(chunk)
+					result = ensure_text(bytes(rawbytes))
+					dbgp("readString(%s) exhausted readable memory, returning %r" % (PTR_PRINT % location, result))
+					return result
+			except Exception as e:
+				dbgp("readString(%s) loadCStr general exception: %s" % (PTR_PRINT % location, str(e)))
+				rawbytes = bytearray()
+				nextloc = location
+				while pykd.isValid(nextloc):
+					chunk = self.readMemory(nextloc, 4)
+					dbgp("readString(%s) chunk @ %s -> %s" % (PTR_PRINT % location, PTR_PRINT % nextloc, binascii.hexlify(chunk).decode('ascii') if chunk else "<empty>"))
+					if not chunk:
+						break
+					for thisbyte in iter_byte_values(chunk):
+						if thisbyte < 0x20 or thisbyte > 0x7e:
+							result = ensure_text(bytes(rawbytes))
+							dbgp("readString(%s) terminated on byte 0x%02x, returning %r" % (PTR_PRINT % location, thisbyte, result))
+							return result
+						rawbytes.append(thisbyte)
+					nextloc += len(chunk)
+				result = ensure_text(bytes(rawbytes))
+				dbgp("readString(%s) exhausted readable memory, returning %r" % (PTR_PRINT % location, result))
+				return result
 		else:
+			dbgp("readString(%s) invalid address" % (PTR_PRINT % location))
 			return ""
 
 	def readWString(self,location):
@@ -4283,7 +4327,58 @@ class Debugger:
 	"""
 
 	def readString(self,address):
-		return pykd.loadCStr(address)
+		dbgp("readString(%s) called" % (PTR_PRINT % address))
+		if pykd.isValid(address):
+			try:
+				result = pykd.loadCStr(address)
+				dbgp("readString(%s) loadCStr returned %r" % (PTR_PRINT % address, result))
+				return result
+			except pykd.MemoryException as e:
+				dbgp("readString(%s) loadCStr MemoryException: %s" % (PTR_PRINT % address, str(e)))
+				try:
+					result = pykd.loadChars(address, 0x100)
+					dbgp("readString(%s) loadChars returned %r" % (PTR_PRINT % address, result))
+					return result
+				except Exception as inner_e:
+					dbgp("readString(%s) loadChars exception: %s" % (PTR_PRINT % address, str(inner_e)))
+					rawbytes = bytearray()
+					nextloc = address
+					while pykd.isValid(nextloc):
+						chunk = self.readMemory(nextloc, 4)
+						dbgp("readString(%s) chunk @ %s -> %s" % (PTR_PRINT % address, PTR_PRINT % nextloc, binascii.hexlify(chunk).decode('ascii') if chunk else "<empty>"))
+						if not chunk:
+							break
+						for thisbyte in iter_byte_values(chunk):
+							if thisbyte < 0x20 or thisbyte > 0x7e:
+								result = ensure_text(bytes(rawbytes))
+								dbgp("readString(%s) terminated on byte 0x%02x, returning %r" % (PTR_PRINT % address, thisbyte, result))
+								return result
+							rawbytes.append(thisbyte)
+						nextloc += len(chunk)
+					result = ensure_text(bytes(rawbytes))
+					dbgp("readString(%s) exhausted readable memory, returning %r" % (PTR_PRINT % address, result))
+					return result
+			except Exception as e:
+				dbgp("readString(%s) loadCStr general exception: %s" % (PTR_PRINT % address, str(e)))
+				rawbytes = bytearray()
+				nextloc = address
+				while pykd.isValid(nextloc):
+					chunk = self.readMemory(nextloc, 4)
+					dbgp("readString(%s) chunk @ %s -> %s" % (PTR_PRINT % address, PTR_PRINT % nextloc, binascii.hexlify(chunk).decode('ascii') if chunk else "<empty>"))
+					if not chunk:
+						break
+					for thisbyte in iter_byte_values(chunk):
+						if thisbyte < 0x20 or thisbyte > 0x7e:
+							result = ensure_text(bytes(rawbytes))
+							dbgp("readString(%s) terminated on byte 0x%02x, returning %r" % (PTR_PRINT % address, thisbyte, result))
+							return result
+						rawbytes.append(thisbyte)
+					nextloc += len(chunk)
+				result = ensure_text(bytes(rawbytes))
+				dbgp("readString(%s) exhausted readable memory, returning %r" % (PTR_PRINT % address, result))
+				return result
+		dbgp("readString(%s) invalid address" % (PTR_PRINT % address))
+		return ""
 
 	"""
 	Breakpoints
