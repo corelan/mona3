@@ -21564,16 +21564,20 @@ def procSuggest(args):
 						skeletonarg = skelparts[1]
 					else:
 						dbg.log(" ** Please specify the skeleton type AND an argument. **")
+						dbg.log("    Valid types are : tcpclient:argument, udpclient:argument, fileformat:argument")
 						return
 					usecliargs = True
 				else:
 					dbg.log(" ** Please specify a valid skeleton type and an argument. **")
+					dbg.log("    Valid types are : tcpclient:argument, udpclient:argument, fileformat:argument")
 					return							
 			else:
 				dbg.log(" ** Please specify a skeletontype using -t **",highlight=1)
+				dbg.log("    Valid types are : tcpclient:argument, udpclient:argument, fileformat:argument")
 				return
 		else:
 			dbg.log(" ** Please specify a skeletontype using -t **",highlight=1)
+			dbg.log("    Valid types are : tcpclient:argument, udpclient:argument, fileformat:argument")
 			return
 
 	mspresults = {}
@@ -21806,7 +21810,8 @@ def procSuggest(args):
 				stackadjust = 0
 				if largestreg.lower() == "esp":
 					if not isEIPUnicode:
-						exploitstr += "    buffer << Metasm::Shellcode.assemble(Metasm::Ia32.new, 'add esp,-1500').encode_string # avoid GetPC shellcode corruption\n"
+						exploitstr += "    # stack adjust to give %s and %s room to play\n" % (STACK_POINTER, PROGRAM_COUNTER)
+						exploitstr += "    buffer << Metasm::Shellcode.assemble(Metasm::Ia32.new, 'add esp,-1500').encode_string\n"
 						stackadjust = 6
 						exploitstr += "    buffer << payload.encoded  #max " + str(largestsize - stackadjust) + " bytes\n"
 				if isEIPUnicode:
