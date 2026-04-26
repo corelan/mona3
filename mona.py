@@ -4844,13 +4844,13 @@ class MnModule:
 			if cached_entry is False:
 				return _ret(False, None, _miss_reason(ptr_bucket))
 			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
-			return _ret(True, cached_entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA 0x%x (VA %s).\n(cached)" % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, cached_entry.rva, PTR_PRINT % cached_entry.va))
+			return _ret(True, cached_entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA %s (VA %s).\n(cached)" % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, PTR_PRINT % cached_entry.rva, PTR_PRINT % cached_entry.va))
 
 		if ptr_bucket in cfg_bucket_hits:
 			entry = cfg_first_entries.get(ptr_bucket)
 			cfg_compat_cache[ptr_bucket] = entry
 			bucket_start, bucket_end = _bucket_bounds(ptr_bucket)
-			return _ret(True, entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA 0x%x (VA %s)." % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, entry.rva if entry else 0, PTR_PRINT % (entry.va if entry else 0)))
+			return _ret(True, entry, "Address is in CFG target range [%s-%s],\nmatching CFG entry RVA %x (VA %s)." % (PTR_PRINT % bucket_start, PTR_PRINT % bucket_end, PTR_PRINT % (entry.rva if entry else 0), PTR_PRINT % (entry.va if entry else 0)))
 
 		cfg_compat_cache[ptr_bucket] = False
 
@@ -11921,11 +11921,6 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							thisopcodebytes = ""
 							chainptr = startptr
 							if isGoodGadgetPtr(startptr,criteria): 
-								if bypasscfg and iscfg:
-									# only allow CFG Compatible pointers 
-									cfg_compatible_pointer = modinfo.checkCFGCompatible(startptr)
-									dbgp("Is %s CFG compatible? %s " % (PTR_PRINT % startptr, cfg_compatible_pointer))
-										
 								# only lookup if it's a good gadget
 								if not startptr in ropgadgets and not startptr in interestinggadgets:
 									#if DEBUG_MODE:
@@ -11981,10 +11976,15 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 													dbgp("Added %s to interesting gadgets" % (PTR_PRINT % startptr))
 								
 											ropgadgets[startptr] = fullchain
+
 											dbgp("Added %s to ropgadgets " % (PTR_PRINT % startptr))
-											if bypasscfg and cfg_compatible_pointer:
-												valid_cfg_target_gadgets[startptr] = fullchain
-												dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
+											if bypasscfg and iscfg:
+												# only allow CFG Compatible pointers 
+												cfg_compatible_pointer = modinfo.checkCFGCompatible(startptr)
+												dbgp("Is % (%s)s CFG compatible? %s " % (currentmodulename, PTR_PRINT % startptr, cfg_compatible_pointer))											
+												if cfg_compatible_pointer:
+													valid_cfg_target_gadgets[startptr] = fullchain
+													dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
 
 							startptr = startptr+1
 						except Exception as ropex:
