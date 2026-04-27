@@ -70,6 +70,45 @@ def prepend_release_notes(release_notes_file, sections):
     path.write_text(new_text, encoding="utf-8")
 
 
+def cleanup_old_release_notes(release_notes_file, latest_revisions, max_revision_distance=10):
+    path = Path(release_notes_file)
+
+    if not path.exists():
+        return
+
+    text = path.read_text(encoding="utf-8")
+
+    header_pattern = re.compile(
+        r"^\[(mona|windbglib)\s+(\d+\.\d+)\.(\d+)\]\s*$",
+        re.MULTILINE,
+    )
+
+    matches = list(header_pattern.finditer(text))
+    if not matches:
+        return
+
+    kept_sections = []
+
+    for index, match in enumerate(matches):
+        name = match.group(1)
+        revision = int(match.group(3))
+
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        section = text[start:end].strip()
+
+        latest_revision = latest_revisions.get(name)
+
+        if latest_revision is None:
+            kept_sections.append(section)
+            continue
+
+        if latest_revision - revision <= max_revision_distance:
+            kept_sections.append(section)
+
+    path.write_text("\n\n".join(kept_sections).rstrip() + "\n", encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--since", required=True)
@@ -82,11 +121,14 @@ def main():
         raise RuntimeError("Each --file needs a matching --name")
 
     sections = []
+    latest_revisions = {}
 
     for filename, name in zip(args.file, args.name):
         old_revision, new_revision = bump_revision(filename)
         version = get_version_string(filename)
         commits = get_commits_for_file(args.since, filename)
+
+        latest_revisions[name] = new_revision
 
         section = f"[{name} {version}.{new_revision}]\n{commits}"
         sections.append(section)
@@ -94,6 +136,12 @@ def main():
         print(f"{filename}: __REV__ {old_revision} -> {new_revision}")
 
     prepend_release_notes(args.release_notes, sections)
+
+    cleanup_old_release_notes(
+        args.release_notes,
+        latest_revisions,
+        max_revision_distance=10,
+    )
 
 
 if __name__ == "__main__":
