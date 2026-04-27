@@ -530,6 +530,12 @@ def getAliasName():
 				if guessedname != "":
 					aliasname = guessedname
 					dbgp("Alias guessed using windbg alias list")
+		else:
+			# Immunity, 
+			# get the actual script name
+			sname = get_script_name() 
+			if not sname == "unknown":
+				aliasname = "!%s" % sname
 	dbgp("Alias to use: %s" % aliasname)
 	return aliasname
 
@@ -547,6 +553,7 @@ def getLaunchCommand():
 	dbgp("LaunchCommand: %s" % launchcmd)
 	#dbgp("EntireCommand: %s" % entire_command)
 	return launchcmd
+
 
 def guessAliasName(current_command):
 	# if WinDBG, check the aliases
@@ -26922,7 +26929,7 @@ def getBanner():
 	bannertext += "    #------------------------------------------------------------------#\n"
 	banners[2] = bannertext
 
-	bannertext = ""
+	bannertext = "\n"
 	bannertext += "    .##.....##..#######..##....##....###........########..##....##\n"
 	bannertext += "    .###...###.##.....##.###...##...##.##.......##.....##..##..##.\n"
 	bannertext += "    .####.####.##.....##.####..##..##...##......##.....##...####..\n"
@@ -26988,19 +26995,20 @@ def procHelp(args, helpForCommand=None):
 	dbgname = __DEBUGGERAPP__
 	if isWinDBG():
 		dbgname = "%s" % windbgprettyname
-	dbg.log("    Debugger        : %s (%sbit)" % (dbgname,str(arch)))
-	dbg.log("    Plugin version  : %s r%s" % (__VERSION__,__REV__))
-	dbg.log("    Python version  : %s" % (getPythonVersion()))
-	if isWinDBG():
-		pykdversion = dbg.getPyKDVersionNr()
-		dbg.log("    PyKD version    : %s" % pykdversion)
-		if g_keystoneLoaded:
-			dbg.log("    keystone-engine : %s" % (keystone.__version__))
+	#dbg.log("    Debugger        : %s (%sbit)" % (dbgname,str(arch)))
+	#dbg.log("    Plugin version  : %s r%s" % (__VERSION__,__REV__))
+	#dbg.log("    Python version  : %s" % (getPythonVersion()))
+	#if isWinDBG():
+	#	pykdversion = dbg.getPyKDVersionNr()
+	#	dbg.log("    PyKD version    : %s" % pykdversion)
+	#	if g_keystoneLoaded:
+	#		dbg.log("    keystone-engine : %s" % (keystone.__version__))
 	dbg.log("    Written by Corelan - https://www.corelan.be")
 	dbg.log("    Project page : https://github.com/corelan/mona3")
 	dbg.logLines(getBanner(),highlight=1)
 
 	if helpForCommand == None:
+		dbg.log("")
 		dbg.log("Global options :", highlight=1)
 		dbg.log("----------------", highlight=1)
 		dbg.log("You can use one or more of the following global options on any command that will perform")
@@ -27047,12 +27055,11 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("")
 		dbg.log("  You can interrupt a long-running search by creating a file 'stop'")
 		dbg.log("  and placing it in the same folder as mona.py")
-		dbg.log("  Next time mona intends to calculate an eta, it will interrupt the script instead")
+		dbg.log("  Any time mona intends to calculate an eta, it will check for the file,")
+		dbg.log("  and interrupt the script if the file was present.")
 		dbg.log("-" * 120)
 	scriptname = get_script_name()
-	launchcmd = "!" + scriptname		
-	if isWinDBG():
-		launchcmd = "!py " + scriptname
+	launchcmd = getAliasName()
 
 	if helpForCommand == None:
 		# show all commands
@@ -27060,10 +27067,10 @@ def procHelp(args, helpForCommand=None):
 		dbg.logLines("\n\nUsage :")
 		dbg.logLines("-------\n")
 		if isWinDBG():
-			dbg.log("<b>!py %s &lt;command&gt; &lt;parameter&gt;</b>" % scriptname)
+			dbg.log("<b>!%s &lt;command&gt; &lt;parameter&gt;</b>" % launchcmd)
 			dbg.logLines("\nAvailable commands and parameters for <b>%sbit</b> architecture:\n" % str(arch))
 		else:
-			dbg.log("%s <command> <parameter>" % getAliasName())
+			dbg.log("%s <command> <parameter>" % launchcmd)
 			dbg.logLines("\nAvailable commands and parameters for %sbit architecture:\n" % str(arch))
 
 		items = sorted(commands.items(), key=itemgetter(0))
@@ -27092,9 +27099,12 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("")
 		dbg.log("Basic command:") 
 		dbg.log("--------------")
-		dbg.log("   %s %s" % (launchcmd,helpForCommand.name ))
+		aliasname = getAliasName()
+		commands_to_show = ["%s %s" % (aliasname, helpForCommand.name)]
 		if helpForCommand.name != helpForCommand.alias:
-			dbg.log("   %s %s" % (launchcmd,helpForCommand.alias ))
+			commands_to_show.append("%s %s" % (aliasname, helpForCommand.alias))
+		for cmd in commands_to_show:
+			dbg.log("   %s" % cmd, highlight = True)
 		dbg.log("")
 		dbg.log("Usage:")
 		dbg.log("------")
@@ -27139,12 +27149,12 @@ You can add items to the parameter using the -add option, and remove items using
 The alias variable allow you to set the command you're using to launch mona.
 This will affect clickable links and help output.
 
-For example, in WinDBG(X):
-   !load pykd
-   !py -3.9 c:\Tools\mona3\mona.py config -set alias #mona
-   as !py -3.9 c:\Tools\mona3\mona.py !mona
+  For example, in WinDBG(X):
+    !load pykd
+    !py -3.9 c:\Tools\mona3\mona.py config -set alias #mona
+    as !py -3.9 c:\Tools\mona3\mona.py !mona
 
-   (note: the # (hashtag) will be replaced with !)
+    (note: the # (hashtag) will be replaced with !)
 
 """
 	
@@ -27164,6 +27174,7 @@ Optional arguments :
                            load   - InLoadOrderModuleList (DLL load order)
                            memory - InMemoryOrderModuleList
                            init   - InInitializationOrderModuleList (DllMain call order)
+
     -sort <spec>       : sort the output using a compound sort specifier.
                          Each key is optionally followed by a suffix:
                            Bool columns  (rebase,safeseh,aslr,cfg,nx,os):
@@ -27511,7 +27522,9 @@ Optional arguments:
                  Example: -t vablocks
 				 (this is the equivalent of -f "peb,teb,mod,stack,heap,vablocks")
 
-Use -a to show everything, -f to pick specific types, or -s elements for hierarchical mode."""
+  Use -a to show everything, 
+      -f to pick specific types, 
+	  or -s elements for hierarchical mode."""
 	
 	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
 
@@ -27787,13 +27800,16 @@ Arguments:
     -a     : address (or register) to write to""" 
 
 	# initialize list of available mona commands
-	global scriptname
+	global scriptname	
 	scriptname = get_script_name()
-	launchcmd = scriptname
+	launchcmd = getAliasName()
 	if isWinDBG():
-		launchcmd = "!py " + scriptname
+		if guessedAlias != "":
+			launchcmd = guessedAlias
+		else:
+			launchcmd = "!py " + scriptname
 
-	commands["help"] 			= MnCommand("help", "Show help", "%s help [command]" % launchcmd,procHelp,"h",[32,64])
+	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
@@ -28095,13 +28111,12 @@ def main(args):
 
 		aline = " ".join(a for a in argcopy)
 
-
+		aliasname = ""
 		if isWinDBG():
-			scriptname = get_script_name()
-			aline = "!py " + aline
-			dbg.log("[+] Command used: <b>%s</b>" % aline)
-			if guessedAlias != "":
-				dbg.log("    (Perhaps you have used %s %s " % (guessedAlias, justargs))
+			aliasname = getAliasName()
+			dbg.log("[+] Command used: <b>%s %s</b>" % (aliasname, justargs))		
+			if aline != "":
+				dbg.log("             >>>> %s" % (aline))
 		else:
 			scriptname = "mona"
 			aline = ("%s " % getAliasName()) + aline
@@ -28154,7 +28169,7 @@ def main(args):
 		scriptname = get_script_name()
 		launchcmd = "!" + scriptname		
 		if isWinDBG():
-			launchcmd = "!py " + scriptname
+			launchcmd = aliasname
 
 		if command == "" or command == "-h":
 			command = "help"
@@ -28199,7 +28214,6 @@ def main(args):
 		# ----- report ----- #
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
-		dbg.log("")
 		if isWinDBG():
 			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (get_current_datetime(), getAliasName(), str(delta)))
 		else:
