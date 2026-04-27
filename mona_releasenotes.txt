@@ -1,3 +1,17 @@
+[mona 3.0.3001]
+- 833347d change way versions and revisions are collected
+- 817d38c convert registers to lowercase
+- 8401411 python2/3 compatibility issues
+- 240e126 implement byte expanding in cpbArgsToBytes
+- 5f6db1a indent for better readability
+- 5e69328 migrate code over to getIntArg
+- 374bd5b Merge pull request #49 from corelan/remove-pickle
+- afcea6e simplify, add use of getIntArg()
+- 0171b7a Remove pickle, yay
+- 801cc2c Merge pull request #48 from corelan/peb-teb-refactor
+- 53c1b52 implement helper to get numeric arguments
+- 91c10a5 Refactor PEB and TEB usage to be relying more on Mn structs
+
 [mona 3.0.3000]
 
 ___  ________ _   _   ___          _____ 
