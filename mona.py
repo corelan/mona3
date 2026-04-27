@@ -68,7 +68,6 @@ else:
 	bytes_type = str
 
 
-__IMM__ = '1.8'
 __DEBUGGERAPP__ = ''
 arch = 32
 win7mode = False
@@ -162,6 +161,7 @@ Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
 global scriptname
 currentArgs = []
 guessedAlias = ""
+aliasname = ""
 
 MemoryPageACL={}
 configFileCache = {}
@@ -316,6 +316,7 @@ def getWinDBGVersion():
 				return
 
 			windbgflavor = "unknown"
+			windbgprettyname = "Unknown Debugger"
 
 
 
@@ -512,27 +513,31 @@ offsets = {
 
 
 def getAliasName():
-	aliasname = "!mona"
-	monaConfig = MnConfig()
-	configalias = monaConfig.get("alias")
-	if len(configalias) > 0:
-		aliasname = configalias
-		dbgp("Alias taken from mona config")
-	else:
-		if isWinDBG():
-			launchcmd = getLaunchCommand()
-			if launchcmd != "": 
-				guessedname = guessAliasName(launchcmd)
-				if guessedname != "":
-					aliasname = guessedname
-					dbgp("Alias guessed using windbg alias list")
+	global aliasname
+	if aliasname == "":
+		aliasname = "!mona"
+		monaConfig = MnConfig()
+		configalias = monaConfig.get("alias")
+		if len(configalias) > 0:
+			aliasname = configalias
+			dbgp("Alias taken from mona config")
 		else:
-			# Immunity, 
-			# get the actual script name
-			sname = get_script_name() 
-			if not sname == "unknown":
-				aliasname = "!%s" % sname
-	dbgp("Alias to use: %s" % aliasname)
+			if isWinDBG():
+				launchcmd = getLaunchCommand()
+				if launchcmd != "": 
+					guessedname = guessAliasName(launchcmd)
+					if guessedname != "":
+						aliasname = guessedname
+						dbgp("Alias guessed using windbg alias list")
+			else:
+				# Immunity, 
+				# get the actual script name
+				sname = get_script_name() 
+				if not sname == "unknown":
+					aliasname = "!%s" % sname
+		dbgp("Alias to use: %s" % aliasname)
+	else:
+		dbgp("Alias returned from cache: %s" % aliasname)
 	return aliasname
 
 
@@ -983,7 +988,7 @@ def get_current_function_name():
         # Parent function
         parent_name = parent_frame.f_code.co_name if parent_frame else "???()"
 
-        return "--- %s() -> %s(%s)" % (parent_name, current_name, callerargs)
+        return "--- %s() -> <b>%s</b>(%s)" % (parent_name, current_name, callerargs)
 
     finally:
         del frame	
