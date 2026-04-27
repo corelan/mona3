@@ -824,6 +824,55 @@ def getAllRegisters():
 		return dbg.getRegs()
 
 
+def cpbArgToBytes(value):
+	txt = ensure_text(value).strip().replace('"', "").replace("'", "")
+	if txt == "":
+		return b"", True
+
+	if "\\x" in txt.lower():
+		badchars = txt.replace("\\x", "").replace("\\X", "")
+		bpos = 0
+		newbadchars = ""
+		try:
+			while bpos < len(badchars):
+				if (bpos + 1) >= len(badchars):
+					return b"", False
+				curchar = badchars[bpos] + badchars[bpos+1]
+				if curchar == "..":
+					pos = bpos
+					if pos > 1 and pos <= len(badchars)-4:
+						bytebefore = badchars[pos-2] + badchars[pos-1]
+						byteafter = badchars[pos+2] + badchars[pos+3]
+						bbefore = int(bytebefore,16)
+						bafter = int(byteafter,16)
+						insertbytes = ""
+						bbefore += 1
+						while bbefore < bafter:
+							insertbytes += "%02x" % bbefore
+							bbefore += 1
+						newbadchars += insertbytes
+				else:
+					newbadchars += curchar
+				bpos += 2
+			raw = hex2bin(newbadchars)
+		except Exception:
+			return b"", False
+	else:
+		try:
+			raw = ensure_bytes(txt, encoding="latin-1")
+		except Exception:
+			return b"", False
+
+	seen = set()
+	out = []
+	for c in raw:
+		b = c if isinstance(c, int) else ord(c)
+		if b not in seen:
+			seen.add(b)
+			out.append(struct.pack('B', b))
+	return b"".join(out), True
+
+
 def _safe_int(v):
 	try:
 		return int(str(v).strip().replace("'", "").replace('"', ""))
@@ -1754,6 +1803,12 @@ def bin2hex(binbytes):
 		else:
 			out.append("%02x" % _ord(c))
 	return ' '.join(out)
+
+def bytesToPrintableHex(data):
+    if len(data) == 0:
+        return ""
+    return "\\x" + "\\x".join(bin2hex(data).split(" "))
+
 
 
 def yesno():
@@ -18338,44 +18393,18 @@ def args2criteria(args,modulecriteria,criteria):
 			args["cpb"] = args["cbp"]
 	
 	if "cpb" in args:
-		badchars = args["cpb"]
-		badchars = badchars.replace("'","")
-		badchars = badchars.replace('"',"")
-		badchars = badchars.replace("\\x","")
-		# see if we need to expand ..
-		bpos = 0
-		newbadchars = ""
-		while bpos < len(badchars):
-			curchar = badchars[bpos]+badchars[bpos+1]
-			if curchar == "..":
-				pos = bpos
-				if pos > 1 and pos <= len(badchars)-4:
-					# get byte before and after ..
-					bytebefore = badchars[pos-2] + badchars[pos-1]
-					byteafter = badchars[pos+2] + badchars[pos+3]
-					bbefore = int(bytebefore,16)
-					bafter = int(byteafter,16)
-					insertbytes = ""
-					bbefore += 1
-					while bbefore < bafter:
-						insertbytes += "%02x" % bbefore
-						bbefore += 1
-					newbadchars += insertbytes
-			else:
-				newbadchars += curchar
-			bpos += 2
-		badchars = newbadchars
-		cnt = 0
-		strb = b""
-		while cnt < len(badchars):
-			strb=strb+binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
-			cnt=cnt+2
+		strb, badcharsok = cpbArgToBytes(args["cpb"])
+		if not badcharsok:
+			dbg.log("    * Unable to parse -cpb value '%s'" % args["cpb"], highlight=True)
+			return modulecriteria,criteria
 		criteria["badchars"] = strb
-		dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
+		badchars_printable = "\\x" + "\\x".join(bin2hex(strb).split(" "))
+		dbg.log("    - Bad char filter will be applied to pointers : %s " % badchars_printable)
+
 			
 	if "cm" in args:
 		modcriteria = args["cm"].split(",")
-		for modcrit in modcriteria:
+		for modcrit in modcriteria: 
 			modcrit=modcrit.strip("'")
 			modcrit=modcrit.strip('"').lower().strip()
 			#each criterium has 1 or 2 parts : criteria=value
@@ -20570,41 +20599,16 @@ def procByteArray(args):
 			if not "cpb" in args:
 				args["cpb"] = args["b"]
 
-	if "cpb" in args:	
-		badchars = args["cpb"]
-	badchars = cleanHex(badchars)
-
-	# see if we need to expand ..
-	bpos = 0
-	newbadchars = ""
-	while bpos < len(badchars):
-		curchar = badchars[bpos]+badchars[bpos+1]
-		if curchar == "..":
-			pos = bpos
-			if pos > 1 and pos <= len(badchars)-4:
-				# get byte before and after ..
-				bytebefore = badchars[pos-2] + badchars[pos-1]
-				byteafter = badchars[pos+2] + badchars[pos+3]
-				bbefore = int(bytebefore,16)
-				bafter = int(byteafter,16)
-				insertbytes = b""
-				bbefore += 1
-				while bbefore < bafter:
-					insertbytes += "%02x" % bbefore
-					bbefore += 1
-				newbadchars += insertbytes
-		else:
-			newbadchars += curchar
-		bpos += 2
-	badchars = newbadchars
-
-	cnt = 0
 	strb = b""
-	while cnt < len(badchars):
-		strb += binascii.a2b_hex(badchars[cnt]+badchars[cnt+1])
-		cnt=cnt+2
+	if "cpb" in args:
+		strb, badcharsok = cpbArgToBytes(args["cpb"])
+		if not badcharsok:
+			dbg.log(" *** Unable to parse -cpb value '%s' ***" % args["cpb"], highlight=1)
+			return
 
-	dbg.log("Generating table, excluding %d bad chars..." % len(strb))
+	badchars_printable = "\\x" + "\\x".join(bin2hex(strb).split(" "))
+	dbg.log("Generating table, excluding %d bad chars: %s" % (len(strb), badchars_printable))
+
 	arraytable = []
 	binarray = b""
 
@@ -27032,6 +27036,7 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("                                  except if you are looking for unicode + one crit")
 		dbg.log("  -cpb '\\x00\\x01'        : Provide list with bad chars, applies to pointers")
 		dbg.log("                           You can use .. to indicate a range of bytes (in between 2 bad chars)")
+		dbg.log("                           For example -cpb '\\x00..\\x05' will be expanded to \\x00\\x01\\x02\\x03\\x04\\x05")
 		dbg.log("  -x <access>            : Specify desired access level of the returning pointers. If not specified,")
 		dbg.log("                           only executable pointers will be returned.")
 		dbg.log("                           Access levels can be one of the following values : R,W,X,RW,RX,WX,RWX or *")
