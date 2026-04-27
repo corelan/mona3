@@ -2699,7 +2699,7 @@ class MnPEB:
 		0x00000080:		["hvc", "Enable Heap Validation On Call"],
   		0x00000100:		["vrf", "Enable Application Verifier"],
 		0x00000200:		["   ", "Enable Silent Process Exit Monitoring"],
-  		**({0x000000400: ["ptg", "Enable Pool Tagging"]} if win7mode else {}),
+  		0x00000400:     ["ptg", "Enable Pool Tagging"],
 		0x00000800:		["htg", "Enable Heap Tagging"],
 		0x00001000:		["ust", "Create User Mode Stack Trace"],
 		0x00002000:		["kst", "Create Kernel Mode Stack Trace"],
@@ -2721,6 +2721,10 @@ class MnPEB:
 		0x40000000:		["bhd", "Disable Bad Handles Detection"],
 		0x80000000:		["dpd", "Disable Protected DLL Verification"],
 	}
+
+	if not win7mode and 0x00000400 in _nt_global_flag_definitions:
+		del _nt_global_flag_definitions[0x00000400]
+
 
 	# PEB field offsets: (offset_x86, offset_x64)
 	_offsets = {
@@ -2867,14 +2871,14 @@ class MnPEB:
             
 		return ",".join(names)
     
-	def getNtGlobalFlagValueName(flag_value):
+	def getNtGlobalFlagValueName(self, flag_value):
 		"""
 		Returns a formatted string: '+[shortname] - [description]'
 		Example: '+hpc - Enable Heap Parameter Checking'
 		"""
 		short_name, description = self.getNtGlobalFlagValueData(flag_value)
-		prefix = f"+{short_name}" if short_name.strip() else "    "
-		return f"{prefix} - {description}"
+		prefix = "+%s" % short_name if short_name.strip() else "    "
+		return "%s - %s" % (prefix, description)
 
 	def _iter_ldr(self, list_name="InLoadOrderModuleList"):
 		"""Yield (dll_base, base_name, full_path) for every entry in *list_name*."""
