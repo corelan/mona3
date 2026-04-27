@@ -120,7 +120,6 @@ import datetime
 import binascii
 import itertools
 import traceback
-import pickle
 import json
 from collections import OrderedDict
 import bisect
@@ -1441,7 +1440,7 @@ def getHeapAllocSize(requested_size, granularity = 8):
 	return allocated_size
 	
 
-
+# TODO: Move into MnModule
 def getFunctionAddress(modname,funcname):
 	"""
 	Returns the addres of the function inside a given module
@@ -1846,23 +1845,6 @@ def writeJSONDict(filename, dicttosave):
 		outfile.write(_to_bytes(json.dumps(dicttosave)))
 	return
 
-
-def readPickleDict(filename):
-	"""
-	Retrieve stored dict from file (pickle load)
-	"""
-	pdict = {}
-	pdict = pickle.load( open(filename,"rb"))
-	return pdict
-
-def writePickleDict(filename, dicttosave):
-	"""
-	Write a dict to file as a pickle
-	"""
-	pickle.dump(dicttosave, open(filename, "wb"))
-	return
-
-	
 def opcodesToHex(opcodes):
 	"""
 	Converts pairs of chars (opcode bytes) to hex string notation
@@ -26775,7 +26757,7 @@ def procAllocMem(args):
 			dbg.log("[+] Wrote %d times \\x%s to chunk at %s" % (written,bin2hex(fillbyte),PTR_PRINT % addy))
 	return
 
-def procHideDebug(args): #bananas bananas
+def procHideDebug(args): # TODO: move most of this logic to the PEB too
 	_ensureMnProc(entities=["peb"])
 	peb = mnproc.getPEB().address
 	dbg.log("[+] Patching PEB (0x%08x)" % peb)
