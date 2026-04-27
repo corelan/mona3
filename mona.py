@@ -1784,6 +1784,10 @@ def getVariantType(typenr):
 
 
 
+def listToLower(items):
+	return [_to_text(item).lower() for item in items]
+
+
 def bin2hex(binbytes):
 	"""
 	Converts bytes/bytearray/str/int to a hex string
@@ -19020,6 +19024,10 @@ def procFindJMP(args, procUsage=""):
 				validregs = dbglib.Registers32BitsOrder[:]
 			if arch == 64:
 				validregs = dbglib.Registers32BitsOrder[:] + dbglib.Registers64BitsOrder[:]
+
+			# convert the registers to lowercase
+			if not isWinDBG():
+				validregs = listToLower(validregs)
 			if not thisreg in validregs:
 				dbg.log("Invalid register '%s'." % args["r"].strip(), highlight=1)
 				dbg.log("Valid registers: %s" % ", ".join(validregs))
