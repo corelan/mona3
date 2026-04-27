@@ -164,9 +164,6 @@ global scriptname
 currentArgs = []
 guessedAlias = ""
 
-_teb_addr_cache = None
-_peb_addr_cache = None
-
 MemoryPageACL={}
 configFileCache = {}
 CFGTableCache = {}
@@ -775,7 +772,7 @@ def resetGlobals():
 # reset semaphore
 _creating_mnproc = False
 
-
+# TODO: To remove when we complete MnProc as a smart getter
 def _ensureMnProc(entities=None, include_chunks=False):
     """Lazily create MnProc and optionally populate selected entities.
 
@@ -2504,13 +2501,11 @@ def walkSegment(FirstEntry,LastValidEntry,heapbase):
 	Finds all chunks in a given segment
 
 	Arguments : Start and End of segment, and heapbase
-	
 
 	Returns a dictionary of MnChunk objects
 	Key : chunk pointer
 
 	"""
-	mHeap = MnHeap(heapbase)
 	mSegment = MnSegment(heapbase,FirstEntry,LastValidEntry)
 	return mSegment.getChunks()
 
@@ -2649,37 +2644,46 @@ def getNrOfDictElements(thisdict):
 			total += 1
 	return total
 
-def get_teb_addr():
-	"""
-	Return the TEB address for the current thread.
-	Cached at mona level (_teb_addr_cache) and at the windbglib Debugger
-	instance level (self._teb_addr).
-	"""
-	global _teb_addr_cache
-	if _teb_addr_cache is not None:
-		return int(_teb_addr_cache)
-	try:
-		_teb_addr_cache = dbg.get_teb_addr()
-	except Exception:
-		# Fallback for Immunity: use current thread's TEB directly
-		try:
-			tid = dbg.getThreadId()
-			thread = dbg.getAllThreads()[tid]
-			_teb_addr_cache = thread.getTEB()
-			if _teb_addr_cache is None:
-				_teb_addr_cache = 0
-		except Exception:
-			_teb_addr_cache = 0
-	if _teb_addr_cache is None:
-		_teb_addr_cache = 0
-	return int(_teb_addr_cache)
-
 
 class MnPEB:
 	"""
 	Class representing the Process Environment Block (PEB).
 	Reads fields directly from memory using the cached PEB address.
 	"""
+ 
+	_nt_global_flag_definitions = {
+		0x0: 			["","No GFlags enabled"],
+		0x00000001:		["soe", "Stop On Execute"],
+		0x00000002:		["sls", "Show Loader Snaps"],
+		0x00000004:		["dic", "Debug Initial Command"],
+		0x00000008:		["shg", "Stop On Hung GUI"],
+		0x00000010:		["htc", "Enable Heap Tail Checking"],
+		0x00000020:		["hfc", "Enable Heap Free Checking"],
+		0x00000080:		["hvc", "Enable Heap Validation On Call"],
+  		0x00000100:		["vrf", "Enable Application Verifier"],
+		0x00000200:		["   ", "Enable Silent Process Exit Monitoring"],
+  		**({0x000000400: ["ptg", "Enable Pool Tagging"]} if win7mode else {}),
+		0x00000800:		["htg", "Enable Heap Tagging"],
+		0x00001000:		["ust", "Create User Mode Stack Trace"],
+		0x00002000:		["kst", "Create Kernel Mode Stack Trace"],
+		0x00004000:		["otl", "Maintain A List Of Objects For Each Type"],
+		0x00008000:		["htd", "Enable Heap Tagging By DLL"],
+		0x00010000:		["dse", "Disable Stack Extension"],
+		0x00020000:		["d32", "Enable Debugging Of Win32 Subsystem"],
+		0x00040000:		["ksl", "Enable Loading Of Kernel Debugger Symbols"],
+		0x00080000:		["dps", "Disable Paging Of Kernel Stacks"],
+		0x00100000:		["scb", "Enable System Critical Breaks"],
+		0x00200000:		["dhc", "Disable Heap Coalesce On Free"],
+		0x00400000:		["ece", "Enable Close Exception"],
+		0x00800000:		["eel", "Enable Exception Logging"],
+		0x01000000:		["eot", "Early Object Handle Type Tagging"],
+		0x02000000:		["hpa", "Enable Page Heap"],
+		0x04000000:		["dwl", "Debug WinLogon"],
+		0x08000000:		["ddp", "Buffer DbgPrint Output"],
+		0x10000000:		["cse", "Early Critical Section Event Creation"],
+		0x40000000:		["bhd", "Disable Bad Handles Detection"],
+		0x80000000:		["dpd", "Disable Protected DLL Verification"],
+	}
 
 	# PEB field offsets: (offset_x86, offset_x64)
 	_offsets = {
@@ -2690,6 +2694,7 @@ class MnPEB:
 		"NumberOfHeaps":        (0x88, 0xE8),
 		"MaximumNumberOfHeaps": (0x8C, 0xEC),
 		"ProcessHeaps":         (0x90, 0xF0),
+		"NtGlobalFlag":         (0x68, 0xBC),
 		"OSMajorVersion":       (0xA4, 0x118),
 		"OSMinorVersion":       (0xA8, 0x11C),
 		"OSBuildNumber":        (0xAC, 0x120),
@@ -2716,16 +2721,31 @@ class MnPEB:
 	_full_name_off  = (0x24, 0x48)
 	_base_name_off  = (0x2C, 0x58)
 
-	# Class-level cache: list_name -> [(dll_base, base_name, full_path), ...]
-	_raw_cache = {}
-
 	# Architecture index: 0 for x86, 1 for x64
 	_arch_index = 1 if arch == 64 else 0
 
 	# TODO: move part of procHideDebug here, we want patching to be done via MnPEB
 	def __init__(self):
-		self.PEBAddress = MnPEB.get_address()
-		if self.PEBAddress == 0:
+		try:
+			addr = dbg.get_peb_addr()
+		except Exception:
+			addr = None
+		if addr is None:
+			try:
+				teb = dbg.get_teb_addr()
+			except Exception:
+				try:
+					tid = dbg.getThreadId()
+					teb = dbg.getAllThreads()[tid].getTEB() or 0
+				except Exception:
+					teb = 0
+			if teb:
+				if arch == 32:
+					addr = struct.unpack('<L', dbg.readMemory(teb + 0x30, 4))[0]
+				else:
+					addr = struct.unpack('<Q', dbg.readMemory(teb + 0x60, 8))[0]
+		self.address = int(addr) if addr is not None else 0
+		if self.address == 0:
 			raise Exception("Unable to determine PEB address")
 
 		def _read_ptr(addr):
@@ -2734,64 +2754,93 @@ class MnPEB:
 		def _read_dword(addr):
 			return struct.unpack('<L', dbg.readMemory(addr, 4))[0]
 
-		peb = self.PEBAddress
-
-		self.ImageBaseAddress     = _read_ptr(peb + self._offsets["ImageBaseAddress"][self._arch_index])
-		self.Ldr                  = _read_ptr(peb + self._offsets["Ldr"][self._arch_index])
-		self.ProcessParameters    = _read_ptr(peb + self._offsets["ProcessParameters"][self._arch_index])
-		self.ProcessHeap          = _read_ptr(peb + self._offsets["ProcessHeap"][self._arch_index])
-		self.NumberOfHeaps        = _read_dword(peb + self._offsets["NumberOfHeaps"][self._arch_index])
-		self.MaximumNumberOfHeaps = _read_dword(peb + self._offsets["MaximumNumberOfHeaps"][self._arch_index])
-		self.ProcessHeaps         = _read_ptr(peb + self._offsets["ProcessHeaps"][self._arch_index])
-		self.OSMajorVersion       = _read_dword(peb + self._offsets["OSMajorVersion"][self._arch_index])
-		self.OSMinorVersion       = _read_dword(peb + self._offsets["OSMinorVersion"][self._arch_index])
-		self.OSBuildNumber        = struct.unpack('<H', dbg.readMemory(peb + self._offsets["OSBuildNumber"][self._arch_index], 2))[0]
+		self.ImageBaseAddress     = _read_ptr(self.address + self._offsets["ImageBaseAddress"][self._arch_index])
+		self.Ldr                  = _read_ptr(self.address + self._offsets["Ldr"][self._arch_index])
+		self.ProcessParameters    = _read_ptr(self.address + self._offsets["ProcessParameters"][self._arch_index])
+		self.ProcessHeap          = _read_ptr(self.address + self._offsets["ProcessHeap"][self._arch_index])
+		self.NumberOfHeaps        = _read_dword(self.address + self._offsets["NumberOfHeaps"][self._arch_index])
+		self.MaximumNumberOfHeaps = _read_dword(self.address + self._offsets["MaximumNumberOfHeaps"][self._arch_index])
+		self.ProcessHeaps         = _read_ptr(self.address + self._offsets["ProcessHeaps"][self._arch_index])
+		self.OSMajorVersion       = _read_dword(self.address + self._offsets["OSMajorVersion"][self._arch_index])
+		self.OSMinorVersion       = _read_dword(self.address + self._offsets["OSMinorVersion"][self._arch_index])
+		self.OSBuildNumber        = struct.unpack('<H', dbg.readMemory(self.address + self._offsets["OSBuildNumber"][self._arch_index], 2))[0]
 
 		# LdrList is built on demand via get_ldr_list() to avoid triggering
 		# MnModule construction (which calls _ensureMnProc) while MnProc.__init__
 		# is still on the stack — which would cause unbounded recursion.
-		self._ldr_list = None
+		self._ldr_list        = None
+		self._modules_by_name = {}
+		self._modules_by_base = {}
+		self._nt_global_flag = None
+		self._nt_global_flag  = self.getNtGlobalFlag()
 
-	@staticmethod
-	def get_address():
-		"""
-		Return the PEB address.
-		Cached at mona level (_peb_addr_cache) and at the windbglib Debugger
-		instance level (self._peb_addr).
-		"""
-		global _peb_addr_cache
-		if _peb_addr_cache is not None:
-			return int(_peb_addr_cache)
-		try:
-			_peb_addr_cache = dbg.get_peb_addr()
-		except Exception:
-			teb = get_teb_addr()
-			if teb != 0:
-				if arch == 32:
-					_peb_addr_cache = struct.unpack('<L', dbg.readMemory(teb + 0x30, 4))[0]
-				else:
-					_peb_addr_cache = struct.unpack('<Q', dbg.readMemory(teb + 0x60, 8))[0]
-				if _peb_addr_cache is None:
-					_peb_addr_cache = 0
-			else:
-				_peb_addr_cache = 0
-		if _peb_addr_cache is None:
-			_peb_addr_cache = 0
-		return int(_peb_addr_cache)
+	def get_address(self):
+		"""Return the PEB address stored on this instance."""
+		return self.address
 
-	@staticmethod
-	def _raw_walk(list_name="InLoadOrderModuleList"):
-		"""
-		Yield (dll_base, base_name, full_path) for every entry in the
-		specified PEB_LDR_DATA linked list.
+	def getNtGlobalFlag(self):
+		"""Return the cached NtGlobalFlag value read from the PEB."""
+		if self._nt_global_flag is None:
+			offset = self._offsets["NtGlobalFlag"][self._arch_index]
+			try:
+				self._nt_global_flag = struct.unpack('<L', dbg.readMemory(self.address + offset, 4))[0]
+			except:
+				elf._nt_global_flag = 0
+		return self._nt_global_flag
 
-		No MnPEB instance required.  Results are cached per list_name.
+	def getNtGlobalFlagValues(self, flag):
 		"""
-		if list_name in MnPEB._raw_cache:
-			for entry in MnPEB._raw_cache[list_name]:
-				yield entry
-			return
+		Decomposes a bitmask flag into its individual component flags.
+		"""
+		available_flags = sorted(
+			[k for k in self._nt_global_flag_definitions.keys() if k > 0], 
+			reverse=True
+		)
 
+		return [flag_value for flag_value in available_flags if flag & flag_value]
+    
+	def getNtGlobalFlagNames(self, flag):
+		"""
+		Converts a bitmask flag into a list of short names (abbreviations).
+		"""
+		active_bits = self.getNtGlobalFlagValues(flag)
+		names = [
+			self._nt_global_flag_definitions[bit][0] 
+			for bit in active_bits 
+			if bit in self._nt_global_flag_definitions
+		]
+		return names
+    
+	def getNtGlobalFlagValueData(self, flag_value):
+		"""
+		Returns the [short_name, description] list for a specific flag value.
+		Returns ["", ""] if the flag value is not defined.
+		"""
+		return self._nt_global_flag_definitions.get(flag_value, ["", ""])
+    
+	def getActiveFlagNames(self, flag_value):
+		"""
+		Returns a comma-separated string of short names for the active flags.
+		If no flags are set, returns the description for 0x0.
+		"""
+		names = self.getNtGlobalFlagNames(flag_value)
+
+		if not names:
+			names = [self._nt_global_flag_definitions.get(0, ["", ""])[0]]
+            
+		return ",".join(names)
+    
+	def getNtGlobalFlagValueName(flag_value):
+		"""
+		Returns a formatted string: '+[shortname] - [description]'
+		Example: '+hpc - Enable Heap Parameter Checking'
+		"""
+		short_name, description = self.getNtGlobalFlagValueData(flag_value)
+		prefix = f"+{short_name}" if short_name.strip() else "    "
+		return f"{prefix} - {description}"
+
+	def _iter_ldr(self, list_name="InLoadOrderModuleList"):
+		"""Yield (dll_base, base_name, full_path) for every entry in *list_name*."""
 		def _read_ptr(addr):
 			data = dbg.readMemory(addr, PTR_SIZE)
 			if len(data) < PTR_SIZE:
@@ -2809,84 +2858,68 @@ class MnPEB:
 			raw = dbg.readMemory(buf_ptr, length)
 			return raw.decode('utf-16-le', errors='replace')
 
-		peb_addr = MnPEB.get_address()
-		if peb_addr == 0:
+		if not self.address:
 			return
-		ldr = _read_ptr(peb_addr + MnPEB._offsets["Ldr"][MnPEB._arch_index])
+		ldr = _read_ptr(self.address + MnPEB._offsets["Ldr"][MnPEB._arch_index])
 		if not ldr:
 			return
-
-		info = MnPEB._ldr_list_info[list_name]
+		info          = MnPEB._ldr_list_info[list_name]
 		list_head     = ldr + info["head_offset"][MnPEB._arch_index]
 		link_off      = info["link_offset"][MnPEB._arch_index]
 		dll_base_off  = MnPEB._dll_base_off[MnPEB._arch_index]
 		full_name_off = MnPEB._full_name_off[MnPEB._arch_index]
 		base_name_off = MnPEB._base_name_off[MnPEB._arch_index]
-
 		flink = _read_ptr(list_head)
-		results = []
 		while flink and flink != list_head:
 			entry_base = flink - link_off
 			dll_base   = _read_ptr(entry_base + dll_base_off)
 			if dll_base is None:
 				break
-			full_path  = _wstr(entry_base, full_name_off)
-			base_name  = _wstr(entry_base, base_name_off)
-			results.append((dll_base, base_name, full_path))
+			yield dll_base, _wstr(entry_base, base_name_off), _wstr(entry_base, full_name_off)
 			flink = _read_ptr(flink)
 			if flink is None:
 				break
 
-		# Fallback: if PEB walk failed (e.g. ntdll corrupted), use debug engine
-		if not results and __DEBUGGERAPP__ == "WinDBG":
-			results = dbglib.getModulesFromDebugger()
-
-		MnPEB._raw_cache[list_name] = results
-		for entry in results:
-			yield entry
-
-	def get_ldr_list(self):
+	def walk_modules(self):
 		"""
-		Return the cached LdrList, building it on the first call.
-		Lazy so that MnPEB.__init__ does not trigger MnModule construction
-		(which needs _ensureMnProc) while MnProc is still being created.
+		Walk all three PEB_LDR_DATA module lists and return:
+		  {list_name: [MnModule, ...]}
+		MnModule objects are deduplicated by dll_base across lists.
+		Result is cached on self._ldr_list.
 		"""
-		if self._ldr_list is None:
-			self._ldr_list = self.peb_walk()
-		return self._ldr_list
-
-	def peb_walk(self):
-		"""
-		Walk all three PEB_LDR_DATA module lists and return a dict with
-		three keys, each mapping to a list of MnModule objects.
-
-		MnModule objects are created once (during the first list walk) and
-		reused by dll_base for subsequent lists, avoiding redundant PE parsing.
-		"""
+		if self._ldr_list is not None:
+			return self._ldr_list
 		mod_cache = {}
-
 		result = {}
 		for list_name in self._ldr_list_info:
+			entries = list(self._iter_ldr(list_name))
+			if not entries and __DEBUGGERAPP__ == "WinDBG":
+				entries = dbglib.getModulesFromDebugger()
 			modules = []
-			for dll_base, base_name, _ in MnPEB._raw_walk(list_name):
+			for dll_base, base_name, _ in entries:
 				if dll_base in mod_cache:
 					modules.append(mod_cache[dll_base])
 				else:
 					try:
-						imagename = os.path.splitext(base_name)[0]
-						mod = MnModule(imagename)
+						mod = MnModule(os.path.splitext(base_name)[0])
 						mod_cache[dll_base] = mod
 						modules.append(mod)
 					except Exception:
 						pass
 			result[list_name] = modules
+		self._ldr_list        = result
+		self._modules_by_base = mod_cache
+		self._modules_by_name = {m.moduleKey.lower(): m for m in mod_cache.values()}
 		return result
 
-	@staticmethod
-	def base_from_peb(modulename):
+	def get_ldr_list(self):
+		"""Return the cached module lists, building them on the first call."""
+		return self.walk_modules()
+
+	def locate_module(self, modulename):
 		"""
-		Return the load address (DllBase) for *modulename* by walking the PEB.
-		Returns 0 if not found.
+		Return (dll_base, full_path) for *modulename* by walking the PEB once.
+		Returns (0, '') if not found.
 
 		Handles deduplicated keys of the form "<stem>_<hexaddr>" that are
 		generated by getAllModules() when two modules share the same stem
@@ -2896,34 +2929,36 @@ class MnPEB:
 		"""
 		try:
 			name_lower = os.path.splitext(modulename.lower())[0]
-			for dll_base, base_name, _ in MnPEB._raw_walk():
+			for dll_base, base_name, full_path in self._iter_ldr():
 				if os.path.splitext(base_name.lower())[0] == name_lower:
-					return dll_base
+					return dll_base, full_path
 			m = re.match(r'^(.+)_([0-9a-f]+)$', name_lower)
 			if m:
 				try:
 					candidate = int(m.group(2), 16)
 					if candidate >= 0x10000:
-						return candidate
+						return candidate, ""
 				except ValueError:
 					pass
-			return 0
+			return 0, ""
 		except Exception:
-			return 0
+			return 0, ""
 
-	@staticmethod
-	def path_from_peb(mzbase):
-		"""
-		Return the full filesystem path for the module loaded at *mzbase*.
-		Returns "" if not found.
-		"""
-		try:
-			for dll_base, _, full_path in MnPEB._raw_walk():
-				if dll_base == mzbase:
-					return full_path
-			return ""
-		except Exception:
-			return ""
+	def getModuleByName(self, module_name):
+		"""Return the MnModule for *module_name* from the cache, or None."""
+		if self._ldr_list is None:
+			self.walk_modules()
+		return self._modules_by_name.get(module_name.lower())
+
+	def getModuleByAddress(self, addr):
+		"""Return the MnModule whose range contains *addr* from the cache, or None."""
+		if self._ldr_list is None:
+			self.walk_modules()
+		mod = self._modules_by_base.get(addr)
+		if mod:
+			return mod
+		return next((m for m in self._modules_by_base.values()
+					 if m.moduleBase <= addr <= m.moduleTop), None)
 
 class MnTEB:
 	"""
@@ -2943,7 +2978,7 @@ class MnTEB:
 	_arch_index = 1 if arch == 64 else 0
 
 	def __init__(self, teb_addr, peb=None):
-		self.TEBAddress = teb_addr
+		self.addr = teb_addr
 
 		# Reference to the shared MnPEB (from MnProc), not a new instance
 		self.PEB = peb
@@ -2978,7 +3013,7 @@ class MnTEB:
 		"""Return the MnTEB with the given TEB address from the MnProc cache, or None."""
 		_ensureMnProc(entities=["threads"])
 		for tid, mteb in mnproc.getThreads().items():
-			if mteb.TEBAddress == teb_addr:
+			if mteb.addr == teb_addr:
 				return mteb
 		return None
 
@@ -4539,13 +4574,11 @@ class MnModule:
 				modrebased = False
 				modisos = False
 				modiscfg = False
-				mzbase = MnPEB.base_from_peb(modulename)
+				mzbase, path = mnproc.getPEB().locate_module(modulename)
 				if mzbase == 0:
 					# fall back to pykd if PEB walk fails
 					self.moduleobj = dbg.getModule(modulename)
 					mzbase = self.moduleobj.getBaseAddress() if self.moduleobj else 0
-
-				path = MnPEB.path_from_peb(mzbase)
 				if not path:
 					if not hasattr(self, 'moduleobj'):
 						self.moduleobj = dbg.getModule(modulename)
@@ -5091,8 +5124,6 @@ class MnModule:
 	# no dbglib dependency for OS-module detection.
 	# ------------------------------------------------------------------
 
-
-
 	class _FixedFileInfo:
 		"""Mirrors VS_FIXEDFILEINFO (winver.h). Signature must be 0xFEEF04BD."""
 		SIGNATURE = 0xFEEF04BD
@@ -5126,7 +5157,7 @@ class MnModule:
 
 	class VSVersionInfo:
 		"""
-		Parse a VS_VERSION_INFO resource blob.
+		Parse a VS_VERSIONINFO resource blob.
 		Use from_memory(modbase) or from_file(path) to construct.
 		"""
 
@@ -5326,28 +5357,28 @@ class MnModule:
 		else:
 			outstring = "[None]"
 		return outstring
-		
+
 	def isAslr(self):
 		return self.isAslr
-		
+
 	def isSafeSEH(self):
 		return self.isSafeSEH
-		
+
 	def isRebase(self):
 		return self.isRebase
-		
+
 	def isOS(self):
 		return self.isOS
 
 	def isCFG(self):
 		return self.isCFG
-	
+
 	def isNX(self):
 		return self.isNX
-		
+
 	def moduleKey(self):
 		return self.moduleKey
-		
+
 	def modulePath(self):
 		return self.modulePath
 
@@ -5356,34 +5387,34 @@ class MnModule:
 
 	def moduleBase(self):
 		return self.moduleBase
-	
+
 	def moduleSize(self):
 		return self.moduleSize
-	
+
 	def moduleTop(self):
 		return self.moduleTop
-	
+
 	def moduleEntry(self):
 		return self.moduleEntry
-		
+
 	def moduleCodebase(self):
 		return self.moduleCodebase
-	
+
 	def moduleCodesize(self):
 		return self.moduleCodesize
-		
+
 	def moduleCodetop(self):
 		return self.moduleCodetop
-		
+
 	def moduleVersion(self):
 		return self.moduleVersion
 
 	def moduleDllCharacteristics(self):
 		return self.moduleDllCharacteristics
-		
+
 	def isExcluded(self):
 		return self.isExcluded
-	
+
 	def getFunctionCalls(self,criteria={}):
 		funccalls = {}
 		sequences = []
@@ -5391,7 +5422,6 @@ class MnModule:
 		funccalls = searchInRange(sequences, self.moduleBase, self.moduleTop,criteria)
 		return funccalls
 
-		
 	def getIAT(self):
 		IAT = {}
 		#dbg.log("")
@@ -5693,8 +5723,7 @@ class MnModule:
 			dbg.logLines(traceback.format_exc())
 			return IAT
 		return IAT
-		
-	
+
 	def getEAT(self):
 		dbgp(get_current_function_name())
 		eatlist = {}
@@ -5777,123 +5806,8 @@ class MnModule:
 			eatlist = self.EAT
 		return eatlist
 
-	
 	def getShortName(self):
 		return stripExtension(self.moduleKey)
-
-def getNtGlobalFlag():
-	_ensureMnProc(entities=["peb"])
-	flagoffset = 0x68
-	if arch == 64:
-		flagoffset = 0xBC
-	pebaddress = MnPEB.get_address()
-	if mnproc.NtGlobalFlag == -1:
-		try:
-			mnproc.NtGlobalFlag = struct.unpack('<L',dbg.readMemory(pebaddress+flagoffset,4))[0]
-		except:
-			mnproc.NtGlobalFlag = 0
-	return mnproc.NtGlobalFlag
-
-def getNtGlobalFlagDefinitions():
-	definitions = {}
-	
-	definitions[0x0]		= ["","No GFlags enabled"]
-	
-	definitions[0x00000001]	= ["soe", "Stop On Execute"]
-	definitions[0x00000002]	= ["sls", "Show Loader Snaps"]
-	definitions[0x00000004]	= ["dic", "Debug Initial Command"]
-	definitions[0x00000008]	= ["shg", "Stop On Hung GUI"]
-	
-	definitions[0x00000010]	= ["htc", "Enable Heap Tail Checking"]
-	definitions[0x00000020]	= ["hfc", "Enable Heap Free Checking"]
-	definitions[0x00000040]	= ["hpc", "Enable Heap Parameter Checking"]
-	definitions[0x00000080]	= ["hvc", "Enable Heap Validation On Call"]
-	
-	definitions[0x00000100]	= ["vrf", "Enable Application Verifier"]
-	definitions[0x00000200]	= ["   ", "Enable Silent Process Exit Monitoring"]
-	if not win7mode:
-		definitions[0x00000400]	= ["ptg", "Enable Pool Tagging"]
-	definitions[0x00000800]	= ["htg", "Enable Heap Tagging"]
-	
-	definitions[0x00001000]	= ["ust", "Create User Mode Stack Trace"]
-	definitions[0x00002000]	= ["kst", "Create Kernel Mode Stack Trace"]
-	definitions[0x00004000]	= ["otl", "Maintain A List Of Objects For Each Type"]
-	definitions[0x00008000]	= ["htd", "Enable Heap Tagging By DLL"]
-	
-	definitions[0x00010000]	= ["dse", "Disable Stack Extension"]
-	definitions[0x00020000]	= ["d32", "Enable Debugging Of Win32 Subsystem"]
-	definitions[0x00040000]	= ["ksl", "Enable Loading Of Kernel Debugger Symbols"]
-	definitions[0x00080000]	= ["dps", "Disable Paging Of Kernel Stacks"]
-	
-	definitions[0x00100000]	= ["scb", "Enable System Critical Breaks"]
-	definitions[0x00200000]	= ["dhc", "Disable Heap Coalesce On Free"]
-	definitions[0x00400000]	= ["ece", "Enable Close Exception"]
-	definitions[0x00800000]	= ["eel", "Enable Exception Logging"]
-	
-	definitions[0x01000000]	= ["eot", "Early Object Handle Type Tagging"]
-	definitions[0x02000000]	= ["hpa", "Enable Page Heap"]
-	definitions[0x04000000]	= ["dwl", "Debug WinLogon"]
-	definitions[0x08000000]	= ["ddp", "Buffer DbgPrint Output"]
-
-	definitions[0x10000000] = ["cse", "Early Critical Section Event Creation"]
-	definitions[0x40000000] = ["bhd", "Disable Bad Handles Detection"]
-	definitions[0x80000000]	= ["dpd", "Disable Protected DLL Verification"]
-	
-	return definitions
-
-def getNtGlobalFlagValues(flag):
-	allvalues = []
-	for defvalue in getNtGlobalFlagDefinitions():
-		if defvalue > 0:
-			allvalues.append(defvalue)
-	# sort list descending
-	allvalues.sort(reverse=True)
-	flagvalues = []
-	remaining = flag
-	for flagvalue in allvalues:
-		if flagvalue <= remaining:
-			remaining -= flagvalue
-			if remaining >= 0:
-				flagvalues.append(flagvalue)
-	return flagvalues
-
-def getNtGlobalFlagNames(flag):
-	names = []
-	allvalues = getNtGlobalFlagDefinitions()
-	currentvalues = getNtGlobalFlagValues(flag)
-	for defvalue in currentvalues:
-		if defvalue > 0:
-			names.append(allvalues[defvalue][0])
-	return names
-
-def getNtGlobalFlagValueData(flagvalue):
-	toreturn = ["",""]
-	if flagvalue in getNtGlobalFlagDefinitions():
-		toreturn = getNtGlobalFlagDefinitions()[flagvalue]
-	return toreturn
-
-def getActiveFlagNames(flagvalue):
-	currentflags = getNtGlobalFlagValues(flagvalue)
-	flagdefs = getNtGlobalFlagDefinitions()
-	flagnames = []
-	if len(currentflags) == 0:
-		currentflags = [0]
-	for flag in currentflags:
-		if flag in flagdefs:
-			flagdata = flagdefs[flag]
-			flagnames.append(flagdata[0])
-	return ",".join(flagnames)
-
-def getNtGlobalFlagValueName(flagvalue):
-	data = getNtGlobalFlagValueData(flagvalue)
-	toreturn = ""
-	if data[0] != "":
-		toreturn += "+" + data[0]
-	else:
-		toreturn += "    "
-	toreturn += " - "
-	toreturn += data[1]
-	return toreturn
 
 def getProcessHeapsInfo():
 	"""
@@ -5919,7 +5833,7 @@ def getProcessHeapsInfo():
 
 	# Read PEB address
 	try:
-		peb = MnPEB.get_address()
+		peb = mnproc.getPEB().address
 	except:
 		return results
 
@@ -8347,13 +8261,14 @@ class MnSegment:
 		         Values : MnChunk objects
 		         chunktype will be set to "chunk"
 		"""
+		_ensureMnProc()
 		thischunk = self.firstentry
 		allchunksfound = False
 		allchunks = {}
 		nextchunk = thischunk
 		cnt = 0
 		savedprevsize = 0
-		mHeap = MnHeap(self.heapbase)
+		mHeap = mnproc.getHeapObject(self.heapbase)
 		key = mHeap.getEncodingKey()
 		header_data_offset = mHeap.getChunkHeaderDataOffset()
 		while not allchunksfound:
@@ -8475,7 +8390,8 @@ class MnChunk:
 		self.dph_block_information_endstamp = 0
 		self.hasust = False
 		# if ust/hpa is enabled, the chunk header is followed by 32bytes of DPH_BLOCK_INFORMATION header info
-		currentflagnames = getNtGlobalFlagNames(getNtGlobalFlag())
+		_peb = mnproc.getPEB()
+		currentflagnames = _peb.getNtGlobalFlagNames(_peb.getNtGlobalFlag())
 		if "ust" in currentflagnames:
 			self.hasust = True
 		if "hpa" in currentflagnames:
@@ -8670,14 +8586,13 @@ class MnProc:
 		self.segmentlistCache = {}
 		self.VACache = {}
 		self.IATCache = {}
-		self.NtGlobalFlag = -1
+		self._heap_objects = {}
 		self.FreeListBitmap = {}
 		self.g_modules = {}
 		self.g_modulesOrder = None
 		self._is_populating_modules = False
 
 		# --- populated by populate() ---
-		self.peb = None
 		self.peb = self.getPEB()
 		self.teb = None
 		self.threads = {}      # {tid: MnTEB} — populated by getThreads()
@@ -8687,22 +8602,38 @@ class MnProc:
 		self.ntheapdetail = {} # {heapaddr: getNTHeapInfo() result}
 		self.defaultheap = 0   # default process heap address
 
+	def getHeapObject(self, heapbase):
+		"""Return a cached MnHeap for *heapbase*, constructing it on first access."""
+		if heapbase not in self._heap_objects:
+			self._heap_objects[heapbase] = MnHeap(heapbase)
+		return self._heap_objects[heapbase]
+
 	def getPEB(self):
 		"""Return the cached MnPEB, populating if needed."""
-		if self.peb is None:
+		if getattr(self, 'peb', None) is None:
 			self.peb = MnPEB()
 		return self.peb
 
 	def getCurrentTEB(self):
-		"""Return the MnTEB for the current thread."""
-		addr = self.teb if self.teb else get_teb_addr()
+		"""Return the cached MnTEB for the current thread, discovering it if needed."""
+		if self.teb is not None:
+			return self.teb
+		try:
+			addr = dbg.get_teb_addr()
+		except Exception:
+			try:
+				tid = dbg.getThreadId()
+				addr = dbg.getAllThreads()[tid].getTEB() or 0
+			except Exception:
+				addr = 0
 		if not addr:
 			return None
-		# Prefer the already-constructed instance from the threads cache
 		for mteb in self.threads.values():
-			if mteb.TEBAddress == addr:
-				return mteb
-		return MnTEB(addr, peb=self.peb)
+			if mteb.addr == addr:
+				self.teb = mteb
+				return self.teb
+		self.teb = MnTEB(addr, peb=self.peb)
+		return self.teb
 
 	def getTEBs(self):
 		"""Return a list of MnTEB objects for all threads in the process."""
@@ -8731,7 +8662,7 @@ class MnProc:
 					"base":  teb.StackBase,
 					"limit": teb.StackLimit,
 					"size":  teb.StackBase - teb.StackLimit,
-					"teb":   teb.TEBAddress,
+					"teb":   teb.addr,
 				}
 		return self.stacks
 
@@ -8746,11 +8677,7 @@ class MnProc:
 
 	def getModuleForAddress(self, addr):
 		"""Return the MnModule containing *addr*, or None."""
-		self.populate(entities=["modules"])
-		for modkey, props in self.g_modules.items():
-			if props["base"] <= addr <= props["top"]:
-				return MnModule(modkey)
-		return None
+		return self.getPEB().getModuleByAddress(addr)
 
 	def populateVACache(self):
 		"""
@@ -8849,10 +8776,7 @@ class MnProc:
 			except:
 				pass
 		if "teb" in selected and self.teb is None:
-			try:
-				self.teb = get_teb_addr()
-			except:
-				pass
+			self.getCurrentTEB()
 
 		# Modules
 		if "modules" in selected and len(self.modules) == 0:
@@ -8999,12 +8923,12 @@ class MnProc:
 		peb     = self.peb
 		threads = self.getThreads()
 		pid     = str(next(iter(threads.values())).ProcessId) if threads else ""
-		return (peb.PEBAddress, peb.PEBAddress + peb_size, "PEB",
+		return (peb.address, peb.address + peb_size, "PEB",
 				"%s (PID: %s)" % (clickPEB("PEB"), pid))
 
 	def _teb_entry(self, tid, mteb, teb_size, current_teb_addr):
 		"""Return (start, end, "TEB", desc) from an MnTEB instance."""
-		teb_addr = mteb.TEBAddress
+		teb_addr = mteb.addr
 		cur      = "*" if teb_addr == current_teb_addr else ""
 		if arch == 32:
 			desc = "%s%s (TID: %s | SEH Count: %s)" % (cur, clickTEB(teb_addr, "TEB"), str(mteb.Id), str(mteb.SEHCount))
@@ -9140,7 +9064,7 @@ class MnProc:
 		peb_size, teb_size = self._struct_sizes()
 		if self.peb is not None:
 			regions.append(self._peb_entry(peb_size))
-		current_teb_addr = get_teb_addr()
+		current_teb_addr = self.getCurrentTEB().addr if self.getCurrentTEB() else 0
 		stackaddy        = dbg.getRegs().get(STACK_POINTER, 0)
 		threads          = self.getThreads()
 		stacks           = self.getStacks()
@@ -9151,7 +9075,7 @@ class MnProc:
 				if sinfo:
 					regions.append(self._stack_entry(tid, mteb, sinfo, stackaddy))
 		elif self.teb is not None:
-			regions.append((self.teb, self.teb + teb_size, "TEB", "TEB"))
+			regions.append((self.teb.addr, self.teb.addr + teb_size, "TEB", "TEB"))
 		for name in self.modules:
 			regions.append(self._module_entry(MnModule(name)))
 		for heapaddr, htype, info in self.getAllHeapsSorted():
@@ -9177,7 +9101,7 @@ class MnProc:
 		peb_size, teb_size = self._struct_sizes()
 		if self.peb is not None:
 			regions.append(self._peb_entry(peb_size) + ([],))
-		current_teb_addr = get_teb_addr()
+		current_teb_addr = self.getCurrentTEB().addr if self.getCurrentTEB() else 0
 		stackaddy        = dbg.getRegs().get(STACK_POINTER, 0)
 		threads          = self.getThreads()
 		stacks           = self.getStacks()
@@ -10209,8 +10133,9 @@ class MnPointer:
 #  Various functions                    #
 #---------------------------------------#
 def getDefaultProcessHeap():
-	peb = MnPEB.get_address()
-	defprocheap = struct.unpack('<L',dbg.readMemory(peb+0x18,4))[0]
+	_ensureMnProc(entities=["peb"])
+	_peb = mnproc.getPEB().address
+	defprocheap = struct.unpack('<L',dbg.readMemory(_peb+0x18,4))[0]
 	return defprocheap
 
 def getSortedSegmentList(heapbase):
@@ -22699,7 +22624,8 @@ def procHeap(args):
 		allheaps = dbg.getHeapsAddress()
 	except:
 		allheaps = []
-	dbg.log("Peb : %s, NtGlobalFlag : 0x%08x" % (PTR_PRINT % MnPEB.get_address(),getNtGlobalFlag()))
+	_ensureMnProc(entities=["peb"])
+	dbg.log("Peb : %s, NtGlobalFlag : 0x%08x" % (PTR_PRINT % mnproc.getPEB().address, mnproc.getPEB().getNtGlobalFlag()))
 	dbg.log("Heaps:")
 	dbg.log("------")
 	if len(allheaps) > 0:
@@ -24435,7 +24361,8 @@ def procPEB(args):
 	"""
 	Show the address of the PEB
 	"""
-	pebaddy = MnPEB.get_address()
+	_ensureMnProc(entities=["peb"])
+	pebaddy = mnproc.getPEB().address
 	dbg.log("PEB is located at " + PTR_PRINT % pebaddy, address=pebaddy)
 	return
 
@@ -24443,8 +24370,10 @@ def procTEB(args):
 	"""
 	Show the address of the TEB for the current thread
 	"""
-	tebaddy = get_teb_addr()
-	dbg.log("TEB is located at " + PTR_PRINT % tebaddy, address=tebaddy)
+	_ensureMnProc()
+	teb = mnproc.getCurrentTEB()
+	teb_addr = teb.addr if teb else 0
+	dbg.log("TEB is located at " + PTR_PRINT % teb_addr, address=teb_addr)
 	return
 
 def procPageACL(args):
@@ -26159,14 +26088,16 @@ def procHeapCookie(args):
 	return
 
 def procFlags(args):
-	currentflag = getNtGlobalFlag()
+	_ensureMnProc(entities=["peb"])
+	_peb = mnproc.getPEB()
+	currentflag = _peb.getNtGlobalFlag()
 	dbg.log("[+] NtGlobalFlag: 0x%08x" % currentflag)
-	flagvalues = getNtGlobalFlagValues(currentflag)
+	flagvalues = _peb.getNtGlobalFlagValues(currentflag)
 	if len(flagvalues) == 0:
 		dbg.log("    No GFlags set")
 	else:
 		for flagvalue in flagvalues:
-			dbg.log("    0x%08x : %s" % (flagvalue,getNtGlobalFlagValueName(flagvalue)))
+			dbg.log("    0x%08x : %s" % (flagvalue, _peb.getNtGlobalFlagValueName(flagvalue)))
 	return
 
 def procEval(args):
@@ -26845,7 +26776,8 @@ def procAllocMem(args):
 	return
 
 def procHideDebug(args): #bananas bananas
-	peb = MnPEB.get_address()
+	_ensureMnProc(entities=["peb"])
+	peb = mnproc.getPEB().address
 	dbg.log("[+] Patching PEB (0x%08x)" % peb)
 	if peb == 0:
 		dbg.log("** Unable to find PEB **")
