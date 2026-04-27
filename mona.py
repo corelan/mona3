@@ -513,6 +513,7 @@ offsets = {
 
 
 def getAliasName():
+	dbgp(get_current_function_name())
 	global aliasname
 	if aliasname == "":
 		aliasname = "!mona"
@@ -542,6 +543,8 @@ def getAliasName():
 
 
 def getLaunchCommand():
+	dbgp(get_current_function_name())
+
 	launchcmd = ""
 	entire_command = ""
 	
@@ -557,6 +560,8 @@ def getLaunchCommand():
 
 
 def guessAliasName(current_command):
+	dbgp(get_current_function_name())
+
 	# if WinDBG, check the aliases
 	# and see if there is one that matches with 
 	# the current python command
@@ -3993,7 +3998,7 @@ class MnConfig:
 						thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
 						configFileCache[thisparam] = thisvalue
 
-						dbgp("Stored parameter %s with value %s in configFileCache %s" % (thisparam, thisvalue, configFileCache))
+						dbgp("Added parameter %s with value %s to configFileCache %s" % (thisparam, thisvalue, configFileCache))
 
 				print_dict_table(configFileCache, headers, types, padding="      ", itemsequence=[])
 
