@@ -20291,7 +20291,8 @@ def procDump(args):
 	
 	size = 0
 	if "n" in args:
-		size = int(args["n"])
+		size, sizeok = getIntArg(args["n"])
+
 	elif "e" in args:
 		endaddress_raw = str(args["e"]).replace("0x","").replace("0X","")
 		endaddress, endaddressok = getAddyArg(endaddress_raw)
@@ -24364,6 +24365,7 @@ def procPEB(args):
 	_ensureMnProc(entities=["peb"])
 	pebaddy = mnproc.getPEB().address
 	dbg.log("PEB is located at " + PTR_PRINT % pebaddy, address=pebaddy)
+	dbg.log("")
 	return
 
 def procTEB(args):
@@ -24374,6 +24376,7 @@ def procTEB(args):
 	teb = mnproc.getCurrentTEB()
 	teb_addr = teb.addr if teb else 0
 	dbg.log("TEB is located at " + PTR_PRINT % teb_addr, address=teb_addr)
+	dbg.log("")
 	return
 
 def procPageACL(args):
@@ -26667,20 +26670,10 @@ def procAllocMem(args):
 	acl = "RWX"
 
 	if "s" in args:
-		if type(args["s"]).__name__.lower() != "bool":
-			sval = args["s"]
-			if sval.lower().startswith("0x"):
-				try:
-					size = int(sval,16)
-				except:
-					sizeerror = True
-			else:
-				try:
-					size = int(sval)
-				except:
-					sizeerror = True
-		else:
-			sizeerror = True
+		size, sizeok = getIntArg(args["s"])
+		if not sizeok:
+			dbg.log(" *** Please specify a valid size with -s ***",highlight=1)
+			return
 
 	if "b" in args:
 		if type(args["b"]).__name__.lower() != "bool":
@@ -28249,6 +28242,7 @@ def main(args):
 		# ----- report ----- #
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
+		dbg.log("")
 		if isWinDBG():
 			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (get_current_datetime(), getAliasName(), str(delta)))
 		else:
