@@ -20073,15 +20073,16 @@ def procFindWild(args):
 			return
 			
 	if "depth" in args:
-		try:
-			criteria["depth"] = int(args["depth"])
-		except:
+		depthval, depthok = getIntArg(args["depth"])
+		if depthok:
+			criteria["depth"] = depthval
+		else:
 			dbg.log("invalid depth value",highlight=1)
 			return	
 
 	if "all" in args:
 		criteria["all"] = True
-		
+
 	if "distance" in args:
 		if type(args["distance"]).__name__.lower() == "bool":
 			dbg.log("invalid distance value(s)",highlight=1)
@@ -20092,16 +20093,14 @@ def procFindWild(args):
 				valueparts = parts.split("=")
 				if len(valueparts) > 1:
 					if valueparts[0].lower() == "min":
-						try:
-							mindistance = int(valueparts[1])
-						except:
-							mindistance = 0	
+						mindistance, distanceok = getIntArg(valueparts[1])
+						if not distanceok:
+							mindistance = 0
 					if valueparts[0].lower() == "max":
-						try:
-							maxdistance = int(valueparts[1])
-						except:
-							maxdistance = 0	
-	
+						maxdistance, distanceok = getIntArg(valueparts[1])
+						if not distanceok:
+							maxdistance = 0
+
 		if maxdistance < mindistance:
 			tmp = maxdistance
 			maxdistance = mindistance
@@ -28126,7 +28125,7 @@ def main(args):
 			aliasname = getAliasName()
 			dbg.log("[+] Command used: <b>%s %s</b>" % (aliasname, justargs))		
 			if aline != "":
-				dbg.log("             >>>> %s" % (aline))
+				dbg.log("    >>>> %s" % (aline))
 		else:
 			scriptname = "mona"
 			aline = ("%s " % getAliasName()) + aline
