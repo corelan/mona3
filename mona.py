@@ -669,7 +669,7 @@ def clickTEB(tebptr = 0, displaytext = ""):
 	tebptrstr = PTR_PRINT % tebptr
 	tebptrstr_display = displaytext
 	if tebptrstr_display == "":
-		tebptrstr_display = tebptrsr
+		tebptrstr_display = tebptrstr
 	tebstrout = ""
 	if isWinDBG():
 		tebstrout = "<link cmd=\"dt _TEB %s\">%s</link>" % (tebptrstr, tebptrstr_display)
@@ -1390,7 +1390,42 @@ def getAddyArg(argaddy):
 			addyok = False
 
 	return findval, addyok
-	
+
+
+def getIntArg(argvalue):
+	"""
+	Tries to extract an integer from a specified argument.
+	Supports decimal and hex values using 0x.. / ..h or 0n.. / ..n notation.
+	Returns the parsed value and a boolean that indicates success.
+	"""
+	try:
+		integer_types = (int, long)
+	except NameError:
+		integer_types = (int,)
+
+	if isinstance(argvalue, bool) or argvalue is None:
+		return 0, False
+
+	if isinstance(argvalue, integer_types):
+		return int(argvalue), True
+
+	numtxt = str(argvalue).strip()
+	if numtxt == "":
+		return 0, False
+
+	numtxt_lower = numtxt.lower()
+	try:
+		if numtxt_lower.startswith("0x"):
+			return int(numtxt, 16), True
+		if numtxt_lower.endswith("h"):
+			return int(numtxt[:-1], 16), True
+		if numtxt_lower.startswith("0n"):
+			return int(numtxt[2:], 10), True
+		if numtxt_lower.endswith("n"):
+			return int(numtxt[:-1], 10), True
+		return int(numtxt), True
+	except Exception:
+		return 0, False
 
 
 def getHeapAllocSize(requested_size, granularity = 8):
@@ -19693,25 +19728,19 @@ def procROP(args,mode="all"):
 	technique = ""            
 	
 	if "depth" in args:
-		if type(args["depth"]).__name__.lower() != "bool":
-			try:
-				depth = int(args["depth"])
-			except:
-				pass
+		depthval, depthok = getIntArg(args["depth"])
+		if depthok:
+			depth = depthval
 	
 	if "offset" in args:
-		if type(args["offset"]).__name__.lower() != "bool":
-			try:
-				maxoffset = int(args["offset"])
-			except:
-				pass
+		offsetval, offsetok = getIntArg(args["offset"])
+		if offsetok:
+			maxoffset = offsetval
 	
 	if "distance" in args:
-		if type(args["distance"]).__name__.lower() != "bool":
-			try:
-				thedistance = args["distance"]
-			except:
-				pass
+		distanceval, distanceok = getIntArg(args["distance"])
+		if distanceok:
+			thedistance = distanceval	
 	
 	if "split" in args:
 		if type(args["split"]).__name__.lower() == "bool":
@@ -19849,11 +19878,9 @@ def procJOP(args,mode="all"):
 	depth = 6
 	
 	if "depth" in args:
-		if type(args["depth"]).__name__.lower() != "bool":
-			try:
-				depth = int(args["depth"])
-			except:
-				pass			
+		depthval, depthok = getIntArg(args["depth"])
+		if depthok:
+			depth = depthval			
 	findJOPGADGETS(modulecriteria,criteria,depth)			
 	
 	
@@ -19862,15 +19889,8 @@ def procCreatePATTERN(args):
 	pattern = ""
 	dbgp("Args: %s" % args)
 	if "?" in args and args["?"] != "":
-		try:
-			if "0x" in args["?"].lower():
-				try:
-					size = int(args["?"],16)
-				except:
-					size = 0
-			else:
-				size = int(args["?"])
-		except:
+		size, sizeok = getIntArg(args["?"])
+		if not sizeok:
 			size = 0
 
 	if size == 0:
@@ -23589,14 +23609,9 @@ def procFwptr(args):
 	offset = 0
 
 	if "chunksize" in args:
-		if type(args["chunksize"]).__name__.lower() != "bool":
-			try:
-				if str(args["chunksize"]).lower().startswith("0x"):
-					chunksize = int(args["chunksize"],16)
-				else:
-					chunksize = int(args["chunksize"])
-			except:
-				chunksize = 0
+		chunksize, chunksizeok = getIntArg(args["chunksize"])
+		if not chunksizeok:
+			chunksize = 0
 		if chunksize == 0 or chunksize > 0xffff:
 			dbg.log("[!] Invalid chunksize specified")
 			if chunksize > 0xffff:
@@ -23607,14 +23622,9 @@ def procFwptr(args):
 			dbg.log("[+] Will filter on chunksize 0x%0x" % chunksize )
 	if dofreelist:
 		if "offset" in args:
-			if type(args["offset"]).__name__.lower() != "bool":
-				try:
-					if str(args["offset"]).lower().startswith("0x"):
-						offset = int(args["offset"],16)
-					else:
-						offset = int(args["offset"])
-				except:
-					offset = 0
+			offset, offsetok = getIntArg(args["offset"])
+			if not offsetok:
+				offset = 0
 			if offset == 0:
 				dbg.log("[!] Invalid offset specified")
 			else:
@@ -24171,13 +24181,9 @@ def procFillChunk(args):
 	customsize = 0
 
 	if "s" in args:
-		if type(args["s"]).__name__.lower() != "bool":
-			sizearg = args["s"]
-			if sizearg.lower().startswith("0x"):
-				sizearg = sizearg.lower().replace("0x","")
-				customsize = int(sizearg,16)
-			else:
-				customsize = int(sizearg)
+		customsize, sizeok = getIntArg(args["s"])
+		if not sizeok:
+			customsize = 0
 
 	if "a" in args:
 		if type(args["a"]).__name__.lower() != "bool":
@@ -25347,43 +25353,19 @@ def procDumpLog(args):
 			
 
 	if "l" in args:
-		if type(args["l"]).__name__.lower() != "bool":
-			if str(args["l"]).lower().startswith("0x"):
-				try:
-					levels = int(args["l"],16)
-				except:
-					levels = 0
-			else:
-				try:
-					levels = int(args["l"])
-				except:
-					levels = 0
+		levelsval, levelsok = getIntArg(args["l"])
+		if levelsok:
+			levels = levelsval
 
 	if "m" in args:
-		if type(args["m"]).__name__.lower() != "bool":
-			if str(args["m"]).lower().startswith("0x"):
-				try:
-					nestedsize = int(args["m"],16)
-				except:
-					nestedsize = 0x28
-			else:
-				try:
-					nestedsize = int(args["m"])
-				except:
-					nestedsize = 0x28
+		nestedsizeval, nestedsizeok = getIntArg(args["m"])
+		if nestedsizeok:
+			nestedsize = nestedsizeval
 
 	if "s" in args:
-		if type(args["s"]).__name__.lower() != "bool":
-			if str(args["s"]).lower().startswith("0x"):
-				try:
-					filtersize = int(args["s"],16)
-				except:
-					filtersize = 0
-			else:
-				try:
-					filtersize = int(args["s"])
-				except:
-					filtersize = 0
+		filtersizeval, filtersizeok = getIntArg(args["s"])
+		if filtersizeok:
+			filtersize = filtersizeval
 
 	if logfile == "":
 		dbg.log(" *** Error: please specify a valid logfile with argument -f ***",highlight=1)
@@ -25521,43 +25503,19 @@ def procDumpObj(args):
 			addy,addyok = getAddyArg(args["a"])
 
 	if "s" in args:
-		if type(args["s"]).__name__.lower() != "bool":
-			if str(args["s"]).lower().startswith("0x"):
-				try:
-					size = int(args["s"],16)
-				except:
-					size = 0
-			else:
-				try:
-					size = int(args["s"])
-				except:
-					size = 0
+		sizeval, sizeok = getIntArg(args["s"])
+		if sizeok:
+			size = sizeval
 
 	if "l" in args:
-		if type(args["l"]).__name__.lower() != "bool":
-			if str(args["l"]).lower().startswith("0x"):
-				try:
-					levels = int(args["l"],16)
-				except:
-					levels = 0
-			else:
-				try:
-					levels = int(args["l"])
-				except:
-					levels = 0
+		levelsval, levelsok = getIntArg(args["l"])
+		if levelsok:
+			levels = levelsval
 
 	if "m" in args:
-		if type(args["m"]).__name__.lower() != "bool":
-			if str(args["m"]).lower().startswith("0x"):
-				try:
-					nestedsize = int(args["m"],16)
-				except:
-					nestedsize = 0
-			else:
-				try:
-					nestedsize = int(args["m"])
-				except:
-					nestedsize = 0
+		nestedsizeval, nestedsizeok = getIntArg(args["m"])
+		if nestedsizeok:
+			nestedsize = nestedsizeval
 
 	errorsfound = False
 	if addy == 0:
@@ -25620,16 +25578,11 @@ def procCopy(args):
 				if not bytesok:
 					errorsfound = True
 			else:
-				if str(args['n']).lower().startswith("0x"):
-					try:
-						nrbytes = int(args["n"],16)
-					except:
-						nrbytes = 0
+				nrbytesval, nrbytesok = getIntArg(args["n"])
+				if nrbytesok:
+					nrbytes = nrbytesval
 				else:
-					try:
-						nrbytes = int(args["n"])
-					except:
-						nrbytes = 0
+					nrbytes = 0
 
 	errorsfound = False
 	if src == 0:
