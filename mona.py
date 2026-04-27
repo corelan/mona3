@@ -14079,7 +14079,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			for ptrkeys in pointers:
 				nrfound += len(pointers[ptrkeys])
 			if nrfound > 0:
-				dbg.log("    Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
+				dbg.log("        Found %d pointers to '%s' in 0x%08x-0x%08x" % (nrfound, first_pattern_flat, mBase, mTop))
 			for instrkey in pointers:
 				# keep results keyed by the actual pattern we searched for
 				if not instrkey in allpointers:
