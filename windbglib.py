@@ -75,6 +75,9 @@ global cpebaddress
 global keystoneLoaded
 keystoneLoaded = False
 
+global windbgflavor
+windbgflavor = ""
+
 arch = 32
 
 currentPID = 0
@@ -137,6 +140,10 @@ DEBUG_MODE = False
 def set_debug_mode(enabled):
     global DEBUG_MODE
     DEBUG_MODE = bool(enabled)
+
+def set_windbgflavor(flavor):
+	global windbgflavor
+	windbgflavor = flavor
 
 def dbgp(s, errormode=False):
 	# print debug information

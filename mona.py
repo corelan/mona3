@@ -151,6 +151,9 @@ PTR_SIZE = 4 if arch == 32 else 8
 PTR_FMT = '<L' if arch == 32 else '<Q'
 PTR_PRINT = "0x%08x" if arch == 32 else "0x%016x"
 PTR_PRINT_ADDRESSONLY = "%08x" if arch == 32 else "%016x"
+HEAPGRANULARITY = 8
+if arch == 64:
+	HEAPGRANULARITY = 16
 
 
 Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
@@ -159,15 +162,17 @@ Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
 
 global scriptname
 currentArgs = []
+guessedAlias = ""
 
 _teb_addr_cache = None
 _peb_addr_cache = None
+
 MemoryPageACL={}
+configFileCache = {}
+CFGTableCache = {}
 
 disasmLowerChecked = False
 disasmIsLower = False
-configFileCache = {}
-CFGTableCache = {}
 configwarningshown = False
 _excluded_modules_list = None
 ptr_counter = 0
@@ -175,12 +180,12 @@ ptr_to_get = -1
 silent = False
 noheader = False
 g_keystoneLoaded = False
-g_windbgflavor = ""
+windbgflavor = ""
+windbgprettyname = ""
 _sym_cache_dirs = None
 _heap_cmd_prefix = None
 
 mnproc = None
-
 
 
 try:
@@ -216,7 +221,6 @@ def isImmunity():
 	return False
 
 
-
 def dbgp(s, highlight=False, errormode = False):
 	# print debug information
 	msgprefix = ""
@@ -235,12 +239,6 @@ def dbgp(s, highlight=False, errormode = False):
 def getWinDBGVersion():
 	"""
 	Determine whether the current debugger host appears to be WinDBGX.
-
-	Returns:
-		dict with:
-			is_windbgx : True/False
-			debugger   : "windbgx", "windbg_classic", or "unknown"
-			reason     : short explanation of the detection result
 
 	Detection logic:
 		WinDBG Classic is normally launched as windbg.exe from the Windows Kits
@@ -265,9 +263,10 @@ def getWinDBGVersion():
 
 	if isWinDBG():
 
-		global g_windbgflavor
+		global windbgflavor
+		global windbgprettyname
 
-		if g_windbgflavor == "" or g_windbgflavor == "unknown":
+		if windbgflavor == "" or windbgflavor == "unknown":
 
 			version_lines = []
 
@@ -279,7 +278,8 @@ def getWinDBGVersion():
 
 			if not version_lines:
 				# assume it's windbg classic
-				g_windbgflavor = "windbg"
+				windbgflavor = "windbg"
+				windbgprettyname = "WinDBG Classic"
 				return
 				
 
@@ -305,7 +305,8 @@ def getWinDBGVersion():
 					matched_windbgx.append(indicator)
 
 			if matched_windbgx:
-				g_windbgflavor = "windbgx"
+				windbgflavor = "windbgx"
+				windbgprettyname = "WinDBGX"
 				return
 
 			matched_classic = []
@@ -314,11 +315,11 @@ def getWinDBGVersion():
 					matched_classic.append(indicator)
 
 			if matched_classic:
-				g_windbgflavor = "windbg"
+				windbgflavor = "windbg"
+				windbgprettyname = "WinDBG Classic"
 				return
 
-			g_windbgflavor = "unknown"
-
+			windbgflavor = "unknown"
 
 
 
@@ -334,9 +335,11 @@ def _ensureSymbolCache(auto_fix=False):
 	if not isWinDBG():
 		return []
 
-	# this will initialize g_windbgflavor to either "windbg" or "windbgx"
+	# this will initialize windbgflavor to either "windbg" or "windbgx"
+	# and windbgprettyname to "WinDBG Classic" or "WinDBGX"
 	getWinDBGVersion()
-	dbgp("Active Debugger Flavor: %s" % g_windbgflavor)
+
+	dbgp("Active Debugger Flavor: %s" % windbgprettyname)
 
 	raw = dbglib.getSymbolPath().replace(" ", "")
 	ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
@@ -357,7 +360,7 @@ def _ensureSymbolCache(auto_fix=False):
 			dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
 			return []
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	dbgp("Cache_dirs: %s" % cache_dirs)
@@ -414,6 +417,12 @@ def _hasSymbolsCached(modprops):
 	return path is not None
 
 
+
+#
+# Initialization of a bunch of stuff
+#
+
+
 if isWinDBG():
 	_ensureSymbolCache(auto_fix=True)
 
@@ -447,9 +456,6 @@ if not win7mode:
 	except:
 		pass
 
-heapgranularity = 8
-if arch == 64:
-	heapgranularity = 16
 
 offset_categories = ["xp", "vista", "win7", "win8", "win10"]
 
@@ -515,10 +521,66 @@ def getAliasName():
 	configalias = monaConfig.get("alias")
 	if len(configalias) > 0:
 		aliasname = configalias
+		dbgp("Alias taken from mona config")
+	else:
+		if isWinDBG():
+			launchcmd = getLaunchCommand()
+			if launchcmd != "": 
+				guessedname = guessAliasName(launchcmd)
+				if guessedname != "":
+					aliasname = guessedname
+					dbgp("Alias guessed using windbg alias list")
+	dbgp("Alias to use: %s" % aliasname)
 	return aliasname
 
 
+def getLaunchCommand():
+	launchcmd = ""
+	entire_command = ""
+	
+	if '__file__' in globals():
+		launchcmd = str(__file__).strip().strip("\"'")
+	elif len(sys.argv) > 0:
+		launchcmd = str(sys.argv[0]).strip().strip("\"'")
+	#if launchcmd != "":
+	#	entire_command = "!py -%d.%d %s" % (sys.version_info[0], sys.version_info[1], launchcmd)
+	dbgp("LaunchCommand: %s" % launchcmd)
+	#dbgp("EntireCommand: %s" % entire_command)
+	return launchcmd
 
+def guessAliasName(current_command):
+	# if WinDBG, check the aliases
+	# and see if there is one that matches with 
+	# the current python command
+	global guessedAlias
+	if guessedAlias != "":
+		return guessedAlias
+	aliasname = ""
+	try:
+		output = dbg.nativeCommand("al")
+		outputlines = output.split("\n")
+		current_command = str(current_command).strip().lower()
+
+		for outputline in outputlines:
+			thisline = outputline.strip()
+			if thisline == "" or thisline.startswith("Alias") or thisline.startswith("-"):
+				continue
+
+			parts = thisline.split(None, 1)
+			if len(parts) != 2:
+				continue
+
+			thisalias = parts[0].strip()
+			thisvalue = parts[1].strip().lower()
+
+			if current_command in thisvalue:
+				aliasname = thisalias
+				break
+	except:
+		pass
+	dbgp("Guessed alias name: %s" % aliasname)
+	guessedAlias = aliasname
+	return aliasname
 
 ###
 # Add WinDBG Clickable links to values
@@ -536,14 +598,12 @@ def clickWinDBGCmd(windbg_cmd = ""):
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (windbg_cmd, windbg_cmd)
 	return cmdoutstr
 
-
 def clickFetchSym(modname, displaytext = ""):
 	cmdoutstr = displaytext
 	if isWinDBG():
 		cmd = "%s sym -f -m %s" % (getAliasName(), modname)
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
 	return cmdoutstr
-
 
 def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	chunktrstr = ""
@@ -573,7 +633,6 @@ def clickDisassemble(locstr = ""):
 	if __DEBUGGERAPP__ == "WinDBG" and locstr != "":
 		clickstr = "<link cmd=\"u %s L 20\">%s</link>" % (locstr, locstr)
 	return clickstr
-
 
 def clickStackPtr(stackptr = 0):
 	stackptrstr = ""
@@ -642,8 +701,6 @@ def clickMnCommand(commandname=""):
 	return commandstrout
 
 
-### Various utilities
-
 def checkKeystone():
 	pyversion = "%d.%d" % (sys.version_info[0], sys.version_info[1])
 	if not g_keystoneLoaded:
@@ -708,8 +765,9 @@ def resetGlobals():
 	CFGTableCache = {}
 	return
 
-
+# reset semaphore
 _creating_mnproc = False
+
 
 def _ensureMnProc(entities=None, include_chunks=False):
     """Lazily create MnProc and optionally populate selected entities.
@@ -1326,7 +1384,6 @@ def getAddyArg(argaddy):
 
 	return findval, addyok
 	
-
 
 
 def getHeapAllocSize(requested_size, granularity = 8):
@@ -3508,7 +3565,6 @@ class MnEncoder:
 			
 			blockcnt -= 1
 	
-
 		return encodedbytes
 
 
@@ -5929,7 +5985,7 @@ def getNTSegmentInfo(heapbase, segaddr, segstart, segend, firstentry, lastentry)
 	max_free = 0
 	for chunkaddr, chunk in allchunks.items():
 		state = "BUSY" if (chunk.flag & 0x01) else "FREE"
-		csize = chunk.size * heapgranularity
+		csize = chunk.size * HEAPGRANULARITY
 		chunkinfo = {
 			"address": chunkaddr,
 			"size": csize,
@@ -6083,7 +6139,7 @@ def getLFHSubSegmentRanges(heapaddr):
 				bc = struct.unpack('<H', dbg.readMemory(ssptr + ss_blockcount_off[ai], 2))[0]
 				if bs == 0 or bc == 0:
 					return
-				total = bs * bc * heapgranularity
+				total = bs * bc * HEAPGRANULARITY
 				ranges.append((ub, ub + total))
 			except:
 				pass
@@ -6559,8 +6615,8 @@ class MnHeap(object):
 	def getFreeBins(self):
 		"""Return free chunks organized by size bin (0-127).
 
-		Bin index maps to allocation size: bin N = N * heapgranularity bytes.
-		Bin 0 holds chunks > 127 * heapgranularity (the overflow bin).
+		Bin index maps to allocation size: bin N = N * HEAPGRANULARITY bytes.
+		Bin 0 holds chunks > 127 * HEAPGRANULARITY (the overflow bin).
 
 		Return: dict {bin_index: [MnChunk, ...]}
 		        Only populated bins are included.
@@ -8322,9 +8378,9 @@ class MnSegment:
 				unused = 0
 
 			if thissize > 0:
-				nextchunk = thischunk + (thissize * heapgranularity)
+				nextchunk = thischunk + (thissize * HEAPGRANULARITY)
 			else:
-				nextchunk += heapgranularity
+				nextchunk += HEAPGRANULARITY
 
 			chunktype = "chunk"
 			is_virtalloc = "virtall" in getHeapFlag(flag).lower()
@@ -8440,7 +8496,7 @@ class MnChunk:
 		self.commitsize = commitsize
 		self.reservesize = reservesize
 		self.userptr = self.chunkptr + self.headersize + self.extraheadersize
-		self.usersize = (self.size * heapgranularity) - self.unused - self.extraheadersize
+		self.usersize = (self.size * HEAPGRANULARITY) - self.unused - self.extraheadersize
 		self.remaining = self.unused - self.headersize - self.extraheadersize
 		self.flagtxt = getHeapFlag(self.flag)
 
@@ -8490,19 +8546,19 @@ class MnChunk:
 						self.flagtxt = self.flagtxt.replace("Virtallocd","Internal")
 			dbg.log("                      (         bytes        )                   (bytes)")						
 			dbg.log("      HEAP_ENTRY      Size  PrevSize    Unused Flags    UserPtr  UserSize Remaining - state")
-			dbg.log("        %08x  %08x  %08x  %08x  [%02x]   %08x  %08x  %08x   %s  (hex)" % (self.chunkptr,self.size*heapgranularity,self.prevsize*heapgranularity,self.unused,self.flag,self.userptr,self.usersize,self.unused-self.headersize,self.flagtxt))
-			dbg.log("                  %08d  %08d  %08d                   %08d  %08d   %s  (dec)" % (self.size*heapgranularity,self.prevsize*heapgranularity,self.unused,self.usersize,self.unused-self.headersize,self.flagtxt))
+			dbg.log("        %08x  %08x  %08x  %08x  [%02x]   %08x  %08x  %08x   %s  (hex)" % (self.chunkptr,self.size*HEAPGRANULARITY,self.prevsize*HEAPGRANULARITY,self.unused,self.flag,self.userptr,self.usersize,self.unused-self.headersize,self.flagtxt))
+			dbg.log("                  %08d  %08d  %08d                   %08d  %08d   %s  (dec)" % (self.size*HEAPGRANULARITY,self.prevsize*HEAPGRANULARITY,self.unused,self.usersize,self.unused-self.headersize,self.flagtxt))
 			dbg.log("")
 			chunkshown = True
 
 		if self.chunktype == "virtualalloc":
 			dbg.log("    _HEAP @ %08x, VirtualAllocdBlocks" % (self.heapbase))
 			dbg.log("      FLINK : 0x%08x, BLINK : 0x%08x" % (self.flink,self.blink))
-			dbg.log("      CommitSize : 0x%08x bytes, ReserveSize : 0x%08x bytes" % (self.commitsize*heapgranularity, self.reservesize*heapgranularity))
+			dbg.log("      CommitSize : 0x%08x bytes, ReserveSize : 0x%08x bytes" % (self.commitsize*HEAPGRANULARITY, self.reservesize*HEAPGRANULARITY))
 			dbg.log("                      (         bytes        )                   (bytes)")						
 			dbg.log("      HEAP_ENTRY      Size  PrevSize    Unused Flags    UserPtr  UserSize - state")
-			dbg.log("        %08x  %08x  %08x  %08x  [%02x]   %08x  %08x   %s  (hex)" % (self.chunkptr,self.size*heapgranularity,self.prevsize*heapgranularity,self.unused,self.flag,self.userptr,self.usersize,self.flagtxt))
-			dbg.log("                  %08d  %08d  %08d                   %08d   %s  (dec)" % (self.size*heapgranularity,self.prevsize*heapgranularity,self.unused,self.usersize,self.flagtxt))
+			dbg.log("        %08x  %08x  %08x  %08x  [%02x]   %08x  %08x   %s  (hex)" % (self.chunkptr,self.size*HEAPGRANULARITY,self.prevsize*HEAPGRANULARITY,self.unused,self.flag,self.userptr,self.usersize,self.flagtxt))
+			dbg.log("                  %08d  %08d  %08d                   %08d   %s  (dec)" % (self.size*HEAPGRANULARITY,self.prevsize*HEAPGRANULARITY,self.unused,self.usersize,self.flagtxt))
 			dbg.log("")
 			chunkshown = True
 
@@ -18722,7 +18778,7 @@ def procConfig(args):
 			dbg.log("    Config file: %s" % configfilename)
 			dbg.log("    Current value of parameter %s = %s" % (configparam,monaConfig.get(configparam)))
 			monaConfig.clear(configparam)
-			dbg.log("    Parameter %s cleared / removed" % (configparam))
+			dbg.log("    Parameter %s cleared / removed" % (configparam), highlight=True)
 			dbg.log("")
 			dbg.log("[+] Listing current values from configuration file:")
 			dbg.log("")
@@ -18808,9 +18864,9 @@ def procConfig(args):
 			monaConfig.set(configparam, configvalue)
 			
 			if removed_values:
-				dbg.log("    Removed value(s): %s" % ", ".join(removed_values))
+				dbg.log("    Removed value(s): %s" % ", ".join(removed_values), highlight = True)
 			if not_found_values:
-				dbg.log("    Value(s) not found: %s" % ", ".join(not_found_values))
+				dbg.log("    Value(s) not found: %s" % ", ".join(not_found_values), highlight = True)
 			
 			dbg.log("")
 			configDict = {}
@@ -22756,7 +22812,7 @@ def procHeap(args):
 
 					# Unified bin display — works on XP, Vista/7, 8/10/11
 					freebins = mHeap.getFreeBins()
-					gran = heapgranularity
+					gran = HEAPGRANULARITY
 					total_free = 0
 
 					# Build segment index-to-address map
@@ -24063,7 +24119,7 @@ def procFillChunk(args):
 					matched_chunk = allchunks[chunk_start]
 				else:
 					for chunkaddr, mchunk in allchunks.items():
-						chunksize = mchunk.size * heapgranularity
+						chunksize = mchunk.size * HEAPGRANULARITY
 						if chunk_start >= chunkaddr and chunk_start < (chunkaddr + chunksize):
 							matched_chunk = mchunk
 							break
@@ -25273,10 +25329,9 @@ def procDumpLog(args):
 		logfile.write("Addresses to dump:", thislog)
 		allocsizegroups = {}
 		allocsizes = []
-		heapgranularity = 8
 		for addy in logdata:
 			logfile.write("%s (%s)" % (addy, logdata[addy]), thislog)
-			allocsize = getHeapAllocSize(logdata[addy], heapgranularity)
+			allocsize = getHeapAllocSize(logdata[addy], HEAPGRANULARITY)
 			if not allocsize in allocsizegroups:
 				allocsizegroups[allocsize] = [addy]
 			else:
@@ -25284,7 +25339,7 @@ def procDumpLog(args):
 			if not allocsize in allocsizes:
 				allocsizes.append(allocsize)
 		logfile.write("", thislog);
-		logfile.write("(Allocated) Size groups, heap granularity %d bytes" % heapgranularity, thislog)
+		logfile.write("(Allocated) Size groups, heap granularity %d bytes" % HEAPGRANULARITY, thislog)
 		allocsizes.sort()
 		for allocsize in allocsizes:
 			logfile.write("Size 0x%02x" % allocsize, thislog)
@@ -26091,7 +26146,7 @@ def _sym_list(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	dbgp("Cache dirs: %s" % cache_dirs)
@@ -26232,7 +26287,7 @@ def _sym_load(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	# Parse -s for specific server/cache index
@@ -26323,7 +26378,7 @@ def _sym_load(args):
 			else:
 				# WinDBG .reload /f
 				success, local_path, message = dbglib.fetchSymbol(
-					reload_name, pdbname, guidage, windbgflavor=g_windbgflavor)
+					reload_name, pdbname, guidage, windbgflavor=windbgflavor)
 
 			if success:
 				loaded += 1
@@ -26356,7 +26411,7 @@ def _sym_clean(args):
 			folders_to_clean.append(args["p"])
 
 	if len(folders_to_clean) == 0:
-		cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbgflavor)
+		cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
 		for cdir in cache_dirs:
 			ckey = cdir.lower()
 			if ckey not in seen_folders:
@@ -26859,7 +26914,7 @@ def getBanner():
 	bannertext = ""
 	bannertext += "    #----------------------------------------------------------------- #\n"
 	bannertext += "    |                                                                  |\n"
-	bannertext += "    |      ____ ___  ____  ____  ____ _                                |\n"
+	bannertext += "    |    ____ ___  ____  ____  ____ _                                  |\n"
 	bannertext += "    |   / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be          |\n"
 	bannertext += "    |  / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com |\n"
 	bannertext += "    | /_/ /_/ /_/\____/_/ /_/\__,_/  https://www.corelan-certified.com |\n"
@@ -26868,7 +26923,7 @@ def getBanner():
 	banners[2] = bannertext
 
 	bannertext = ""
-	bannertext += "\n    .##.....##..#######..##....##....###........########..##....##\n"
+	bannertext += "    .##.....##..#######..##....##....###........########..##....##\n"
 	bannertext += "    .###...###.##.....##.###...##...##.##.......##.....##..##..##.\n"
 	bannertext += "    .####.####.##.....##.####..##..##...##......##.....##...####..\n"
 	bannertext += "    .##.###.##.##.....##.##.##.##.##.....##.....########.....##...\n"
@@ -26930,7 +26985,10 @@ def procHelp(args, helpForCommand=None):
 	global commands
 	global scriptname
 	dbg.log("    mona.py - Exploit Development Swiss Army Knife")
-	dbg.log("    Debugger        : %s (%sbit)" % (__DEBUGGERAPP__,str(arch)))
+	dbgname = __DEBUGGERAPP__
+	if isWinDBG():
+		dbgname = "%s" % windbgprettyname
+	dbg.log("    Debugger        : %s (%sbit)" % (dbgname,str(arch)))
 	dbg.log("    Plugin version  : %s r%s" % (__VERSION__,__REV__))
 	dbg.log("    Python version  : %s" % (getPythonVersion()))
 	if isWinDBG():
@@ -27081,10 +27139,10 @@ You can add items to the parameter using the -add option, and remove items using
 The alias variable allow you to set the command you're using to launch mona.
 This will affect clickable links and help output.
 
-For example, in WinDBG:
+For example, in WinDBG(X):
    !load pykd
    !py -3.9 c:\Tools\mona3\mona.py config -set alias #mona
-	as !py -3.9 c:\Tools\mona3\mona.py !mona
+   as !py -3.9 c:\Tools\mona3\mona.py !mona
 
    (note: the # (hashtag) will be replaced with !)
 
@@ -28009,9 +28067,14 @@ def main(args):
 		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (get_current_datetime(),thisversion,thisrevision, arch))
 		dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
 		if isWinDBG():
-			dbg.log("[ -- START -- ] PyKD: %s " % dbg.getPyKDVersionNr())
-			if not g_keystoneLoaded and arch==64:
-				dbg.log("[ -- START -- ] Keystone-engine NOT loaded")
+			pykdver = dbg.getPyKDVersionNr()
+			keystonever = ""
+			if g_keystoneLoaded:
+				keystonever = keystone.__version__
+			else:
+				keystonever = "<b>not loaded</b>"
+			libversions = "%s (%sbit) | PyKD: %s | Keystone-engine: %s" % (windbgprettyname, arch, pykdver, keystonever)
+			dbg.log("[ -- START -- ] %s" % libversions)
 		dbg.log("")
 
 		ptr_counter = 0
@@ -28026,13 +28089,19 @@ def main(args):
 		arguments = []
 		command = ""
 		argcopy = copy.copy(args)
+		justargs = ""
+		if len(argcopy) > 1:
+			justargs = " ".join(a for a in argcopy[1:])
 
 		aline = " ".join(a for a in argcopy)
+
 
 		if isWinDBG():
 			scriptname = get_script_name()
 			aline = "!py " + aline
 			dbg.log("[+] Command used: <b>%s</b>" % aline)
+			if guessedAlias != "":
+				dbg.log("    (Perhaps you have used %s %s " % (guessedAlias, justargs))
 		else:
 			scriptname = "mona"
 			aline = ("%s " % getAliasName()) + aline
@@ -28087,7 +28156,7 @@ def main(args):
 		if isWinDBG():
 			launchcmd = "!py " + scriptname
 
-		if command == "":
+		if command == "" or command == "-h":
 			command = "help"
 
 		# is user trying to run a valid command or alias?
@@ -28131,11 +28200,14 @@ def main(args):
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
 		dbg.log("")
-		dbg.log("[ -- END -- ] %s | mona.py took %s" % (get_current_datetime(), str(delta)))
+		if isWinDBG():
+			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (get_current_datetime(), getAliasName(), str(delta)))
+		else:
+			dbg.log("[ -- END -- ] %s | %s took %s" % (get_current_datetime(), getAliasName(), str(delta)))
 		if yesno():
 			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
 		dbg.setStatusBar("Done")
-		if DEBUG_MODE and __DEBUGGERAPP__ == "WinDBG":
+		if DEBUG_MODE and isWinDBG():
 			dbg.nativeCommand(".logclose")
 				
 	except:
