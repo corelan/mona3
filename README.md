@@ -207,21 +207,21 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 **Step 1**: ***Open*** **WinDBG(X)** and ***attach*** it to your target process
 
 **Step 2**: At the WinDBG(X) Command Line, ***load*** the **PyKD** bootstrapper extension:
-```
+```python
 !load pykd
 ```
 
 **Step 3**: ***Run*** **Mona** using **Python 3.9**:
 
 On WinDBG(X):
-```
+```python
 !py -3.9 C:\Tools\mona3\mona.py
 ```
 (You can run the same command on 32bit and 64bit debugging sessions, WinDBG(X) will select the appropriate Python3.9.13 version)
 
 
 **Convenience**: ***Create an alias*** to avoid typing the full path every time:
-```
+```python
 !as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
 Now you can simply type `!mona` at the WinDBG(X) Command Line.
@@ -259,7 +259,7 @@ In WinDBGX, we can use the "Startup Settings"
 ***Configure*** the **Startup settings** to auto-load on every session:
 1. Navigate to: ***File > Settings > Debugging settings > Startup***
 2. ***Paste*** the following commands:
-```
+```python
 !load pykd
 as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
@@ -318,7 +318,7 @@ This may be helpful in case you have various different Python versions installed
 Although WinDBG(X) may be able to find a certain Python version, it still may fail to locate/load basic libraries (such as `socket` etc)
 
 This is what the problem looks like:
-```batch
+```python
 0:000> !pykd.info
 
 pykd bootstrapper version: 2.0.0.24
