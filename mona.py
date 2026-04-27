@@ -2552,52 +2552,36 @@ def splitToPtrInstr(input):
 	
 	thispointer = -1
 	thisinstruction = ""
+
+	if isinstance(input, bytes):
+		input = input.decode("latin-1", errors="ignore")
 	
 	# Some mona output lines may be indented; don't require the pointer to be at column 0.
 	thisline = input.lower()
 	thisline_stripped = thisline.lstrip()
 	input_stripped = input.lstrip()
-	is_bytes = isinstance(thisline, bytes)
 	
 	# Skip comment lines and lines without instruction separator
-	if is_bytes:
-		if thisline_stripped.startswith(b"#"):
-			return thispointer, thisinstruction
-		# Gadget/instruction lines use " : " (space-colon-space) as separator.
-		if b" : " not in input_stripped:
-			return thispointer, thisinstruction
-	else:
-		if thisline_stripped.startswith("#"):
-			return thispointer, thisinstruction
-		# Gadget/instruction lines use " : " (space-colon-space) as separator.
-		if " : " not in input_stripped:
-			return thispointer, thisinstruction
+	if thisline_stripped.startswith("#"):
+		return thispointer, thisinstruction
+	# Gadget/instruction lines use " : " (space-colon-space) as separator.
+	if " : " not in input_stripped:
+		return thispointer, thisinstruction
 	
-	# Create appropriate patterns based on input type
-	if is_bytes:
-		split1 = re.compile(b" ")
-		split2 = re.compile(b":")
-		split3 = re.compile(br"\*\*")
-		startswith_arg = b"0x"
-		newline_arg = b"\n"
-		carriage_arg = b"\r"
-		colon_arg = b":"
-		ptr_re = re.compile(br"^0x[0-9a-f]{8,16}$")
-	else:
-		split1 = re.compile(" ")
-		split2 = re.compile(":")
-		split3 = re.compile(r"\*\*")
-		startswith_arg = "0x"
-		newline_arg = "\n"
-		carriage_arg = "\r"
-		colon_arg = ":"
-		ptr_re = re.compile(r"^0x[0-9a-f]{8,16}$")
+	split1 = re.compile(" ")
+	split2 = re.compile(":")
+	split3 = re.compile(r"\*\*")
+	startswith_arg = "0x"
+	newline_arg = "\n"
+	carriage_arg = "\r"
+	colon_arg = ":"
+	ptr_re = re.compile(r"^0x[0-9a-f]{8,16}$")
 	
 	if thisline_stripped.startswith(startswith_arg):
 		#get the pointer
 		parts = split1.split(input_stripped)
-		dbgp("Parts: %s" % parts)
-		part1 = parts[0].replace(newline_arg, b"" if is_bytes else "").replace(carriage_arg, b"" if is_bytes else "")
+		#dbgp("Parts: %s" % parts)
+		part1 = parts[0].replace(newline_arg, "").replace(carriage_arg, "")
 		part1_lc = part1.lower()
 		# Accept both 32-bit (8 hex digits) and 64-bit (up to 16 hex digits) pointers.
 		if not ptr_re.match(part1_lc):
@@ -2606,7 +2590,7 @@ def splitToPtrInstr(input):
 			thispointer = hexStrToInt(part1)
 			if len(parts) > 1:
 				subparts = split2.split(input_stripped)
-				subpartsall = b"" if is_bytes else ""
+				subpartsall = ""
 				if len(subparts) > 1:
 					cnt = 1
 					while cnt < len(subparts):
@@ -12084,7 +12068,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		for filename in filestouse:
 			dbg.log("     - Reading %s" % filename)
 			all_opcodes = mergeOpcodes(all_opcodes,readGadgetsFromFile(filename))
-			
+			interruptMona()
 	dbg.updateLog()
 	tp = 0
 	ending_cnt = {}
@@ -12110,7 +12094,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if not usefiles:		
 		dbg.log("[+] Expanding and filtering gadgets for %d endings" % tp)
 	else:
-		dbg.log("    - Categorizing %d gadget endings" % tp)
+		dbg.log("[+] Categorizing %d gadget endings from ROP file(s)" % tp)
 		silent = True
 	dbg.updateLog()
 	ropgadgets = {}
@@ -12265,22 +12249,26 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				else:
 					if step == 0:
 						startptr = endingtypeptr
+						dbgp("Step 0, Chain pointer %s" % (PTR_PRINT % startptr))
 					if step == 1:
 						thischain = endingtypeptr
 						chainptr = startptr
 						ptrx = MnPointer(chainptr)
 						modname = ptrx.belongsTo()
+						dbgp("Step 1, Chain pointer %s = module %s" % ((PTR_PRINT % startptr), modname))
 						issafeseh = False
 						if modname != "":
 							thism = MnModule(modname)
 							issafeseh = thism.isSafeSEH
 						if isGoodGadgetPtr(startptr,criteria) and not startptr in ropgadgets and not startptr in interestinggadgets:
+							dbgp("   Chain: %s" % thischain)
 							fullchain = thischain
 							if isInterestingGadget(fullchain):
+								dbgp("   This is an interesting chain")
 								interestinggadgets[startptr] = fullchain
 								#this may be a good stackpivot too
 								stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance)
-								dbgp("%s: stackivot distance %d" % (fullchain, stackpivotdistance))
+								dbgp("   %s: stackivot distance %d" % (fullchain, stackpivotdistance))
 								if stackpivotdistance > 0:
 									#safeseh or not ?
 									if issafeseh:
@@ -12293,9 +12281,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											stackpivots[stackpivotdistance] = [[startptr,fullchain]]
 										else:
 											stackpivots[stackpivotdistance].append([startptr,fullchain])	
-							else:
-								if not fast:
-									ropgadgets[startptr] = fullchain
+							if not startptr in ropgadgets:
+								ropgadgets[startptr] = fullchain
 						step = -1
 					step += 1
 	
@@ -12480,7 +12467,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						arrtowrite += ptrinfo
 						flipover += 1
 						gcount += 1
-						if flipover > 5000:
+						if flipover >= 5000:
 							eta = get_eta(startmoment, gcount , len(valid_cfg_target_gadgets))
 							dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(valid_cfg_target_gadgets)))
 							flipover = 0
@@ -12521,7 +12508,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							arrtowrite += ptrinfo
 							flipover += 1
 							gcount += 1
-							if flipover > 5000:
+							if flipover >= 5000:
 								eta = get_eta(startmoment, gcount , len(arrptrs))
 								dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(arrptrs)))
 								flipover = 0	
@@ -12534,7 +12521,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							arrtowrite += ptrinfo
 							flipover += 1
 							gcount += 1
-							if flipover > 5000:
+							if flipover >= 5000:
 								eta = get_eta(startmoment, gcount , len(interestinggadgets))
 								dbg.log("    Update: ETA: %s (%d/%d)" % (eta, gcount, len(interestinggadgets)))
 								flipover = 0
@@ -17102,6 +17089,7 @@ def readGadgetsFromFile(filename):
 	srcfile = open(filename,"rb")
 	content = srcfile.readlines()
 	srcfile.close()
+	content = [line.decode("latin-1", "ignore") if not isinstance(line, str) else line for line in content]
 	msffiledetected = False
 	#what kind of file do we have
 	for thisLine in content:
@@ -17137,10 +17125,15 @@ def readGadgetsFromFile(filename):
 				thisinstr = ""
 		
 	else:
-		dbg.log("[+] Importing Mona legacy ROP file...")
+		dbg.log("[+] Importing Mona legacy ROP file, %d lines..." % len(content))
+		linecnt = 1
+		invalidcnt = 0
+		maxline = len(content)
 		for thisLine in content:
+			#dbgp("Read line from ROP file: %s" % thisLine)
 			if isAsciiString(thisLine.replace("\r","").replace("\n","")):
 				refpointer,instr = splitToPtrInstr(thisLine)
+				dbgp("  %d/%d | Pointer: %s | Instruction: %s" % (linecnt, maxline, PTR_PRINT % refpointer, instr))
 				if refpointer != -1:
 					#get ending
 					instrparts = instr.split("#")
@@ -17149,6 +17142,12 @@ def readGadgetsFromFile(filename):
 						readopcodes[ending] = [refpointer,instr]
 					else:
 						readopcodes[ending] += ([refpointer,instr])
+				else:
+					invalidcnt += 1
+			else:
+				invalidcnt += 1
+			linecnt += 1
+		dbg.log("    Processed %d lines, found %d valid instructions, skipped %d invalid lines" % (maxline, linecnt, invalidcnt))
 	return readopcodes
 	
 def isGoodGadgetPtr(gadget,criteria):
@@ -17220,7 +17219,7 @@ def getStackPivotDistance(gadget,distance=0):
 			elif ("qword ptr" in g or "[" in g) and "fss" not in g:
 				return 0
 				
-	dbgp("   Distance found: %d" % offset)
+	dbgp("   Distance found: %d. Min wanted: %d, Max wanted: %d" % (offset, mindistance, maxdistance))
 
 	if mindistance <= offset and offset <= maxdistance:
 		return offset
@@ -18678,6 +18677,128 @@ def getAbsolutePath(filename):
 #-----------------------------------------------------------------------#	
 
 # ----- Config file management ----- #
+
+
+def procCleanLog(args):
+	minage = 30
+	argerror = False
+	statmode = False
+	if "d" in args:
+		if type(args["d"]).__name__.lower() == "bool":
+			argerror = True
+		else:
+			try:
+				minage = int(args["d"])
+				if minage < 0:
+					argerror = True
+			except:
+				argerror = True
+	if "stat" in args and type(args["stat"]).__name__.lower() == "bool":
+		statmode = True
+	
+	if argerror:
+		dbg.log("** Please specific a valid number of days with -d", highlight = True)
+		dbg.log("   or omit the parameter to use the default of 30", highlight = True)
+		return
+
+	monaConfig = MnConfig()
+	configworkingfolder = monaConfig.get("workingfolder")
+
+	if configworkingfolder != "":
+		fixedworkingfolder = configworkingfolder
+		placeholderpos = len(fixedworkingfolder)
+		for placeholder in ["%p", "%i"]:
+			thispos = fixedworkingfolder.find(placeholder)
+			if thispos > -1 and thispos < placeholderpos:
+				placeholderpos = thispos
+		fixedworkingfolder = fixedworkingfolder[:placeholderpos].rstrip("\\/")
+		if fixedworkingfolder != "":
+			dbg.log("[+] Working folder base path: %s" % fixedworkingfolder)
+			if os.path.exists(fixedworkingfolder):
+				deletedFiles = {}
+				logFiles = {}
+				statFiles = {}
+				deleteindex = 1
+				logindex = 1
+				totaldeletedsizekb = 0
+				totaldeletedsizemb = "0.00 MB"
+				now = time.time()
+				for root, dirs, files in os.walk(fixedworkingfolder):
+					for thisfile in files:
+						thisfile_lc = thisfile.lower()
+						matches = False
+						if thisfile_lc.endswith("mona-windbg-debug.log"):
+							matches = True
+						if thisfile_lc.endswith(".old"):
+							matches = True
+						if thisfile_lc.endswith(".old2"):
+							matches = True
+						if "rop" in thisfile_lc and "progress" in thisfile_lc and thisfile_lc.endswith(".log"):
+							matches = True
+						if matches:
+							fullpath = os.path.join(root, thisfile)
+							try:
+								mtime = os.path.getmtime(fullpath)
+								age = int((now - mtime) / 86400)
+								filesizekb = int(round(float(os.path.getsize(fullpath)) / 1024))
+								if statmode:
+									logFiles[logindex] = [root, thisfile, age, "%dKB" % filesizekb]
+									logindex += 1
+									statkey = age
+									if age > minage:
+										statkey = ">%d" % minage
+									if not statkey in statFiles:
+										statFiles[statkey] = filesizekb
+									else:
+										statFiles[statkey] += filesizekb
+								else:
+									if age > minage or (minage == 0 and age >= 0):
+										os.remove(fullpath)
+										deletedFiles[deleteindex] = [root, thisfile, age, "%dKB" % filesizekb]
+										totaldeletedsizekb += filesizekb
+										deleteindex += 1
+							except Exception as e:
+								dbgp("Unable to remove file %s: %s" % (fullpath, str(e)), errormode=False)
+				totaldeletedsizemb = "%.2f MB" % (float(totaldeletedsizekb) / 1024)
+				
+				# show results
+				if statmode:
+					if len(logFiles) > 0:
+						dbg.log("[+] Done. Found %d matching files:" % len(logFiles))
+						headers = ["Index", "Folder","File","Age","Size in KB"]
+						types   = ["int", "string", "string", "int", "string"]
+						print_dict_table(logFiles, headers, types, padding = "    ")
+						dbg.log("")
+						dbg.log("[+] Size overview by age:")
+						for statkey in sorted([k for k in statFiles if str(k).startswith(">") == False]):
+							dbg.log("    %s day(s): %dKB" % (str(statkey), statFiles[statkey]))
+						if (">%d" % minage) in statFiles:
+							dbg.log("    >%d day(s): %dKB" % (minage, statFiles[">%d" % minage]))
+						dbg.log("")
+					else:
+						dbg.log("[+] Done. No matching log files found")
+				else:
+					if len(deletedFiles) > 0:
+						dbg.log("[+] Done. I have deleted %d files:" % len(deletedFiles))
+						headers = ["Index", "Folder","File","Age","Size in KB"]
+						types   = ["int", "string", "string", "int", "string"]
+
+						print_dict_table(deletedFiles, headers, types, padding = "    ")	
+						dbg.log("")
+						dbg.log("[+] Total disk space saved: %s" % totaldeletedsizemb)
+						dbg.log("")
+					else:
+						dbg.log("[+] Done. No files found that met the age criteria of %d days" % minage)
+			else:
+				dbg.log("[!] That folder does not seem to exist", highlight = True)
+	else:
+		dbg.log("[!] No 'workingfolder' parameter found in mona's config", highlight = True)
+	
+	dbg.log("")
+	return
+
+
+	
 
 def procConfig(args):
 	#did we specify -get, -set, -add, -list or -del?
@@ -26990,7 +27111,17 @@ def getBanner():
 # Show Help
 def procHelp(args, helpForCommand=None):
 	global commands
-	global scriptname
+
+	# initialize list of available mona commands
+	global scriptname	
+	scriptname = get_script_name()
+	launchcmd = getAliasName()
+	if isWinDBG():
+		if guessedAlias != "":
+			launchcmd = guessedAlias
+		else:
+			launchcmd = "!py " + scriptname
+
 	dbg.log("    mona.py - Exploit Development Swiss Army Knife")
 	dbgname = __DEBUGGERAPP__
 	if isWinDBG():
@@ -27029,7 +27160,7 @@ def procHelp(args, helpForCommand=None):
 		dbg.log("                           You can enable or disable a certain criterium by setting it to true or false")
 		dbg.log("                           Example :  -cm aslr=true,safeseh=false")
 		dbg.log("                           Suppose you want to search for p/p/r in aslr enabled modules, you could call")
-		dbg.log("                           %s seh -cm aslr" % getAliasName())
+		dbg.log("                           %s seh -cm aslr" % launchcmd)
 		dbg.log("  -cmp <regex>           : Only include modules whose full path matches the given regex (case-insensitive)")
 		dbg.log("                           Example : -cmp kernel32  -cmp \"C:\\\\Windows\"  -cmp \"\\.dll$\"")
 		dbg.logLines("\n  Global options affecting addresses:\n", highlight=1)
@@ -27117,6 +27248,15 @@ def procHelp(args, helpForCommand=None):
 # populate the commands dict
 def populateCommands(args):
 	global commands
+
+	global scriptname	
+	scriptname = get_script_name()
+	launchcmd = getAliasName()
+	if isWinDBG():
+		if guessedAlias != "":
+			launchcmd = guessedAlias
+		else:
+			launchcmd = "!py " + scriptname
 
 	
 	sehUsage = """Default module criteria : non safeseh, non aslr, non rebase
@@ -27799,19 +27939,29 @@ Arguments:
     -f     : Full path to the file to read 
     -a     : address (or register) to write to""" 
 
-	# initialize list of available mona commands
-	global scriptname	
-	scriptname = get_script_name()
-	launchcmd = getAliasName()
-	if isWinDBG():
-		if guessedAlias != "":
-			launchcmd = guessedAlias
-		else:
-			launchcmd = "!py " + scriptname
+	cleanLogUsage = """Free up some diskspace by removing old log files from workingfolder
+    This command only works if you have an active workingfolder set
+    For instance: %s config -set workingfolder c:\logs\%%p
+
+    The script will delete:
+    - *mona-windbg-debug.log
+    - *.old
+    - *.old2
+    - *rop*progress*.log
+
+    If you use -stat, the script will not delete any files.
+    Instead, it will list all matching files and show size statistics by file age.
+    Files older than the configured minimum age will be grouped together in one bucket.
+
+Optional arguments:
+    -d <number>  : Minimum age of the log file to delete (default: 30). Set to -d 0 to do a full cleanup
+    -stat        : Show matching files and age/size statistics without deleting anything""" % launchcmd
+
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
+	commands["cleanlog"]       = MnCommand("cleanlog","Remove old log files from your workingfolder",cleanLogUsage,procCleanLog,"clean",[32,64])   
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
 	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC,"rf",[32,64])
 	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP chain and perhaps do some ROP magic with them",ropUsage,procROP,"",[32,64])
