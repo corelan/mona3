@@ -1,0 +1,61 @@
+# .github/workflows/manual-release-revision.yml
+name: Manual revision bump
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_mona:
+        description: "Bump mona.py"
+        type: boolean
+        default: true
+      bump_windbglib:
+        description: "Bump windbglib.py"
+        type: boolean
+        default: false
+      since_ref:
+        description: "Summarize commits since this ref/tag/sha"
+        required: true
+        default: "HEAD~10"
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump revisions and update release notes
+        run: |
+          args=""
+
+          if [ "${{ inputs.bump_mona }}" = "true" ]; then
+            args="$args --file mona.py --name mona"
+          fi
+
+          if [ "${{ inputs.bump_windbglib }}" = "true" ]; then
+            args="$args --file windbglib.py --name windbglib"
+          fi
+
+          python3 .github/scripts/manual_release_bump.py \
+            --since "${{ inputs.since_ref }}" \
+            --release-notes mona_releasenotes.txt \
+            $args
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add mona.py windbglib.py mona_releasenotes.txt
+          git commit -m "Prepare release revision update"
+          git push

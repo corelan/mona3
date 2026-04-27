@@ -31,11 +31,11 @@ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY 
 WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-$Revision: 3000 $
+$Revision: 3333
 """
 
 __VERSION__ = '3.0'
-__REV__ = ''.join(filter(str.isdigit, '$Revision: 3000 $'))
+__REV__ = 3000
 
 DEBUG_MODE = False
 
@@ -1967,14 +1967,14 @@ def getVersionInfo(filename):
 		# Py2/Py3 compatibility: ensure line is text
 		if not isinstance(line, str):
 			line = line.decode("utf-8", "ignore")	
-		if line.startswith("$Revision"):
-			parts = line.split(" ")
-			if len(parts) > 1:
-				revision = parts[1].replace("$","")
 		if line.startswith("__VERSION__"):
 			parts = line.split("=")
 			if len(parts) > 1:
 				version = parts[1].strip()
+		if line.startswith("__REV__"):
+			parts = line.split("=")
+			if len(parts) > 1:
+				revision = parts[1].strip()
 
 	# Normalize version and revision
 	def _normalize_version(v):
@@ -20989,11 +20989,11 @@ def procUpdate(args):
 
 		return ""
 
-	def _validate_versioned_python_file(filename):
-		version, revision = getVersionInfo(filename)
-		if version == "" and revision == "0":
-			return False, "no version/revision information found"
-		return True, ""
+		def _validate_versioned_python_file(filename):
+			version, revision = getVersionInfo(filename)
+			if version == "" or revision == "0":
+				return False, "missing __VERSION__ and/or __REV__ information"
+			return True, ""
 
 	def _download_with_fallback(main_url, backup_url, destfile, label, validator=None):
 		last_error = ""
@@ -21192,7 +21192,7 @@ def procUpdate(args):
 
 		dbgp("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
 
-		if current_version == "" and current_revision == "0":
+		if current_version == "" or current_revision == "0":
 			if not force_update:
 				dbgp("    [!] Unable to read current version info from %s" % current_file)
 				dbgp("Skipping %s because current version info could not be read" % name)
@@ -21221,7 +21221,7 @@ def procUpdate(args):
 
 		dbgp("Downloaded version info for %s: version=%s revision=%s" % (name, new_version, new_revision))
 
-		if new_version == "" and new_revision == "0":
+		if new_version == "" or new_revision == "0":
 			dbg.log("    [-] Downloaded %s but could not read version/revision information" % name, highlight=1)
 			dbgp("Downloaded file for %s does not appear to contain valid version info" % name)
 
@@ -27001,14 +27001,7 @@ def procHelp(args, helpForCommand=None):
 	dbgname = __DEBUGGERAPP__
 	if isWinDBG():
 		dbgname = "%s" % windbgprettyname
-	#dbg.log("    Debugger        : %s (%sbit)" % (dbgname,str(arch)))
-	#dbg.log("    Plugin version  : %s r%s" % (__VERSION__,__REV__))
-	#dbg.log("    Python version  : %s" % (getPythonVersion()))
-	#if isWinDBG():
-	#	pykdversion = dbg.getPyKDVersionNr()
-	#	dbg.log("    PyKD version    : %s" % pykdversion)
-	#	if g_keystoneLoaded:
-	#		dbg.log("    keystone-engine : %s" % (keystone.__version__))
+
 	dbg.log("    Written by Corelan - https://www.corelan.be")
 	dbg.log("    Project page : https://github.com/corelan/mona3")
 	dbg.logLines(getBanner(),highlight=1)
