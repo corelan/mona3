@@ -47,7 +47,7 @@ def get_version_string(filename):
 def get_commits_for_file(since_ref, filename):
     output = run_git([
         "log",
-        "--pretty=format:- %h %s",
+        "--pretty=format:%an|||%h %s",
         f"{since_ref}..HEAD",
         "--",
         filename,
@@ -56,7 +56,21 @@ def get_commits_for_file(since_ref, filename):
     if not output:
         return "- No file-specific commits found."
 
-    return output
+    commits_by_author = {}
+
+    for line in output.splitlines():
+        author, msg = line.split("|||", 1)
+        commits_by_author.setdefault(author, []).append(msg)
+
+    result_lines = []
+
+    for author in sorted(commits_by_author):
+        result_lines.append(f"{author}:")
+        for commit in commits_by_author[author]:
+            result_lines.append(f"  - {commit}")
+        result_lines.append("")
+
+    return "\n".join(result_lines).strip()
 
 
 def prepend_release_notes(release_notes_file, sections):
