@@ -20927,19 +20927,24 @@ def procUpdate(args):
 				parts.append(0)
 		return tuple(parts)
 
+	def _compare_version_rev(ver1, rev1, ver2, rev2):
+		vt1 = _version_tuple(ver1)
+		vt2 = _version_tuple(ver2)
+		if vt1 < vt2:
+			return -1
+		if vt1 > vt2:
+			return 1
+		r1 = _safe_int(rev1)
+		r2 = _safe_int(rev2)
+		if r1 < r2:
+			return -1
+		if r1 > r2:
+			return 1
+		return 0
+
 	def _is_newer(cur_ver, cur_rev, new_ver, new_rev):
-		cur_vt = _version_tuple(cur_ver)
-		new_vt = _version_tuple(new_ver)
-		cur_r = _safe_int(cur_rev)
-		new_r = _safe_int(new_rev)
-
 		dbgp("Comparing versions: current=%s.%s new=%s.%s" % (str(cur_ver), str(cur_rev), str(new_ver), str(new_rev)))
-
-		if new_vt > cur_vt:
-			return True
-		if new_vt < cur_vt:
-			return False
-		return new_r > cur_r
+		return _compare_version_rev(cur_ver, cur_rev, new_ver, new_rev) < 0
 
 	def _safe_remove(filename):
 		try:
@@ -20989,11 +20994,11 @@ def procUpdate(args):
 
 		return ""
 
-		def _validate_versioned_python_file(filename):
-			version, revision = getVersionInfo(filename)
-			if version == "" or revision == "0":
-				return False, "missing __VERSION__ and/or __REV__ information"
-			return True, ""
+	def _validate_versioned_python_file(filename):
+		version, revision = getVersionInfo(filename)
+		if version == "" or revision == "0":
+			return False, "missing __VERSION__ and/or __REV__ information"
+		return True, ""
 
 	def _download_with_fallback(main_url, backup_url, destfile, label, validator=None):
 		last_error = ""
@@ -21027,54 +21032,82 @@ def procUpdate(args):
 			dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
 		return False, ""
 
-	def _get_release_notes_for_version(releasenotes_file, filename, version, revision):
-		normalized_name = _normalize_name_for_notes(filename)
-		normalized_version = _normalize_version(version)
-		normalized_revision = str(_safe_int(revision))
-		header_to_find = "[%s %s.%s]" % (normalized_name, normalized_version, normalized_revision)
-
-		dbgp("Looking for release notes header %s in %s" % (header_to_find, releasenotes_file))
-
+	def _read_release_notes_sections(releasenotes_file):
+		sections = []
 		if not os.path.isfile(releasenotes_file):
 			dbgp("Release notes file %s does not exist" % releasenotes_file)
-			return header_to_find, ""
+			return sections
 
 		try:
 			with open(releasenotes_file, "rb") as fh:
 				lines = fh.readlines()
 		except Exception as e:
 			dbgp("Unable to read release notes file %s : %s" % (releasenotes_file, str(e)), errormode=False)
-			return header_to_find, ""
+			return sections
 
-		found = False
-		out = []
-
+		current = None
+		header_re = re.compile(r'^\[([^\s\]]+)\s+([0-9][0-9A-Za-z\._-]*)\.([0-9]+)\]$')
 		for rawline in lines:
 			try:
 				line = rawline.decode("utf-8", "ignore")
 			except:
 				line = str(rawline)
-
 			stripped = line.strip()
-
-			if stripped.lower() == header_to_find.lower():
-				found = True
-				dbgp("Found matching release notes header %s" % header_to_find)
+			m = header_re.match(stripped)
+			if m:
+				if current is not None:
+					current["notes"] = "\n".join(current["notes"]).strip()
+					sections.append(current)
+				current = {
+					"header": stripped,
+					"name": m.group(1).lower(),
+					"version": _normalize_version(m.group(2)),
+					"revision": str(_safe_int(m.group(3))),
+					"notes": []
+				}
 				continue
+			if current is not None:
+				current["notes"].append(line.rstrip("\r\n"))
 
-			if found:
-				if stripped.startswith("[") and stripped.endswith("]"):
+		if current is not None:
+			current["notes"] = "\n".join(current["notes"]).strip()
+			sections.append(current)
+
+		return sections
+
+	def _get_release_notes_since_version(releasenotes_file, filename, from_version, from_revision, to_version, to_revision):
+		normalized_name = _normalize_name_for_notes(filename)
+		sections = _read_release_notes_sections(releasenotes_file)
+		out = []
+		start_header = "[%s %s.%s]" % (normalized_name, _normalize_version(from_version), str(_safe_int(from_revision)))
+		end_header = "[%s %s.%s]" % (normalized_name, _normalize_version(to_version), str(_safe_int(to_revision)))
+
+		for section in sections:
+			if section["name"] != normalized_name:
+				continue
+			if _compare_version_rev(section["version"], section["revision"], from_version, from_revision) <= 0:
+				continue
+			if _compare_version_rev(section["version"], section["revision"], to_version, to_revision) > 0:
+				continue
+			out.append(section)
+
+		if len(out) == 0 and _compare_version_rev(from_version, from_revision, to_version, to_revision) == 0:
+			for section in sections:
+				if section["name"] == normalized_name and _compare_version_rev(section["version"], section["revision"], to_version, to_revision) == 0:
+					out.append(section)
 					break
-				out.append(line.rstrip("\r\n"))
 
-		return header_to_find, "\n".join(out).strip()
+		dbgp("Collected %d release note section(s) for %s from %s to %s" % (len(out), normalized_name, start_header, end_header))
+		return out, start_header, end_header
 
-	def _get_release_notes_with_retry(releasenotes_file, releasenotes_backup, filename, version, revision):
-		header, notes = _get_release_notes_for_version(releasenotes_file, filename, version, revision)
-		if notes != "":
-			return header, notes
+	def _get_release_notes_with_retry(releasenotes_file, releasenotes_backup, filename, from_version, from_revision, to_version, to_revision):
+		sections, start_header, end_header = _get_release_notes_since_version(
+			releasenotes_file, filename, from_version, from_revision, to_version, to_revision
+		)
+		if len(sections) > 0:
+			return sections, start_header, end_header
 
-		dbgp("Header %s not found in current release notes file, retrying from backup URL" % header)
+		dbgp("No release notes found between %s and %s, retrying from backup URL" % (start_header, end_header))
 
 		ok_notes, notes_url = _download_with_fallback(
 			releasenotes_backup,
@@ -21085,11 +21118,13 @@ def procUpdate(args):
 
 		if ok_notes:
 			dbgp("Re-downloaded release notes from backup URL %s" % notes_url)
-			header, notes = _get_release_notes_for_version(releasenotes_file, filename, version, revision)
+			sections, start_header, end_header = _get_release_notes_since_version(
+				releasenotes_file, filename, from_version, from_revision, to_version, to_revision
+			)
 		else:
 			dbgp("Unable to re-download release notes from backup URL")
 
-		return header, notes
+		return sections, start_header, end_header
 
 	simulate_only = False
 	if "simul" in args:
@@ -21212,7 +21247,7 @@ def procUpdate(args):
 
 			if simulate_only:
 				dbgp("Simulation mode: using current version release notes for %s because download failed" % name)
-				release_notes_targets.append((name, current_version, current_revision))
+				release_notes_targets.append((name, current_version, current_revision, current_version, current_revision))
 
 			_safe_remove(download_file)
 			continue
@@ -21227,7 +21262,7 @@ def procUpdate(args):
 
 			if simulate_only:
 				dbgp("Simulation mode: using current version release notes for %s because downloaded file had invalid version info" % name)
-				release_notes_targets.append((name, current_version, current_revision))
+				release_notes_targets.append((name, current_version, current_revision, current_version, current_revision))
 				dbgp("Not removing downloaded file so you can inspect what went wrong")
 			else:
 				_safe_remove(download_file)
@@ -21240,13 +21275,13 @@ def procUpdate(args):
 		if force_update:
 			if simulate_only:
 				dbg.log("    [*] Simulation mode enabled - not updating %s (but -force would overwrite it)" % name)
-				release_notes_targets.append((name, new_version, new_revision))
+				release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 			else:
 				try:
 					dbgp("Force copying %s over %s" % (download_file, current_file))
 					shutil.copyfile(download_file, current_file)
 					dbg.log("    [+] Forced in-place update of %s" % name, highlight=1)
-					release_notes_targets.append((name, new_version, new_revision))
+					release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 				except Exception as e:
 					dbg.log("    [-] Unable to force update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
@@ -21257,13 +21292,13 @@ def procUpdate(args):
 			if simulate_only:
 				dbg.log("    [*] Simulation mode enabled - not updating %s" % name)
 				dbgp("Simulation mode active, not copying %s on top of current file" % name)
-				release_notes_targets.append((name, new_version, new_revision))
+				release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 			else:
 				try:
 					dbgp("Copying %s over %s" % (download_file, current_file))
 					shutil.copyfile(download_file, current_file)
 					dbg.log("    [+] Updated %s in place" % name, highlight=1)
-					release_notes_targets.append((name, new_version, new_revision))
+					release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 				except Exception as e:
 					dbg.log("    [-] Unable to update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
@@ -21272,35 +21307,38 @@ def procUpdate(args):
 			dbg.log("    [+] You are already running the latest version of %s" % name)
 			if simulate_only:
 				dbgp("Simulation mode: using current version release notes for %s because no newer version was found" % name)
-				release_notes_targets.append((name, current_version, current_revision))
+				release_notes_targets.append((name, current_version, current_revision, current_version, current_revision))
 
 		_safe_remove(download_file)
 
-	if downloaded_release_notes and len(release_notes_targets) > 0:
-		dbg.log("[+] Release notes")
-		for fname, ver, rev in release_notes_targets:
-			header, notes = _get_release_notes_with_retry(
-				releasenotes_path,
-				releasenotes_backup,
-				fname,
-				ver,
-				rev
-			)
-			if header in seen_release_headers:
-				dbgp("Skipping duplicate release notes header %s" % header)
-				continue
-			seen_release_headers[header] = True
-
-			if notes != "":
-				dbg.log("    %s" % header, highlight = True)
-				for line in notes.splitlines():
-					dbg.log("    %s" % line, highlight = True)
-			else:
-				dbgp("No release note entry found for %s, even after retrying backup server" % header)
-	elif not downloaded_release_notes:
-		dbgp("Release notes were not downloaded, so nothing will be shown")
-	else:
-		dbgp("No release notes targets were collected, so no release notes section will be printed")
+		if downloaded_release_notes and len(release_notes_targets) > 0:
+			dbg.log("[+] Release notes")
+			for fname, from_ver, from_rev, to_ver, to_rev in release_notes_targets:
+				sections, start_header, end_header = _get_release_notes_with_retry(
+					releasenotes_path,
+					releasenotes_backup,
+					fname,
+					from_ver,
+					from_rev,
+					to_ver,
+					to_rev
+				)
+				if len(sections) > 0:
+					for section in sections:
+						header = section["header"]
+						if header in seen_release_headers:
+							dbgp("Skipping duplicate release notes header %s" % header)
+							continue
+						seen_release_headers[header] = True
+						dbg.log("    %s" % header, highlight = True)
+						for line in section["notes"].splitlines():
+							dbg.log("    %s" % line, highlight = True)
+				else:
+					dbgp("No release note entries found between %s and %s, even after retrying backup server" % (start_header, end_header))
+		elif not downloaded_release_notes:
+			dbgp("Release notes were not downloaded, so nothing will be shown")
+		else:
+			dbgp("No release notes targets were collected, so no release notes section will be printed")
 
 	return "Done"
 
