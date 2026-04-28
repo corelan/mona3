@@ -159,7 +159,9 @@ Install separate copies of `mona.py` and `windbglib.py` for each debugger applic
 
 **Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
 
-> We're going to use WinDBG(X) aliases to avoid having to type the full path.
+We will put the files in a central location. That means we'll have to refer to the files using their absolute path.
+
+> Don't worry, we're going to use WinDBG(X) aliases to avoid having to type the full path.  In fact, the goal is to simply run `!mona`
 
 <br> 
 
