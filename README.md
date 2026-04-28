@@ -28,6 +28,7 @@
 - 🤝 [Want to contribute?](#want-to-contribute)
 - 📚 [Posts and resources about Mona v3](#posts-and-resources-about-mona-v3)
 
+
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
 ### Highlights
@@ -59,7 +60,7 @@ The script will automatically:
 * ***Install*** **Visual Studio runtime** and register required DLLs
 
 
-If you prefer to install those components by yourself, please verify (after installation) the desired Python3/PyKD behavior:
+If you prefer to install those components yourself, after installation, verify that Python 3 and PyKD work as expected:
 
 Open an Administrator Command Prompt.
 
@@ -106,7 +107,7 @@ quit()
 
 ### 1.2. Windows 7
 
-**Still running Windows 7 somewhere?**
+If you are still using Windows 7:
 
 Begin by installing [Python 2.7.18](https://www.python.org/ftp/python/2.7.18/python-2.7.18.msi).
 
@@ -124,12 +125,12 @@ This will install all required components to run `mona` on Windows 7.
 
 ### 1.3. A note on 64bit
 
-The 64bit versions of WinDBG(X) don't actually support assembling 64bit mnemonics into opcode. 
+The 64-bit versions of WinDBG(X) do not support assembling 64-bit mnemonics into opcodes.
 
-We've hardcoded a few common instructions in an assembly "cache" inside windbglib.py, but we're also checking if your machine has the `keystone-engine` library installed.
+Mona includes a small assembly cache in `windbglib.py`... but that's not really good enough to meet all needs.   
  
-If it is the case, windbglib will use it as needed to assemble.
-If not, support for 64bit assembly will be limited, and some commands that take arbitrary assemby statements might fail.
+If `keystone-engine` is installed, `windbglib.py` will use it when needed.
+If not, support for 64-bit assembly will be very limited (to the items in the assembly cache), and some commands that take arbitrary assembly statements might fail.  
 
 ---
 
@@ -192,7 +193,7 @@ Create a central folder, for instance `C:\Tools\mona3`.
 
 #### Step 2: Configure for WinDBG Classic / WinDBGX
 
-Reference the files directly from `C:\Tools\mona3` using aliases (see **Section 3.2** for auto-loading setup).
+Reference the files directly from `C:\Tools\mona3` using aliases (see [**Section B below**](#b-auto-loading-pykd-and-creating-an-alias-in-windbg-classic-and-windbgx) for auto-loading setup).
 
 **Recommendation**: Use **Python 3.9** when running `mona` in WinDBG(X). 
 
@@ -217,7 +218,7 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 * ***Install*** **Python 2.7.18** (***32-bit version only***)
 * ***Ensure*** the 32-bit `C:\Python27` folder is in your system **PATH** environment variable
   * ***Verify*** by opening Command Prompt and typing `python` — it should launch Python 2.7.18 (32-bit)
-  * *Alternative*: See **Section 3.3** for a launcher `.bat` file to temporarily set the PATH
+  * *Alternative*: See **Section E below** for a launcher `.bat` file to temporarily set the PATH
 
 ---
 
@@ -229,14 +230,17 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 ### A. Running Mona in WinDBG Classic and WinDBGX
 
-> **Note**: We recommend launching WinDBG Classic or WinDBGX from an Administrator Command Prompt.  This ensures we're running the debugger with administrator privileges, and it allows to specific certain command lines arguments as welL.
+> **Note**: We recommend launching WinDBG Classic or WinDBGX from an Administrator Command Prompt. This ensures the debugger runs with administrator privileges and lets you pass command-line arguments more easily.
 
 
 #### WinDBG Classic
 
-**Step 1**: ***Open*** **WinDBG Classic** by running `windbg.exe` from its program folder (typically something like `C:\Program Files (x86)\Windows Kits\10\Debuggers`) and ***attach*** it to your target process.
+**Step 1**: ***Open*** **WinDBG Classic** 
 
-(Make sure to run `windbg.exe` from the `x64` folder if you're going to attach to a 64bit process, and to run `windbg.exe` from the `x86` folder to open a 32bit debugging session.)
+Run `windbg.exe` from the correct WinDBG Program Folder. The base path typically begins with `C:\Program Files (x86)\Windows Kits\10\Debuggers`, and inside that folder, you should find a `x86` and a `x64` folder, amongst others.
+Make sure to run `windbg.exe` from the `x64` folder if you're going to attach to a 64bit process, and to run `windbg.exe` from the `x86` folder to open a 32bit debugging session.
+
+Next, ***attach*** WinDBG Classic to your target process.
 
 **Step 2**: At the WinDBG Classic Command Line, ***load*** the **PyKD** bootstrapper extension:
 ```python
@@ -254,7 +258,7 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 ```
 Now you can simply type `!mona` at the WinDBG Command Line.
 
-I'll explain how to automate the creation of this alias when WinDBG Classic starts in section B below.
+Section B below shows how to automate this alias at startup.
 
 
 
@@ -287,11 +291,11 @@ Now you can simply type `!mona` at the WinDBG(X) Command Line as well.
 
 **For WinDBG Classic:**
 
-***Launch*** `windbg.exe` from its program folder, and use the `-c` comand line flag to auto-load **PyKD** and ***create*** the **mona** alias. 
+***Launch*** `windbg.exe` from its program folder, and use the `-c` command-line flag to auto-load **PyKD** and ***create*** the **mona** alias. 
 
 To make things even easier, you could consider creating a small batch file inside the WinDBG Program folders (both `x86` and `x64`) that has all the required command line arguments:
 
-For example, create `w.bat`in the x86 folder,  with the following contents:
+For example, create `w.bat` in the `x86` folder with the following contents:
 
 ```batch
 set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9 C:\Tools\mona3\mona.py' "
@@ -309,7 +313,7 @@ set "WINDBG_CMD=windbg.exe -hd -c '!load pykd; as !mona !py -3.9-64 C:\Tools\mon
 
 **For WinDBGX:**
 
-In WinDBGX, we can use the "Startup Settings"
+In WinDBGX, use Startup Settings to run these commands at the start of each session.
 
 ***Configure*** the **Startup settings** to auto-load on every session:
 1. Navigate to: ***File > Settings > Debugging settings > Startup***
@@ -399,9 +403,9 @@ ImportError: DLL load failed: %1 is not a valid Win32 application.
 >>>
 ```
 
-As you can see, although WinDBG loaded the correct Python version/architecture (2.7.8 64bit), it still references libraries from the 32bit Python installation in `C:\Python27\Lib` instead of `C:\Python27-64\Lib`.
+As you can see, although WinDBG loaded the correct Python version and architecture (Python 2.7.18, 64-bit), it still references libraries from the 32-bit Python installation in `C:\Python27\Lib` instead of `C:\Python27-64\Lib`.
 
-The fix is relatively easy. Set the `PYTHONHOME` and `PYTHONPATH`environment variables, and insert the correct folder into the `PATH`.
+The fix is relatively easy. Set the `PYTHONHOME` and `PYTHONPATH` environment variables, and insert the correct folder into the `PATH`.
 
 For example: Open WinDBG Classic and use Python 2.7.18 64bit (installed under `C:\Python27-64`):
 
@@ -430,7 +434,7 @@ SET PYTHONPATH=
 
 Simply ***launch*** **Immunity Debugger** and type `!mona` at the command prompt.
 
-**If you prefer NOT to have C:\\Python27 in your system PATH:**
+**If you do not want to keep `C:\\Python27` in your system `PATH`:**
 
 ***Create*** a launcher batch file (`runimmunity.bat`) that ***temporarily*** sets the PATH variable:
 
@@ -450,7 +454,7 @@ Or create a shortcut on your desktop to the `runimmunity.bat` file, and configur
 
 * Right click on the shortcut
 * Choose ***Properties***
-* Open the ***General*** tab and change the name to something like `Ìmmunity Debugger Py2`
+* Open the ***General*** tab and change the name to something like `Immunity Debugger Py2`
 * Open the ***Shortcut*** tab
 * Click ***Advanced***
 * Enable ***Run as administrator***
@@ -483,7 +487,7 @@ If you discover a bug, please ***open an issue*** and provide ***detailed steps 
 
 ## 🤝 Want to contribute?
 
-Check our [CONTRIBUTING.md](CONTRIBUTING.md) file for more info
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 <br> 
 
