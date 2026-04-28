@@ -114,6 +114,7 @@ Next, download a copy of the `CorelanWin7VMinstall.py` python script from [the C
 
 This will install all required components to run `mona` on Windows 7.
 
+<br>
 
 ### 1.3. A note on 64bit
 
