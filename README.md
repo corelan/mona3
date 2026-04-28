@@ -258,7 +258,7 @@ Next, ***attach*** WinDBG Classic to your target process.
 ```
 Now you can simply type `!mona` at the WinDBG Command Line.
 
-Section B below shows how to automate this alias at startup.
+[Section B](#b-auto-loading-pykd-and-creating-an-alias-in-windbg-classic-and-windbgx) below shows how to automate this alias at startup.
 
 
 
@@ -489,7 +489,7 @@ If you discover a bug, please ***open an issue*** and provide ***detailed steps 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
-<br> 
+<br> <br> 
 
 ## 📚 Posts and resources about Mona v3
 
