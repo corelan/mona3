@@ -147,8 +147,10 @@ You have two installation approaches:
 ### 2.1. Distributed installation 
 
 This setup involves installing separate copies of `mona.py` and `windbglib.py` for each debugger application.   
-We recommend and prefer using a centralized location, but in case your interested in how to set it up with individual copies of `mona.py` and `windbglib.py` for each debugger, you can follow these steps: 
+For the record, we do recommend and prefer using a **centralized location**, but in case your interested in how to make things work using individual copies of `mona.py` and `windbglib.py` for each debugger, you can follow the steps below. 
 
+First of all, **download** `mona.py` and `windbglib.py` from this repository and store them somewhere. 
+> **⚠️ Important**: Verify the downloaded files contain ***actual Python code***, not HTML
 
 **For WinDBG Classic:**
 * **32-bit**: put the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
