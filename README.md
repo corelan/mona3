@@ -2,29 +2,29 @@
 
 # MONA v3
 
-## Table of Contents
+## 📑 Table of Contents
 
-- [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
-  - [1. Install dependencies](#1-install-dependencies)
+- [🛠️ Preparing your system to run Mona](#preparing-your-system-to-run-mona)
+  - [📦 1. Install dependencies](#1-install-dependencies)
     - [1.1. Windows 10 and later](#11-windows-10-and-later)
     - [1.2. Windows 7](#12-windows-7)
     - [1.3. A note on 64bit](#13-a-note-on-64bit)
-  - [2. Install mona & windbglib](#2-install-mona--windbglib)
+  - [📥 2. Install mona & windbglib](#2-install-mona--windbglib)
     - [2.1. Distributed installation](#21-distributed-installation)
     - [2.2. Centralized installation (recommended)](#22-centralized-installation-recommended)
       - [Step 1: Set up central location](#step-1-set-up-central-location)
       - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
       - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
-  - [3. Running Mona](#3-running-mona)
+  - [▶️ 3. Running Mona](#3-running-mona)
     - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
     - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
     - [3.3. Running Mona in WinDBG Classic on Windows 7](#33-running-mona-in-windbg-classic-on-windows-7)
     - [3.4. Helping Python find its libraries](#34-helping-python-find-its-libraries)
     - [3.5. Running Mona in Immunity](#35-running-mona-in-immunity)
-- [Thank you](#thank-you)
-- [Found a bug?](#found-a-bug)
-- [Want to contribute?](#want-to-contribute)
-- [Posts and resources about Mona v3](#posts-and-resources-about-mona-v3)
+- [🙏 Thank you](#thank-you)
+- [🐛 Found a bug?](#found-a-bug)
+- [🤝 Want to contribute?](#want-to-contribute)
+- [📚 Posts and resources about Mona v3](#posts-and-resources-about-mona-v3)
 
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
@@ -37,11 +37,11 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 ---
 <br> <br> 
 
-# Preparing your system to run Mona
+# 🛠️ Preparing your system to run Mona
 
 <br> 
 
-## 1. Install dependencies
+## 📦 1. Install dependencies 
 
 
 ### 1.1. Windows 10 and later
@@ -126,7 +126,7 @@ If not, support for 64bit assembly will be limited, and some commands that take 
 
 <br> <br> 
 
-## 2. Install mona & windbglib
+## 📥 2. Install mona & windbglib
 
 You have two installation approaches: ***distributed*** (multiple copies) or ***centralized*** (recommended - single copy).
 
@@ -199,7 +199,7 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 <br> <br> 
 
-## 3. Running Mona
+## ▶️ 3. Running Mona
 
 <br> 
 
@@ -414,25 +414,25 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 ---
 <br> <br> 
 
-## Thank you
+## 🙏 Thank you
 
 Mona v3 would not have been possible without the ***hard work and dedication*** of **[@apl3b](https://github.com/apl3b)**. Thank you! 🙏
 
 
 <br> <br> 
 
-## Found a bug?
+## 🐛 Found a bug?
 
 If you discover a bug, please ***open an issue*** and provide ***detailed steps to reproduce*** the problem.
 
 <br> <br> 
 
-## Want to contribute?
+## 🤝 Want to contribute?
 
 Check our [CONTRIBUTING.md](CONTRIBUTING.md) file for more info
 
 <br> 
 
-## Posts and resources about Mona v3
+## 📚 Posts and resources about Mona v3
 
 * [Mona v3 Release - Announcement on Corelan Blog](https://www.corelan.be/index.php/2026/05/01/mona-v3-released/)
