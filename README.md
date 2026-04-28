@@ -115,8 +115,8 @@ Next, download a copy of the `CorelanWin7VMinstall.py` python script from [the C
 
 ```batch
 C:\>cd Python27
-
-C:\Python27>python c:\CorelanWin7VMinstall.py```
+C:\Python27>python c:\CorelanWin7VMinstall.py
+```
 
 This will install all required components to run `mona` on Windows 7.
 
