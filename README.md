@@ -4,7 +4,7 @@
 
 ## 📑 Table of Contents
 
-- 🛠️ [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
+- 🛠️ [Setting up Mona](#setting-up-mona)
   - 📦 [1. Install dependencies](#1-install-dependencies)
     - [1.1. Windows 10 and later](#11-windows-10-and-later)
     - [1.2. Windows 7](#12-windows-7)
@@ -15,12 +15,12 @@
       - [Step 1: Set up central location](#step-1-set-up-central-location)
       - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
       - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
-  - ▶️ [3. Running Mona](#3-running-mona)
-    - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
-    - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
-    - [3.3. Running Mona in WinDBG Classic on Windows 7](#33-running-mona-in-windbg-classic-on-windows-7)
-    - [3.4. Helping Python find its libraries](#34-helping-python-find-its-libraries)
-    - [3.5. Running Mona in Immunity](#35-running-mona-in-immunity)
+- ▶️ [Running Mona](#running-mona)
+  - [A. Running Mona in WinDBG(X)](#a-running-mona-in-windbgx)
+  - [B. Auto loading pykd and creating an alias in WinDBG(X)](#b-auto-loading-pykd-and-creating-an-alias-in-windbgx)
+  - [C. Running Mona in WinDBG Classic on Windows 7](#c-running-mona-in-windbg-classic-on-windows-7)
+  - [D. Helping Python find its libraries](#d-helping-python-find-its-libraries)
+  - [E. Running Mona in Immunity](#e-running-mona-in-immunity)
 - 🙏 [Thank you](#thank-you)
 - 🐛 [Found a bug?](#found-a-bug)
 - 🤝 [Want to contribute?](#want-to-contribute)
@@ -37,7 +37,7 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 ---
 <br> <br> 
 
-# 🛠️ Preparing your system to run Mona
+# 🛠️ Setting up Mona
 
 <br> 
 
@@ -199,11 +199,11 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 <br> <br> 
 
-## ▶️ 3. Running Mona
+# ▶️ Running Mona
 
 <br> 
 
-### 3.1. Running Mona in WinDBG(X)
+### A. Running Mona in WinDBG(X)
 
 **Step 1**: ***Open*** **WinDBG(X)** and ***attach*** it to your target process
 
@@ -229,7 +229,7 @@ Now you can simply type `!mona` at the WinDBG(X) Command Line.
 
 <br> 
 
-### 3.2. Auto loading pykd and creating an alias in WinDBG(X)
+### B. Auto loading pykd and creating an alias in WinDBG(X)
 
 **For WinDBG Classic:**
 
@@ -269,7 +269,7 @@ as !mona !py -3.9 C:\Tools\mona3\mona.py
 
 <br> 
 
-### 3.3. Running Mona in WinDBG Classic on Windows 7
+### C. Running Mona in WinDBG Classic on Windows 7
 
 For Windows 7, we recommend using a small launcher script that sets a few Python related environment variables.
 
@@ -312,7 +312,7 @@ SET PYTHONPATH=
 <br> 
 
 
-### 3.4. Helping Python find its libraries
+### D. Helping Python find its libraries
 
 You can use similar batch files in Windows 11 as well.
 This may be helpful in case you have various different Python versions installed on your system.
@@ -370,7 +370,7 @@ SET PYTHONPATH=
 
 
 
-### 3.5. Running Mona in Immunity
+### E. Running Mona in Immunity
 
 **If Python 2.7 is in your system PATH:**
 
