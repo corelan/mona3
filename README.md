@@ -4,27 +4,27 @@
 
 ## 📑 Table of Contents
 
-- [🛠️ Preparing your system to run Mona](#preparing-your-system-to-run-mona)
-  - [📦 1. Install dependencies](#1-install-dependencies)
+- 🛠️ [Preparing your system to run Mona](#preparing-your-system-to-run-mona)
+  - 📦 [1. Install dependencies](#1-install-dependencies)
     - [1.1. Windows 10 and later](#11-windows-10-and-later)
     - [1.2. Windows 7](#12-windows-7)
     - [1.3. A note on 64bit](#13-a-note-on-64bit)
-  - [📥 2. Install mona & windbglib](#2-install-mona--windbglib)
+  - 📥 [2. Install mona & windbglib](#2-install-mona--windbglib)
     - [2.1. Distributed installation](#21-distributed-installation)
     - [2.2. Centralized installation (recommended)](#22-centralized-installation-recommended)
       - [Step 1: Set up central location](#step-1-set-up-central-location)
       - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
       - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
-  - [▶️ 3. Running Mona](#3-running-mona)
+  - ▶️ [3. Running Mona](#3-running-mona)
     - [3.1. Running Mona in WinDBG(X)](#31-running-mona-in-windbgx)
     - [3.2. Auto loading pykd and creating an alias in WinDBG(X)](#32-auto-loading-pykd-and-creating-an-alias-in-windbgx)
     - [3.3. Running Mona in WinDBG Classic on Windows 7](#33-running-mona-in-windbg-classic-on-windows-7)
     - [3.4. Helping Python find its libraries](#34-helping-python-find-its-libraries)
     - [3.5. Running Mona in Immunity](#35-running-mona-in-immunity)
-- [🙏 Thank you](#thank-you)
-- [🐛 Found a bug?](#found-a-bug)
-- [🤝 Want to contribute?](#want-to-contribute)
-- [📚 Posts and resources about Mona v3](#posts-and-resources-about-mona-v3)
+- 🙏 [Thank you](#thank-you)
+- 🐛 [Found a bug?](#found-a-bug)
+- 🤝 [Want to contribute?](#want-to-contribute)
+- 📚 [Posts and resources about Mona v3](#posts-and-resources-about-mona-v3)
 
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
