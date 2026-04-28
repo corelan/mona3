@@ -24,6 +24,7 @@
 - [Thank you](#thank-you)
 - [Found a bug?](#found-a-bug)
 - [Want to contribute?](#want-to-contribute)
+- [Posts and resources about Mona v3](#posts-and-resources-about-mona-v3)
 
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
@@ -434,4 +435,4 @@ Check our [CONTRIBUTING.md](CONTRIBUTING.md) file for more info
 
 ## Posts and resources about Mona v3
 
-* [Announcement on Corelan Blog](https://www.corelan.be/index.php/2026/05/01/mona-v3-released/)
+* [Mona v3 Release - Announcement on Corelan Blog](https://www.corelan.be/index.php/2026/05/01/mona-v3-released/)
