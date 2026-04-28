@@ -429,3 +429,9 @@ If you discover a bug, please ***open an issue*** and provide ***detailed steps 
 ## Want to contribute?
 
 Check our [CONTRIBUTING.md](CONTRIBUTING.md) file for more info
+
+<br> 
+
+## Posts and resources about Mona v3
+
+* [Announcement on Corelan Blog](https://www.corelan.be/index.php/2026/05/01/mona-v3-released/)
