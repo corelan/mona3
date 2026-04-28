@@ -146,18 +146,23 @@ You have two installation approaches:
 
 ### 2.1. Distributed installation 
 
-Install separate copies of `mona.py` and `windbglib.py` for each debugger application. This approach is useful if you have multiple debuggers on the same machine.
+This setup involves installing separate copies of `mona.py` and `windbglib.py` for each debugger application.   
+We recommend and prefer using a centralized location, but in case your interested in how to set it up with individual copies of `mona.py` and `windbglib.py` for each debugger, you can follow these steps: 
+
 
 **For WinDBG Classic:**
 * **32-bit**: put the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x86`
 * **64-bit**: put the 2 files under `C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`
+
+This technically allows you to reference `mona.py` without having to provide the absolute path, as it should be relative to the WinDBG Classic application.
 
 **For Immunity Debugger:**
 * Place `mona.py` in: `C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands`
 * *Note: You do not need `windbglib.py` for Immunity*
 
 **For WinDBGX:**
-* Reference `mona.py` from ***any location*** of your choice
+* Reference `mona.py` from ***any location*** of your choice. You will very likely have to reference one of the files in the WinDBG Classic program folders yourself. 
+
 
 <br> 
 
