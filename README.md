@@ -131,7 +131,10 @@ If not, support for 64bit assembly will be limited, and some commands that take 
 
 ## 📥 2. Install mona & windbglib
 
-You have two installation approaches: ***distributed*** (multiple copies) or ***centralized*** (recommended - single copy).
+You have two installation approaches:
+
+* [***Distributed*** installation](#21-distributed-installation): multiple copies
+* [***Centralized*** installation](#22-centralized-installation-recommended): recommended, single copy
 
 <br> 
 
