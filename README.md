@@ -61,7 +61,7 @@ The script will automatically:
 
 If you prefer to install those components by yourself, please verify (after installation) the desired Python3/PyKD behavior:
 
-Open an administrator command prompt.
+Open an Administrator Command Prompt.
 
 Run `py -3.9-32`
 
@@ -108,9 +108,15 @@ quit()
 
 **Still running Windows 7 somewhere?**
 
-Begin by installing Python 2.7.18.
+Begin by installing [Python 2.7.18](https://www.python.org/ftp/python/2.7.18/python-2.7.18.msi).
 
-Next, download a copy of the `CorelanWin7VMinstall.py` python script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining) and run it from an administrator command prompt.
+Next, download a copy of the `CorelanWin7VMinstall.py` python script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining) and run it from an Administrator Command Prompt.
+(let's say you have stored the file on your C: drive)
+
+```batch
+C:\>cd Python27
+
+C:\Python27>python c:\CorelanWin7VMinstall.py```
 
 This will install all required components to run `mona` on Windows 7.
 
@@ -190,6 +196,9 @@ If not using Immunity Debugger or Python2 scripts, feel free to safely ***remove
 #### Step 3: Configure for Immunity Debugger
 
 **Option A: Create a symbolic link** (recommended)
+
+From an Administrator Command Prompt:
+
 ```batch
 mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py" "C:\Tools\mona3\mona.py"
 ```
