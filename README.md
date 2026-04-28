@@ -16,8 +16,10 @@
       - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
       - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
 - ▶️ [Running Mona](#running-mona)
-  - [A. Running Mona in WinDBG(X)](#a-running-mona-in-windbgx)
-  - [B. Auto loading pykd and creating an alias in WinDBG(X)](#b-auto-loading-pykd-and-creating-an-alias-in-windbgx)
+  - [A. Running Mona in WinDBG Classic and WinDBGX](#a-running-mona-in-windbg-classic-and-windbgx)
+    - [WinDBG Classic](#windbg-classic)
+    - [WinDBGX](#windbgx)
+  - [B. Auto loading pykd and creating an alias in WinDBG Classic and WinDBGX](#b-auto-loading-pykd-and-creating-an-alias-in-windbg-classic-and-windbgx)
   - [C. Running Mona in WinDBG Classic on Windows 7](#c-running-mona-in-windbg-classic-on-windows-7)
   - [D. Helping Python find its libraries](#d-helping-python-find-its-libraries)
   - [E. Running Mona in Immunity](#e-running-mona-in-immunity)
@@ -203,39 +205,69 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 <br> 
 
-### A. Running Mona in WinDBG(X)
+### A. Running Mona in WinDBG Classic and WinDBGX
 
-**Step 1**: ***Open*** **WinDBG(X)** and ***attach*** it to your target process
+> **Note**: We recommend launching WinDBG Classic or WinDBGX from an Administrator Command Prompt.  This ensures we're running the debugger with administrator privileges, and it allows to specific certain command lines arguments as welL.
 
-**Step 2**: At the WinDBG(X) Command Line, ***load*** the **PyKD** bootstrapper extension:
+
+#### WinDBG Classic
+
+**Step 1**: ***Open*** **WinDBG Classic** by running `windbg.exe` from its program folder (typically something like `C:\Program Files (x86)\Windows Kits\10\Debuggers`) and ***attach*** it to your target process.
+
+(Make sure to run `windbg.exe` from the `x64` folder if you're going to attach to a 64bit process, and to run `windbg.exe` from the `x86` folder to open a 32bit debugging session.)
+
+**Step 2**: At the WinDBG Classic Command Line, ***load*** the **PyKD** bootstrapper extension:
 ```python
 !load pykd
 ```
 
 **Step 3**: ***Run*** **Mona** using **Python 3.9**:
-
-On WinDBG(X):
 ```python
 !py -3.9 C:\Tools\mona3\mona.py
 ```
-(You can run the same command on 32bit and 64bit debugging sessions, WinDBG(X) will select the appropriate Python3.9.13 version)
-
 
 **Convenience**: ***Create an alias*** to avoid typing the full path every time:
 ```python
 !as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
-Now you can simply type `!mona` at the WinDBG(X) Command Line.
+Now you can simply type `!mona` at the WinDBG Command Line.
+
+I'll explain how to automate the creation of this alias when WinDBG Classic starts in section B below.
+
+
+
+#### WinDBGX
+
+**Step 1**: ***Open*** **WinDBGX** by running `windbgx` and ***attach*** it to your target process.  WinDBGX will automatically select the right architecture based on the process you're attaching to.
+
+**Step 2**: At the WinDBGX Command Line, ***load*** the **PyKD** bootstrapper extension:
+```python
+!load pykd
+```
+
+**Step 3**: ***Run*** **Mona** using **Python 3.9**:
+```python
+!py -3.9 C:\Tools\mona3\mona.py
+```
+(You can run the same command on 32bit and 64bit debugging sessions, WinDBGX will select the appropriate Python 3.9.13 version)
+
+**Convenience**: ***Create an alias*** to avoid typing the full path every time:
+```python
+!as !mona !py -3.9 C:\Tools\mona3\mona.py
+```
+Now you can simply type `!mona` at the WinDBG(X) Command Line as well.
 
 <br> 
 
-### B. Auto loading pykd and creating an alias in WinDBG(X)
+
+
+### B. Auto loading pykd and creating an alias in WinDBG Classic and WinDBGX
 
 **For WinDBG Classic:**
 
-***Launch*** with the `-c` flag to auto-load **PyKD** and ***create*** the **mona** alias. 
+***Launch*** `windbg.exe` from its program folder, and use the `-c` comand line flag to auto-load **PyKD** and ***create*** the **mona** alias. 
 
-You could create a small batch file inside the WinDBG Program folders (both `x86` and `x64`) that has all the required command line arguments:
+To make things even easier, you could consider creating a small batch file inside the WinDBG Program folders (both `x86` and `x64`) that has all the required command line arguments:
 
 For example, create `w.bat`in the x86 folder,  with the following contents:
 
