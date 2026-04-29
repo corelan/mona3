@@ -26611,21 +26611,21 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 
 	if first_broken_src is not None:
 		if not logsilent:
-			log("First mismatching byte: %s" % bin2hex(first_broken_src))
+			log(f"First mismatching byte: {bin2hex(first_broken_src)}")
 		if first_broken_src not in guessed_badchars:
 			guessed_badchars.append(first_broken_src)
 
 	if likely_bc:
 		if not logsilent:
-			log("Very likely bad chars: %s" % bin2hex(sorted(set(likely_bc))))
+			log(f"Very likely bad chars: {bin2hex(sorted(set(list(likely_bc))))}")
 		for b in likely_bc:
 			if b not in guessed_badchars:
 				guessed_badchars.append(b)
 
 	if not logsilent and len(bytes_in_changed_blocks) > 0:
-		log("Possibly bad chars: %s" % bin2hex(sorted(bytes_in_changed_blocks)))
+		log(f"Possibly bad chars: {bin2hex(sorted(set(list(bytes_in_changed_blocks))))}")
 
-	for b in sorted(bytes_in_changed_blocks):
+	for b in bytes_in_changed_blocks:
 		if b not in guessed_badchars:
 			guessed_badchars.append(b)
 
@@ -26633,7 +26633,7 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 	bytes_omitted_from_input = set(chr(i) for i in range(0, 256)) - set(cmp.x)
 	if bytes_omitted_from_input:
 		if not logsilent:
-			log("Bytes omitted from input: %s" % bin2hex(sorted(bytes_omitted_from_input)))
+			log(f"Bytes omitted from input: {bin2hex(sorted(set(list(bytes_omitted_from_input))))}")
 		for b in sorted(bytes_omitted_from_input):
 			if b not in guessed_badchars:
 				guessed_badchars.append(b)
@@ -26659,7 +26659,7 @@ def memcompare(location, src, comparetable, sctype="normal", smart=True, tableco
 		locinfo = MnPointer(location).memLocation()
 		badbstr = " "
 		if len(badbytes) > 0:
-			badbstr = bin2hex(sorted(badbytes))
+			badbstr = bin2hex(badbytes)
 		comparetable.add(0, ['0x%08x' % location, msg, badbstr, sctype, locinfo])
 
 	objlogfile.write("-" * 100, logfile)
@@ -26668,7 +26668,11 @@ def memcompare(location, src, comparetable, sctype="normal", smart=True, tableco
 
 	mem = read_memory(dbg, location, 2 * len(src))
 	if smart:
-		cmp = MemoryComparator(src, mem)
+		# Convert list of single byte strs (src) to bytes object for MemoryComparator
+		src_bytes = b""
+		for byte_str in src:
+			src_bytes = src_bytes + bytes([ord(byte_str)])
+		cmp = MemoryComparator(src_bytes, mem)
 		mapped_chunks = [''.join(chr(_ord(b)) for b in chunk) for chunk in cmp.guess_mapping()]
 	else:
 		mapped_chunks = [chr(_ord(b)) for b in mem[:len(src)]] + [()] * (len(src) - len(mem))
@@ -34018,7 +34022,8 @@ def parse_undelimited_cpb(input_string):
 			elif char == "..":
 				parsed_string += f"{hex_char_list[index - 1]}..{hex_char_list[index + 1]},"
 				continue
-		except Exception:
+		except IndexError:
+			parsed_string += f"{char},"
 			continue
 		else: parsed_string += f"{char},"
 	return parse_cpb_input(parsed_string[:-1])
@@ -34039,7 +34044,7 @@ def parse_cpb_input(user_input):
 			for char_index in range(int.from_bytes(start_bad_char), int.from_bytes(end_bad_char)):
 				bad_chars_list.append(char_index.to_bytes())
 			bad_chars_list.append(end_bad_char)
-		else: bad_chars_list + parse_undelimited_cpb(input_substring_entry)
+		else: bad_chars_list = bad_chars_list + parse_undelimited_cpb(input_substring_entry)
 	return bad_chars_list
 
 def bad_char_comparison_array(args):
