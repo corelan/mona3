@@ -112,6 +112,25 @@ Before submitting, test as much as reasonably possible:
 
 If your code touches architecture-specific or debugger-specific behavior, extra validation is expected.
 
+For targeted manual testing of a single `!mona` command across the main supported combinations, you can use [`testing/runmonatests.cmd`](testing/runmonatests.cmd). The script runs the command in 6 scenarios:
+
+- x86 + Python 3.9
+- x64 + Python 3.9
+- x86 + Python 2.7
+- x64 + Python 2.7
+- x86 + WinDbgX + Python 3.9
+- x64 + WinDbgX + Python 3.9
+
+Usage:
+
+```bat
+testing\runmonatests.cmd !mona modules
+testing\runmonatests.cmd !mona rop -m kernel32.dll
+```
+
+Before using it, open the file and adjust the paths and settings for your local setup, especially `MONA_PATH`, `TARGET_APP_32`, `TARGET_APP_64`, and `DEBUGGER_FRONTEND`. If you prefer console execution, set `AUTO_QUIT=1` and use `DEBUGGER_FRONTEND=cdb`.
+Run the script from an elevated Administrator Command Prompt so WinDbg and the target process can start with the required permissions.
+
 ### 4. Submit a pull request
 
 Once your branch is ready, open a PR.

@@ -489,6 +489,8 @@ If you discover a bug, please ***open an issue*** and provide ***detailed steps 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
+If you are changing or debugging a specific `!mona` command, be aware that the repo also includes [`testing/runmonatests.cmd`](testing/runmonatests.cmd) to exercise that command across multiple test scenarios. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and usage details, including the requirement to run it from an elevated Administrator Command Prompt.
+
 <br> <br> 
 
 ## 📚 Posts and resources about Mona v3
