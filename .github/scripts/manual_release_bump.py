@@ -7,6 +7,10 @@ from pathlib import Path
 
 REV_PATTERN = re.compile(r"(^\s*__REV__\s*=\s*)(\d+)(\s*$)", re.MULTILINE)
 VERSION_PATTERN = re.compile(r"^\s*__VERSION__\s*=\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
+GITHUB_NOREPLY_PATTERN = re.compile(
+    r"^(?:\d+\+)?([A-Za-z0-9-]+)@users\.noreply\.github\.com$",
+    re.IGNORECASE,
+)
 
 
 def run_git(args):
@@ -47,7 +51,7 @@ def get_version_string(filename):
 def get_commits_for_file(since_ref, filename):
     output = run_git([
         "log",
-        "--pretty=format:%an|||%h %s",
+        "--pretty=format:%an|||%ae|||%h %s",
         f"{since_ref}..HEAD",
         "--",
         filename,
@@ -59,7 +63,8 @@ def get_commits_for_file(since_ref, filename):
     commits_by_author = {}
 
     for line in output.splitlines():
-        author, msg = line.split("|||", 1)
+        author, email, msg = line.split("|||", 2)
+        author = get_author_display(author, email)
         commits_by_author.setdefault(author, []).append(msg)
 
     result_lines = []
@@ -68,9 +73,16 @@ def get_commits_for_file(since_ref, filename):
         result_lines.append(f"{author}:")
         for commit in commits_by_author[author]:
             result_lines.append(f"  - {commit}")
-        result_lines.append("")
 
     return "\n".join(result_lines).strip()
+
+
+def get_author_display(author_name, author_email):
+    match = GITHUB_NOREPLY_PATTERN.match(author_email.strip())
+    if match:
+        return match.group(1)
+
+    return author_name
 
 
 def prepend_release_notes(release_notes_file, sections):

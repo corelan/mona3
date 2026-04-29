@@ -21641,7 +21641,7 @@ def procUpdate(args):
 		main_url = entry["main_url"]
 		backup_url = entry["backup_url"]
 
-		dbg.log("[+] Processing %s" % name, highlight = True)
+		dbg.log("\n[+] Processing %s" % name, highlight = True)
 		dbgp("Current file   : %s" % current_file)
 		dbgp("Download target: %s" % download_file)
 
