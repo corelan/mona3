@@ -2,6 +2,7 @@
 
 # MONA v3
 
+<a id="table-of-contents"></a>
 ## 📑 Table of Contents
 
 - 🛠️ [Setting up Mona](#setting-up-mona)
@@ -9,11 +10,11 @@
     - [1.1. Windows 10 and later](#11-windows-10-and-later)
     - [1.2. Windows 7](#12-windows-7)
     - [1.3. A note on 64bit](#13-a-note-on-64bit)
-  - 📥 [2. Install mona & windbglib](#2-install-mona--windbglib)
+  - 📥 [2. Install mona & windbglib](#2-install-mona-windbglib)
     - [2.1. Distributed installation](#21-distributed-installation)
     - [2.2. Centralized installation (recommended)](#22-centralized-installation-recommended)
       - [Step 1: Set up central location](#step-1-set-up-central-location)
-      - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic--windbgx)
+      - [Step 2: Configure for WinDBG Classic / WinDBGX](#step-2-configure-for-windbg-classic-windbgx)
       - [Step 3: Configure for Immunity Debugger](#step-3-configure-for-immunity-debugger)
 - ▶️ [Running Mona](#running-mona)
   - [A. Running Mona in WinDBG Classic and WinDBGX](#a-running-mona-in-windbg-classic-and-windbgx)
@@ -40,10 +41,12 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 ---
 <br> <br> 
 
+<a id="setting-up-mona"></a>
 # 🛠️ Setting up Mona
 
 <br> 
 
+<a id="1-install-dependencies"></a>
 ## 📦 1. Install dependencies 
 
 
@@ -136,6 +139,7 @@ If not, support for 64-bit assembly will be very limited (to the items in the as
 
 <br> <br> 
 
+<a id="2-install-mona-windbglib"></a>
 ## 📥 2. Install mona & windbglib
 
 You have two installation approaches:
@@ -224,6 +228,7 @@ mklink "C:\Program Files (x86)\Immunity Inc\Immunity Debugger\PyCommands\mona.py
 
 <br> <br> 
 
+<a id="running-mona"></a>
 # ▶️ Running Mona
 
 <br> 
@@ -472,6 +477,7 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 ---
 <br> <br> 
 
+<a id="thank-you"></a>
 ## 🙏 Thank you
 
 Mona v3 would not have been possible without the ***hard work and dedication*** of **[@apl3b](https://github.com/apl3b)**. Thank you! 🙏
@@ -479,12 +485,14 @@ Mona v3 would not have been possible without the ***hard work and dedication*** 
 
 <br> <br> 
 
+<a id="found-a-bug"></a>
 ## 🐛 Found a bug?
 
 If you discover a bug, please ***open an issue*** and provide ***detailed steps to reproduce*** the problem.
 
 <br> <br> 
 
+<a id="want-to-contribute"></a>
 ## 🤝 Want to contribute?
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
@@ -493,6 +501,7 @@ If you are changing or debugging a specific `!mona` command, be aware that the r
 
 <br> <br> 
 
+<a id="posts-and-resources-about-mona-v3"></a>
 ## 📚 Posts and resources about Mona v3
 
 * [Mona v3 Release - Announcement on Corelan Blog](https://www.corelan.be/index.php/2026/05/01/mona-v3-released/)
