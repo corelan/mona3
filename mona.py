@@ -1059,6 +1059,8 @@ def DwordToBits(srcDword):
 
 
 
+
+
 def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
@@ -1796,6 +1798,276 @@ def getVariantType(typenr):
 
 def listToLower(items):
 	return [_to_text(item).lower() for item in items]
+
+
+def strPosLen(address, mode="all"):
+	"""
+	Inspect whether an address points into an ASCII or UTF-16LE ASCII string.
+
+	Return:
+	OrderedDict with:
+		- is_string
+		- string_type          : "ascii" / "unicode" / ""
+		- start_address
+		- position
+		- position_bytes
+		- value
+		- value_bytes
+		- length
+		- length_bytes
+		- text
+		- mode
+	"""
+	result = OrderedDict([
+		("is_string", False),
+		("string_type", ""),
+		("start_address", None),
+		("position", None),
+		("position_bytes", None),
+		("value", ""),
+		("value_bytes", b""),
+		("value_in_pattern", False),
+		("value_pattern_position", None),
+		("length", 0),
+		("length_bytes", 0),
+		("text", ""),
+		("string_in_pattern", False),
+		("pattern_start", None),
+		("pattern_end", None),
+		("mode", mode),
+	])
+
+	try:
+		address = int(address)
+	except:
+		return result
+
+	mode = _to_text(mode).lower().strip()
+	if mode not in ["all", "strict"]:
+		mode = "all"
+	result["mode"] = mode
+
+	def _read_exact(addr, size):
+		if addr is None or size <= 0:
+			return None
+		try:
+			data = dbg.readMemory(addr, size)
+			if data is None:
+				return None
+			data = ensure_bytes(data)
+			if len(data) != size:
+				return None
+			return data
+		except:
+			return None
+
+	def _all_ascii(data):
+		if data is None or len(data) == 0:
+			return False
+		for b in data:
+			if not isAscii2(_ord(b)):
+				return False
+		return True
+
+	def _all_unicode_ascii(data):
+		if data is None or len(data) == 0 or (len(data) % 2) != 0:
+			return False
+		for i in range(0, len(data), 2):
+			if not isAscii2(_ord(data[i])) or _ord(data[i + 1]) != 0x00:
+				return False
+		return True
+
+	def _unit_is_valid(unit, string_type):
+		if unit is None:
+			return False
+		if string_type == "ascii":
+			return len(unit) == 1 and isAscii2(_ord(unit[0]))
+		if string_type == "unicode":
+			return len(unit) == 2 and isAscii2(_ord(unit[0])) and _ord(unit[1]) == 0x00
+		return False
+
+	def _unit_to_char(unit, string_type):
+		if not _unit_is_valid(unit, string_type):
+			return ""
+		return chr(_ord(unit[0]))
+
+	def _bytes_to_text(data, string_type):
+		if data is None:
+			return ""
+		if string_type == "ascii":
+			return "".join(chr(_ord(b)) for b in data if isAscii2(_ord(b)))
+		if string_type == "unicode":
+			out = []
+			for i in range(0, len(data), 2):
+				unit = data[i:i + 2]
+				if not _unit_is_valid(unit, "unicode"):
+					break
+				out.append(chr(_ord(unit[0])))
+			return "".join(out)
+		return ""
+
+	def _find_start_all(addr, string_type):
+		step = 1 if string_type == "ascii" else 2
+		curr = addr
+		while True:
+			prev = curr - step
+			unit = _read_exact(prev, step)
+			if not _unit_is_valid(unit, string_type):
+				return curr
+			curr = prev
+
+	def _read_all_from_start(start, string_type):
+		step = 1 if string_type == "ascii" else 2
+		out = []
+		curr = start
+		while True:
+			unit = _read_exact(curr, step)
+			if unit is None:
+				break
+			if string_type == "ascii":
+				if _ord(unit[0]) == 0x00 or not _unit_is_valid(unit, "ascii"):
+					break
+			else:
+				if _ord(unit[0]) == 0x00 and _ord(unit[1]) == 0x00:
+					break
+				if not _unit_is_valid(unit, "unicode"):
+					break
+			out.append(unit)
+			curr += step
+		return b"".join(out)
+
+	def _all_same_chars(raw, string_type):
+		step = 1 if string_type == "ascii" else 2
+		first = raw[:step]
+		for i in range(step, len(raw), step):
+			if raw[i:i + step] != first:
+				return False
+		return True
+
+	def _find_start_strict(addr, string_type, sample):
+		step = 1 if string_type == "ascii" else 2
+		if _all_same_chars(sample, string_type):
+			token = sample[:step]
+			curr = addr
+			while True:
+				prev = curr - step
+				unit = _read_exact(prev, step)
+				if unit != token:
+					return curr
+				curr = prev
+		token_len = len(sample)
+		curr = addr
+		while True:
+			prev = curr - token_len
+			chunk = _read_exact(prev, token_len)
+			if chunk != sample:
+				return curr
+			curr = prev
+
+	def _read_strict_from_start(start, string_type, sample):
+		step = 1 if string_type == "ascii" else 2
+		if _all_same_chars(sample, string_type):
+			token = sample[:step]
+			out = []
+			curr = start
+			while True:
+				unit = _read_exact(curr, step)
+				if unit != token:
+					break
+				out.append(unit)
+				curr += step
+			return b"".join(out)
+		token_len = len(sample)
+		out = []
+		curr = start
+		while True:
+			chunk = _read_exact(curr, token_len)
+			if chunk != sample:
+				break
+			out.append(chunk)
+			curr += token_len
+		return b"".join(out)
+
+	def _read_display_value(addr, string_type):
+		chars_needed = PTR_SIZE
+		step = 1 if string_type == "ascii" else 2
+		out = []
+		curr = addr
+		for _ in range(chars_needed):
+			unit = _read_exact(curr, step)
+			if not _unit_is_valid(unit, string_type):
+				break
+			out.append(_unit_to_char(unit, string_type))
+			curr += step
+		return "".join(out)
+
+	def _get_cyclic_pattern():
+		global silent
+		oldsilent = silent
+		try:
+			silent = True
+			return createPattern(20280)
+		finally:
+			silent = oldsilent
+
+	def _find_in_pattern(needle, pattern):
+		if needle is None:
+			return None
+		needle = _to_text(needle)
+		if needle == "":
+			return None
+		pos = pattern.find(needle)
+		if pos >= 0:
+			return pos
+		return None
+
+	sample = _read_exact(address, PTR_SIZE)
+	if sample is None:
+		return result
+
+	string_type = ""
+	if _all_ascii(sample):
+		string_type = "ascii"
+	elif _all_unicode_ascii(sample):
+		string_type = "unicode"
+	else:
+		result["value_bytes"] = sample
+		return result
+
+	if mode == "strict":
+		start = _find_start_strict(address, string_type, sample)
+		full_bytes = _read_strict_from_start(start, string_type, sample)
+	else:
+		start = _find_start_all(address, string_type)
+		full_bytes = _read_all_from_start(start, string_type)
+
+	step = 1 if string_type == "ascii" else 2
+	full_text = _bytes_to_text(full_bytes, string_type)
+
+	result["is_string"] = len(full_bytes) > 0
+	result["string_type"] = string_type
+	result["start_address"] = start
+	result["position_bytes"] = address - start
+	result["position"] = (address - start) // step
+	result["value"] = _read_display_value(address, string_type)
+	result["value_bytes"] = sample
+	result["length_bytes"] = len(full_bytes)
+	result["length"] = len(full_text)
+	result["text"] = full_text
+
+	cyclic_pattern = _get_cyclic_pattern()
+	value_patpos = _find_in_pattern(result["value"], cyclic_pattern)
+	if value_patpos is not None:
+		result["value_in_pattern"] = True
+		result["value_pattern_position"] = value_patpos
+
+	text_patpos = _find_in_pattern(full_text, cyclic_pattern)
+	if text_patpos is not None:
+		result["string_in_pattern"] = True
+		result["pattern_start"] = text_patpos
+		result["pattern_end"] = text_patpos + len(full_text) - 1 if len(full_text) > 0 else text_patpos
+
+	return result
 
 
 def bin2hex(binbytes):
@@ -18039,11 +18311,41 @@ def goFindMSP(distance=0, args=None):
 	if "registers_to" not in results:
 		results["registers_to"] = registers_to
 
+	if len(results["registers"]) == 0:
+		# maybe the user forgot to use a cyclic pattern, and used A's or something like that
+		if STACK_POINTER in regs:
+			strictinfo = strPosLen(regs[STACK_POINTER], mode="strict")
+			if strictinfo["is_string"]:
+				strictlines = []
+				strictlines.append("\n")
+				strictlines.append("[+] Maybe you forgot to use a cyclic pattern. That's ok.")
+				strictlines.append("    I would recommend trying again (with a cyclic pattern) to get more/meaningful results ")
+				strictlines.append("    By looking at %s, I was able to find some interesting things already though." % STACK_POINTER)
+				strictlines.append("\n")
+				strictlines.append("    * No cyclic pattern was found in the registers, but %s points into a repeated %s sequence:" % ( STACK_POINTER, strictinfo["string_type"]))
+				strictlines.append("      %s points at %s, which is %d characters into a sequence that: " % (STACK_POINTER, PTR_PRINT % regs[STACK_POINTER], strictinfo["position"]))
+				strictlines.append("          - starts at %s, and" % PTR_PRINT % strictinfo["start_address"])
+				strictlines.append("          - is %d characters long (%d bytes)" % (strictinfo["length"], strictinfo["length_bytes"]))
+				strictlines.append("    * At that location, the next %d characters are '%s'" % (PTR_SIZE,strictinfo["value"]))
+				if strictinfo["value_in_pattern"]:
+					strictlines.append("    * That value still matches the cyclic pattern at offset %d" % strictinfo["value_pattern_position"])
+				if strictinfo["string_in_pattern"]:
+					strictlines.append("    * The repeated sequence is also part of the cyclic pattern from offset %d to %d" % (
+						strictinfo["pattern_start"],
+						strictinfo["pattern_end"]
+					))
+				for strictline in strictlines:
+					if not silent:
+						dbg.log(strictline)
+					tofile += "%s\n" % strictline
+
+
+
 	# 3. SEH record overwritten ?
 	# SEH chain logic is x86-only in this form, so skip entirely on x64
 
 	seh = {}
-	if PTR_SIZE == 4:
+	if arch == 32:
 		if not silent:
 			dbg.logLines("\n[+] Examining SEH chain")
 		tofile += "\n[+] Examining SEH chain\n"
@@ -26135,6 +26437,86 @@ def procHeapCookie(args):
 		dbg.log("Bad luck, no results.")			
 	return
 
+
+
+def procStrPos(args):
+
+	address = None
+	origarg = None
+
+	if "a" in args:
+		address,addressok = getAddyArg(args["a"])
+		origarg = args["a"]
+		if not addressok:
+			dbg.log(" ** Please provide a valid address with -a **", highlight=1)
+			return
+
+	if address is not None:
+		info = strPosLen(address, mode="all")
+		dbg.log("[+] Checking content at %s, any string" % (PTR_PRINT % address))
+
+		if info["is_string"]:
+			dbg.log("    Found a %s string: %s" % (info["string_type"], info["text"]))
+			dbg.log("    The string starts at %s (%s) and is %d characters long (%d bytes)" % (
+				origarg,
+				PTR_PRINT % info["start_address"],
+				info["length"],
+				info["length_bytes"]
+			))
+			dbg.log("    The supplied address points %d characters into the string" % info["position"])
+			dbg.log("    At that position, the next %d characters are '%s'" % (PTR_SIZE, info["value"]))
+		else:
+			dbg.log("[-] The supplied address does not point into an ASCII/Unicode string")
+
+		# maybe it's a cyclic pattern
+		if info["value_in_pattern"]:
+			dbg.log("    The value at %s (%s) matches the cyclic pattern at offset %d" % (
+				origarg,
+				PTR_PRINT % address,
+				info["value_pattern_position"]
+			))
+		if info["string_in_pattern"]:
+			dbg.log("    The recovered string is part of the cyclic pattern from offset %d to %d" % (
+				info["pattern_start"],
+				info["pattern_end"]
+			))
+		if not info["value_in_pattern"] and not info["string_in_pattern"]:
+			dbg.log("    The value at the supplied address does not appear to be part of the cyclic pattern")
+
+		if info["is_string"]:
+			info = strPosLen(address, mode="strict")
+			dbg.log("[+] Checking content at %s again, more restrictive search" % (PTR_PRINT % address))
+			dbg.log("    I'll be looking for the exact string/repeated sequence")
+			if info["is_string"]:
+				dbg.log("    The restrictive match yields a %s sequence: %s" % (info["string_type"], info["text"]))
+				dbg.log("    That sequence starts at %s (%s) and spans %d characters (%d bytes)" % (
+					origarg,
+					PTR_PRINT % info["start_address"],
+					info["length"],
+					info["length_bytes"]
+				))
+				dbg.log("    The supplied address lands %d characters into that repeated sequence" % info["position"])
+				if info["value_in_pattern"]:
+					dbg.log("    The value at that address still matches the cyclic pattern at offset %d" % info["value_pattern_position"])
+				if info["string_in_pattern"]:
+					dbg.log("    The restrictive sequence is part of the cyclic pattern from offset %d to %d" % (
+						info["pattern_start"],
+						info["pattern_end"]
+					))
+				#if not info["value_in_pattern"] and not info["string_in_pattern"]:
+				#	dbg.log("    The restrictive sequence does not appear to line up with the cyclic pattern")
+			else:
+				dbg.log("    No restrictive repeated sequence was found at the supplied address")
+
+
+
+	else:
+
+		dbg.log(" ** Please provide a valid address with -a **", highlight=1)
+
+
+
+
 def procFlags(args):
 	_ensureMnProc(entities=["peb"])
 	_peb = mnproc.getPEB()
@@ -27836,6 +28218,33 @@ Optional arguments (for -clean):
 NOTE: -clean will delete files automatically, without asking for confirmation.
 	""" % ", ".join(MODULE_COLUMNS)
 
+	strposUsage = """Finds the position of the contents at the provided address in the string it is part of.
+Arguments:
+    -a <address>   : address to inspect
+
+The command reads bytes at the given address (4 bytes on 32-bit, 8 bytes on 64-bit)
+and checks whether those bytes appear to be part of:
+    - an ASCII string
+    - a UTF-16LE / Unicode string made of printable ASCII characters + null bytes
+
+If a string is found, mona will:
+    - determine whether it is ASCII or Unicode
+    - walk backwards to find the start of the string
+    - calculate the offset of the supplied address inside that string
+    - calculate the full string length in characters and bytes
+    - show the PTR_SIZE-sized value at the supplied address in string form
+
+Notes:
+    - this command currently uses the default "all" matching mode
+    - the address may be a literal address, register, symbol, or expression accepted by getAddyArg()
+
+Examples:
+    %s stringpos -a 0x41414141
+    %s strpos -a rsp
+    %s strpos -a [esp]
+	""" % (launchcmd, launchcmd, launchcmd)
+
+
 	evalUsage = """Evaluates an expression
 Arguments:
     <the expression to evaluate>
@@ -27928,6 +28337,7 @@ Optional arguments:
 	commands["copy"]			= MnCommand("copy","Copy bytes from one location to another",copyUsage,procCopy,"cp",[32,64])
 	commands["write"]           = MnCommand("write","Write a byte sequence to a location",writeUsage,procWrite,"w",[32,64])
 	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])	
+	commands["stringpos"]       = MnCommand("stringpos","Find position of memory at address in string it is part of", strposUsage, procStrPos,"strpos",[32,64])
 	commands["fillchunk"]	    = MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 	if isWinDBG():
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
