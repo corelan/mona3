@@ -1651,12 +1651,12 @@ def normalizeHexBytesArg(pattern):
 
 	return txt
 
-def cleanHex(hex):
-	hex = hex.replace("'","")
-	hex = hex.replace('"',"")
-	hex = hex.replace("\\x","")
-	hex = hex.replace("0x","")
-	return hex
+def cleanHex(input_string):
+	input_string = input_string.replace("'","")
+	input_string = input_string.replace('"',"")
+	input_string = input_string.replace("\\x","")
+	input_string = input_string.replace("0x","")
+	return input_string
 
 def hex2int(hex):
 	return int(hex,16)
@@ -15666,7 +15666,7 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 	return guessed_badchars
 
 
-def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
+def memcompare(location, src, comparetable, sctype="normal", smart=True, tablecols=16):
 	''' Thoroughly compares an input binary string with a location in memory
 	and outputs the results. '''
 
@@ -15684,7 +15684,7 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 		locinfo = MnPointer(location).memLocation()
 		badbstr = " "
 		if len(badbytes) > 0:
-			badbstr = "%s " % bin2hex(sorted(badbytes))
+			badbstr = bin2hex(sorted(badbytes))
 		comparetable.add(0, ['0x%08x' % location, msg, badbstr, sctype, locinfo])
 
 	objlogfile.write("-" * 100, logfile)
@@ -18833,14 +18833,8 @@ def args2criteria(args,modulecriteria,criteria):
 			args["cpb"] = args["cbp"]
 	
 	if "cpb" in args:
-		strb, badcharsok = cpbArgToBytes(args["cpb"])
-		if not badcharsok:
-			dbg.log("    * Unable to parse -cpb value '%s'" % args["cpb"], highlight=True)
-			return modulecriteria,criteria
-		criteria["badchars"] = strb
-		badchars_printable = "\\x" + "\\x".join(bin2hex(strb).split(" "))
-		dbg.log("    - Bad char filter will be applied to pointers : %s " % badchars_printable)
-
+		criteria["badchars"] = b"".join(parse_cpb_input(args["cpb"]))
+		dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
 			
 	if "cm" in args:
 		modcriteria = args["cm"].split(",")
@@ -20763,35 +20757,91 @@ def procDump(args):
 
 # ----- compare : Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg or just a file with raw bytes with a copy in memory, indicate bad chars / corruption ----- #
 def procCompare(args):
-	startpos = 0
-	filename = ""
-	skipmodules = False
-	findunicode = False
-	allregs = getRegisters()
-	if "f" in args:
-		filename = getAbsolutePath(args["f"].replace('"',"").replace("'",""))
-		#see if we can read the file
-		if not os.path.isfile(filename):
-			dbg.log("Unable to find/read file %s" % filename,highlight=1)
-			return
-	else:
-		dbg.log("You must specify a valid filename using parameter -f", highlight=1)
-		return
+	memory_search_start_pos = 0
+	skip_modules = False
+	find_unicode = False
+	char_array_args = {}
+	search_mode = "normal"
 	if "a" in args:
-		startpos,addyok = getAddyArg(args["a"])
+		memory_search_start_pos,addyok = getAddyArg(args["a"])
 		if not addyok:
 			dbg.log("%s is an invalid address" % args["a"], highlight=1)
 			return
 	if "s" in args:
-		skipmodules = True
+		skip_modules = True
 	if "unicode" in args:
-		findunicode = True
+		find_unicode = True
+	if "cpb" in args:
+		char_array_args["cpb"] = args["cpb"]
 	if "t" in args:
-		format = args["t"]
+		file_format = args["t"]
 	else:
-		format = None
-	compareFormattedFileWithMemory(filename,format,startpos,skipmodules,findunicode)				
-	
+		file_format = None
+	if "f" in args:
+		file_name = getAbsolutePath(args["f"].replace('"',"").replace("'",""))
+		if not os.path.isfile(file_name):
+			dbg.log("Unable to find/read file %s" % file_name,highlight=1)
+			return
+		compareFormattedFileWithMemory(file_name, file_format, memory_search_start_pos, skip_modules, find_unicode)
+	else:
+		if find_unicode: raise NotImplementedError("compare does not yet support unicode search")
+		comparison_output_table = dbg.createTable('mona Memory comparison results',
+		                               ['Address', 'Status', 'BadChars', 'Type', 'Location'])
+		char_array = bad_char_comparison_array(char_array_args)
+		# memcompare expects a list of single char strings, not bytes, so:
+		char_string_array = []
+		for char in char_array:
+			char_string_array.append(chr(char))
+		memcompare(memory_search_start_pos, char_string_array, comparison_output_table)
+
+def parse_undelimited_cpb(input_string):
+	hex_char_list = []
+	parsed_string = ""
+	zipped_chars = zip(input_string[::2], input_string[1::2])
+	for char_first, char_second in zipped_chars:
+		hex_char_list.append(char_first + char_second)
+	for index, char in enumerate(hex_char_list):
+		try:
+			if hex_char_list[index + 1] == ".." or hex_char_list[index - 1] == "..":
+				continue
+			elif char == "..":
+				parsed_string += f"{hex_char_list[index - 1]}..{hex_char_list[index + 1]},"
+				continue
+		except Exception:
+			continue
+		else: parsed_string += f"{char},"
+	return parse_cpb_input(parsed_string[:-1])
+
+
+def parse_cpb_input(user_input):
+	user_input = cleanHex(user_input)
+	user_input = user_input.replace(":", ",")
+	user_input_list = user_input.split(",")
+	bad_chars_list = []
+	for input_substring_entry in user_input_list:
+		if len(input_substring_entry) == 2:
+			bad_char = bytes.fromhex(input_substring_entry)
+			bad_chars_list.append(bad_char)
+		elif len(input_substring_entry) == 6 and input_substring_entry[2:4] == "..":
+			start_bad_char = bytes.fromhex(input_substring_entry[0:2])
+			end_bad_char = bytes.fromhex(input_substring_entry[4:6])
+			for char_index in range(int.from_bytes(start_bad_char), int.from_bytes(end_bad_char)):
+				bad_chars_list.append(char_index.to_bytes())
+			bad_chars_list.append(end_bad_char)
+		else: bad_chars_list + parse_undelimited_cpb(input_substring_entry)
+	return bad_chars_list
+
+def bad_char_comparison_array(args):
+	bad_chars_list = []
+	if "cpb" in args:
+		bad_chars_list = parse_cpb_input(args["cpb"])
+	char_array_list = []
+	for char in range(0x00, 0xFF+1): # for X in range() does not include final number, so +1 to account for that
+		if bytes([char]) not in bad_chars_list:
+			char_array_list.append(char)
+	char_array = bytes(char_array_list)
+	return char_array
+
 # ----- offset: Calculate the offset between two addresses ----- #
 def procOffset(args):
 	extratext1 = ""
@@ -21014,8 +21064,7 @@ def procBf(args):
 def procByteArray(args):
 
 	dbgp(get_current_function_name())
-
-	badchars = ""
+	bad_chars = b""
 	bytesperline = 32
 	startval = 0
 	endval = 255
@@ -21038,16 +21087,10 @@ def procByteArray(args):
 			if not "cpb" in args:
 				args["cpb"] = args["b"]
 
-	strb = b""
 	if "cpb" in args:
-		strb, badcharsok = cpbArgToBytes(args["cpb"])
-		if not badcharsok:
-			dbg.log(" *** Unable to parse -cpb value '%s' ***" % args["cpb"], highlight=1)
-			return
+		bad_chars = b"".join(parse_cpb_input(args["cpb"]))
 
-	badchars_printable = "\\x" + "\\x".join(bin2hex(strb).split(" "))
-	dbg.log("Generating table, excluding %d bad chars: %s" % (len(strb), badchars_printable))
-
+	dbg.log("Generating table, excluding %d bad chars..." % len(bad_chars))
 	arraytable = []
 	binarray = b""
 
@@ -21066,7 +21109,7 @@ def procByteArray(args):
 		if len(hexbyte) == 1:
 			hexbyte = "0" + hexbyte
 		hexbyte2 = binascii.a2b_hex(hexbyte)
-		if not hexbyte2 in strb:
+		if not hexbyte2 in bad_chars:
 			arraytable.append(hexbyte)
 			binarray += binbyte
 
@@ -25386,8 +25429,7 @@ def procEnc(args):
 			byteerror = True
 
 	if "cpb" in args:
-		if type(args["cpb"]).__name__.lower() != "bool":
-			badbytes = hex2bin(args["cpb"])
+		bad_chars = b"".join(parse_cpb_input(args["cpb"]))
 
 	if not encodertype in validencoders:
 		encodertyperror = True
@@ -27875,21 +27917,26 @@ Optional arguments:
     -e <address> : the end address of the copy"""
 	
 
-	compareUsage = """Compare a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
+	compareUsage = """Compare a bad characters array or a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
 
 Mandatory argument :
     -f <filename> : full path to input file
 
-Optional argument :
+
+Optional arguments :
+    -cpb <bytes> : bytes to exclude from the comparison array. Example : '\\x00\\x0a\\x0d'
+                   Note: Does not work when file specified for comparison array with -f
+                   Note: you can specify ranges using .. 
+                   Example: '\\x00\\x0a..\\x20\\x32\\x7f..\\xff'
     -a <address> : the exact address of the bytes in memory (address or register). 
                    If you don't specify an address, I will try to locate the bytes in memory 
                    by looking at the first 8 bytes.
     -s : skip locations that belong to a module
     -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically
     -t : input file type format. If no file type format is specified, I will try to guess the input file type format.
-	 
-    Available formats:
-    'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'"""
+	-f <filename> : full path to input file to compare bytes in memory with
+                    Available formats:
+                    'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'"""
 
 	offsetUsage = """Calculate the number of bytes between two addresses. 
 In addition to plain addresses, you can also specify registers, modules, module!functionnames, etc.
