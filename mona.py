@@ -22971,6 +22971,8 @@ def procLayout(args):
 	# Use sequential idx as dict key to avoid address collisions (e.g. Heap
 	# header and first Heap Segment share the same start address). The actual
 	# start address is conveyed to print_dict_table via key_col.
+	_CAT_DISPLAY = {"Segment": "Seg", "VAD Block": "VAd", "Chunk": "Chnk"}
+
 	table_data = OrderedDict()
 	table_seq = []
 	table_starts = []       # parallel start-address list for key_col
@@ -22986,10 +22988,6 @@ def procLayout(args):
 		# infer it from category transitions so heap children are visually nested.
 		indent = ""
 		if not element_mode:
-			# Infer visual nesting from category transitions (flat list has no
-			# explicit depth, so track heap chain state across iterations).
-			# Segments and VA Blocks sit at the same level as their Heap;
-			# only Chunks are indented to show they belong to a Segment.
 			if category in ("Heap", "Segment", "VAD Block"):
 				in_heap_chain = True
 			elif category == "Chunk":
@@ -22997,14 +22995,11 @@ def procLayout(args):
 			else:
 				in_heap_chain = False
 		prev_category = category
-		# Deduplicate truly identical (start, category) pairs (e.g. a segment
-		# walked twice). Different categories at the same start are kept
-		# (Heap header + first Heap Segment both begin at the heap base).
 		dedup_key = (start, category)
 		if dedup_key in seen_regions:
 			continue
 		seen_regions.add(dedup_key)
-		table_data[idx] = (end, psize, category, indent + description)
+		table_data[idx] = (end, psize, _CAT_DISPLAY.get(category, category), indent + description)
 		table_seq.append(idx)
 		table_starts.append(start)
 
