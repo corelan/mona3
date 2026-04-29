@@ -7353,19 +7353,23 @@ class MnNTHeap(MnHeap):
 
 		va_offset = self._offset("VirtualAllocdBlocks")
 		listhead = self.heapbase + va_offset
+		dbgp("getVirtualAllocdBlocks: heap=0x%x listhead=0x%x (offset 0x%x)" % (self.heapbase, listhead, va_offset))
 
 		try:
 			entry = readPtrSizeBytes(listhead)
+			dbgp("getVirtualAllocdBlocks: Flink=0x%x" % entry)
 			while entry != listhead:
 				vab = MnVirtualAllocdBlocks(entry)
+				dbgp("getVirtualAllocdBlocks: entry=0x%x commit=0x%x reserve=0x%x" % (entry, vab.CommitSize, vab.ReserveSize))
 				self.VirtualAllocdBlocks[entry] = {
 					"commit_size":  vab.CommitSize,
 					"reserve_size": vab.ReserveSize,
 				}
 				entry = readPtrSizeBytes(entry)
-		except:
-			pass
+		except Exception as e:
+			dbgp("getVirtualAllocdBlocks: exception: %s" % str(e))
 
+		dbgp("getVirtualAllocdBlocks: found %d blocks" % len(self.VirtualAllocdBlocks))
 		return self.VirtualAllocdBlocks
 
 	def getLFHAddress(self):
