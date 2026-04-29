@@ -18317,16 +18317,16 @@ def goFindMSP(distance=0, args=None):
 			strictinfo = strPosLen(regs[STACK_POINTER], mode="strict")
 			if strictinfo["is_string"]:
 				strictlines = []
-				strictlines.append("\n")
+				strictlines.append("")
 				strictlines.append("[+] Maybe you forgot to use a cyclic pattern. That's ok.")
-				strictlines.append("    I would recommend trying again (with a cyclic pattern) to get more/meaningful results ")
-				strictlines.append("    By looking at %s, I was able to find some interesting things already though." % STACK_POINTER)
-				strictlines.append("\n")
+				strictlines.append("    I would recommend trying again (with a cyclic pattern) to get more/meaningful results ;-)")
+				strictlines.append("")
+				strictlines.append("    However, by looking in memory at %s, I was able to find some interesting things already." % STACK_POINTER)
+				strictlines.append("")
 				strictlines.append("    * No cyclic pattern was found in the registers, but %s points into a repeated %s sequence:" % ( STACK_POINTER, strictinfo["string_type"]))
-				strictlines.append("      %s points at %s, which is %d characters into a sequence that: " % (STACK_POINTER, PTR_PRINT % regs[STACK_POINTER], strictinfo["position"]))
+				strictlines.append("      At %s (%s), I found '%s' which is %d characters into a sequence that: " % (STACK_POINTER, PTR_PRINT % regs[STACK_POINTER], strictinfo["value"], strictinfo["position"]))
 				strictlines.append("          - starts at %s, and" % PTR_PRINT % strictinfo["start_address"])
 				strictlines.append("          - is %d characters long (%d bytes)" % (strictinfo["length"], strictinfo["length_bytes"]))
-				strictlines.append("    * At that location, the next %d characters are '%s'" % (PTR_SIZE,strictinfo["value"]))
 				if strictinfo["value_in_pattern"]:
 					strictlines.append("    * That value still matches the cyclic pattern at offset %d" % strictinfo["value_pattern_position"])
 				if strictinfo["string_in_pattern"]:
@@ -18338,6 +18338,38 @@ def goFindMSP(distance=0, args=None):
 					if not silent:
 						dbg.log(strictline)
 					tofile += "%s\n" % strictline
+			if (not strictinfo["is_string"]) or strictinfo["position"] == 0:
+				allinfo = strPosLen(regs[STACK_POINTER], mode="all")
+				if allinfo["is_string"]:
+					alllines = []
+					if strictinfo["is_string"] and strictinfo["position"] == 0:
+						alllines.append("")
+						alllines.append("[+] Content at %s seems to be a string. An additional broader %s string check was performed:" % (
+							STACK_POINTER,
+							allinfo["string_type"]
+						))
+						alllines.append("    * At %s (%s), I found '%s', which is %d characters into a string that " % (STACK_POINTER, (PTR_PRINT % regs[STACK_POINTER]), allinfo["value"], allinfo["position"]) )
+						alllines.append("      - starts at %s, and " % (PTR_PRINT % allinfo["start_address"]))
+						alllines.append("      - is %d characters long (%d bytes)" % (allinfo["length"],allinfo["length_bytes"]))
+						alllines.append("      - the first %d characters from the start of that string are" % min(40, len(allinfo["text"])))
+						alllines.append("        '%s'" % ( allinfo["text"][:40]))
+
+					else:
+						alllines.append("[+] No cyclic pattern was found in the registers, but %s points into a %s string" % (
+							STACK_POINTER,
+							allinfo["string_type"]
+						))
+					if allinfo["value_in_pattern"]:
+						alllines.append("    That value still matches the cyclic pattern at offset %d" % allinfo["value_pattern_position"])
+					if allinfo["string_in_pattern"]:
+						alllines.append("    The recovered string is also part of the cyclic pattern from offset %d to %d" % (
+							allinfo["pattern_start"],
+							allinfo["pattern_end"]
+						))
+					for allline in alllines:
+						if not silent:
+							dbg.log(allline)
+						tofile += "%s\n" % allline
 
 
 
