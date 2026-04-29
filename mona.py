@@ -22852,8 +22852,8 @@ def procLayout(args):
 		"all":       set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VAD Block"]),
 	}
 	all_internal = set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VAD Block"])
-	# By default, hide chunks and VA blocks
-	default_categories = all_internal - set(["Chunk", "VAD Block"])
+	# By default, hide only chunks
+	default_categories = all_internal - set(["Chunk"])
 	valid_filters = sorted(filter_map.keys())
 
 	show_all = "a" in args or "all" in args
