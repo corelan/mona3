@@ -9454,7 +9454,7 @@ class MnProc:
 		"""
 		Return a unified flat view of all process structures sorted by start address.
 		Each item: (start, end, category, description)
-		Categories: "PEB", "TEB", "Stack", "Module", "Heap", "Segment", "VAD Block", "Chunk"
+		Categories: "PEB", "TEB", "Stack", "Module", "Heap", "Segment", "VADBlock", "Chunk"
 		"""
 		_alias   = getAliasName()
 		_windbg  = isWinDBG()
@@ -9546,7 +9546,7 @@ class MnProc:
 				vaend = vaaddr + va["commit_size"]
 				flink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
 				blink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
-				regions.append((vaaddr, vaend, "VAD Block",
+				regions.append((vaaddr, vaend, "VADBlock",
 					"VAd%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
 						hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])))
 		regions.sort(key=lambda x: x[0])
@@ -9559,7 +9559,7 @@ class MnProc:
 		Top categories: "PEB", "TEB", "Module", "Heap"
 		Children:
 		  - TEB  \u2192 [Stack]
-		  - Heap \u2192 [Segment (\u2192 [Chunk]), VAD Block]
+		  - Heap \u2192 [Segment (\u2192 [Chunk]), VADBlock]
 		"""
 		_alias   = getAliasName()
 		_windbg  = isWinDBG()
@@ -9651,12 +9651,12 @@ class MnProc:
 				vaend = vaaddr + va["commit_size"]
 				flink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
 				blink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
-				va_children.append((vaaddr, vaend, "VAD Block",
+				va_children.append((vaaddr, vaend, "VADBlock",
 					"VAd%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
 						hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"]),
 					[]))
 			regions.append((heapaddr, heap_end, "Heap",
-				"%s (%s%s | Segments: %d | VA Blocks: %d)" % (
+				"%s (%s%s | Segments: %d | VADBlocks: %d)" % (
 					heap_title, htype, fe_label, len(segments), len(va_blocks)),
 				seg_children + va_children))
 		regions.sort(key=lambda x: x[0])
@@ -22849,10 +22849,10 @@ def procLayout(args):
 		"stack":     set(["Stack"]),
 		"heap":      set(["Heap", "Segment"]),
 		"chunks":    set(["Heap", "Segment", "Chunk"]),
-		"vablocks":  set(["Heap", "Segment", "VAD Block"]),
-		"all":       set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VAD Block"]),
+		"vablocks":  set(["Heap", "Segment", "VADBlock"]),
+		"all":       set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"]),
 	}
-	all_internal = set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VAD Block"])
+	all_internal = set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"])
 	# By default, hide only chunks
 	default_categories = all_internal - set(["Chunk"])
 	valid_filters = sorted(filter_map.keys())
@@ -22898,6 +22898,8 @@ def procLayout(args):
 		type_names = [x.strip().lower() for x in typeval.split(",")]
 		added = False
 		for tn in type_names:
+			if tn.startswith("vab") or tn.startswith("vad"):
+				tn = "vablocks"
 			if tn in filter_map and tn != "all":
 				show_categories |= filter_map[tn]
 				added = True
@@ -22934,11 +22936,13 @@ def procLayout(args):
 	category_mappings["Segment"] = "%s pl -f heap" % getAliasName()
 	category_mappings["Module"] = "%s mod" % getAliasName()
 	category_mappings["Chunk"] = "%s pl -f chunks" % getAliasName()
-	category_mappings["VAD Block"] = "%s pl -f vablocks" % getAliasName()
+	category_mappings["VADBlock"] = "%s pl -f vablocks" % getAliasName()
 	category_mappings["Chunk"] = "%s pl -f chunks" % getAliasName()
 
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
 	dbg.log("    Sort mode: %s" % _sort_val)
+	catlist = ",".join(show_categories)
+	dbg.log("    Categories to show: %s" % catlist)
 	MnProc.ensure()
 	want_chunks = include_chunks or "Chunk" in show_categories
 
@@ -22987,7 +22991,7 @@ def procLayout(args):
 		# infer it from category transitions so heap children are visually nested.
 		indent = ""
 		if not element_mode:
-			if category in ("Heap", "Segment", "VAD Block"):
+			if category in ("Heap", "Segment", "VADBlock"):
 				in_heap_chain = True
 			elif category == "Chunk":
 				indent = "  \\_ "
