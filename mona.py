@@ -9505,14 +9505,14 @@ class MnProc:
 			listhead     = heapaddr + mheap._offset("SegmentList")
 			listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
 			seg_walk     = mheap._seg_walk()
-			_seg_name    = {sa: "Segment%02d-%02d" % (i, hidx) for i, (sa, _, _, _) in enumerate(seg_walk)}
+			_seg_name    = {sa: "Seg%02d-%02d" % (i, hidx) for i, (sa, _, _, _) in enumerate(seg_walk)}
 			segs_by_addr = {seg.address: seg for seg in segments}
 			regions.append((heapaddr, heap_end, "Heap",
 				"%s (%s%s | Segments: %d | VA Blocks: %d)" % (
 					heapname, htype, fe_label, len(segments), len(va_blocks))))
 			for i, (segaddr, flink_addr, blink_addr, seg_corrupted) in enumerate(seg_walk):
 				seg_obj  = segs_by_addr.get(segaddr)
-				segname  = clickSegmentWinDBG(segaddr, "nt", "Segment%02d-%02d" % (i, hidx))
+				segname  = clickSegmentWinDBG(segaddr, "nt", "Seg%02d-%02d" % (i, hidx))
 				flink    = listhead_str if flink_addr == listhead else "0x%s (%s)" % (toHex(flink_addr), _seg_name.get(flink_addr, "?"))
 				blink    = listhead_str if blink_addr == listhead else "0x%s (%s)" % (toHex(blink_addr), _seg_name.get(blink_addr, "?"))
 				seg_base = seg_obj.BaseAddress    if seg_obj else segaddr
@@ -9535,17 +9535,17 @@ class MnProc:
 						lfh_tag = " | LFH" if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts) else ""
 						regions.append((chunk.chunkptr, chunk.chunkptr + chunk.size * HEAPGRANULARITY, "Chunk",
 							"%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
-								"Chunk%04d-%03d-%02d" % (ci, i, hidx),
+								"Chnk%04d-%03d-%02d" % (ci, i, hidx),
 								self._fmt_userptr(chunk.userptr, chunk.usersize, _alias, _windbg), chunk.usersize,
 								getHeapFlag(chunk.flag), heapname, segname, chunk.flag, lfh_tag)))
 			vaaddrs = sorted(va_blocks.keys())
 			for i, vaaddr in enumerate(vaaddrs):
 				va    = va_blocks[vaaddr]
 				vaend = vaaddr + va["commit_size"]
-				flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
-				blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
+				flink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
+				blink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
 				regions.append((vaaddr, vaend, "VAD Block",
-					"VirtualAllocdBlock%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
+					"VAd%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
 						hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])))
 		regions.sort(key=lambda x: x[0])
 		return regions
@@ -9609,12 +9609,12 @@ class MnProc:
 			listhead     = heapaddr + mheap._offset("SegmentList")
 			listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
 			seg_walk     = mheap._seg_walk()
-			_seg_name    = {sa: "Segment%02d-%02d" % (i, hidx) for i, (sa, _, _, _) in enumerate(seg_walk)}
+			_seg_name    = {sa: "Seg%02d-%02d" % (i, hidx) for i, (sa, _, _, _) in enumerate(seg_walk)}
 			segs_by_addr = {seg.address: seg for seg in segments}
 			seg_children = []
 			for i, (segaddr, flink_addr, blink_addr, seg_corrupted) in enumerate(seg_walk):
 				seg_obj  = segs_by_addr.get(segaddr)
-				segname  = clickSegmentWinDBG(segaddr, "nt", "Segment%02d-%02d" % (i, hidx))
+				segname  = clickSegmentWinDBG(segaddr, "nt", "Seg%02d-%02d" % (i, hidx))
 				flink    = listhead_str if flink_addr == listhead else "0x%s (%s)" % (toHex(flink_addr), _seg_name.get(flink_addr, "?"))
 				blink    = listhead_str if blink_addr == listhead else "0x%s (%s)" % (toHex(blink_addr), _seg_name.get(blink_addr, "?"))
 				seg_base = seg_obj.BaseAddress    if seg_obj else segaddr
@@ -9635,7 +9635,7 @@ class MnProc:
 						lfh_tag = " | LFH" if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts) else ""
 						chunk_children.append((chunk.chunkptr, chunk.chunkptr + chunk.size * HEAPGRANULARITY, "Chunk",
 							"%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
-								"Chunk%04d-%03d-%02d" % (ci, i, hidx),
+								"Chnk%04d-%03d-%02d" % (ci, i, hidx),
 								self._fmt_userptr(chunk.userptr, chunk.usersize, _alias, _windbg), chunk.usersize,
 								getHeapFlag(chunk.flag), heapname, segname, chunk.flag, lfh_tag),
 							[]))
@@ -9648,10 +9648,10 @@ class MnProc:
 			for i, vaaddr in enumerate(vaaddrs):
 				va    = va_blocks[vaaddr]
 				vaend = vaaddr + va["commit_size"]
-				flink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
-				blink = "0x%s (VirtualAllocdBlock%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
+				flink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
+				blink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
 				va_children.append((vaaddr, vaend, "VAD Block",
-					"VirtualAllocdBlock%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
+					"VAd%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
 						hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"]),
 					[]))
 			regions.append((heapaddr, heap_end, "Heap",
@@ -22971,8 +22971,6 @@ def procLayout(args):
 	# Use sequential idx as dict key to avoid address collisions (e.g. Heap
 	# header and first Heap Segment share the same start address). The actual
 	# start address is conveyed to print_dict_table via key_col.
-	_CAT_DISPLAY = {"Segment": "Seg", "VAD Block": "VAd", "Chunk": "Chnk"}
-
 	table_data = OrderedDict()
 	table_seq = []
 	table_starts = []       # parallel start-address list for key_col
@@ -22999,7 +22997,7 @@ def procLayout(args):
 		if dedup_key in seen_regions:
 			continue
 		seen_regions.add(dedup_key)
-		table_data[idx] = (end, psize, _CAT_DISPLAY.get(category, category), indent + description)
+		table_data[idx] = (end, psize, category, indent + description)
 		table_seq.append(idx)
 		table_starts.append(start)
 
