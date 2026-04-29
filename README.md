@@ -488,7 +488,7 @@ Mona v3 would not have been possible without the ***hard work and dedication*** 
 <a id="found-a-bug"></a>
 ## 🐛 Found a bug?
 
-If you discover a bug, please ***open an issue*** and provide ***detailed steps to reproduce*** the problem.
+If you discover a bug, please ***[open an issue](issues/new/choose)*** and provide ***detailed steps to reproduce*** the problem.
 
 <br> <br> 
 
