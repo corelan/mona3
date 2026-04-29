@@ -9476,9 +9476,8 @@ class MnProc:
 		for idx, mheap in self.getAllHeapsSorted():
 			heapaddr = mheap.heapbase
 			htype    = mheap.getHeapType()
-			heapname = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
-			if heapaddr == self.peb.ProcessHeap:
-				heapname = "[Default] " + heapname
+			heapname  = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
+			heap_title = ("[Default] " if heapaddr == self.peb.ProcessHeap else "") + heapname
 			corrupted = False
 			try:
 				corrupted = mheap.isCorrupted()
@@ -9486,10 +9485,10 @@ class MnProc:
 				corrupted = True
 			heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted else 0)
 			if corrupted:
-				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heapname))
+				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heap_title))
 				continue
 			if htype != "NT":
-				regions.append((heapaddr, heap_end, "Heap", "%s (%s)" % (heapname, htype)))
+				regions.append((heapaddr, heap_end, "Heap", "%s (%s)" % (heap_title, htype)))
 				continue
 			hidx = int(idx) if str(idx).isdigit() else 0
 			fe_label = ""
@@ -9509,7 +9508,7 @@ class MnProc:
 			segs_by_addr = {seg.address: seg for seg in segments}
 			regions.append((heapaddr, heap_end, "Heap",
 				"%s (%s%s | Segments: %d | VA Blocks: %d)" % (
-					heapname, htype, fe_label, len(segments), len(va_blocks))))
+					heap_title, htype, fe_label, len(segments), len(va_blocks))))
 			for i, (segaddr, flink_addr, blink_addr, seg_corrupted) in enumerate(seg_walk):
 				seg_obj  = segs_by_addr.get(segaddr)
 				segname  = clickSegmentWinDBG(segaddr, "nt", "Seg%02d-%02d" % (i, hidx))
@@ -9578,22 +9577,21 @@ class MnProc:
 		for mod in self.getPEB().getModules().values():
 			regions.append(self._module_entry(mod) + ([],))
 		for idx, mheap in self.getAllHeapsSorted():
-			heapaddr = mheap.heapbase
-			htype    = mheap.getHeapType()
-			heapname = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
-			if heapaddr == self.peb.ProcessHeap:
-				heapname = "[Default] " + heapname
-			corrupted = False
+			heapaddr   = mheap.heapbase
+			htype      = mheap.getHeapType()
+			heapname   = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
+			heap_title = ("[Default] " if heapaddr == self.peb.ProcessHeap else "") + heapname
+			corrupted  = False
 			try:
 				corrupted = mheap.isCorrupted()
 			except Exception:
 				corrupted = True
 			heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted else 0)
 			if corrupted:
-				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heapname, []))
+				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heap_title, []))
 				continue
 			if htype != "NT":
-				regions.append((heapaddr, heap_end, "Heap", "%s (%s)" % (heapname, htype), []))
+				regions.append((heapaddr, heap_end, "Heap", "%s (%s)" % (heap_title, htype), []))
 				continue
 			hidx = int(idx) if str(idx).isdigit() else 0
 			fe_label = ""
@@ -9656,7 +9654,7 @@ class MnProc:
 					[]))
 			regions.append((heapaddr, heap_end, "Heap",
 				"%s (%s%s | Segments: %d | VA Blocks: %d)" % (
-					heapname, htype, fe_label, len(segments), len(va_blocks)),
+					heap_title, htype, fe_label, len(segments), len(va_blocks)),
 				seg_children + va_children))
 		regions.sort(key=lambda x: x[0])
 		return regions
