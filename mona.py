@@ -3824,14 +3824,17 @@ def archValue(x86, x64):
 		return x64
 
 def readPtrSizeBytes(ptr):
-	if arch == 32:
-		data = dbg.readMemory(ptr,4)
-		expected = 4
-		fmt = '<L'
-	elif arch == 64:
-		data = dbg.readMemory(ptr,8)
-		expected = 8
-		fmt = '<Q'
+	data = dbg.readMemory(ptr, PTR_SIZE)
+	expected = PTR_SIZE
+	fmt = PTR_FMT
+	#if arch == 32:
+	#	data = dbg.readMemory(ptr,4)
+	#	expected = 4
+	#	fmt = '<L'
+	#elif arch == 64:
+	#	data = dbg.readMemory(ptr,8)
+	#	expected = 8
+	#	fmt = '<Q'
 	if not data or len(data) < expected:
 		dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
 		return 0
@@ -22871,6 +22874,10 @@ def procLayout(args):
 		filter_names = [x.strip().lower() for x in filterval.split(",")]
 		show_categories = set()
 		for fn in filter_names:
+			if fn.startswith("vab") or fn.startswith("vad"):
+				fn = "vablocks"
+			if fn.startswith("mod"):
+				fn = "mod"
 			if fn in filter_map:
 				show_categories |= filter_map[fn]
 			else:
@@ -22900,6 +22907,8 @@ def procLayout(args):
 		for tn in type_names:
 			if tn.startswith("vab") or tn.startswith("vad"):
 				tn = "vablocks"
+			if tn.startswith("mod"):
+				tn = "mod"
 			if tn in filter_map and tn != "all":
 				show_categories |= filter_map[tn]
 				added = True
