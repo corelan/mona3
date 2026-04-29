@@ -9225,7 +9225,6 @@ class MnProc:
 		self.vtableCache = {}
 		self.stacklistCache = {}
 		self.segmentlistCache = {}
-		self.VACache = {}
 		self.IATCache = {}
 		self.FreeListBitmap = {}
 
@@ -9335,36 +9334,6 @@ class MnProc:
 	def getModuleForAddress(self, addr):
 		"""Return the MnModule containing *addr*, or None."""
 		return self.getPEB().getModuleByAddress(addr)
-
-	def populateVACache(self):
-		"""
-		Build a lookup table of all heap segment ranges and VA block ranges
-		into self.VACache for fast isInHeap() lookups.
-		"""
-		seg_ranges = []
-		va_ranges = []
-		try:
-			allheaps = dbg.getHeapsAddress()
-		except:
-			allheaps = []
-		for heap in allheaps:
-			segments = getSegmentsForHeap(heap)
-			for segment in segments:
-				segstart = segment
-				seglast = segments[segment][3]
-				seg_ranges.append((heap, segstart, seglast))
-			try:
-				mHeap = MnHeap(heap)
-				valist = mHeap.getVirtualAllocdBlocks()
-				for vachunk in valist:
-					vainfo = valist[vachunk]
-					va_ranges.append((vachunk, vachunk + vainfo["commit_size"]))
-			except:
-				pass
-		seg_ranges.sort(key=lambda x: x[1])
-		va_ranges.sort(key=lambda x: x[0])
-		self.VACache = {"segments": seg_ranges, "vablocks": va_ranges}
-
 
 	def getStacksSorted(self):
 		"""Return stacks sorted by base address: [(tid, [base, top]), ...]"""
@@ -9963,17 +9932,15 @@ class MnPointer:
 		"""
 		MnProc.ensure()
 
-		# Check segments
-		for heap, segstart, seglast in mnproc.VACache["segments"]:
-			if self.address >= heap and self.address <= seglast:
-				self.ownerName = "Segment"
-				return True
-
-		# Check VA blocks
-		for vastart, vaend in mnproc.VACache["vablocks"]:
-			if self.address >= vastart and self.address <= vaend:
-				self.ownerName = "VirtualAllocdBlock"
-				return True
+		for mheap in mnproc.getPEB().getNTHeaps():
+			for seg in mheap.getSegments():
+				if seg.BaseAddress <= self.address <= seg.LastValidEntry:
+					self.ownerName = "Segment"
+					return True
+			for vaaddr, vainfo in mheap.getVABlocks().items():
+				if vaaddr <= self.address <= vaaddr + vainfo["commit_size"]:
+					self.ownerName = "VirtualAllocdBlock"
+					return True
 
 		return False
 		
@@ -24978,20 +24945,23 @@ def procPageACL(args):
 					if "Stack" not in pageusage:
 						mod = "(Stack)"
 				else:
-					# Check heap segments
+					# Check heap segments and VA blocks via PEB
 					in_heap = False
 					owner = ""
-					for heap, segstart, seglast in mnproc.VACache["segments"]:
-						if pagestart >= heap and pagestart <= seglast:
-							in_heap = True
-							owner = clickSegmentWinDBG(segstart, "nt", "Segment")
-							break
-					if not in_heap:
-						for vastart, vaend in mnproc.VACache["vablocks"]:
-							if pagestart >= vastart and pagestart <= vaend:
+					for _mh in mnproc.getPEB().getNTHeaps():
+						for _seg in _mh.getSegments():
+							if _seg.BaseAddress <= pagestart <= _seg.LastValidEntry:
 								in_heap = True
-								owner = "VirtualAllocdBlock"
+								owner = clickSegmentWinDBG(_seg.address, "nt", "Segment")
 								break
+						if not in_heap:
+							for _vaaddr, _vainfo in _mh.getVABlocks().items():
+								if _vaaddr <= pagestart <= _vaaddr + _vainfo["commit_size"]:
+									in_heap = True
+									owner = "VirtualAllocdBlock"
+									break
+						if in_heap:
+							break
 					if in_heap and "Heap" not in pageusage:
 						mod = "(%s)" % owner
 			acl_num = page.getAccess()
