@@ -10,7 +10,6 @@ __pycache__/
 # other scripts
 *.sh
 *.bat
-*.cmd
 *.zsh
 
 # VS Code Workspace files
