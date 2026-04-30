@@ -24105,16 +24105,16 @@ def procHeap(args):
 										if "virtallocd" in flagtxt.lower():
 											flagtxt += " (LFH)"
 											flagtxt = flagtxt.replace("Virtallocd","Internal")
-										userptr = block + headersize
-										psize = thischunk.prevsize * 8
-										blocksize = thischunk.size * 8
+										userptr = thischunk.userptr
+										psize = thischunk.prevsize * HEAPGRANULARITY
+										blocksize = thischunk.size * HEAPGRANULARITY
 										selfsize = blocksize
-										usersize = blocksize - unused
+										usersize = thischunk.usersize
 										extratxt = ""
 										nextblock = block + blocksize
 
 									if not "stat" in args:
-										tolog = "       %08x  %05x  %05x   %05x  %08x  %08x (%d) (%s) %s" % (block,psize,selfsize,unused,block+headersize,usersize,usersize,flagtxt,extratxt)
+										tolog = "       %08x  %05x  %05x   %05x  %08x  %08x (%d) (%s) %s" % (block,psize,selfsize,unused,userptr,usersize,usersize,flagtxt,extratxt)
 										dbg.log(tolog)
 										logfile_b.write(tolog,thislog_b)
 									else:
