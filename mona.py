@@ -9154,6 +9154,22 @@ class MnChunk(MnListEntry):
 			max_step, time.time() - walk_start))
 		interruptMona()
 
+	@staticmethod
+	def getFillPattern(addy):
+		"""Return a label if *addy* is a known heap fill pattern, else None.
+
+		64-bit patterns are the 32-bit base pattern repeated: pat | (pat << 32).
+		"""
+		_uninitialized = {0xbaadf00d, 0xc0c0c0c0, 0xcdcdcdcd}
+		_freed         = {0xfeeefeee, 0xdddddddd}
+		for pat in _uninitialized:
+			if addy == pat or addy == pat | (pat << 32):
+				return "Uninitialized"
+		for pat in _freed:
+			if addy == pat or addy == pat | (pat << 32):
+				return "Freed"
+		return None
+
 	def fill(self, fillchar="A", start=None, size=None):
 		"""
 		Fill chunk data with a single byte.
@@ -10337,8 +10353,8 @@ class MnPointer:
 									dodump = True
 								break		
 
-		if dodump and dumpsize > 0 and dumpsize < 1025 and not silent:
-			self.dumpObjectAtLocation(dumpsize)	
+		if dodump and dumpsize > 0 and not silent:
+			self.dumpObjectAtLocation(dumpsize)
 
 		return foundinheap, foundinsegment, foundinva, foundinchunk
 
@@ -10426,9 +10442,12 @@ class MnPointer:
 				dbg.log("-" * 70)
 				dbg.log("[+] Dumping allocation at %s %s" % (PTR_PRINT % addy, custommsg))
 				dbg.log("    Size: 0x%02x bytes" % size)
-				if (size > 0x500):
-					dbg.log("    Output below will be limited to the first 0x500 bytes")
-					size = 0x500
+				if (size > 0x200):
+					dps_cmd = "dps %s L 0x%x/%x" % ((PTR_PRINT % addy), size, archValue(4,8))
+					dps_link = "<link cmd=\"%s\">%s</link>" % (dps_cmd, dps_cmd) if isWinDBG() else dps_cmd
+					dbg.log("    Output below will be limited to the first 0x200 bytes")
+					dbg.log("    To see the full allocation: %s" % dps_link)
+					size = 0x200
 				if levels > 0:
 					dbg.log("    Also dumping up to %d levels deep, max size of nested objects: 0x%02x bytes" % (levels, nestedsize))
 				dbg.log("")
@@ -10573,14 +10592,15 @@ class MnPointer:
 
 	def getLocInfo(self,loc,addy,startaddy,endaddy):
 		locinfo = []
-		
+
 		if addy >= startaddy and addy <= endaddy:
 			offset = addy - startaddy
 			locinfo = ["self","ptr to self+%s" % (PTR_PRINT % offset),""]
 			return locinfo
 
-		if addy == 0xc0c0c0c0 or addy == 0xc0c0c0c0c0c0c0c0:
-			locinfo = ["self", "Uninitialized", addy]
+		fill = MnChunk.getFillPattern(addy)
+		if fill is not None:
+			locinfo = ["self", fill, addy]
 			return locinfo
 			
 		ismapped = False
