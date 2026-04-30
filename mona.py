@@ -8316,7 +8316,7 @@ class MnNTSegmentBase:
 				saved_prevsize = size
 			flagtxt = getHeapFlag(flag).lower()
 			is_virtalloc = "virtall" in flagtxt
-			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else 0x8
+			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else HEAPGRANULARITY
 			itercnt += 1
 			yield MnChunk(current, "chunk", headersize, self.Heap, self.BaseAddress,
 			              size, prevsize, segid, flag, unused, tag)
@@ -9137,7 +9137,7 @@ class MnChunk(MnListEntry):
 				saved_prevsize = size
 			flagtxt = getHeapFlag(flag).lower()
 			is_virtalloc = "virtall" in flagtxt
-			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else 0x8
+			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else HEAPGRANULARITY
 			itercnt += 1
 			yield cls(current, "chunk", headersize, heap.heapbase, segment_base,
 			          size, prevsize, segid, flag, unused, tag)
