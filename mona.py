@@ -9500,9 +9500,15 @@ class MnProc:
 				fe_label = " | FrontEnd: %s" % self._FE_NAMES.get(fe_type, "0x%x" % fe_type)
 			except Exception:
 				pass
+			dbgp("Enumerating segments for heap %s" % (PTR_PRINT % heapaddr))
 			segments     = mheap.getSegments()
+			dbgp("  Got %d segments" % len(segments))
+			dbgp("Enumerating vadblocks for heap %s" % (PTR_PRINT % heapaddr))
 			va_blocks    = mheap.getVABlocks()
+			dbgp("  Got %d vadblocks" % len(va_blocks))
+			dbgp("Enumerating LFH Ranges for heap %s" % (PTR_PRINT % heapaddr))
 			lfh_ranges   = mheap.getLFHRanges() if include_chunks else []
+			dbgp("  Got %d LFH Ranges" % len(lfh_ranges))
 			lfh_starts   = [r[0] for r in lfh_ranges]
 			listhead     = heapaddr + mheap._offset("SegmentList")
 			listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
@@ -9519,7 +9525,9 @@ class MnProc:
 				blink    = listhead_str if blink_addr == listhead else "0x%s (%s)" % (toHex(blink_addr), _seg_name.get(blink_addr, "?"))
 				seg_base = seg_obj.BaseAddress    if seg_obj else segaddr
 				seg_end  = seg_obj.LastValidEntry if seg_obj else segaddr
+				dbgp("Enumerating Chunks in segment %s" % (PTR_PRINT % seg_base))
 				chunks   = seg_obj.getChunks() if (seg_obj and include_chunks) else {}
+				dbgp("  Got %d chunks" % len(chunks))
 				chunk_info = ""
 				if chunks:
 					total   = len(chunks)
