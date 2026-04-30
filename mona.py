@@ -8287,6 +8287,16 @@ class MnNTSegmentBase:
 		current = self.FirstEntry
 		last    = self.LastValidEntry
 		saved_prevsize = 0
+		walk_start = time.time()
+		next_progress_log = 5.0
+		itercnt = 0
+		decode_failures = 0
+		zero_size_steps = 0
+		last_flag_hits = 0
+		max_step = 0
+		dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
+			PTR_PRINT % self.BaseAddress, PTR_PRINT % self.FirstEntry, PTR_PRINT % self.LastValidEntry,
+			(self.LastValidEntry - self.FirstEntry) if self.LastValidEntry >= self.FirstEntry else 0, hdr_off, key))
 		while current < last:
 			size = segid = flag = unused = tag = 0
 			try:
@@ -8305,20 +8315,39 @@ class MnNTSegmentBase:
 					segid  = struct.unpack('<B', raw[6:7])[0]
 					unused = struct.unpack('<B', raw[7:8])[0]
 			except Exception:
-				pass
+				decode_failures += 1
 			if saved_prevsize == 0:
 				prevsize       = 0
 				saved_prevsize = size
 			else:
 				prevsize       = saved_prevsize
 				saved_prevsize = size
-			is_virtalloc = "virtall" in getHeapFlag(flag).lower()
-			headersize   = 0x20 if (is_virtalloc or "internal" in getHeapFlag(flag).lower()) else 0x8
+			flagtxt = getHeapFlag(flag).lower()
+			is_virtalloc = "virtall" in flagtxt
+			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else 0x8
+			itercnt += 1
 			yield MnChunk(current, "chunk", headersize, self.Heap, self.BaseAddress,
 			              size, prevsize, segid, flag, unused, tag)
-			if "last" in getHeapFlag(flag).lower():
+			if "last" in flagtxt:
+				last_flag_hits += 1
+				dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
+					PTR_PRINT % current, itercnt, time.time() - walk_start))
 				break
-			current += (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
+			step = (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
+			if size == 0:
+				zero_size_steps += 1
+			if step > max_step:
+				max_step = step
+			current += step
+			elapsed = time.time() - walk_start
+			if elapsed >= next_progress_log:
+				dbgp("    Segment walk progress: seg=%s current=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d elapsed=%.2fs" % (
+					PTR_PRINT % self.BaseAddress, PTR_PRINT % current, itercnt, decode_failures,
+					zero_size_steps, last_flag_hits, elapsed))
+				next_progress_log += 5.0
+		dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
+			PTR_PRINT % self.BaseAddress, itercnt, decode_failures, zero_size_steps, last_flag_hits,
+			max_step, time.time() - walk_start))
 
 	def getChunks(self):
 		"""Lazily enumerate all non-VirtualAlloc MnChunk objects. Cached after first call.
@@ -9052,6 +9081,16 @@ class MnChunk(MnListEntry):
 		hdr_off = heap.getChunkHeaderDataOffset()
 		current = first_entry
 		saved_prevsize = 0
+		walk_start = time.time()
+		next_progress_log = 5.0
+		itercnt = 0
+		decode_failures = 0
+		zero_size_steps = 0
+		last_flag_hits = 0
+		max_step = 0
+		dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
+			PTR_PRINT % segment_base, PTR_PRINT % first_entry, PTR_PRINT % last_valid_entry,
+			(last_valid_entry - first_entry) if last_valid_entry >= first_entry else 0, hdr_off, key))
 		while current < last_valid_entry:
 			size = segid = flag = unused = tag = 0
 			try:
@@ -9070,20 +9109,39 @@ class MnChunk(MnListEntry):
 					segid  = struct.unpack('<B', raw[6:7])[0]
 					unused = struct.unpack('<B', raw[7:8])[0]
 			except Exception:
-				pass
+				decode_failures += 1
 			if saved_prevsize == 0:
 				prevsize       = 0
 				saved_prevsize = size
 			else:
 				prevsize       = saved_prevsize
 				saved_prevsize = size
-			is_virtalloc = "virtall" in getHeapFlag(flag).lower()
-			headersize   = 0x20 if (is_virtalloc or "internal" in getHeapFlag(flag).lower()) else 0x8
+			flagtxt = getHeapFlag(flag).lower()
+			is_virtalloc = "virtall" in flagtxt
+			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else 0x8
+			itercnt += 1
 			yield cls(current, "chunk", headersize, heap.heapbase, segment_base,
 			          size, prevsize, segid, flag, unused, tag)
-			if "last" in getHeapFlag(flag).lower():
+			if "last" in flagtxt:
+				last_flag_hits += 1
+				dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
+					PTR_PRINT % current, itercnt, time.time() - walk_start))
 				break
-			current += (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
+			step = (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
+			if size == 0:
+				zero_size_steps += 1
+			if step > max_step:
+				max_step = step
+			current += step
+			elapsed = time.time() - walk_start
+			if elapsed >= next_progress_log:
+				dbgp("    Segment walk progress: seg=%s current=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d elapsed=%.2fs" % (
+					PTR_PRINT % segment_base, PTR_PRINT % current, itercnt, decode_failures,
+					zero_size_steps, last_flag_hits, elapsed))
+				next_progress_log += 5.0
+		dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
+			PTR_PRINT % segment_base, itercnt, decode_failures, zero_size_steps, last_flag_hits,
+			max_step, time.time() - walk_start))
 
 	def fill(self, fillchar="A", start=None, size=None):
 		"""
