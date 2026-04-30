@@ -23237,7 +23237,10 @@ def _procHeapByAddr(refvalue):
 				return "LFH Subsegment (LFH @ %s)" % (PTR_PRINT % mheap.getLFHAddress())
 			except:
 				return "LFH Subsegment"
-		return "Segment @ %s" % (PTR_PRINT % chunk.segmentbase)
+		seg_str = PTR_PRINT % chunk.segmentbase
+		if isWinDBG():
+			seg_str = "<link cmd=\"dt _HEAP_SEGMENT %s\">%s</link>" % (seg_str, seg_str)
+		return "Segment @ %s" % seg_str
 
 	def _print_one_chunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
 		dbg.log("  [%s]" % label)
@@ -23247,12 +23250,20 @@ def _procHeapByAddr(refvalue):
 			return
 		ctx    = _chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts)
 		first8 = _read_first8(chunk.userptr)
-		dbg.log("    _HEAP_ENTRY          : %s" % (PTR_PRINT % chunk.chunkptr))
-		dbg.log("    UserPtr              : %s" % (PTR_PRINT % chunk.userptr))
+		entry_str = PTR_PRINT % chunk.chunkptr
+		uptr_str  = PTR_PRINT % chunk.userptr
+		heap_str  = PTR_PRINT % mheap.heapbase
+		if isWinDBG():
+			entry_str = "<link cmd=\"dt _HEAP_ENTRY %s\">%s</link>" % (entry_str, entry_str)
+			dps_count = max(1, chunk.usersize // PTR_SIZE)
+			uptr_str  = "<link cmd=\"dps %s L%x\">%s</link>" % (uptr_str, dps_count, uptr_str)
+			heap_str  = "<link cmd=\"!heap -t -a %s\">%s</link>" % (heap_str, heap_str)
+		dbg.log("    _HEAP_ENTRY          : %s" % entry_str)
+		dbg.log("    UserPtr              : %s" % uptr_str)
 		dbg.log("    UserSize             : 0x%x (%d)" % (chunk.usersize, chunk.usersize))
 		dbg.log("    State                : %s (0x%02x)" % (chunk.flagtxt, chunk.flag))
 		dbg.log("    First 8 bytes @ UserPtr: %s" % first8)
-		dbg.log("    Heap                 : %s" % (PTR_PRINT % mheap.heapbase))
+		dbg.log("    Heap                 : %s" % heap_str)
 		dbg.log("    Context              : %s" % ctx)
 		dbg.log("")
 
