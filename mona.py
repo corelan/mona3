@@ -10224,6 +10224,8 @@ class MnPointer:
 		foundinchunk = None
 		dumpsize = 0
 		dodump = False
+		found_encoding_key = 0
+		found_chunk_base = 0
 
 		MnProc.ensure()
 		for mheap in mnproc.getPEB().getNTHeaps():
@@ -10245,6 +10247,8 @@ class MnPointer:
 							self.showHeapStackTrace(thischunk)
 							dodump = True
 							dumpsize = thissize
+							found_encoding_key = mheap.getEncodingKey()
+							found_chunk_base = chunkptr
 						foundinchunk = thischunk
 						foundinsegment = seg.address
 						foundinheap = heapbase
@@ -10354,7 +10358,7 @@ class MnPointer:
 								break		
 
 		if dodump and dumpsize > 0 and not silent:
-			self.dumpObjectAtLocation(dumpsize)
+			self.dumpObjectAtLocation(dumpsize, encoding_key=found_encoding_key, chunk_base=found_chunk_base)
 
 		return foundinheap, foundinsegment, foundinva, foundinchunk
 
@@ -10432,7 +10436,7 @@ class MnPointer:
 		silent = False
 		return funcinfo
 
-	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg=""):
+	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg="", encoding_key=0, chunk_base=0):
 		dumpdata = {}
 		origdumpdata = {} 
 		if isWinDBG():
@@ -10472,19 +10476,30 @@ class MnPointer:
 					output = dbg.nativeCommand(cmdtorun)
 					outputlines = output.split("\n")
 					offset = 0
+					hdr_off = archValue(0, 8)
 					for outputline in outputlines:
 						if not outputline.replace(" ","") == "":
 							loc = outputline[0:archValue(8,17)].replace("`","")
 							content = outputline[archValue(10,19):archValue(18,36)].replace("`","")
 							symbol = outputline[archValue(19,37):]
-							if not "??" in content and symbol.replace(" ","") == "":
+							loc_int = hexStrToInt(loc)
+							if encoding_key != 0 and chunk_base != 0 and loc_int == chunk_base + hdr_off:
+								decoded_val     = hexStrToInt(content) ^ encoding_key
+								decoded_content = "%0*x" % (len(content), decoded_val)
+								xor_cmd         = "? poi(%s) ^ 0x%x" % (PTR_PRINT % loc_int, encoding_key)
+								heap_cmd        = "!heap -x %s" % (PTR_PRINT % chunk_base)
+								xor_link        = "<link cmd=\"%s\">%s</link>" % (xor_cmd, xor_cmd) if isWinDBG() else xor_cmd
+								heap_link       = "<link cmd=\"%s\">%s</link>" % (heap_cmd, heap_cmd) if isWinDBG() else heap_cmd
+								info = ["", "%s ^ %x | %s | %s" % (decoded_content, encoding_key, xor_link, heap_link), "", content]
+								dumpdata[loc_int] = info
+							elif not "??" in content and symbol.replace(" ","") == "":
 								contentaddy = hexStrToInt(content)
-								info = self.getLocInfo(hexStrToInt(loc),contentaddy,startaddy,endaddy)
+								info = self.getLocInfo(loc_int, contentaddy, startaddy, endaddy)
 								info.append(content)
-								dumpdata[hexStrToInt(loc)] = info
+								dumpdata[loc_int] = info
 							else:
-								info = ["",symbol,"",content]
-								dumpdata[hexStrToInt(loc)] = info
+								info = ["", symbol, "", content]
+								dumpdata[loc_int] = info
 					if addy in parentdata:
 						pdata = parentdata[addy]
 						parent = "Referenced at %s (object %s, offset +0x%02x)" % ((PTR_PRINT % pdata[0]),(PTR_PRINT % pdata[1]),pdata[0]-pdata[1])
