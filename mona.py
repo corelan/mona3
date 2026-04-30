@@ -10488,7 +10488,7 @@ class MnPointer:
 								decoded_content = "%0*x" % (len(content), decoded_val)
 								xor_cmd         = "? poi(%s) ^ 0x%x" % (PTR_PRINT % loc_int, encoding_key)
 								xor_link        = "<link cmd=\"%s\">%s</link>" % (xor_cmd, xor_cmd) if isWinDBG() else xor_cmd
-								info = ["", "%s | %s" % (decoded_content, xor_link), "", decoded_content]
+								info = ["", "%s | %s" % (decoded_content, xor_link), "", content]
 								dumpdata[loc_int] = info
 							elif not "??" in content and symbol.replace(" ","") == "":
 								contentaddy = hexStrToInt(content)
