@@ -8276,6 +8276,16 @@ class MnNTSegmentBase:
 	  self.LastValidEntry : int
 	"""
 
+	def _last_committed_entry(self):
+		"""Return the address where committed chunk data ends in this segment.
+
+		Default: LastValidEntry (includes any uncommitted tail — safe as a
+		walk bound only when the walker can detect end-of-committed via the
+		chunk header 'last' flag or a read exception).  Subclasses may
+		override to return a tighter bound derived from UCR metadata.
+		"""
+		return self.LastValidEntry
+
 	def _walk(self):
 		"""Yield MnChunk instances by walking this segment's entries sequentially.
 
@@ -8285,7 +8295,7 @@ class MnNTSegmentBase:
 		key     = self._encoding_key
 		hdr_off = archValue(0, 8)
 		current = self.FirstEntry
-		last    = self.LastValidEntry
+		last    = self._last_committed_entry()
 		saved_prevsize = 0
 		while current < last:
 			size = segid = flag = unused = tag = 0
@@ -8465,6 +8475,25 @@ class MnNTVistaSegment(MnNTSegmentBase):
 		"Reserved":                        (0x036, 0x05a),
 		"UCRSegmentList":                  (0x038, 0x060),
 	}
+
+	def _last_committed_entry(self):
+		"""Walk UCRSegmentList to find the start of the first uncommitted range.
+
+		_HEAP_UCR_DESCRIPTOR layout:
+		  x86: +0x000 ListEntry (8 bytes), +0x008 Address, +0x00c Size
+		  x64: +0x000 ListEntry (16 bytes), +0x010 Address, +0x018 Size
+		"""
+		ucr_list = MnListEntry(self.address + self._offsets["UCRSegmentList"][MnPEB.getArch()])
+		addr_off = archValue(0x08, 0x10)
+		result   = self.LastValidEntry
+		try:
+			for entry in ucr_list.walk():
+				ucr_start = readPtrSizeBytes(entry + addr_off)
+				if ucr_start < result:
+					result = ucr_start
+		except Exception:
+			pass
+		return result
 
 	def __init__(self, segaddr, encoding_key=0):
 		self.address       = segaddr
