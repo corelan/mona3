@@ -23254,7 +23254,7 @@ def _procHeapByAddr(refvalue):
 		uptr_str  = PTR_PRINT % chunk.userptr
 		heap_str  = PTR_PRINT % mheap.heapbase
 		if isWinDBG():
-			entry_str = "<link cmd=\"dt _HEAP_ENTRY %s\">%s</link>" % (entry_str, entry_str)
+			entry_str = "<link cmd=\"!heap -x %s\">%s</link>" % (entry_str, entry_str)
 			dps_count = max(1, chunk.usersize // PTR_SIZE)
 			uptr_str  = "<link cmd=\"dps %s L%x\">%s</link>" % (uptr_str, dps_count, uptr_str)
 			heap_str  = "<link cmd=\"!heap -t -a %s\">%s</link>" % (heap_str, heap_str)
@@ -23672,6 +23672,14 @@ def procHeap(args):
 				if expand:
 					infoblocks["virtualallocdblocks"] = [vachunks]
 
+				# Build {FirstEntry: seg_obj} using the cached PEB heap (same pattern as MnPointer)
+				_layout_seg_by_fe = {}
+				try:
+					_layout_cached_heap = mnproc.getPEB().getHeapObject(heapbase)
+					_layout_seg_by_fe = {s.FirstEntry: s for s in _layout_cached_heap.getSegments()}
+				except Exception:
+					pass
+
 				for infotype in infoblocks:
 					heapdata = infoblocks[infotype]
 					for thisdata in heapdata:
@@ -23681,8 +23689,12 @@ def procHeap(args):
 							segstart = segments[seg][0]
 							segend = segments[seg][1]
 							FirstEntry = segments[seg][2]
-							LastValidEntry = segments[seg][3]								
-							datablocks = walkSegment(FirstEntry,LastValidEntry,heapbase)
+							LastValidEntry = segments[seg][3]
+							_layout_seg_obj = _layout_seg_by_fe.get(FirstEntry)
+							if _layout_seg_obj is not None:
+								datablocks = _layout_seg_obj.getChunks()
+							else:
+								datablocks = walkSegment(FirstEntry, LastValidEntry, heapbase)
 							tolog = "----- Heap 0x%08x%s, Segment 0x%08x - 0x%08x (%d/%d) -----" % (heapbase,heapbase_extra,segstart,segend,segmentcnt,len(sortedsegments))
 
 						if infotype == "virtualallocdblocks":
@@ -23721,11 +23733,11 @@ def procHeap(args):
 								unused = thischunk.unused
 								headersize = thischunk.headersize
 								flags = getHeapFlag(thischunk.flag)
-								userptr = block + headersize
-								psize = thischunk.prevsize * 8
-								blocksize = thischunk.size * 8
+								userptr = thischunk.userptr
+								psize = thischunk.prevsize * HEAPGRANULARITY
+								blocksize = thischunk.size * HEAPGRANULARITY
 								selfsize = blocksize
-								usersize = blocksize - unused
+								usersize = thischunk.usersize
 								extratxt = ""
 							# read block into memory
 							blockmem = dbg.readMemory(block,blocksize)
@@ -24007,7 +24019,10 @@ def procHeap(args):
 						dbg.log(tolog)
 					logfile_l.write("",thislog_l)
 					logfile_l.write(tolog,thislog_l)
-				dbg.addKnowledge("vtableCache",mnproc.vtableCache)
+				try:
+					dbg.addKnowledge("vtableCache",mnproc.vtableCache)
+				except Exception:
+					pass
 
 
 			if searchtype in ["segments","all","chunks"] or "stat" in args:
