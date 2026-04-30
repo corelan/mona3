@@ -8282,6 +8282,7 @@ class MnNTSegmentBase:
 		dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
 			PTR_PRINT % self.BaseAddress, PTR_PRINT % self.FirstEntry, PTR_PRINT % self.LastValidEntry,
 			(self.LastValidEntry - self.FirstEntry) if self.LastValidEntry >= self.FirstEntry else 0, hdr_off, key))
+		consecutive_failures = 0
 		while current < last:
 			size = segid = flag = unused = tag = 0
 			try:
@@ -8299,8 +8300,14 @@ class MnNTSegmentBase:
 					tag    = struct.unpack('<B', raw[3:4])[0]
 					segid  = struct.unpack('<B', raw[6:7])[0]
 					unused = struct.unpack('<B', raw[7:8])[0]
+				consecutive_failures = 0
 			except Exception:
 				decode_failures += 1
+				consecutive_failures += 1
+				if consecutive_failures >= 16:
+					dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
+						consecutive_failures, PTR_PRINT % current))
+					break
 			if saved_prevsize == 0:
 				prevsize       = 0
 				saved_prevsize = size
@@ -9095,6 +9102,7 @@ class MnChunk(MnListEntry):
 		dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
 			PTR_PRINT % segment_base, PTR_PRINT % first_entry, PTR_PRINT % last_valid_entry,
 			(last_valid_entry - first_entry) if last_valid_entry >= first_entry else 0, hdr_off, key))
+		consecutive_failures = 0
 		while current < last_valid_entry:
 			size = segid = flag = unused = tag = 0
 			try:
@@ -9112,9 +9120,15 @@ class MnChunk(MnListEntry):
 					tag    = struct.unpack('<B', raw[3:4])[0]
 					segid  = struct.unpack('<B', raw[6:7])[0]
 					unused = struct.unpack('<B', raw[7:8])[0]
+				consecutive_failures = 0
 			except Exception as e:
 				dbgp("Decode error: %s" % str(e))
 				decode_failures += 1
+				consecutive_failures += 1
+				if consecutive_failures >= 16:
+					dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
+						consecutive_failures, PTR_PRINT % current))
+					break
 			if saved_prevsize == 0:
 				prevsize       = 0
 				saved_prevsize = size
@@ -24003,6 +24017,16 @@ def procHeap(args):
 				if searchtype in ["all","chunks"]:
 					infoblocks["virtualallocdblocks"] = [vachunks]
 
+				# Build {FirstEntry: seg_obj} using the cached PEB heap so getChunks()
+				# shares the same MnNTSegmentBase objects (and _chunks cache) used by
+				# MnPointer.showHeapBlockInfo() / MnProc.getAllSorted().
+				_seg_by_fe = {}
+				try:
+					_cached_nt_heap = mnproc.getPEB().getHeapObject(heapbase)
+					_seg_by_fe = {s.FirstEntry: s for s in _cached_nt_heap.getSegments()}
+				except Exception:
+					pass
+
 				for infotype in infoblocks:
 					heapdata = infoblocks[infotype]
 					for thisdata in heapdata:
@@ -24032,7 +24056,11 @@ def procHeap(args):
 							except:
 								pass
 							if infotype == "segments":
-								datablocks = walkSegment(FirstEntry,LastValidEntry,heapbase)
+								_seg_obj = _seg_by_fe.get(FirstEntry)
+								if _seg_obj is not None:
+									datablocks = _seg_obj.getChunks()
+								else:
+									datablocks = walkSegment(FirstEntry, LastValidEntry, heapbase)
 							else:
 								datablocks = heapdata[0]
 							tolog = "    Nr of chunks : %d " % len(datablocks)
