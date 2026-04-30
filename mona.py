@@ -2001,11 +2001,6 @@ def bin2hex(binbytes):
 			out.append("%02x" % _ord(c))
 	return ' '.join(out)
 
-def bytesToPrintableHex(data):
-    if len(data) == 0:
-        return ""
-    return "\\x" + "\\x".join(bin2hex(data).split(" "))
-
 
 
 def yesno():
