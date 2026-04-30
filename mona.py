@@ -9175,6 +9175,7 @@ class MnChunk(MnListEntry):
 		dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
 			PTR_PRINT % segment_base, itercnt, decode_failures, zero_size_steps, last_flag_hits,
 			max_step, time.time() - walk_start))
+		interruptMona()
 
 	def fill(self, fillchar="A", start=None, size=None):
 		"""
@@ -10299,8 +10300,8 @@ class MnPointer:
 					if self.address >= vaptr and self.address <= vaptr + vainfo["commit_size"]:
 						if not silent:
 							dbg.log("")
-							dbg.log("     Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
-							dbg.log("     VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
+							dbg.log("    Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
+							dbg.log("    VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
 							self.showObjectInfo()
 							dumpsize = vainfo["commit_size"]
 							dodump = True
