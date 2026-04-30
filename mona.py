@@ -2715,7 +2715,10 @@ def decodeHeapHeader(headeraddress,headersize,key):
 	decodedheader = ""
 	fullheaderbytes = ""
 	while blockcnt < headersize:
-		header = struct.unpack('<L',dbg.readMemory(headeraddress+blockcnt,4))[0]
+		raw = dbg.readMemory(headeraddress+blockcnt,4)
+		if not raw or len(raw) < 4:
+			dbgp("decodeHeapHeader: short read at %s+0x%x, expected 4 bytes, got %d" % (PTR_PRINT % headeraddress, blockcnt, len(raw) if raw else 0))
+		header = struct.unpack('<L',raw)[0]
 		if blockcnt < key_size:
 			# extract the corresponding 4 bytes of the key
 			key_dword = (key >> (blockcnt * 8)) & 0xFFFFFFFF
