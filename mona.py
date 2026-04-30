@@ -10490,7 +10490,7 @@ class MnPointer:
 								heap_cmd        = "!heap -x %s" % (PTR_PRINT % chunk_base)
 								xor_link        = "<link cmd=\"%s\">%s</link>" % (xor_cmd, xor_cmd) if isWinDBG() else xor_cmd
 								heap_link       = "<link cmd=\"%s\">%s</link>" % (heap_cmd, heap_cmd) if isWinDBG() else heap_cmd
-								info = ["", "%s^%x | %s | %s" % (content, encoding_key, xor_link, heap_link), "", content]
+								info = ["", "%s ^ %x | %s | %s" % (content, encoding_key, xor_link, heap_link), "", content]
 								dumpdata[loc_int] = info
 							elif not "??" in content and symbol.replace(" ","") == "":
 								contentaddy = hexStrToInt(content)
