@@ -2703,35 +2703,12 @@ def getHeapFlag(flag):
 			flagtext = ','.join(flagtext)
 		return flagtext
 
-def decodeHeapHeader(headeraddress,headersize,key):
-	# get header and XOR first 8 bytes with encoding key (_HEAP_ENTRY sized)
-	# Always read in 4-byte chunks: _HEAP_ENTRY fields are WORD/BYTE-sized, not
-	# pointer-sized. Reading PTR_SIZE (8) bytes on x64 produces a 16-char hex
-	# string but the inner loop only processes 8 chars, silently discarding half
-	# the header and producing corrupt field values.
-	key_size = 8
-	blockcnt = 0
-	fullheaderbytes = ""
-	decodedheader = ""
-	fullheaderbytes = ""
-	while blockcnt < headersize:
-		raw = dbg.readMemory(headeraddress+blockcnt,4)
-		if not raw or len(raw) < 4:
-			dbgp("decodeHeapHeader: short read at %s+0x%x, expected 4 bytes, got %d" % (PTR_PRINT % headeraddress, blockcnt, len(raw) if raw else 0))
-		header = struct.unpack('<L',raw)[0]
-		if blockcnt < key_size:
-			# extract the corresponding 4 bytes of the key
-			key_dword = (key >> (blockcnt * 8)) & 0xFFFFFFFF
-			decodedheader = header ^ key_dword
-		else:
-			decodedheader = header
-		headerbytes = "%08x" % decodedheader
-		bytecnt = 7
-		while bytecnt >= 0:
-			fullheaderbytes = fullheaderbytes + headerbytes[bytecnt-1] + headerbytes[bytecnt]
-			bytecnt -= 2
-		blockcnt += 4
-	return hex2bin(fullheaderbytes)
+def decodeHeapHeader(headeraddress, headersize, key):
+	# Read all bytes at once and XOR the first 8 (key size) with the encoding key.
+	raw = bytearray(dbg.readMemory(headeraddress, headersize))
+	for i in range(min(8, headersize)):
+		raw[i] ^= (key >> (i * 8)) & 0xFF
+	return bytes(raw)
 
 def walkSegment(FirstEntry,LastValidEntry,heapbase):
 	"""
@@ -10224,9 +10201,7 @@ class MnPointer:
 		Find address in heap and print out info about heap, segment, chunk it belongs to
 		"""
 		dbgp(get_current_function_name())
-		allheaps = []
-		heapkey = 0
-		
+
 		foundinheap = None
 		foundinsegment = None
 		foundinva = None
@@ -10234,74 +10209,42 @@ class MnPointer:
 		dumpsize = 0
 		dodump = False
 
-		try:
-			allheaps = dbg.getHeapsAddress()
-		except:
-			allheaps = []
-		for heapbase in allheaps:
-			mHeap = MnHeap(heapbase)
-			heapbase_extra = ""
-			frontendinfo = []
-			frontendheapptr = 0
-			frontendheaptype = 0
-			if win7mode:
-				heapkey = mHeap.getEncodingKey()
-				if mHeap.usesLFH():
-					frontendheaptype = 0x2
-					heapbase_extra = " [LFH] "
-					frontendheapptr = mHeap.getLFHAddress()
-			frontendinfo = [frontendheaptype,frontendheapptr]
+		MnProc.ensure()
+		for mheap in mnproc.getPEB().getNTHeaps():
+			heapbase = mheap.heapbase
 
-			segments = mHeap.getHeapSegmentList()
-
-			#segments
-			for seg in segments:
-				dbgp("Checking segment %s, looking for %s" % (PTR_PRINT % seg, PTR_PRINT % self.address))
-				seginfo = segments[seg]
-				if hasattr(seginfo, "BaseAddress"):
-					segstart = seginfo.BaseAddress
-					segend = seginfo.end
-					FirstEntry = seginfo.FirstEntry
-					LastValidEntry = seginfo.LastValidEntry
-				else:
-					segstart = seginfo["base"]
-					segend = seginfo["end"]
-					FirstEntry = seginfo["firstentry"]
-					LastValidEntry = seginfo["lastentry"]
-				allchunks = walkSegment(FirstEntry,LastValidEntry,heapbase)
-				for chunkptr in allchunks:
-					thischunk = allchunks[chunkptr]
-					thissize = thischunk.size*8 
-					headersize = thischunk.headersize
+			# segments: skip any whose range does not contain self.address
+			for seg in mheap.getSegments():
+				if not (seg.BaseAddress <= self.address < seg.end):
+					continue
+				dbgp("Checking segment %s, looking for %s" % (PTR_PRINT % seg.address, PTR_PRINT % self.address))
+				for chunkptr, thischunk in seg.getChunks().items():
+					thissize = thischunk.size * HEAPGRANULARITY
 					if self.address >= chunkptr and self.address < (chunkptr + thissize):
-						# found it !
 						if not silent:
 							dbg.log("")
 							dbg.log("     Address 0x%08x found in " % self.address)
-							thischunk.showChunk(showdata = True)
+							thischunk.showChunk(showdata=True)
 							self.showObjectInfo()
 							self.showHeapStackTrace(thischunk)
 							dodump = True
 							dumpsize = thissize
 						foundinchunk = thischunk
-						foundinsegment = seg
+						foundinsegment = seg.address
 						foundinheap = heapbase
 						break
-				if not foundinchunk == None:
+				if foundinchunk is not None:
 					break
 
-			# VA
-			if foundinchunk == None:
-				# maybe it's in VirtualAllocdBlocks
-				vachunks = mHeap.getVirtualAllocdBlocks()
+			# VA blocks
+			if foundinchunk is None:
 				dbgp("Checking VADBlocks, looking for %s" % (PTR_PRINT % self.address))
-				for vaptr in vachunks:
-					vainfo = vachunks[vaptr]
+				for vaptr, vainfo in mheap.getVABlocks().items():
 					if self.address >= vaptr and self.address <= vaptr + vainfo["commit_size"]:
 						if not silent:
 							dbg.log("")
-							dbg.log("    Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
-							dbg.log("    VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
+							dbg.log("     Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address, heapbase))
+							dbg.log("     VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
 							self.showObjectInfo()
 							dumpsize = vainfo["commit_size"]
 							dodump = True
@@ -10312,8 +10255,9 @@ class MnPointer:
 
 			# perhaps chunk is in FEA
 			# if it is, it won't be a VA chunk
-			if foundinva == None:
+			if foundinva is None:
 				if not win7mode:
+					mHeap = MnHeap(heapbase)
 					foundinlal = False
 					foundinfreelist = False
 					FrontEndHeap = mHeap.getFrontEndHeap()
