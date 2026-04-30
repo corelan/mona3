@@ -9108,7 +9108,8 @@ class MnChunk(MnListEntry):
 					tag    = struct.unpack('<B', raw[3:4])[0]
 					segid  = struct.unpack('<B', raw[6:7])[0]
 					unused = struct.unpack('<B', raw[7:8])[0]
-			except Exception:
+			except Exception as e:
+				dbgp("Decode error: %s" % str(e))
 				decode_failures += 1
 			if saved_prevsize == 0:
 				prevsize       = 0
@@ -9585,7 +9586,7 @@ class MnProc:
 				seg_end  = seg_obj.LastValidEntry if seg_obj else segaddr
 				dbgp("Enumerating Chunks in segment %s" % (PTR_PRINT % seg_base))
 				chunks   = seg_obj.getChunks() if (seg_obj and include_chunks) else {}
-				dbgp("  Got %d chunks" % len(chunks))
+				dbgp("  Got %d chunks" % len(chunks))			
 				chunk_info = ""
 				if chunks:
 					total   = len(chunks)
