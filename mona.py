@@ -23157,7 +23157,141 @@ def procLayout(args):
 
 
 #------heapstuff-----#
-	
+
+def _procHeapByAddr(refvalue):
+	"""
+	Show _HEAP_ENTRY info for the previous, current, and next chunk relative to *refvalue*.
+
+	Walks all NT heaps via MnProc / MnPEB / MnHeap / MnChunk. Prints the following
+	fields for each of the three chunks: _HEAP_ENTRY, UserPtr, UserSize, State,
+	first 8 bytes at UserPtr, Heap, and either Segment / LFH Subsegment / VABlock.
+	"""
+	MnProc.ensure()
+	if mnproc is None:
+		dbg.log("[-] Could not initialise process context", highlight=1)
+		return
+
+	found_result = None   # ("seg", mHeap, sorted_chunks, idx)  or  ("va", mHeap, vaaddr, vainfo)
+
+	for mHeap in mnproc.getPEB().getNTHeaps():
+		if found_result is not None:
+			break
+		# -- search in regular segments --
+		try:
+			for seg in mHeap.getSegments():
+				seg_lo = min(seg.BaseAddress, seg.FirstEntry)
+				if not (seg_lo <= refvalue < seg.LastValidEntry):
+					continue
+				chunks  = seg.getChunks()
+				sorted_chunks = sorted(chunks.values(), key=lambda c: c.chunkptr)
+				for idx, chunk in enumerate(sorted_chunks):
+					if chunk.chunkptr <= refvalue < chunk.chunkptr + chunk.size * HEAPGRANULARITY:
+						found_result = ("seg", mHeap, sorted_chunks, idx)
+						break
+				if found_result is not None:
+					break
+		except Exception:
+			pass
+		if found_result is not None:
+			break
+		# -- search in VA blocks --
+		try:
+			for vaaddr, vainfo in mHeap.getVirtualAllocdBlocks().items():
+				if vaaddr <= refvalue < vaaddr + vainfo["commit_size"]:
+					found_result = ("va", mHeap, vaaddr, vainfo)
+					break
+		except Exception:
+			pass
+
+	if found_result is None:
+		dbg.log("[-] Could not find a heap chunk containing %s" % (PTR_PRINT % refvalue), highlight=1)
+		return
+
+	# -- helpers --
+	def _read_first8(ptr):
+		try:
+			return bin2hex(dbg.readMemory(ptr, 8))
+		except:
+			return "??"
+
+	def _chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+		for va, vi in va_blks.items():
+			if va <= chunk.chunkptr < va + vi["commit_size"]:
+				return "VABlock @ %s" % (PTR_PRINT % va)
+		if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts):
+			try:
+				return "LFH Subsegment (LFH @ %s)" % (PTR_PRINT % mheap.getLFHAddress())
+			except:
+				return "LFH Subsegment"
+		return "Segment @ %s" % (PTR_PRINT % chunk.segmentbase)
+
+	def _print_one_chunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+		dbg.log("  [%s]" % label)
+		if chunk is None:
+			dbg.log("    (none)")
+			dbg.log("")
+			return
+		ctx    = _chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+		first8 = _read_first8(chunk.userptr)
+		dbg.log("    _HEAP_ENTRY          : %s" % (PTR_PRINT % chunk.chunkptr))
+		dbg.log("    UserPtr              : %s" % (PTR_PRINT % chunk.userptr))
+		dbg.log("    UserSize             : 0x%x (%d)" % (chunk.usersize, chunk.usersize))
+		dbg.log("    State                : %s (0x%02x)" % (chunk.flagtxt, chunk.flag))
+		dbg.log("    First 8 bytes @ UserPtr: %s" % first8)
+		dbg.log("    Heap                 : %s" % (PTR_PRINT % mheap.heapbase))
+		dbg.log("    Context              : %s" % ctx)
+		dbg.log("")
+
+	# -- gather context for found heap --
+	kind  = found_result[0]
+	mH    = found_result[1]
+	va_blks = {}
+	try:
+		va_blks = mH.getVirtualAllocdBlocks()
+	except Exception:
+		pass
+	lfh_r, lfh_s = [], []
+	try:
+		lfh_r = mH.getLFHRanges()
+		lfh_s = [r[0] for r in lfh_r]
+	except Exception:
+		pass
+
+	if kind == "seg":
+		_, _, sorted_chunks, idx = found_result
+		prev_chunk = sorted_chunks[idx - 1] if idx > 0                  else None
+		curr_chunk = sorted_chunks[idx]
+		next_chunk = sorted_chunks[idx + 1] if idx < len(sorted_chunks) - 1 else None
+		dbg.log("[+] Found chunk at %s  (heap %s)" % (PTR_PRINT % curr_chunk.chunkptr, PTR_PRINT % mH.heapbase))
+		dbg.log("")
+		_print_one_chunk("Previous Chunk", prev_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk("Current Chunk",  curr_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk("Next Chunk",     next_chunk, mH, va_blks, lfh_r, lfh_s)
+
+	elif kind == "va":
+		_, _, vaaddr, vainfo = found_result
+		busy_off   = archValue(0x018, 0x030)
+		hdr_size   = archValue(0x8, 0x10)
+		chunk_ptr  = vaaddr + busy_off
+		user_ptr   = chunk_ptr + hdr_size
+		user_size  = vainfo["commit_size"] - busy_off - hdr_size
+		first8     = _read_first8(user_ptr)
+		dbg.log("[+] Address %s is within a VirtualAllocdBlock @ %s  (heap %s)" % (
+			PTR_PRINT % refvalue, PTR_PRINT % vaaddr, PTR_PRINT % mH.heapbase))
+		dbg.log("    (VA blocks are standalone; no adjacent prev/next chunk in segment context)")
+		dbg.log("")
+		dbg.log("  [VABlock Entry]")
+		dbg.log("    _HEAP_ENTRY          : %s" % (PTR_PRINT % chunk_ptr))
+		dbg.log("    UserPtr              : %s" % (PTR_PRINT % user_ptr))
+		dbg.log("    UserSize             : 0x%x (%d)" % (user_size, user_size))
+		dbg.log("    State                : Busy/VirtAllocd")
+		dbg.log("    First 8 bytes @ UserPtr: %s" % first8)
+		dbg.log("    Heap                 : %s" % (PTR_PRINT % mH.heapbase))
+		dbg.log("    Context              : VABlock @ %s (CommitSize: 0x%x, ReserveSize: 0x%x)" % (
+			PTR_PRINT % vaaddr, vainfo["commit_size"], vainfo["reserve_size"]))
+		dbg.log("")
+
+
 def procHeap(args):
 
 	os = dbg.getOsVersion()
@@ -23225,6 +23359,19 @@ def procHeap(args):
 	else:
 		dbg.log(" ** No heaps found")
 	dbg.log("")
+
+	if "a" in args:
+		if type(args["a"]).__name__.lower() == "bool":
+			dbg.log("Please specify a valid chunk address/register with -a", highlight=1)
+			return
+		refvalue, addyok = getAddyArg(args["a"])
+		if not addyok:
+			dbg.log("%s is an invalid address" % args["a"], highlight=1)
+			return
+		dbg.log("[+] Looking for chunk at/containing %s ..." % (PTR_PRINT % refvalue))
+		dbg.log("")
+		_procHeapByAddr(refvalue)
+		return
 
 	heapbase = 0
 	searchtype = ""
@@ -28172,7 +28319,14 @@ Optional arguments:
 	
 	heapUsage = """Show information about various heap chunk lists
 
-Mandatory arguments :
+Standalone argument (mutually exclusive with -h / -t):
+    -a <address> : show _HEAP_ENTRY, UserPtr, UserSize, State, first 8 bytes at UserPtr,
+                   Heap and Segment / LFH Subsegment / VABlock for the chunk that contains
+                   <address> and its immediate predecessor and successor chunks.
+                   <address> may be the chunk header, the user-data pointer, or any address
+                   within the chunk's allocated range (hex, register, expression).
+
+Mandatory arguments (heap-level queries):
     -h <address> : base address of the heap to query
     -t <type> : where type is 'segments', 'chunks', 'layout',
                 'fea' (let mona determine the frontend allocator),
