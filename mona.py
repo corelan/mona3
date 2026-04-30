@@ -3827,14 +3827,6 @@ def readPtrSizeBytes(ptr):
 	data = dbg.readMemory(ptr, PTR_SIZE)
 	expected = PTR_SIZE
 	fmt = PTR_FMT
-	#if arch == 32:
-	#	data = dbg.readMemory(ptr,4)
-	#	expected = 4
-	#	fmt = '<L'
-	#elif arch == 64:
-	#	data = dbg.readMemory(ptr,8)
-	#	expected = 8
-	#	fmt = '<Q'
 	if not data or len(data) < expected:
 		dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
 		return 0
@@ -7349,6 +7341,7 @@ class MnNTHeap(MnHeap):
 		  - "reserve_size" : int
 		"""
 		if len(self.VirtualAllocdBlocks) > 0:
+			dbgp("getVirtualAllocdBlocks: return %d blocks from cache" % len(self.VirtualAllocdBlocks))
 			return self.VirtualAllocdBlocks
 
 		va_offset = self._offset("VirtualAllocdBlocks")
@@ -9964,6 +9957,7 @@ class MnPointer:
 
 	def showObjectInfo(self):
 		# check if chunk is a DOM object
+		
 		if isWinDBG():
 			cmdtorun = "dps %s L 1" % (PTR_PRINT % self.address)
 			output = dbg.nativeCommand(cmdtorun)
@@ -10129,6 +10123,7 @@ class MnPointer:
 		"""
 		Find address in heap and print out info about heap, segment, chunk it belongs to
 		"""
+		dbgp(get_current_function_name())
 		allheaps = []
 		heapkey = 0
 		
@@ -10161,10 +10156,18 @@ class MnPointer:
 
 			#segments
 			for seg in segments:
-				segstart = segments[seg]["base"]
-				segend = segments[seg]["end"]
-				FirstEntry = segments[seg]["firstentry"]
-				LastValidEntry = segments[seg]["lastentry"]								
+				dbgp("Checking segment %s, looking for %s" % (PTR_PRINT % seg, PTR_PRINT % self.address))
+				seginfo = segments[seg]
+				if hasattr(seginfo, "BaseAddress"):
+					segstart = seginfo.BaseAddress
+					segend = seginfo.end
+					FirstEntry = seginfo.FirstEntry
+					LastValidEntry = seginfo.LastValidEntry
+				else:
+					segstart = seginfo["base"]
+					segend = seginfo["end"]
+					FirstEntry = seginfo["firstentry"]
+					LastValidEntry = seginfo["lastentry"]
 				allchunks = walkSegment(FirstEntry,LastValidEntry,heapbase)
 				for chunkptr in allchunks:
 					thischunk = allchunks[chunkptr]
@@ -10174,7 +10177,7 @@ class MnPointer:
 						# found it !
 						if not silent:
 							dbg.log("")
-							dbg.log("Address 0x%08x found in " % self.address)
+							dbg.log("     Address 0x%08x found in " % self.address)
 							thischunk.showChunk(showdata = True)
 							self.showObjectInfo()
 							self.showHeapStackTrace(thischunk)
@@ -10191,13 +10194,14 @@ class MnPointer:
 			if foundinchunk == None:
 				# maybe it's in VirtualAllocdBlocks
 				vachunks = mHeap.getVirtualAllocdBlocks()
+				dbgp("Checking VADBlocks, looking for %s" % (PTR_PRINT % self.address))
 				for vaptr in vachunks:
 					vainfo = vachunks[vaptr]
 					if self.address >= vaptr and self.address <= vaptr + vainfo["commit_size"]:
 						if not silent:
 							dbg.log("")
-							dbg.log("Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
-							dbg.log("  VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
+							dbg.log("     Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address,heapbase))
+							dbg.log("     VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
 							self.showObjectInfo()
 							dumpsize = vainfo["commit_size"]
 							dodump = True
@@ -10225,7 +10229,7 @@ class MnPointer:
 								if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
 									foundinlal = True
 									if not silent:
-										dbg.log("Address is part of chunk on LookAsideList[%d], heap 0x%08x" % (lal_table_entry,mHeap.heapbase))
+										dbg.log("     Address is part of chunk on LookAsideList[%d], heap 0x%08x" % (lal_table_entry,mHeap.heapbase))
 									break
 							if foundinlal:
 								expectedsize = lal_table_entry * 8
@@ -10240,7 +10244,7 @@ class MnPointer:
 									if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
 										extra = "   --> "
 									if not silent:
-										dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, UserSpace: 0x%x (%s)" % (extra,lalchunk.chunkptr,lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize + lalchunk.remaining,flag))
+										dbg.log("     %sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, UserSpace: 0x%x (%s)" % (extra,lalchunk.chunkptr,lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize + lalchunk.remaining,flag))
 								if not silent:
 									self.showObjectInfo()
 									dumpsize = chunksize
@@ -10264,7 +10268,7 @@ class MnPointer:
 								if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):
 									foundinfreelist = True
 									if not silent:
-										dbg.log("Address is part of chunk on FreeLists[%d] at 0x%08x, heap 0x%08x:" % (flindex,freelist_addy,mHeap.heapbase))
+										dbg.log(".    Address is part of chunk on FreeLists[%d] at 0x%08x, heap 0x%08x:" % (flindex,freelist_addy,mHeap.heapbase))
 									break
 							if foundinfreelist:
 								flindicator = 0
@@ -10276,7 +10280,7 @@ class MnPointer:
 										extra = " --> "
 										foundchunk = freelist_chunk
 									if not silent:
-										dbg.log("%sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d)" % (extra,freelist_chunk.chunkptr,freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
+										dbg.log(".    %sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d)" % (extra,freelist_chunk.chunkptr,freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
 									if flindex != 0 and chunksize != (8*flindex):
 										dbg.log("     ** Header may be corrupted! **", highlight = True)
 									flindicator = 1
@@ -10709,12 +10713,20 @@ def getSegmentsForHeap(heapbase):
 		seglist = mHeap.getHeapSegmentList()
 		dbgp("getSegmentsForHeap: got %d segments from getHeapSegmentList" % len(seglist))
 		for segaddr, sinfo in seglist.items():
-			segmentinfo[segaddr] = [
-				sinfo["base"],
-				sinfo["end"],
-				sinfo["firstentry"],
-				sinfo["lastentry"],
-			]
+			if hasattr(sinfo, "BaseAddress"):
+				segmentinfo[segaddr] = [
+					sinfo.BaseAddress,
+					sinfo.end,
+					sinfo.FirstEntry,
+					sinfo.LastValidEntry,
+				]
+			else:
+				segmentinfo[segaddr] = [
+					sinfo["base"],
+					sinfo["end"],
+					sinfo["firstentry"],
+					sinfo["lastentry"],
+				]
 	except Exception as e:
 		if DEBUG_MODE:
 			dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)), errormode=False)
