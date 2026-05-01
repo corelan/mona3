@@ -23074,8 +23074,10 @@ def procLayout(args):
 	# Build the flat region list for display.
 	# element_mode uses getSortedByElement: the hierarchy is walked recursively and
 	# indentation is baked directly into the description string before filtering.
-	# flat mode uses getAllSorted: indentation is inferred from category transitions
-	# in the display loop below.
+	# tree mode also uses getSortedByElement but flattens depth-first so each parent
+	# immediately precedes its own children (e.g. TEB1→Stack1, TEB2→Stack2 rather
+	# than all TEBs before all Stacks as address-sorted getAllSorted() would give).
+	# flat mode uses getAllSorted: indentation is inferred from category transitions.
 	if element_mode:
 		_indent_by_level = ["", "  \\_ ", "    \\_ "]
 		def _flatten_hierarchical(items, level=0):
@@ -23086,6 +23088,15 @@ def procLayout(args):
 				out.extend(_flatten_hierarchical(children, level + 1))
 			return out
 		regions = [r for r in _flatten_hierarchical(mnproc.getSortedByElement(include_chunks=want_chunks)) if r[2] in show_categories]
+	elif tree_mode:
+		def _flatten_tree_order(items):
+			out = []
+			for s, e, cat, desc, children in items:
+				if cat in fetch_categories:
+					out.append((s, e, cat, desc))
+				out.extend(_flatten_tree_order(children))
+			return out
+		regions = _flatten_tree_order(mnproc.getSortedByElement(include_chunks=want_chunks))
 	else:
 		regions = [r for r in mnproc.getAllSorted(include_chunks=want_chunks) if r[2] in fetch_categories]
 
