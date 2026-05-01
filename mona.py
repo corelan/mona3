@@ -22968,8 +22968,8 @@ def procLayout(args):
 		"stack":    set(["Stack"]),
 		"heap":     set(["Heap"]),
 		"segment":  set(["Segment"]),
-		"chunks":   set(["Chunk"]),
-		"vablocks": set(["VADBlock"]),
+		"chunk":   set(["Chunk"]),
+		"vablock": set(["VADBlock"]),
 		"all":      set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"]),
 	}
 	all_internal       = set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"])
@@ -22986,7 +22986,7 @@ def procLayout(args):
 		show_categories = set()
 		for tn in [x.strip().lower() for x in typeval.split(",")]:
 			if tn.startswith("vab") or tn.startswith("vad"):
-				tn = "vablocks"
+				tn = "vablock"
 			if tn.startswith("mod"):
 				tn = "mod"
 			if tn in type_map:
@@ -23021,8 +23021,8 @@ def procLayout(args):
 	category_mappings["Heap"] = "%s heap" % getAliasName()
 	category_mappings["Segment"] = "%s pl -t heap" % getAliasName()
 	category_mappings["Module"] = "%s mod" % getAliasName()
-	category_mappings["Chunk"] = "%s pl -t chunks" % getAliasName()
-	category_mappings["VADBlock"] = "%s pl -t vablocks" % getAliasName()
+	category_mappings["Chunk"] = "%s pl -t chunk" % getAliasName()
+	category_mappings["VADBlock"] = "%s pl -t vablock" % getAliasName()
 
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
 	dbg.log("    Sort mode: %s" % _sort_val)
@@ -28356,7 +28356,7 @@ DEP Bypass options :
 Optional arguments:
     -t <type>  : Show only the specified category or categories (comma-separated).
                  Without -t the default view is shown: PEB, TEB, Module, Stack,
-                 Heap, Segment, VADBlock (only Chunks are hidden by default).
+                 Heap, Segment, VADBlock (only Chunk is hidden by default).
 
                  Available types (each shows only its own rows, no implicit parents):
                    peb      - Process Environment Block
@@ -28365,14 +28365,14 @@ Optional arguments:
                    stack    - Thread stacks
                    heap     - Heap headers only
                    segment  - Heap segment entries only
-                   chunks   - Heap chunks only
-                   vablocks - Virtual-allocated heap blocks only
+                   chunk    - Heap chunks only
+                   vablock  - Virtual-allocated heap blocks only
                    all      - Every category
 
                  Combine types with commas to show multiple at once.
                  Example: !mona pl -t heap,segment
-                 Example: !mona pl -t chunks
-                 Example: !mona pl -t heap,segment,chunks
+                 Example: !mona pl -t chunk
+                 Example: !mona pl -t heap,segment,chunk
                  Example: !mona pl -t all
 
     -s <mode>  : Sort/layout mode. Valid values:
