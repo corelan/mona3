@@ -1999,6 +1999,15 @@ def bin2hex(binbytes):
 	return ' '.join(out)
 
 
+def stripTags(input=""):
+	"""
+	Removes tag markup from text and returns the visible content only.
+	"""
+	if input is None:
+		return ""
+	return re.sub(r"<[^>]*>", "", input)
+
+
 
 def yesno():
 	"""Return a random boolean, favoring False roughly 3:1."""
@@ -23262,44 +23271,47 @@ def _procHeapByAddr(refvalue):
 		dbg.log("    %s found in Heap %s, %s:" % (label, heap_str, ctx))  
 		print_dict_table(chunkDict, headers, types, padding = "    ", itemsequence = [])
 		
-		#dbg.log("    _HEAP_ENTRY          : %s" % entry_str)
-		#dbg.log("    UserPtr              : %s" % uptr_str)
-		#dbg.log("    UserSize             : 0x%x (%d)" % (chunk.usersize, chunk.usersize))
 		dbg.log("    State : %s (0x%02x)" % (chunk.flagtxt, chunk.flag))
 		# to do: 
-		# if pointer at UserPtr is a symbol, print the symol
+		# if pointer at UserPtr is a symbol, print the symbol
+
 		# if pointer at UserPtr is part of a module, print the module
 
 		# is there a string at UserPtr or UserPtr+PTR_SIZE
-
-		startpos_offsets = [0, PTR_SIZE] 
+		startpos_offsets = [0, 4, 8] 
 		stringfound=False
 		stringfoundat = 0
 		string_to_print = ""
 		for readpos in startpos_offsets:
+			startpos = chunk.userptr + readpos
+			dbgp("Checking if %s has a string" % PTR_PRINT % startpos )
 			try:
-				stringinmemory = dbg.readString(chunk.userptr+readpos)
+				stringinmemory = dbg.readString(startpos)
 				if len(stringinmemory) > 1:
 					string_type = "ansi"
 					stringfound = True
 					string_to_print = stringinmemory
-					stringfoundat = chunk.userptr+readpos
+					stringfoundat = startpos
+					break
 			except:
 				continue
 			if not stringfound:
 				try:
-					stringinmemory = dbg.readString(chunk.userptr+readpos)
+					stringinmemory = dbg.readString(startpos)
 					if len(stringinmemory) > 1:
 						string_type = "unicode"
 						stringfound = True
 						string_to_print = stringinmemory
-						stringfoundat = chunk.userptr+readpos
+						stringfoundat = startpos
+						break
 				except:
 					continue
 		
 		if stringfound:
 			# only print the first 40 chars
 			dbg.log("    Chunk contains start of a %s string @%s : '<b>%s</b>'" % (string_type, PTR_PRINT % stringfoundat, string_to_print[:40] ))
+			if stringfoundat != chunk.userptr:
+				dbg.log("    (That's at %s+0x%x)" % (PTR_PRINT % chunk.userptr, (stringfoundat - chunk.userptr) ))
 		else:
 			dbg.log("    First 8 bytes @ UserPtr: %s" % first8)
 		dbg.log("")
@@ -23326,9 +23338,17 @@ def _procHeapByAddr(refvalue):
 		next_chunk = sorted_chunks[idx + 1] if idx < len(sorted_chunks) - 1 else None
 		dbg.log("[+] Found chunk at %s  (heap %s)" % (PTR_PRINT % curr_chunk.chunkptr, PTR_PRINT % mH.heapbase))
 		dbg.log("")
-		_print_one_chunk("<b>Previous</b> Chunk", prev_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk("<b>* Current</b> Chunk",  curr_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk("<b>Next</b> Chunk",     next_chunk, mH, va_blks, lfh_r, lfh_s)
+
+		ptext = "<b>Previous</b> Chunk"
+		ctext = "<b>* Current</b> Chunk"
+		ntext = "<b>Next</b> Chunk"
+		if not isWinDBG():
+			ptext = stripTags(ptext)
+			ctext = stripTags(ctext)
+			ntext = stripTags(ntext)
+		_print_one_chunk(ptext, prev_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk(ctext, curr_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk(ntext,  next_chunk, mH, va_blks, lfh_r, lfh_s)
 
 	elif kind == "va":
 		_, _, vaaddr, vainfo = found_result
