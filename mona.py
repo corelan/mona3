@@ -23037,12 +23037,13 @@ def procLayout(args):
 		"Stack":    ["TEB"],
 	}
 	# Fixed indentation levels used in tree rendering (depth in the hierarchy).
+	# Elements that have a parent get a \\_ connector; root-level elements get none.
 	_tree_indent = {
 		"PEB": "", "TEB": "", "Module": "",
-		"Heap": "  ",
-		"Stack": "  ",
-		"Segment": "    ", "VADBlock": "    ",
-		"Chunk": "      ",
+		"Heap":     "  \\_ ",
+		"Stack":    "  \\_ ",
+		"Segment":  "    \\_ ", "VADBlock":  "    \\_ ",
+		"Chunk":    "      \\_ ",
 	}
 
 	category_mappings = {}
@@ -23132,7 +23133,7 @@ def procLayout(args):
 			else:
 				if category in ("Heap", "Segment", "VADBlock"):
 					in_heap_chain = True
-				elif category == "Chunk":
+				elif category == "Chunk" and fetch_categories & {"Heap", "Segment"}:
 					indent = "  \\_ "
 				else:
 					in_heap_chain = False
