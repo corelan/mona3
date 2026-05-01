@@ -22957,80 +22957,51 @@ def procLayout(args):
 	global silent
 	silent = True
 	include_chunks = False
+	MnProc.ensure()
 
-	# Filter aliases -> internal region types they expand to
-	filter_map = {
-		"peb":       set(["PEB"]),
-		"teb":       set(["TEB"]),
-		"mod":       set(["Module"]),
-		"stack":     set(["Stack"]),
-		"heap":      set(["Heap", "Segment"]),
-		"chunks":    set(["Heap", "Segment", "Chunk"]),
-		"vablocks":  set(["Heap", "Segment", "VADBlock"]),
-		"all":       set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"]),
+	# -t <type> selects exactly the named categories — no implicit parents.
+	# If omitted, the default view is shown (everything except raw Chunks).
+	type_map = {
+		"peb":      set(["PEB"]),
+		"teb":      set(["TEB"]),
+		"mod":      set(["Module"]),
+		"stack":    set(["Stack"]),
+		"heap":     set(["Heap"]),
+		"segment":  set(["Segment"]),
+		"chunk":   set(["Chunk"]),
+		"vablock": set(["VADBlock"]),
+		"all":      set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"]),
 	}
-	all_internal = set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"])
-	# By default, hide only chunks
+	all_internal       = set(["PEB", "TEB", "Module", "Stack", "Heap", "Segment", "Chunk", "VADBlock"])
 	default_categories = all_internal - set(["Chunk"])
-	valid_filters = sorted(filter_map.keys())
+	valid_types        = sorted(type_map.keys())
 
-	show_all = "a" in args or "all" in args
-
-	# Base selection: -f/-filter replaces categories, -a/all shows everything,
-	# default shows broad view (without chunks/VA blocks).
-	if "f" in args or "filter" in args:
-		filterval = args.get("f", args.get("filter", ""))
-		if type(filterval).__name__.lower() == "bool":
-			dbg.log("Please provide a comma-separated list of types to show with -f", highlight=1)
-			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
-			silent = False
-			return
-		filter_names = [x.strip().lower() for x in filterval.split(",")]
-		show_categories = set()
-		for fn in filter_names:
-			if fn.startswith("vab") or fn.startswith("vad"):
-				fn = "vablocks"
-			if fn.startswith("mod"):
-				fn = "mod"
-			if fn in filter_map:
-				show_categories |= filter_map[fn]
-			else:
-				dbg.log("Unknown filter '%s', ignoring" % fn, highlight=1)
-		if len(show_categories) == 0:
-			dbg.log("No valid types matched filter '%s'" % filterval, highlight=1)
-			dbg.log("Valid types: %s" % ", ".join(valid_filters), highlight=1)
-			silent = False
-			return
-	elif show_all:
-		show_categories = set(all_internal)
-	else:
-		show_categories = set(default_categories)
-
-	# Additive selection: -t/-type expands the currently selected categories.
-	# "all" is excluded here — use -a or -f all for that.
-	additive_filters = sorted(k for k in filter_map if k != "all")
 	if "t" in args or "type" in args:
 		typeval = args.get("t", args.get("type", ""))
 		if type(typeval).__name__.lower() == "bool":
-			dbg.log("Please provide a comma-separated list of types to add with -t", highlight=1)
-			dbg.log("Valid types: %s" % ", ".join(additive_filters), highlight=1)
+			dbg.log("Please provide a type with -t", highlight=1)
+			dbg.log("Valid types: %s" % ", ".join(valid_types), highlight=1)
 			silent = False
 			return
-		type_names = [x.strip().lower() for x in typeval.split(",")]
-		added = False
-		for tn in type_names:
-			if tn.startswith("vab") or tn.startswith("vad"):
-				tn = "vablocks"
-			if tn.startswith("mod"):
-				tn = "mod"
-			if tn in filter_map and tn != "all":
-				show_categories |= filter_map[tn]
-				added = True
+		show_categories = set()
+		for tn in [x.strip().lower() for x in typeval.split(",")]:
+			if not tn:
+				continue
+			matches = [k for k in type_map if k.startswith(tn)]
+			if len(matches) == 1:
+				show_categories |= type_map[matches[0]]
+			elif len(matches) > 1:
+				# Ambiguous prefix — warn and skip this token, keep processing the rest
+				dbg.log("Ambiguous type '%s' (matches: %s), please be more specific" % (
+					tn, ", ".join(sorted(matches))), highlight=1)
 			else:
-				dbg.log("Unknown type '%s', ignoring (use -a or -f all to show everything)" % tn if tn == "all" else "Unknown type '%s', ignoring" % tn, highlight=1)
-		if not added:
-			dbg.log("No valid types were added with -t '%s'" % typeval, highlight=1)
-			dbg.log("Valid types: %s" % ", ".join(additive_filters), highlight=1)
+				dbg.log("Unknown type '%s', ignoring. Valid types: %s" % (tn, ", ".join(valid_types)), highlight=1)
+		if not show_categories:
+			dbg.log("No valid types matched. Valid types: %s" % ", ".join(valid_types), highlight=1)
+			silent = False
+			return
+	else:
+		show_categories = set(default_categories)
 
 	# Force chunk walking if chunks will be displayed
 	if "Chunk" in show_categories:
@@ -23046,34 +23017,67 @@ def procLayout(args):
 		_sort_val = "elements"
 	element_mode = _sort_val == "elements"
 
-	# Flush cache if -walk is specified
-	if "walk" in args:
-		resetGlobals()
-		dbg.log("Cache flushed, re-walking process...")
+	# -tree: show ancestor context for selected categories (base mode only).
+	tree_mode = "tree" in args and not element_mode
+
+	# -a <address>: highlight the matching row in tree mode.
+	highlight_addr = None
+	if tree_mode and "a" in args and type(args["a"]).__name__.lower() != "bool":
+		highlight_addr, _ok = getAddyArg(args["a"])
+		if not _ok:
+			dbg.log("[-] Invalid address for -a: %s" % args["a"], highlight=1)
+			highlight_addr = None
+
+	# Per-category context parents shown in tree mode to establish hierarchy.
+	_tree_context_parents = {
+		"Heap":     ["PEB"],
+		"Segment":  ["PEB", "Heap"],
+		"Chunk":    ["PEB", "Heap", "Segment"],
+		"VADBlock": ["PEB", "Heap"],
+		"Stack":    ["TEB"],
+	}
+	# Fixed indentation levels used in tree rendering (depth in the hierarchy).
+	_tree_indent = {
+		"PEB": "", "TEB": "", "Module": "",
+		"Heap": "  ",
+		"Stack": "  ",
+		"Segment": "    ", "VADBlock": "    ",
+		"Chunk": "      ",
+	}
 
 	category_mappings = {}
 	category_mappings["PEB"] = "dt _peb @$peb"
-	category_mappings["TEB"] = "%s pl -f teb; !teb" % getAliasName()
-	category_mappings["Stack"] = "%s pl -f stack" % getAliasName()
+	category_mappings["TEB"] = "%s pl -t teb; !teb" % getAliasName()
+	category_mappings["Stack"] = "%s pl -t stack" % getAliasName()
 	category_mappings["Heap"] = "%s heap" % getAliasName()
-	category_mappings["Segment"] = "%s pl -f heap" % getAliasName()
+	category_mappings["Segment"] = "%s pl -t heap" % getAliasName()
 	category_mappings["Module"] = "%s mod" % getAliasName()
-	category_mappings["Chunk"] = "%s pl -f chunks" % getAliasName()
-	category_mappings["VADBlock"] = "%s pl -f vablocks" % getAliasName()
-	category_mappings["Chunk"] = "%s pl -f chunks" % getAliasName()
+	category_mappings["Chunk"] = "%s pl -t chunk" % getAliasName()
+	category_mappings["VADBlock"] = "%s pl -t vablock" % getAliasName()
+
+	# In tree mode, collect ancestor categories needed to render context rows.
+	if tree_mode:
+		context_cats = set()
+		for cat in show_categories:
+			for parent in _tree_context_parents.get(cat, []):
+				context_cats.add(parent)
+		fetch_categories = show_categories | context_cats
+	else:
+		fetch_categories = show_categories
 
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
-	dbg.log("    Sort mode: %s" % _sort_val)
-	catlist = ",".join(show_categories)
+	dbg.log("    Sort mode: %s%s" % (_sort_val, " [tree]" if tree_mode else ""))
+	catlist = ",".join(sorted(show_categories))
 	dbg.log("    Categories to show: %s" % catlist)
-	MnProc.ensure()
-	want_chunks = include_chunks or "Chunk" in show_categories
+	want_chunks = include_chunks or "Chunk" in fetch_categories
 
 	# Build the flat region list for display.
 	# element_mode uses getSortedByElement: the hierarchy is walked recursively and
 	# indentation is baked directly into the description string before filtering.
-	# flat mode uses getAllSorted: indentation is inferred from category transitions
-	# in the display loop below.
+	# tree mode also uses getSortedByElement but flattens depth-first so each parent
+	# immediately precedes its own children (e.g. TEB1→Stack1, TEB2→Stack2 rather
+	# than all TEBs before all Stacks as address-sorted getAllSorted() would give).
+	# flat mode uses getAllSorted: indentation is inferred from category transitions.
 	if element_mode:
 		_indent_by_level = ["", "  \\_ ", "    \\_ "]
 		def _flatten_hierarchical(items, level=0):
@@ -23084,8 +23088,17 @@ def procLayout(args):
 				out.extend(_flatten_hierarchical(children, level + 1))
 			return out
 		regions = [r for r in _flatten_hierarchical(mnproc.getSortedByElement(include_chunks=want_chunks)) if r[2] in show_categories]
+	elif tree_mode:
+		def _flatten_tree_order(items):
+			out = []
+			for s, e, cat, desc, children in items:
+				if cat in fetch_categories:
+					out.append((s, e, cat, desc))
+				out.extend(_flatten_tree_order(children))
+			return out
+		regions = _flatten_tree_order(mnproc.getSortedByElement(include_chunks=want_chunks))
 	else:
-		regions = [r for r in mnproc.getAllSorted(include_chunks=want_chunks) if r[2] in show_categories]
+		regions = [r for r in mnproc.getAllSorted(include_chunks=want_chunks) if r[2] in fetch_categories]
 
 	if len(regions) == 0:
 		dbg.log("No regions found!", highlight=1)
@@ -23110,22 +23123,31 @@ def procLayout(args):
 		start, end, category, description = region[0], region[1], region[2], region[3]
 		size  = end - start if end > start else 0
 		psize = "0x%x" % size
-		# In element_mode indentation is already baked into description; in flat mode
-		# infer it from category transitions so heap children are visually nested.
+		# In element_mode indentation is already baked into description; in tree mode
+		# use fixed per-category depth; in flat mode infer from category transitions.
 		indent = ""
 		if not element_mode:
-			if category in ("Heap", "Segment", "VADBlock"):
-				in_heap_chain = True
-			elif category == "Chunk":
-				indent = "  \\_ "
+			if tree_mode:
+				indent = _tree_indent.get(category, "")
 			else:
-				in_heap_chain = False
+				if category in ("Heap", "Segment", "VADBlock"):
+					in_heap_chain = True
+				elif category == "Chunk":
+					indent = "  \\_ "
+				else:
+					in_heap_chain = False
 		prev_category = category
 		dedup_key = (start, category)
 		if dedup_key in seen_regions:
 			continue
 		seen_regions.add(dedup_key)
-		table_data[idx] = (end, psize, category, indent + description)
+		desc_entry = indent + description
+		if tree_mode and highlight_addr is not None and start <= highlight_addr < end:
+			if isWinDBG():
+				desc_entry = "<b>" + desc_entry + "</b>"
+			else:
+				desc_entry = ">>> " + desc_entry
+		table_data[idx] = (end, psize, category, desc_entry)
 		table_seq.append(idx)
 		table_starts.append(start)
 
@@ -28393,32 +28415,47 @@ DEP Bypass options :
 	proclayoutUsage = """Show a unified process memory layout map (PEB, TEB, modules, stacks, heaps)
 
 Optional arguments:
-    -a         : Show all region types (including chunks and VA blocks)
-    -s <mode>  : Sort/layout mode. Valid values:
-                   base    (default) Flat list sorted by address; heap nesting is
-                                     inferred from category order (getAllSorted).
-                   elements          Hierarchical layout; indentation reflects explicit
-                                     parent/child relationships — TEB→Stack,
-                                     Heap→Segment→Chunk (getSortedByElement).
-                 Example: -s elements
-    -f <types> : Filter by comma-separated types to display
-                 Valid types: peb, teb, mod, stack, heap, chunks, vablocks, all
-				 (no -f provided: chunks & vablocks are hidden)
-                 Each type expands to include related regions:
-                   heap     = Heap + Heap Segments
-                   chunks   = Heap + Heap Segments + Heap Chunks
-                   vablocks = Heap + Heap Segments + Heap VA Blocks
-                   all      = Everything
-                 Example: -f "heap,stack"
-                 Example: -f "chunks"  (shows heaps, segments and chunks)
-                 Example: -f "all"     (same as -a)
-    -t <type>  : Add individual types to the default output
-                 Example: -t vablocks
-				 (this is the equivalent of -f "peb,teb,mod,stack,heap,vablocks")
+    -t <type>  : Show only the specified category or categories (comma-separated).
+                 Without -t the default view is shown: PEB, TEB, Module, Stack,
+                 Heap, Segment, VADBlock (only Chunk is hidden by default).
 
-  Use -a to show everything, 
-      -f to pick specific types, 
-	  or -s elements for hierarchical mode."""
+                 Available types (each shows only its own rows, no implicit parents):
+                   peb      - Process Environment Block
+                   teb      - Thread Environment Block(s)
+                   mod      - Loaded modules
+                   stack    - Thread stacks
+                   heap     - Heap headers only
+                   segment  - Heap segment entries only
+                   chunk    - Heap chunks only
+                   vablock  - Virtual-allocated heap blocks only
+                   all      - Every category
+
+                 Combine types with commas to show multiple at once.
+                 Example: !mona pl -t heap,segment
+                 Example: !mona pl -t chunk
+                 Example: !mona pl -t heap,segment,chunk
+                 Example: !mona pl -t all
+
+    -tree      : Show ancestor context rows above the selected categories so the
+                 full parent chain is visible (base sort only; ignored with -s elements).
+                 Parents are indented one level above their children:
+                   PEB
+                     Heap
+                       Segment
+                         Chunk
+                 Example: !mona pl -t chunk -tree   (PEB -> Heap -> Segment -> Chunk)
+                 Example: !mona pl -t vablock -tree (PEB -> Heap -> VADBlock)
+                 Example: !mona pl -t segment -tree (PEB -> Heap -> Segment)
+
+    -a <addr>  : (requires -tree) Highlight the row whose address range contains
+                 <addr> in bold (WinDBG) or with a >>> prefix (Immunity).
+                 Useful for locating a specific chunk, segment, or block in the tree.
+                 Example: !mona pl -t chunk -tree -a 0x12345678
+
+    -s <mode>  : Sort/layout mode. Valid values:
+                   base     (default) Flat list sorted by address.
+                   elements           Hierarchical: TEB->Stack, Heap->Segment->Chunk.
+                 Example: !mona pl -s elements"""
 	
 	skeletonUsage = """Creates a Metasploit exploit module skeleton for a specific type of exploit
 
