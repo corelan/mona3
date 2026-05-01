@@ -28479,15 +28479,16 @@ Optional arguments:
                      Heap
                        Segment
                          Chunk
+                       VADBlock 
                  Example: !mona pl -t chunk -tree   (PEB -> Heap -> Segment -> Chunk)
                  Example: !mona pl -t vablock -tree (PEB -> Heap -> VADBlock)
                  Example: !mona pl -t segment -tree (PEB -> Heap -> Segment)
 
-    -a <addr>  : Highlight the row whose address range contains
+    -a <addr>  : Highlight the row (entity) whose address range contains
                  <addr> in bold (WinDBG) or with a >>> prefix (Immunity).
                  Useful for locating a specific chunk, segment, or block in the tree.
                  Example: !mona pl -t chunk -a 0x12345678
-				 (note: this will activate -tree mode)
+                 (note: this will activate -tree mode)
 
     -s <mode>  : Sort/layout mode. Valid values:
                    base     (default) Flat list sorted by address.
