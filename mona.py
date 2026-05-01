@@ -23017,6 +23017,14 @@ def procLayout(args):
 	# -tree: show ancestor context for selected categories (base mode only).
 	tree_mode = "tree" in args and not element_mode
 
+	# -a <address>: highlight the matching row in tree mode.
+	highlight_addr = None
+	if tree_mode and "a" in args and type(args["a"]).__name__.lower() != "bool":
+		highlight_addr, _ok = getAddyArg(args["a"])
+		if not _ok:
+			dbg.log("[-] Invalid address for -a: %s" % args["a"], highlight=1)
+			highlight_addr = None
+
 	# Per-category context parents shown in tree mode to establish hierarchy.
 	_tree_context_parents = {
 		"Heap":     ["PEB"],
@@ -23119,7 +23127,13 @@ def procLayout(args):
 		if dedup_key in seen_regions:
 			continue
 		seen_regions.add(dedup_key)
-		table_data[idx] = (end, psize, category, indent + description)
+		desc_entry = indent + description
+		if tree_mode and highlight_addr is not None and start <= highlight_addr < end:
+			if isWinDBG():
+				desc_entry = "<b>" + desc_entry + "</b>"
+			else:
+				desc_entry = ">>> " + desc_entry
+		table_data[idx] = (end, psize, category, desc_entry)
 		table_seq.append(idx)
 		table_starts.append(start)
 
@@ -28418,6 +28432,11 @@ Optional arguments:
                  Example: !mona pl -t chunk -tree   (PEB -> Heap -> Segment -> Chunk)
                  Example: !mona pl -t vablock -tree (PEB -> Heap -> VADBlock)
                  Example: !mona pl -t segment -tree (PEB -> Heap -> Segment)
+
+    -a <addr>  : (requires -tree) Highlight the row whose address range contains
+                 <addr> in bold (WinDBG) or with a >>> prefix (Immunity).
+                 Useful for locating a specific chunk, segment, or block in the tree.
+                 Example: !mona pl -t chunk -tree -a 0x12345678
 
     -s <mode>  : Sort/layout mode. Valid values:
                    base     (default) Flat list sorted by address.
