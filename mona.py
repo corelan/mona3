@@ -160,36 +160,47 @@ Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
 
 global scriptname
 currentArgs = []
+commands = {}
 guessedAlias = ""
 aliasname = ""
 
-MemoryPageACL={}
-configFileCache = {}
-CFGTableCache = {}
+# cache
+# 
+_memory_page_acl_cache={}
+_config_file_cache = {}
+_cfg_table_cache = {}
+_symbol_dirs_cache = None
 
-disasmLowerChecked = False
-disasmIsLower = False
-configwarningshown = False
-_excluded_modules_list = None
-ptr_counter = 0
-ptr_to_get = -1
-silent = False
-noheader = False
-g_keystoneLoaded = False
-windbgflavor = ""
-windbgprettyname = ""
-_sym_cache_dirs = None
-_heap_cmd_prefix = None
+#
+# some global helper vars
+#
+g_disasm_lower_checked = False
+g_disasm_is_lower = False
+g_config_warning_shown = False
+g_excluded_modules_list = None
+g_ptr_counter = 0
+g_ptr_to_get = -1
+g_silent = False
+g_no_header = False
+g_keystone_loaded = False
+g_windbg_flavor = ""
+g_windbg_pretty_name = ""
+g_os_version = None
+g_heap_cmd_prefix = None
 
+
+
+# these 2 are going to play an important role  
 mnproc = None
-osVersion = None
+mndbg = None
+
 
 
 try:
 	import keystone
-	g_keystoneLoaded = True
+	g_keystone_loaded = True
 except:
-	g_keystoneLoadd = False
+	g_keystone_loaded = False
 
 
 ###
@@ -197,7 +208,6 @@ except:
 # Let's set up the Debugger
 #
 ###
-
 
 
 class MnDebugger:
@@ -242,10 +252,10 @@ class MnDebugger:
 
 		if self.isWinDBG():
 
-			global windbgflavor
-			global windbgprettyname
+			global g_windbg_flavor
+			global g_windbg_pretty_name
 
-			if windbgflavor == "" or windbgflavor == "unknown":
+			if g_windbg_flavor == "" or g_windbg_flavor == "unknown":
 
 				version_lines = []
 
@@ -257,8 +267,8 @@ class MnDebugger:
 
 				if not version_lines:
 					# assume it's windbg classic
-					windbgflavor = "windbg"
-					windbgprettyname = "WinDBG Classic"
+					g_windbg_flavor = "windbg"
+					g_windbg_pretty_name = "WinDBG Classic"
 					return
 
 
@@ -284,8 +294,8 @@ class MnDebugger:
 						matched_windbgx.append(indicator)
 
 				if matched_windbgx:
-					windbgflavor = "windbgx"
-					windbgprettyname = "WinDBGX"
+					g_windbg_flavor = "windbgx"
+					g_windbg_pretty_name = "WinDBGX"
 					return
 
 				matched_classic = []
@@ -294,12 +304,12 @@ class MnDebugger:
 						matched_classic.append(indicator)
 
 				if matched_classic:
-					windbgflavor = "windbg"
-					windbgprettyname = "WinDBG Classic"
+					g_windbg_flavor = "windbg"
+					g_windbg_pretty_name = "WinDBG Classic"
 					return
 
-				windbgflavor = "unknown"
-				windbgprettyname = "Unknown Debugger"
+				g_windbg_flavor = "unknown"
+				g_windbg_pretty_name = "Unknown Debugger"
 
 	def get_current_datetime(self):
 		return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
@@ -320,67 +330,63 @@ class MnDebugger:
 				self.dbg.log("[MONA DEBUG - error] %s | %s" % (self.get_current_datetime(), str(e)), highlight=True)
 				pass
 
+	def _ensureSymbolCache(self, auto_fix=False):
+		"""Check that WinDBG has a valid local symbol cache configured.
+
+		Returns a list of valid local filesystem cache directories.
+		If none are found and auto_fix is True, sets a default symbol path.
+		If none are found and auto_fix is False, logs a warning and returns [].
+		Also populates _symbol_dirs_cache for use by showModuleTable.
+		"""
+		global _symbol_dirs_cache
+		if not self.isWinDBG():
+			return []
+
+		# this will initialize g_windbg_flavor to either "windbg" or "windbgx"
+		# and g_windbg_pretty_name to "WinDBG Classic" or "WinDBGX"
+		self.getWinDBGVersion()
+
+		self.dbgp("Active Debugger Flavor: %s" % g_windbg_pretty_name)
+
+		raw = dbglib.getSymbolPath().replace(" ", "")
+		ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
+		if raw == "":
+			if auto_fix:
+				self.dbg.log("")
+				self.dbg.log("** Warning, no symbol path set ! ** ", highlight=1)
+				sympath = "srv*c:\\symbols*%s" % ms_symbol_server
+				self.dbg.log("   I'll set the symbol path to %s" % sympath)
+				dbglib.setSymbolPath(sympath)
+				self.dbg.log("   Symbol path set, now reloading symbols...")
+				self.dbg.nativeCommand(".reload")
+				self.dbg.log("   All set. Please restart WinDBG.")
+				self.dbg.log("")
+			else:
+				self.dbg.log("[!] No symbol path configured", highlight=1)
+				self.dbg.log("    Configure a symbol path first, e.g.:")
+				self.dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
+				return []
+
+		cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbg_flavor)
+		cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
+
+		self.dbgp("Cache_dirs: %s" % cache_dirs)
+		for d in cache_dirs:
+			self.dbgp("%s" % d)
+
+		if cache_dirs:
+			_symbol_dirs_cache = cache_dirs
+
+		if not cache_dirs and not auto_fix:
+			self.dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
+			self.dbg.log("    Configure a symbol path with a local cache, e.g.:")
+			self.dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
+
+		return cache_dirs
+
 
 mndbg = MnDebugger()
 dbg = mndbg.dbg
-
-commands = {}
-
-
-def _ensureSymbolCache(auto_fix=False):
-	"""Check that WinDBG has a valid local symbol cache configured.
-
-	Returns a list of valid local filesystem cache directories.
-	If none are found and auto_fix is True, sets a default symbol path.
-	If none are found and auto_fix is False, logs a warning and returns [].
-	Also populates _sym_cache_dirs for use by showModuleTable.
-	"""
-	global _sym_cache_dirs
-	if not mndbg.isWinDBG():
-		return []
-
-	# this will initialize windbgflavor to either "windbg" or "windbgx"
-	# and windbgprettyname to "WinDBG Classic" or "WinDBGX"
-	mndbg.getWinDBGVersion()
-
-	mndbg.dbgp("Active Debugger Flavor: %s" % windbgprettyname)
-
-	raw = dbglib.getSymbolPath().replace(" ", "")
-	ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
-	if raw == "":
-		if auto_fix:
-			dbg.log("")
-			dbg.log("** Warning, no symbol path set ! ** ", highlight=1)
-			sympath = "srv*c:\\symbols*%s" % ms_symbol_server
-			dbg.log("   I'll set the symbol path to %s" % sympath)
-			dbglib.setSymbolPath(sympath)
-			dbg.log("   Symbol path set, now reloading symbols...")
-			dbg.nativeCommand(".reload")
-			dbg.log("   All set. Please restart WinDBG.")
-			dbg.log("")
-		else:
-			dbg.log("[!] No symbol path configured", highlight=1)
-			dbg.log("    Configure a symbol path first, e.g.:")
-			dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
-			return []
-
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
-	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
-
-	mndbg.dbgp("Cache_dirs: %s" % cache_dirs)
-	for d in cache_dirs:
-		mndbg.dbgp("%s" % d)
-
-	if cache_dirs:
-		_sym_cache_dirs = cache_dirs
-
-	if not cache_dirs and not auto_fix:
-		dbg.log("[!] No valid local symbol cache directory found in .sympath", highlight=1)
-		dbg.log("    Configure a symbol path with a local cache, e.g.:")
-		dbg.log("    .sympath srv*c:\\symbols*%s" % ms_symbol_server)
-
-	return cache_dirs
-
 
 def _findSymbolsCached(mod, cache_dirs=None):
 	"""Find a module's cached PDB path.
@@ -397,7 +403,7 @@ def _findSymbolsCached(mod, cache_dirs=None):
 		local_pdb = os.path.join(os.path.dirname(modpath), pdbname)
 		if os.path.isfile(local_pdb):
 			return local_pdb, "local"
-	dirs = cache_dirs if cache_dirs is not None else _sym_cache_dirs
+	dirs = cache_dirs if cache_dirs is not None else _symbol_dirs_cache
 	if dirs is not None and pdbname and guidage:
 		for ci, cdir in enumerate(dirs):
 			candidate = os.path.join(cdir, pdbname, guidage, pdbname)
@@ -410,12 +416,12 @@ def _hasSymbolsCached(mod):
 	"""Check if a module's PDB is cached. Returns True/False/None."""
 	pdbname = mod.modulePdbName
 	modpath = mod.modulePath
-	# Local check doesn't need _sym_cache_dirs
+	# Local check doesn't need _symbol_dirs_cache
 	if modpath and pdbname:
 		local_pdb = os.path.join(os.path.dirname(modpath), pdbname)
 		if os.path.isfile(local_pdb):
 			return True
-	if _sym_cache_dirs is None:
+	if _symbol_dirs_cache is None:
 		return None
 	path, _ = _findSymbolsCached(mod)
 	return path is not None
@@ -424,7 +430,7 @@ def _hasSymbolsCached(mod):
 # Initialization of a bunch of stuff
 #
 if mndbg.isWinDBG():
-	_ensureSymbolCache(auto_fix=True)
+	mndbg._ensureSymbolCache(auto_fix=True)
 
 osver = dbg.getOsVersion()
 if osver in ["6", "7", "8", "10", "11", "vista", "win7", "2008server", "win8", "win8.1", "win10", "win11"]:
@@ -664,7 +670,7 @@ def clickMnCommand(commandname=""):
 
 def checkKeystone():
 	pyversion = "%d.%d" % (sys.version_info[0], sys.version_info[1])
-	if not g_keystoneLoaded:
+	if not g_keystone_loaded:
 		if arch==64:
 			dbg.log("")
 			dbg.log("[!] Warning - keystone engine not loaded", highlight=True)
@@ -714,18 +720,18 @@ def resetGlobals():
 	Sets mnproc to None so it will be re-created lazily on next access.
 	"""
 	global currentArgs
-	global disasmLowerChecked
+	global g_disasm_lower_checked
 	global mnproc
-	global _excluded_modules_list
-	global CFGTableCache
-	global osVersion
+	global g_excluded_modules_list
+	global _cfg_table_cache
+	global g_os_version
 
 	mnproc = None
 	currentArgs = None
-	disasmLowerChecked = False
-	_excluded_modules_list = None
-	CFGTableCache = {}
-	osVersion = None
+	g_disasm_lower_checked = False
+	g_excluded_modules_list = None
+	_cfg_table_cache = {}
+	g_os_version = None
 	return
 
 
@@ -1162,19 +1168,19 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 
 def getDisasmInstruction(disasmentry):
 	""" returns instruction string, convert to lower if needed """
-	global disasmLowerChecked
-	global disasmIsLower
+	global g_disasm_lower_checked
+	global g_disasm_is_lower
 	instrline = disasmentry.getDisasm()
-	if disasmLowerChecked:
-		if not disasmIsLower:
+	if g_disasm_lower_checked:
+		if not g_disasm_is_lower:
 			instrline = instrline.lower()
 	else:
-		disasmLowerChecked = True
+		g_disasm_lower_checked = True
 		interim_instr = instrline.lower()
 		if interim_instr == instrline:
-			disasmIsLower = True
+			g_disasm_is_lower = True
 		else:
-			disasmIsLower = False
+			g_disasm_is_lower = False
 			instrline = instrline.lower()
 	return instrline
 	
@@ -1911,13 +1917,13 @@ def strPosLen(address, mode="all"):
 		return "".join(out)
 
 	def _get_cyclic_pattern():
-		global silent
-		oldsilent = silent
+		global g_silent
+		oldsilent = g_silent
 		try:
-			silent = True
+			g_silent = True
 			return createPattern(20280)
 		finally:
-			silent = oldsilent
+			g_silent = oldsilent
 
 	def _find_in_pattern(needle, pattern):
 		if needle is None:
@@ -2069,7 +2075,7 @@ def str2js(inputstring):
 
 	if length % 2 == 1:
 		jsmsg = "Warning : odd size given, js pattern will be truncated to " + str(length - 1) + " bytes, it's better use an even size\n"
-		if not silent:
+		if not g_silent:
 			dbg.logLines(jsmsg, highlight=1)
 
 	toreturn = ""
@@ -3507,15 +3513,15 @@ def getPatternLength(startptr, pattern_type="normal", args=None):
 	"""
 	patternsize = 0
 	endofpattern = False
-	global silent
+	global g_silent
 
 	if args is None:
 		args = {}
 
-	oldsilent = silent
-	silent = True
+	oldsilent = g_silent
+	g_silent = True
 	fullpattern = ensure_bytes(createPattern(200000, args))
-	silent = oldsilent
+	g_silent = oldsilent
 
 	if pattern_type == "upper":
 		fullpattern = fullpattern.upper()
@@ -3815,13 +3821,13 @@ def readPtrSizeBytes(ptr):
 	return struct.unpack(fmt, data)[0]
 
 def _parseOsVersion():
-	global osVersion
-	if osVersion is None:
+	global g_os_version
+	if g_os_version is None:
 		mndbg.dbgp("No OS Version known, crawling it")
 		osrelease = dbg.getOsRelease()
 		mndbg.dbgp("_parseOsVersion(): osrelease='%s' (type: %s)" % (str(osrelease), type(osrelease).__name__))
 
-		osVersion = {
+		g_os_version = {
 			"major": 0,
 			"minor": 0,
 			"build": 0,
@@ -3831,9 +3837,9 @@ def _parseOsVersion():
 		if isinstance(osrelease, tuple):
 			# Immunity format: (Major, Minor, Build, Platform, CSD)
 			try:
-				osVersion["major"] = int(osrelease[0])
-				osVersion["minor"] = int(osrelease[1])
-				osVersion["build"] = int(osrelease[2])
+				g_os_version["major"] = int(osrelease[0])
+				g_os_version["minor"] = int(osrelease[1])
+				g_os_version["build"] = int(osrelease[2])
 			except:
 				pass
 		else:
@@ -3841,15 +3847,15 @@ def _parseOsVersion():
 			osreleaseparts = str(osrelease).split(".")
 			if len(osreleaseparts) >= 3:
 				try:
-					osVersion["major"] = int(osreleaseparts[0])
-					osVersion["minor"] = int(osreleaseparts[1])
-					osVersion["build"] = int(osreleaseparts[2])
+					g_os_version["major"] = int(osreleaseparts[0])
+					g_os_version["minor"] = int(osreleaseparts[1])
+					g_os_version["build"] = int(osreleaseparts[2])
 				except:
 					pass
 
-		major = osVersion["major"]
-		minor = osVersion["minor"]
-		build = osVersion["build"]
+		major = g_os_version["major"]
+		minor = g_os_version["minor"]
+		build = g_os_version["build"]
   
 		if major == 10:
 			# if build >= 22000 => win 11
@@ -3862,7 +3868,7 @@ def _parseOsVersion():
 		else:
 			offset_category = "xp"
 
-		osVersion["category"] = offset_category
+		g_os_version["category"] = offset_category
 
 
 #---------------------------------------#
@@ -3894,7 +3900,7 @@ class MnEncoder:
 
 	def encodeAlphaNum(self,badchars = []):
 		encodedbytes = {}
-		if not silent:
+		if not g_silent:
 			dbg.log("[+] Using alphanum encoder")
 			dbg.log("[+] Received %d bytes to encode" % len(self.origbytestoencode))
 			dbg.log("    %s" % bin2hexstr(self.origbytestoencode))
@@ -3918,7 +3924,7 @@ class MnEncoder:
 			else:
 				self.bytestoencode += b'\x90'
 		if not len(self.bytestoencode) == len(self.origbytestoencode):
-			if not silent:
+			if not g_silent:
 				dbg.log("[+] Added %d nops to make length of input a multiple of 4" % (len(self.bytestoencode) - len(self.origbytestoencode)))
 
 		# break it down into chunks of 4 bytes
@@ -3930,7 +3936,7 @@ class MnEncoder:
 		blockcnt = len(toencodearray)
 		nrblocks = len(toencodearray)
 		while blockcnt > 0:
-			if not silent:
+			if not g_silent:
 				dbg.log("[+] Processing block %d/%d" % (blockcnt,nrblocks))
 			encodedbytes[encodedline] = [b"\x25\x4a\x4d\x4e\x55","and eax,0x554E4D4A"]
 			encodedline += 1
@@ -3946,7 +3952,7 @@ class MnEncoder:
 			revval=hexStrToInt(reversebytes)			   
 			twoval=4294967296-revval
 			twobytes=toHex(twoval)
-			if not silent:	
+			if not g_silent:	
 				dbg.log("Opcode to produce : %s%s %s%s %s%s %s%s" % (origbytes[0],origbytes[1],origbytes[2],origbytes[3],origbytes[4],origbytes[5],origbytes[6],origbytes[7]))
 				dbg.log("         reversed : %s%s %s%s %s%s %s%s" % (reversebytes[0],reversebytes[1],reversebytes[2],reversebytes[3],reversebytes[4],reversebytes[5],reversebytes[6],reversebytes[7]))
 				dbg.log("                    -----------")				   
@@ -3988,7 +3994,7 @@ class MnEncoder:
 				bcnt=bcnt-1
 
 			# we should now have 12 bytes in opcodes
-			if not silent:
+			if not g_silent:
 				dbg.log("                    -----------")
 				dbg.log("                    %s %s %s %s" % (opcodes[9],opcodes[6],opcodes[3],opcodes[0]))
 				dbg.log("                    %s %s %s %s" % (opcodes[10],opcodes[7],opcodes[4],opcodes[1]))
@@ -4258,7 +4264,7 @@ class MnConfig:
 	Class to perform config file operations
 	"""
 	def __init__(self):
-		global configwarningshown
+		global g_config_warning_shown
 
 		mndbg.dbgp(get_current_function_name())
 
@@ -4302,20 +4308,20 @@ class MnConfig:
 
 			# Only warn if we know the expected path and we're not using it
 			if expected_path and os.path.abspath(self.currpath).lower() != os.path.abspath(expected_path).lower():
-				if not configwarningshown:
+				if not g_config_warning_shown:
 					dbg.log(" ** Warning: mona.ini is expected in %s but is currently in %s" % (expected_path, self.currpath), highlight=True)
-					configwarningshown = True
+					g_config_warning_shown = True
 
 
 	def getFileName(self):
 		return self.fullpath
 
 	def list(self):
-		global configFileCache
+		global _config_file_cache
 
 		mndbg.dbgp(get_current_function_name())
 
-		configFileCache = {}
+		_config_file_cache = {}
 		headers = ["Parameter", "Value"]
 		types   = ["string", "string"]
 
@@ -4335,11 +4341,11 @@ class MnConfig:
 						thisparam, thisvalue = thisLine.split("=", 1)
 						thisparam = thisparam.strip().lower()
 						thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
-						configFileCache[thisparam] = thisvalue
+						_config_file_cache[thisparam] = thisvalue
 
-						mndbg.dbgp("Added parameter %s with value %s to configFileCache %s" % (thisparam, thisvalue, configFileCache))
+						mndbg.dbgp("Added parameter %s with value %s to _config_file_cache %s" % (thisparam, thisvalue, _config_file_cache))
 
-				print_dict_table(configFileCache, headers, types, padding="      ", itemsequence=[])
+				print_dict_table(_config_file_cache, headers, types, padding="      ", itemsequence=[])
 
 			except Exception as e:
 				mndbg.dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
@@ -4348,7 +4354,7 @@ class MnConfig:
 		"""
 		Retrieves the contents of a given parameter from the config file
 		or from memory if the config file has been read already
-		(configFileCache)
+		(_config_file_cache)
 
 		Arguments:
 		parameter - the name of the parameter
@@ -4356,17 +4362,17 @@ class MnConfig:
 		Return:
 		A string, containing the contents of that parameter
 		"""
-		global configFileCache
+		global _config_file_cache
 
 		mndbg.dbgp(get_current_function_name())
 
 		toreturn = ""
 		paramkey = parameter.strip().lower()
 
-		if paramkey in configFileCache:
-			return configFileCache[paramkey]
+		if paramkey in _config_file_cache:
+			return _config_file_cache[paramkey]
 
-		if len(configFileCache) == 0:
+		if len(_config_file_cache) == 0:
 			if os.path.exists(self.fullpath):
 				try:
 					configfileobj = open(self.fullpath, "rb")
@@ -4385,8 +4391,8 @@ class MnConfig:
 							thisparam = thisparam.strip().lower()
 							thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
 
-							if thisparam not in configFileCache:
-								configFileCache[thisparam] = thisvalue
+							if thisparam not in _config_file_cache:
+								_config_file_cache[thisparam] = thisvalue
 
 							if thisparam == paramkey:
 								toreturn = thisvalue
@@ -4410,15 +4416,15 @@ class MnConfig:
 		Return:
 		nothing
 		"""
-		global configFileCache
+		global _config_file_cache
 
 		mndbg.dbgp(get_current_function_name())
 
 		paramkey = parameter.strip().lower()
 		paramvalue = str(paramvalue).strip()
 
-		if len(configFileCache) > 0:
-			configFileCache[paramkey] = paramvalue
+		if len(_config_file_cache) > 0:
+			_config_file_cache[paramkey] = paramvalue
 
 		if os.path.exists(self.fullpath):
 			mndbg.dbgp("Editing existing config file %s" % self.fullpath)
@@ -4484,13 +4490,13 @@ class MnConfig:
 		Return:
 		nothing
 		"""
-		global configFileCache
+		global _config_file_cache
 
 		mndbg.dbgp(get_current_function_name())
 
 		paramdel = parameter.lower().strip()
-		if paramdel in configFileCache:
-			del configFileCache[paramdel]
+		if paramdel in _config_file_cache:
+			del _config_file_cache[paramdel]
 
 		if os.path.exists(self.fullpath):
 			mndbg.dbgp("Editing existing config file %s" % self.fullpath)
@@ -4595,17 +4601,17 @@ class MnLog:
 		full path to the logfile name.
 		"""	
 		mndbg.dbgp(get_current_function_name())
-		global noheader
+		global g_no_header
 		if clear:
 			mndbg.dbgp("Filename: %s" % self.filename)
-			if not silent:
+			if not g_silent:
 				dbg.log("")
 				if self.numbered:
 					dbg.log("[+] Preparing output file '" + self.filename +"' (timestamped)")
 				else:
 					dbg.log("[+] Preparing output file '" + self.filename +"'")
 		if not showheader:
-			noheader = True
+			g_no_header = True
 		debuggedname = dbg.getDebuggedName()
 		thispid = dbg.getDebuggedPid()
 		if thispid == 0:
@@ -4633,7 +4639,7 @@ class MnLog:
 					logfile = self._get_timestamped_filename(logfile)
 				except Exception:
 					pass
-			if not silent:
+			if not g_silent:
 				dbg.log("    - (Re)setting output file %s" % logfile)
 			if not self.numbered:
 				# remove logfile.old2 if it exists
@@ -4658,7 +4664,7 @@ class MnLog:
 					pass
 
 			#write header
-			if not noheader:
+			if not g_no_header:
 				try:
 					with open(logfile,"w") as fh:
 						separatorlength = 100
@@ -4667,7 +4673,7 @@ class MnLog:
 						thisversion = thisversion.replace("'","")
 						dbgpretty = "Immunity Debugger"
 						if mndbg.isWinDBG():
-							dbgpretty = windbgprettyname
+							dbgpretty = g_windbg_pretty_name
 						fh.write("  Output generated by mona.py v%s.%s (%s %dbit)\n" % (thisversion, thisrevision, dbgpretty, arch))
 						fh.write("  https://www.corelan.be | https://github.com/corelan/mona3\n")
 						fh.write("  https://www.corelan-training.com | https://www.corelan-certified.com\n")
@@ -5131,16 +5137,16 @@ class MnModule: # TODO: Add getters
 		return False
 
 	def _check_excluded(self, modulename):
-		global _excluded_modules_list
-		if _excluded_modules_list is None:
+		global g_excluded_modules_list
+		if g_excluded_modules_list is None:
 			thisconfig = MnConfig()
 			excludedlist = thisconfig.get("excluded_modules")
 			if excludedlist:
-				_excluded_modules_list = [e.lower().strip() for e in re.split(r"[;,]", excludedlist) if e.strip()]
+				g_excluded_modules_list = [e.lower().strip() for e in re.split(r"[;,]", excludedlist) if e.strip()]
 			else:
-				_excluded_modules_list = []
+				g_excluded_modules_list = []
 		mod_lower = modulename.lower().strip()
-		return any(mod_lower.startswith(e) for e in _excluded_modules_list)
+		return any(mod_lower.startswith(e) for e in g_excluded_modules_list)
 
 	_ATTR_MAP = {
 		"base":               "moduleBase",
@@ -5173,10 +5179,10 @@ class MnModule: # TODO: Add getters
 
 	def getCFGTable(self):
 
-		global CFGTableCache
+		global _cfg_table_cache
 		module_key = self.moduleKey or self.internalname
-		if module_key in CFGTableCache:
-			self.moduleCFGTable = CFGTableCache[module_key]
+		if module_key in _cfg_table_cache:
+			self.moduleCFGTable = _cfg_table_cache[module_key]
 			mndbg.dbgp("Returning CFG Table for %s from cache" % module_key)
 			return self.moduleCFGTable
 
@@ -5343,16 +5349,16 @@ class MnModule: # TODO: Add getters
 
 							cfg_table.add_entry(rva, flag_byte, flags)
 
-					CFGTableCache[module_key] = cfg_table
+					_cfg_table_cache[module_key] = cfg_table
 					mndbg.dbgp("Added CFGTable to cache for module %s" % module_key)
 					return cfg_table
 				
-				CFGTableCache[module_key] = cfg_table
+				_cfg_table_cache[module_key] = cfg_table
 			return cfg_table
 
 		except Exception as e:
 			mndbg.dbgp("Error - unable to get CFG Table for module %s: %s" % (module_key, str(e)), errormode=False)
-			CFGTableCache[module_key] = cfg_table
+			_cfg_table_cache[module_key] = cfg_table
 			return cfg_table
 
 	def checkCFGCompatible(self, ptr, granularity=16, return_entry=False, return_reason=False):
@@ -8166,7 +8172,7 @@ class MnNT10Heap(MnNT8Heap):
 
 	def _offset(self, name):
 		if name in self._BUILD_OFFSETS:
-			build = osVersion["build"] if osVersion else 0
+			build = g_os_version["build"] if g_os_version else 0
 			lo, hi = self._BUILD_OFFSETS[name][17763]
 			vals = hi if build >= 17763 else lo
 			return vals[MnPEB.getArch()]
@@ -10058,11 +10064,11 @@ class MnPointer:
 		
 
 	def getHeapInfo(self):
-		global silent
-		oldsilent = silent
-		silent = True
+		global g_silent
+		oldsilent = g_silent
+		g_silent = True
 		foundinheap, foundinsegment, foundinva, foundinchunk = self.showHeapBlockInfo()
-		silent = oldsilent
+		g_silent = oldsilent
 		return [foundinheap, foundinsegment, foundinva, foundinchunk]
 
 
@@ -10257,7 +10263,7 @@ class MnPointer:
 				for chunkptr, thischunk in seg.getChunks().items():
 					thissize = thischunk.size * HEAPGRANULARITY
 					if self.address >= chunkptr and self.address < (chunkptr + thissize):
-						if not silent:
+						if not g_silent:
 							dbg.log("")
 							dbg.log("     Address 0x%08x found in " % self.address)
 							thischunk.showChunk(showdata=True)
@@ -10279,7 +10285,7 @@ class MnPointer:
 				mndbg.dbgp("Checking VADBlocks, looking for %s" % (PTR_PRINT % self.address))
 				for vaptr, vainfo in mheap.getVABlocks().items():
 					if self.address >= vaptr and self.address <= vaptr + vainfo["commit_size"]:
-						if not silent:
+						if not g_silent:
 							dbg.log("")
 							dbg.log("     Address 0x%08x found in VirtualAllocdBlocks of heap 0x%08x" % (self.address, heapbase))
 							dbg.log("     VA block at 0x%08x, commit: 0x%x, reserve: 0x%x" % (vaptr, vainfo["commit_size"], vainfo["reserve_size"]))
@@ -10310,12 +10316,12 @@ class MnPointer:
 								flag = getHeapFlag(lalchunk.flag)
 								if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
 									foundinlal = True
-									if not silent:
+									if not g_silent:
 										dbg.log("     Address is part of chunk on LookAsideList[%d], heap 0x%08x" % (lal_table_entry,mHeap.heapbase))
 									break
 							if foundinlal:
 								expectedsize = lal_table_entry * 8
-								if not silent:
+								if not g_silent:
 									dbg.log("     LAL [%d] @0x%08x, Expected Chunksize: 0x%x (%d), %d chunks, Flink: 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,nr_of_chunks,lalhead))
 								for chunkindex in fea_lal[lal_table_entry]:
 									lalchunk = fea_lal[lal_table_entry][chunkindex]
@@ -10325,9 +10331,9 @@ class MnPointer:
 									extra = "       "
 									if (self.address >= lalchunk.chunkptr) and (self.address < lalchunk.chunkptr+chunksize):
 										extra = "   --> "
-									if not silent:
+									if not g_silent:
 										dbg.log("     %sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, UserSpace: 0x%x (%s)" % (extra,lalchunk.chunkptr,lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize + lalchunk.remaining,flag))
-								if not silent:
+								if not g_silent:
 									self.showObjectInfo()
 									dumpsize = chunksize
 									dodump = True
@@ -10349,7 +10355,7 @@ class MnPointer:
 								chunksize = freelist_chunk.size * 8
 								if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):
 									foundinfreelist = True
-									if not silent:
+									if not g_silent:
 										dbg.log(".    Address is part of chunk on FreeLists[%d] at 0x%08x, heap 0x%08x:" % (flindex,freelist_addy,mHeap.heapbase))
 									break
 							if foundinfreelist:
@@ -10361,21 +10367,21 @@ class MnPointer:
 									if (self.address >= freelist_chunk.chunkptr) and (self.address < freelist_chunk.chunkptr+chunksize):						
 										extra = " --> "
 										foundchunk = freelist_chunk
-									if not silent:
+									if not g_silent:
 										dbg.log(".    %sChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, Blink: 0x%08x, ChunkSize: 0x%x (%d), Usersize: 0x%x (%d)" % (extra,freelist_chunk.chunkptr,freelist_chunk.userptr,freelist_chunk.flink,freelist_chunk.blink,chunksize,chunksize,freelist_chunk.usersize,freelist_chunk.usersize))
 									if flindex != 0 and chunksize != (8*flindex):
 										dbg.log("     ** Header may be corrupted! **", highlight = True)
 									flindicator = 1
 								if flindex > 1 and int(thisfreelistinusebitmap[flindex]) != flindicator:
-									if not silent:
+									if not g_silent:
 										dbg.log("     ** FreeListsInUseBitmap mismatch for index %d! **" % flindex, highlight = True)
-								if not silent:
+								if not g_silent:
 									self.showObjectInfo()
 									dumpsize = chunksize
 									dodump = True
 								break		
 
-		if dodump and dumpsize > 0 and not silent:
+		if dodump and dumpsize > 0 and not g_silent:
 			self.dumpObjectAtLocation(dumpsize, encoding_key=found_encoding_key, chunk_base=found_chunk_base)
 
 		return foundinheap, foundinsegment, foundinva, foundinchunk
@@ -10425,8 +10431,8 @@ class MnPointer:
 
 	def getPtrFunction(self):
 		funcinfo = ""
-		global silent
-		silent = True
+		global g_silent
+		g_silent = True
 		if mndbg.isWinDBG():
 			lncmd = "ln %s" % (PTR_PRINT % self.address)
 			lnoutput = dbg.nativeCommand(lncmd)
@@ -10451,7 +10457,7 @@ class MnPointer:
 					else:
 						offsettxt = "__base__"
 					funcinfo = memloc+offsettxt
-		silent = False
+		g_silent = False
 		return funcinfo
 
 	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg="", encoding_key=0, chunk_base=0):
@@ -10459,7 +10465,7 @@ class MnPointer:
 		origdumpdata = {} 
 		if mndbg.isWinDBG():
 			addy = self.address
-			if not silent:
+			if not g_silent:
 				dbg.log("")
 				dbg.log("-" * 70)
 				dbg.log("[+] Dumping allocation at %s %s" % (PTR_PRINT % addy, custommsg))
@@ -10524,17 +10530,17 @@ class MnPointer:
 					else:
 						parent = ""
 					
-					global _heap_cmd_prefix
-					if _heap_cmd_prefix is None:
+					global g_heap_cmd_prefix
+					if g_heap_cmd_prefix is None:
 						try:
 							_probe = dbg.nativeCommand("!ext.heap")
 							if _probe and "Unable to find" not in _probe and "No export" not in _probe:
-								_heap_cmd_prefix = "!ext."
+								g_heap_cmd_prefix = "!ext."
 							else:
-								_heap_cmd_prefix = "!"
+								g_heap_cmd_prefix = "!"
 						except:
-							_heap_cmd_prefix = "!"
-					cmd2torun = "%sheap -p -a %s" % (_heap_cmd_prefix, PTR_PRINT % addy)
+							g_heap_cmd_prefix = "!"
+					cmd2torun = "%sheap -p -a %s" % (g_heap_cmd_prefix, PTR_PRINT % addy)
 					output2 = dbg.nativeCommand(cmd2torun)
 					heapdata = output2.split("\n")
 					
@@ -10575,7 +10581,7 @@ class MnPointer:
 				logfile.write("=" * 60,thislog)
 
 			line = ">> Object at %s%s:" % ((PTR_PRINT % startaddy),sizem)
-			if not silent:
+			if not g_silent:
 				dbg.log("")
 				dbg.log(line)
 			
@@ -10583,7 +10589,7 @@ class MnPointer:
 
 			if parent != "":
 				line = "   %s" % parent
-				if not silent:
+				if not g_silent:
 					dbg.log(line)
 				logfile.write(line,thislog)
 
@@ -10591,13 +10597,13 @@ class MnPointer:
 			if arch == 64:
 				line = "Offset  Address              Contents            Info"
 			logfile.write(line,thislog)
-			if not silent:
+			if not g_silent:
 				dbg.log(line)
 			line = "------  -------      --------    -----"
 			if arch == 64:
 				line = "------  -------              --------            -----"
 			logfile.write(line,thislog)
-			if not silent:
+			if not g_silent:
 				dbg.log(line)
 
 			offset = 0
@@ -10611,7 +10617,7 @@ class MnPointer:
 					contentinfo = toAsciiOnly(info[1])
 					offsetstr = toSize("%02x" % offset,4)
 					line = "+%s   %s | %s  %s" % (offsetstr,(PTR_PRINT % loc),content,contentinfo)
-					if not silent:
+					if not g_silent:
 						dbg.log(line)
 					logfile.write(line,thislog)
 					offset += archValue(4,8)
@@ -10958,8 +10964,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 	
 	if not "accesslevel" in criteria:
 		criteria["accesslevel"] = "*"
-	global ptr_counter
-	global ptr_to_get
+	global g_ptr_counter
+	global g_ptr_to_get
 	
 	found_opcodes = {}
 	fallback_pages = 0
@@ -10969,7 +10975,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 	fallback_chunk_reads_ok = 0
 	fallback_hits_total = 0
 	
-	if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
+	if (g_ptr_to_get < 0) or (g_ptr_to_get > 0 and g_ptr_counter < g_ptr_to_get):
 
 		if not sequences:
 			return {}
@@ -11021,7 +11027,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 		had_unreadable_pages = False
 		for a in dbg.MemoryPages.keys():
 
-			if (ptr_to_get < 0) or (ptr_to_get > 0 and ptr_counter < ptr_to_get):
+			if (g_ptr_to_get < 0) or (g_ptr_to_get > 0 and g_ptr_counter < g_ptr_to_get):
 		
 				# get end address of the page
 				page_start = a
@@ -11044,13 +11050,13 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 				start_fb = toHex(page_start)[0:2]
 				end_fb = toHex(page_end)[0:2]
 				if ( ("nonull" in criteria and criteria["nonull"]) and start_fb == "00" and end_fb == "00"  ):
-					if not silent:
+					if not g_silent:
 						dbg.log("      !Skipped search of range %08x-%08x (Has nulls)" % (page_start,page_end))
 					continue
 				
 				if (( ("startswithnull" in criteria and criteria["startswithnull"]))
 						and (start_fb != "00" or end_fb != "00")):
-					if not silent:
+					if not g_silent:
 						dbg.log("      !Skipped search of range %08x-%08x (Doesn't start with null)" % (page_start,page_end))
 					continue
 
@@ -11096,7 +11102,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 
 					cursor = scan_start
 					while cursor <= scan_end_inclusive:
-						if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
+						if (g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get):
 							return found_opcodes
 
 						read_len = min(chunk_size, (scan_end_inclusive - cursor) + 1)
@@ -11123,7 +11129,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 							chunk = chunk[:read_len]
 
 						for pidx, (human_format, buf, buf_len) in enumerate(compiled_patterns):
-							if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
+							if (g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get):
 								return found_opcodes
 
 							carry = carries[pidx] if buf_len > 1 else b""
@@ -11158,8 +11164,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 								page_fallback_hits += 1
 								fallback_hits_total += 1
 
-								ptr_counter += 1
-								if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
+								g_ptr_counter += 1
+								if g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get:
 									return found_opcodes
 
 							# update carry (last buf_len-1 bytes)
@@ -11191,7 +11197,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 
 				# fast path: full region read succeeded
 				for human_format, buf, buf_len in compiled_patterns:
-					if (ptr_to_get > 0 and ptr_counter >= ptr_to_get):
+					if (g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get):
 						return found_opcodes
 
 					recur_find   = []		
@@ -11224,8 +11230,8 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 							
 							page_find.append(i)
 							
-							ptr_counter += 1
-							if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
+							g_ptr_counter += 1
+							if g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get:
 								# stop search
 								if human_format in found_opcodes:
 									found_opcodes[human_format] += page_find
@@ -11248,7 +11254,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 				mndbg.dbgp("searchInRange fallback usefulness: recovered bytes but found no matches")
 			else:
 				mndbg.dbgp("searchInRange fallback usefulness: recovered bytes and found matches")
-		if had_unreadable_pages and not silent:
+		if had_unreadable_pages and not g_silent:
 			mndbg.dbgp("[!] Some memory ranges could not be read during this search; results may be incomplete.")
 	return found_opcodes
 
@@ -11757,7 +11763,7 @@ def getPointerAccess(address, forcedread=False):
 	Return:
 	Access level (human readable format)
 	"""
-	global MemoryPageACL
+	global _memory_page_acl_cache
 
 	paccess = ""
 	try:
@@ -11768,13 +11774,13 @@ def getPointerAccess(address, forcedread=False):
 				page.protect = None
 			except:
 				pass
-			if page in MemoryPageACL:
-				del MemoryPageACL[page]
-		if page in MemoryPageACL and not forcedread:
-			paccess = MemoryPageACL[page]
+			if page in _memory_page_acl_cache:
+				del _memory_page_acl_cache[page]
+		if page in _memory_page_acl_cache and not forcedread:
+			paccess = _memory_page_acl_cache[page]
 		else:
 			paccess = page.getAccess( human = True )
-			MemoryPageACL[page] = paccess
+			_memory_page_acl_cache[page] = paccess
 	except:
 		paccess = ""
 	return paccess
@@ -11832,9 +11838,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				items = sorted(items, key=_POST_SORT_FIELDS[key], reverse=reverse)
 
 
-	if _sym_cache_dirs is None:
-		_ensureSymbolCache(auto_fix=False)
-	show_sym = _sym_cache_dirs is not None
+	if _symbol_dirs_cache is None:
+		mndbg._ensureSymbolCache(auto_fix=False)
+	show_sym = _symbol_dirs_cache is not None
 
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
@@ -11921,8 +11927,8 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 	ptrcnt = 0
 	cnt = 0
 
-	global silent
-	global ptr_to_get
+	global g_silent
+	global g_ptr_to_get
 
 	results_dict = {}
 	results_dict_details = OrderedDict()
@@ -11935,7 +11941,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 		sorted_types = sorted(all_opcodes.keys(), key=lambda k: len(str(k)))
 
 		for hf in sorted_types:
-			if not silent:
+			if not g_silent:
 				try:
 					if forcelower:
 						results_dict[hf.lower()] = [len(all_opcodes[hf])]
@@ -11958,7 +11964,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 
 		if not ptronly:
 
-			if not silent:
+			if not g_silent:
 				dbg.log("")
 				dbg.log("[+] Results: ")
 
@@ -12009,8 +12015,8 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 
 					logfile.write(ptrinfo,thislog)
 
-					if (ptr_to_get > -1) or (cnt < 20):
-						if not silent:
+					if (g_ptr_to_get > -1) or (cnt < 20):
+						if not g_silent:
 							mndbg.dbgp("  %s" % ptrinfo)
 
 						if forcelower:
@@ -12025,14 +12031,14 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 
 					ptrcnt += 1
 
-					if (ptr_to_get == -1 or ptr_to_get > 20) and cnt == 20 and not silent and not messageshown:
+					if (g_ptr_to_get == -1 or g_ptr_to_get > 20) and cnt == 20 and not g_silent and not messageshown:
 						dbg.log("    Please wait while I'm processing all remaining results and writing everything to file...")
 						dbg.log("")
 						messageshown = True
 
-			if not silent:
-				if ptr_to_get > -1:
-					dbg.log("[+] Showing search result %d..." % ptr_to_get)
+			if not g_silent:
+				if g_ptr_to_get > -1:
+					dbg.log("[+] Showing search result %d..." % g_ptr_to_get)
 				elif ptrcnt > 20:
 					dbg.log("[+] Done. Only the first 20 pointers are shown here. For more pointers, open %s..." % thislog)
 				dbg.log("")
@@ -12100,7 +12106,7 @@ def findSEH(modulecriteria={},criteria={}):
 	all_opcodes = {}
 		
 	modulestosearch = getModulesToQuery(modulecriteria)
-	if not silent:
+	if not g_silent:
 		dbg.log("[+] Criteria: %s" % criteriaToText(modulecriteria))
 		dbg.log("[+] Querying %d modules" % len(modulestosearch))
 	
@@ -12109,7 +12115,7 @@ def findSEH(modulecriteria={},criteria={}):
 	# do not each trigger a full page re-enumeration (searchInRange refresh_pages=False).
 	dbg.getMemoryPages()
 	for thismodule in modulestosearch:
-		if not silent:
+		if not g_silent:
 			dbg.log("    - Querying module %s" % thismodule)
 		dbg.updateLog()
 		#search
@@ -12120,21 +12126,21 @@ def findSEH(modulecriteria={},criteria={}):
 	if "all" in criteria:
 		if "accesslevel" in criteria:
 			if criteria["accesslevel"].find("R") == -1:
-				if not silent:
+				if not g_silent:
 					dbg.log("[+] Setting pointer access level criteria to 'R', to increase search results")
 				criteria["accesslevel"] = "R"
-				if not silent:
+				if not g_silent:
 					dbg.log("    New pointer access level : %s" % criteria["accesslevel"])
 		if criteria["all"]:
 			rangestosearch = getRangesOutsideModules()
-			if not silent:
+			if not g_silent:
 				dbg.log("[+] Querying memory outside modules")
 			for thisrange in rangestosearch:
-				if not silent:
+				if not g_silent:
 					dbg.log("    - Querying 0x%08x - 0x%08x" % (thisrange[0],thisrange[1]))
 				found_opcodes = searchInRange(search, thisrange[0], thisrange[1], criteria, refresh_pages=False)
 				all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
-			if not silent:
+			if not g_silent:
 				dbg.log("    - Search complete, processing results")
 			dbg.updateLog()
 	return all_opcodes
@@ -12159,20 +12165,20 @@ def findJMP(modulecriteria={},criteria={},register="esp"):
 	all_opcodes = {}
 		
 	modulestosearch = getModulesToQuery(modulecriteria)
-	if not silent:
+	if not g_silent:
 		dbg.log("[+] Criteria: %s" % criteriaToText(modulecriteria))
 		dbg.log("[+] Querying %d modules" % len(modulestosearch))
 	
 	starttime = datetime.datetime.now()
 	for thismodule in modulestosearch:
-		if not silent:
+		if not g_silent:
 			dbg.log("    - Querying module %s" % thismodule)
 		dbg.updateLog()
 		#search
 		found_opcodes = searchInModule(search,thismodule,criteria)
 		#merge results
 		all_opcodes = mergeOpcodes(all_opcodes,found_opcodes)
-	if not silent:
+	if not g_silent:
 		dbg.log("    - Search complete, processing results")
 	dbg.updateLog()
 	return all_opcodes	
@@ -12198,7 +12204,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 
 	found_opcodes = {}
 	all_opcodes = {}
-	ptr_counter = 0
+	g_ptr_counter = 0
 	ropfuncs = {}
 	funccallresults = []
 	ropfuncoffsets = {}
@@ -12216,7 +12222,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 		offsets["kernel32"] = searchfuncs
 		# on newer OSes, functions are stored in kernelbase.dll
 		offsets["kernelbase.dll"] = searchfuncs
-	if not silent:
+	if not g_silent:
 		dbg.log("[+] Looking for pointers to interesting functions...")
 		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
 	curmod = ""
@@ -12254,7 +12260,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 		#is this module going to get rebase ?
 		themodule = MnModule(key)
 		isrebased = themodule.isRebase
-		if not silent:
+		if not g_silent:
 			dbg.log("    Querying %s" % (key))
 		dbg.log("    - Enumerating IAT (%s)" % key)   
 		allfuncs = themodule.getIAT()
@@ -12269,7 +12275,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 			try:
 				ptr=struct.unpack('<L',dbg.readMemory(fn,4))[0]
 			except Exception as e:
-				if not silent:
+				if not g_silent:
 					dbg.log("Error reading memory at %s in findROPFunc: %s" % (PTR_PRINT % fn, str(e)))
 				pass
 			if ptr != 0:
@@ -12299,15 +12305,15 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 						if isrebased:
 							extra = " [Warning : module is likely to get rebased !]"
 							extrafunc = "-rebased"
-						if not silent:
+						if not g_silent:
 							dbg.log("    0x%s : ptr to %s (0x%s) (%s) %s" % (toHex(fn),thisfuncname,toHex(ptr),key,extra))
 						logtxt = thisfuncfullname.lower().strip()+extrafunc+" | 0x" + toHex(ptr)
 						if logtxt in ropfuncs:
 								ropfuncs[logtxt] += [fn]
 						else:
 								ropfuncs[logtxt] = [fn]
-						ptr_counter += 1
-						if ptr_to_get > 0 and ptr_counter >= ptr_to_get:
+						g_ptr_counter += 1
+						if g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get:
 							ropfuncs,ropfuncoffsets
 
 	return ropfuncs,ropfuncoffsets
@@ -12322,7 +12328,7 @@ def assemble(instructions,encoder=""):
 	Return:
 	Dictionary (pointers)
 	"""
-	if not silent:
+	if not g_silent:
 		dbg.log("Opcode results: ")
 		dbg.log("--------------- ")
 	allopcodes=""
@@ -12342,19 +12348,19 @@ def assemble(instructions,encoder=""):
 				else:
 					strAssembled =  strAssembled+hex(_ord(assemOpc)).replace('0x', '\\x')
 			if len(strAssembled) < 30:
-				if not silent:
+				if not g_silent:
 					dbg.log(" %s = %s" % (instruct,strAssembled))
 				allopcodes=allopcodes+strAssembled
 			else:
-				if not silent:
+				if not g_silent:
 					dbg.log(" %s => Unable to assemble this instruction !" % instruct,highlight=1)
 		except Exception as e:
-			if not silent:
+			if not g_silent:
 				dbg.log("   Could not assemble %s " % instruct)
 				dbg.log("   %s" % str(e))
 				mndbg.dbgp(traceback.format_exc(), errormode=False)
 			pass
-	if not silent:
+	if not g_silent:
 		dbg.log(" Full opcode : %s " % allopcodes)
 	return allopcodes
 	
@@ -12474,7 +12480,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	
 	found_opcodes = {}
 	all_opcodes = {}
-	ptr_counter = 0
+	g_ptr_counter = 0
 	valid_techniques = ["virtualalloc", "virtualprotect"]
 
 	modulestosearch = getModulesToQuery(modulecriteria)
@@ -12579,12 +12585,12 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	print_dict_table(ending_cnt, headers, types, padding = "      ", itemsequence = [])
 	dbg.log("")
 
-	global silent
+	global g_silent
 	if not usefiles:		
 		dbg.log("[+] Expanding and filtering gadgets for %d endings" % tp)
 	else:
 		dbg.log("[+] Categorizing %d gadget endings from ROP file(s)" % tp)
-		silent = True
+		g_silent = True
 	dbg.updateLog()
 	ropgadgets = {}
 	interestinggadgets = {}
@@ -13137,7 +13143,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 	"""
 	found_opcodes = {}
 	all_opcodes = {}
-	ptr_counter = 0
+	g_ptr_counter = 0
 	
 	modulestosearch = getModulesToQuery(modulecriteria)
 	
@@ -13207,7 +13213,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 			else:
 				dbg.log("       Ending : %s, Nr found : %d" % (endingtype,len(all_opcodes[endingtype])))
 				tp = tp + len(all_opcodes[endingtype])
-	global silent
+	global g_silent
 	dbg.log("    - Filtering and mutating %d gadgets" % tp)
 		
 	dbg.updateLog()
@@ -13522,7 +13528,7 @@ def createPattern(size,args={}):
 	if "c3" in args and args["c3"] != "":
 		char3 = args["c3"]
 			
-	if not silent:
+	if not g_silent:
 		if not "extended" in args and size > 20280 and (len(char1) <= 26 or len(char2) <= 26 or len(char3) <= 10):
 			msg = "** You have asked to create a pattern > 20280 bytes, but with the current settings\n"
 			msg += "the pattern generator can't create a pattern of " + str(size) + " bytes. As a result,\n"
@@ -13578,25 +13584,25 @@ def findOffsetInPattern(searchpat,size=20280,args = {}):
 		size = 500000
 		patsize = size
 	
-	global silent
-	oldsilent=silent
+	global g_silent
+	oldsilent=g_silent
 	
 	for mode in modes:
-		silent=oldsilent		
+		g_silent=oldsilent		
 		if mode == "normal":
-			silent=True
+			g_silent=True
 			mspattern=createPattern(size,args)
-			silent=oldsilent
+			g_silent=oldsilent
 			extratext = " "
 		elif mode == "upper":
-			silent=True
+			g_silent=True
 			mspattern=createPattern(size,args).upper()
-			silent=oldsilent
+			g_silent=oldsilent
 			extratext = " (uppercase) "
 		elif mode == "lower":
-			silent=True
+			g_silent=True
 			mspattern=createPattern(size,args).lower()
-			silent=oldsilent
+			g_silent=oldsilent
 			extratext = " (lowercase) "
 		if len(searchpat)==3:
 			#register ?
@@ -13606,44 +13612,44 @@ def findOffsetInPattern(searchpat,size=20280,args = {}):
 				searchpat = "0x" + toHex(regs[searchpat])
 		if len(searchpat)==4:
 			ascipat=searchpat
-			if not silent:
+			if not g_silent:
 				dbg.log("Looking for %s in pattern of %d bytes" % (ascipat,patsize))
 			if ascipat in mspattern:
 				patpos = mspattern.find(ascipat)
-				if not silent:
+				if not g_silent:
 					dbg.log(" - Pattern %s found in cyclic pattern%sat position %d" % (ascipat,extratext,patpos),highlight=1)
 			else:
 				#reversed ?
 				ascipat_r = ascipat[3]+ascipat[2]+ascipat[1]+ascipat[0]
 				if ascipat_r in mspattern:
 					patpos = mspattern.find(ascipat_r)
-					if not silent:
+					if not g_silent:
 						dbg.log(" - Pattern %s (%s reversed) found in cyclic pattern%sat position %d" % (ascipat_r,ascipat,extratext,patpos),highlight=1)			
 				else:
-					if not silent:
+					if not g_silent:
 						dbg.log(" - Pattern %s not found in cyclic pattern%s" % (ascipat_r,extratext))
 		if len(searchpat)==8:
 				searchpat="0x"+searchpat
 		if len(searchpat)==10:
 				hexpat=searchpat
 				ascipat3 = toAscii(hexpat[8]+hexpat[9])+toAscii(hexpat[6]+hexpat[7])+toAscii(hexpat[4]+hexpat[5])+toAscii(hexpat[2]+hexpat[3])
-				if not silent:
+				if not g_silent:
 					dbg.log("Looking for %s in pattern of %d bytes" % (ascipat3,patsize))
 				if ascipat3 in mspattern:
 					patpos = mspattern.find(ascipat3)
-					if not silent:
+					if not g_silent:
 						dbg.log(" - Pattern %s (%s) found in cyclic pattern%sat position %d" % (ascipat3,hexpat,extratext,patpos),highlight=1)
 				else:
 					#maybe it's reversed
 					ascipat4=toAscii(hexpat[2]+hexpat[3])+toAscii(hexpat[4]+hexpat[5])+toAscii(hexpat[6]+hexpat[7])+toAscii(hexpat[8]+hexpat[9])
-					if not silent:
+					if not g_silent:
 						dbg.log("Looking for %s in pattern of %d bytes" % (ascipat4,patsize))
 					if ascipat4 in mspattern:
 						patpos = mspattern.find(ascipat4)
-						if not silent:
+						if not g_silent:
 							dbg.log(" - Pattern %s (%s reversed) found in cyclic pattern%sat position %d" % (ascipat4,hexpat,extratext,patpos),highlight=1)
 					else:
-						if not silent:
+						if not g_silent:
 							dbg.log(" - Pattern %s not found in cyclic pattern%s " % (ascipat4,extratext))
 
 
@@ -14504,7 +14510,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	patterntype - type of search to conduct (str or bin)
 	"""
 	
-	global silent	
+	global g_silent	
 	
 	rangestosearch = []
 	tmpsearch = []
@@ -14530,7 +14536,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	if "depth" in criteria:
 		maxdepth = criteria["depth"]
 	
-	if not silent:
+	if not g_silent:
 		dbg.log("[+] Type of search: %s" % patterntype)
 		dbg.log("[+] Searching for matches up to %d instructions deep" % maxdepth)
 		dbg.log("[+] Criteria in use: %s" % criteriaToText(modulecriteria))
@@ -14664,12 +14670,12 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	elif totalfound > 1000:
 		flipovermax = 100
 	if totalfound > 0:
-		if not silent:
+		if not g_silent:
 			dbg.log("")
 			dbg.log("[+] Lauching forward disassembly on %d pointers (%d different instruction type(s)). This may take a while" % (totalfound, len(allpointers)))
 	startcounter = 1
 	for ptrtypes in allpointers:
-		if not silent:
+		if not g_silent:
 			dbg.log("    Seq %d/%d, start instruction '%s', exploring %d locations" % (startcounter, len(allpointers), ptrtypes, len(allpointers[ptrtypes])))
 		startcounter += 1
 		for thisptr in allpointers[ptrtypes]:
@@ -14765,7 +14771,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	rangestosearch = []
 	tmpsearch = []
 	p2prangestosearch = []
-	global silent	
+	global g_silent	
 	if len(modulecriteria) > 0:
 		modulestosearch = getModulesToQuery(modulecriteria)
 		# convert modules to ranges
@@ -14812,7 +14818,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 
 	if ptype == "bin" and ".." in pattern:
 		wildcardsearch = True
-		if not silent:
+		if not g_silent:
 			dbg.log("    - Wildcard \\x.. detected")
 			
 	if "unic" in criteria and ptype == "asc":
@@ -14823,7 +14829,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 			binpat += "\\x" + str(toHexByte(_ord(thischar))) + "\\x00"
 		pattern = binpat
 		originalPattern += " (unicode)"
-		if not silent:
+		if not g_silent:
 			dbg.log("    - Expanded ascii pattern to unicode, switched search mode to bin")
 
 	bytes = ""
@@ -14832,7 +14838,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	split2 = re.compile(':')
 	split3 = re.compile("\*")		
 	
-	if not silent:
+	if not g_silent:
 		dbg.log("    - Treating search pattern as %s" % ptype)
 		
 	if ptype == "ptr":
@@ -14870,9 +14876,9 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 		bytes = pattern
 	elif ptype == "instr":
 		pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" #","#").replace("# ","#")
-		silent = True
+		g_silent = True
 		bytes = hex2bin(assemble(pattern,""))
-		silent = False
+		g_silent = False
 		if bytes == "":
 			dbg.log("Invalid instruction - could not assemble %s" % pattern,highlight=1)
 			return
@@ -14919,10 +14925,10 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 			dbg.updateLog()
 			searchPattern = []
 			searchPattern.append([originalPattern, bytes])
-			oldsilent=silent
-			silent=True
+			oldsilent=g_silent
+			g_silent=True
 			pointers = searchInRange(searchPattern,mBase,mTop,criteria)
-			silent=oldsilent
+			g_silent=oldsilent
 			allpointers = mergeOpcodes(allpointers,pointers)
 	
 	# filter out bad ones if wildcardsearch is enabled
@@ -14969,7 +14975,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 			for ptr in allpointers[ptrtype]:
 				if not ptr in rawptr:
 					rawptr[ptr]=ptrtype
-		if not silent:
+		if not g_silent:
 			dbg.log("[+] Number of pointers to process : %d" % len(rawptr))
 		sortedptr = list(rawptr.items())
 		sortedptr.sort(key = itemgetter(0))
@@ -15001,7 +15007,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 		if level > 0:
 			thislevel = 1
 			while thislevel <= level:
-				if not silent:
+				if not g_silent:
 					pcnt = 0
 					for ptype,ptrs in remainingpointers.items():
 						for ptr in ptrs:					
@@ -15038,10 +15044,10 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 					mTop = ranges[1]
 					mndbg.dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 					dbg.updateLog()
-					oldsilent = silent
-					silent=True
+					oldsilent = g_silent
+					g_silent=True
 					pointers = searchInRange(searchPattern,mBase,mTop,fakeptrcriteria)
-					silent=oldsilent
+					g_silent=oldsilent
 					for ptrtype in pointers:
 						if not ptrtype in remainingpointers:
 							if poffsetlevel == thislevel:
@@ -15415,8 +15421,8 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 					hexstr += hexchar
 				cnt += 1
 			dbg.log("    - searching for " + hexstr)
-			global silent
-			silent = True
+			global g_silent
+			g_silent = True
 			results = findPattern({}, criteria, hexstr, "bin", 0, TOP_USERLAND, False)
 
 			for _type in results:
@@ -15434,7 +15440,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 			dbg.log("Comparing bytes from file with memory :")
 			for location in locations:
 				memcompare(location, srcdata, comparetable, mode, smart=(mode == 'normal'))
-		silent = False
+		g_silent = False
 	return
 
 
@@ -15849,10 +15855,10 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 
 	mndbg.dbgp(get_current_function_name())
 	
-	global ptr_to_get
-	global ptr_counter
-	global silent
-	global noheader
+	global g_ptr_to_get
+	global g_ptr_counter
+	global g_silent
+	global g_no_header
 	
 
 	#vars
@@ -16039,16 +16045,16 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 								replacelist["ebp"] = "pop"
 
 								#set up call to finding jmp esp
-								oldsilent = silent
-								silent=True
-								ptr_counter = 0
-								ptr_to_get = 3
+								oldsilent = g_silent
+								g_silent=True
+								g_ptr_counter = 0
+								g_ptr_to_get = 3
 								jmpreg = findJMP(modulecriteria,criteria,"esp")
-								ptr_counter = 0
-								ptr_to_get = -1
+								g_ptr_counter = 0
+								g_ptr_to_get = -1
 								jmpptr = 0
 								jmptype = ""
-								silent=oldsilent
+								g_silent=oldsilent
 								total = getNrOfDictElements(jmpreg)
 								if total > 0:
 									ptrindex = random.randint(1,total)
@@ -16071,16 +16077,16 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 				if str(thistarget).startswith("jmp"):
 					targetreg = str(thistarget).split(" ")[1]
 					#set up call to finding jmp esp
-					oldsilent = silent
-					silent=True
-					ptr_counter = 0
-					ptr_to_get = 3
+					oldsilent = g_silent
+					g_silent=True
+					g_ptr_counter = 0
+					g_ptr_to_get = 3
 					jmpreg = findJMP(modulecriteria,criteria,targetreg)
-					ptr_counter = 0
-					ptr_to_get = -1
+					g_ptr_counter = 0
+					g_ptr_to_get = -1
 					jmpptr = 0
 					jmptype = ""
-					silent=oldsilent
+					g_silent=oldsilent
 					total = getNrOfDictElements(jmpreg)
 					if total > 0:
 						ptrindex = random.randint(1,total)
@@ -16187,12 +16193,12 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 					type = "ptr"
 					al = criteria["accesslevel"]
 					criteria["accesslevel"] = "R"
-					ptr_counter = 0				
-					ptr_to_get = 2
-					oldsilent = silent
-					silent=True				
+					g_ptr_counter = 0				
+					g_ptr_to_get = 2
+					oldsilent = g_silent
+					g_silent=True				
 					allpointers = findPattern(modulecriteria,criteria,pattern,type,base,top)
-					silent = oldsilent
+					g_silent = oldsilent
 					criteria["accesslevel"] = al
 					if len(allpointers) > 0:
 						theptr = 0
@@ -16779,16 +16785,16 @@ def getPickupGadget(targetreg,targetval,freetext,suggestions,interestinggadgets,
 			type = "instr"
 			al = criteria["accesslevel"]
 			criteria["accesslevel"] = "X"
-			global ptr_to_get
-			global ptr_counter
-			ptr_counter = 0				
-			ptr_to_get = 5
+			global g_ptr_to_get
+			global g_ptr_counter
+			g_ptr_counter = 0				
+			g_ptr_to_get = 5
 			theptr = 0
-			global silent
-			oldsilent = silent
-			silent=True				
+			global g_silent
+			oldsilent = g_silent
+			g_silent=True				
 			allpointers = findPattern(modulecriteria,criteria,pattern,type,base,top)
-			silent = oldsilent
+			g_silent = oldsilent
 			criteria["accesslevel"] = al
 			thismodname = ""
 			if len(allpointers) > 0:
@@ -16832,11 +16838,11 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 
 	mndbg.dbgp(get_current_function_name())
 
-	global silent
-	oldsilent = silent
-	silent = True
-	global ptr_to_get
-	ptr_to_get = -1	
+	global g_silent
+	oldsilent = g_silent
+	g_silent = True
+	global g_ptr_to_get
+	g_ptr_to_get = -1	
 	rfuncsearch = apiname.lower()
     
 	selectedmodules = False
@@ -16857,7 +16863,7 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 			ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria,criteria, [rfuncsearch])
 		else:
 			ropfuncs,ropfuncoffsets = findROPFUNC(modulecriteria)
-		silent = oldsilent
+		g_silent = oldsilent
 		#first look for good one
 		objprogressfile.write("  * Ropfunc - Found %d pointers" % len(ropfuncs), progressfile)
 		for ropfunctypes in ropfuncs:
@@ -16876,14 +16882,14 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 		#haven't found pointer, and you were looking at specific modules only? remove module restriction, but still exclude ASLR/rebase
 		if (ropfuncptr == 0) and selectedmodules:
 			objprogressfile.write("  * Ropfunc - No results yet, expanding search to all non ASLR/rebase modules", progressfile)
-			oldsilent = silent
-			silent = True
+			oldsilent = g_silent
+			g_silent = True
 			limitedmodulecriteria = {}
 			limitedmodulecriteria["aslr"] = False
 			limitedmodulecriteria["rebase"] = False
 			limitedmodulecriteria["os"] = False
 			ropfuncs,ropfuncoffsets = findROPFUNC(limitedmodulecriteria,criteria)
-			silent = oldsilent
+			g_silent = oldsilent
 			for ropfunctypes in ropfuncs:
 				#dbg.log("Ropfunc - %s %s" % (ropfunctypes, rfuncsearch))
 				if ropfunctypes.lower().find(rfuncsearch) > -1 and ropfunctypes.lower().find("rebased") == -1:
@@ -16893,13 +16899,13 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 		#still haven't found ? clear out modulecriteria, include ASLR/rebase modules (but not OS modules)
 		#if (ropfuncptr == 0) and not selectedmodules:
 		#	objprogressfile.write("  * Ropfunc - Still no results, now going to search in all application modules", progressfile)
-		#	oldsilent = silent
-		#	silent = True
+		#	oldsilent = g_silent
+		#	g_silent = True
 		#	limitedmodulecriteria = {}
 		#	# search in anything except known OS modules - bad idea anyway
 		#	limitedmodulecriteria["os"] = False
 		#	ropfuncs2,ropfuncoffsets2 = findROPFUNC(limitedmodulecriteria,criteria)
-		#	silent = oldsilent
+		#	g_silent = oldsilent
 		#	for ropfunctypes in ropfuncs2:
 		#		if ropfunctypes.lower().find(rfuncsearch) > -1 and ropfunctypes.lower().find("rebased") == -1:
 		#			ropfuncptr = ropfuncs2[ropfunctypes][0]
@@ -18217,8 +18223,8 @@ def checkSEHOverwrite(address, nseh, seh):
 	"""
 	pattypes = ["normal","upper","lower","unicode"]
 	overwritten = []
-	global silent
-	silent = True
+	global g_silent
+	g_silent = True
 
 	fullpattern = createPattern(50000,{})
 	for pattype in pattypes:	
@@ -18245,7 +18251,7 @@ def checkSEHOverwrite(address, nseh, seh):
 				if thissize > 0:
 					overwritten = [pattype,offset]
 					break
-	silent = False
+	g_silent = False
 	return overwritten
 
 
@@ -18270,9 +18276,9 @@ def goFindMSP(distance=0, args=None):
 
 	tofile = ""
 
-	global silent
-	oldsilent = silent
-	silent = True
+	global g_silent
+	oldsilent = g_silent
+	g_silent = True
 
 	# keep text version for searchInRange() / older helper functions
 	fullpattern = createPattern(50000, args)
@@ -18281,7 +18287,7 @@ def goFindMSP(distance=0, args=None):
 
 	# are we attached to an application ?
 	if dbg.getDebuggedPid() == 0:
-		silent = oldsilent
+		g_silent = oldsilent
 		dbg.log("*** Attach to an application, and trigger a crash with a cyclic pattern ! ***", highlight=1)
 		return {}
 
@@ -18289,9 +18295,9 @@ def goFindMSP(distance=0, args=None):
 	# keep as text because searchInRange() expects text
 	patbegin = createPattern(6, args)
 
-	silent = oldsilent
+	g_silent = oldsilent
 	pattypes = ["normal", "unicode", "lower", "upper"]
-	if not silent:
+	if not g_silent:
 		dbg.log("[+] Looking for the first 6 characters of the cyclic pattern in memory")
 	tofile += "[+] Looking for cyclic pattern in memory\n"
 
@@ -18335,7 +18341,7 @@ def goFindMSP(distance=0, args=None):
 						ptrinfo = "[<b>Heap</b>]"
 					thissize = getPatternLength(ptr, pattype, args)
 					if thissize > 0:
-						if not silent:
+						if not g_silent:
 							dbg.log("    Cyclic pattern (%s) found at 0x%s (length %d bytes) %s" % (pattype, toHex(ptr), thissize, ptrinfo))
 						tofile += "    Cyclic pattern (%s) found at 0x%s (length %d bytes) %s \n" % (pattype, toHex(ptr), thissize, ptrinfo)
 						if ptr not in memory:
@@ -18346,7 +18352,7 @@ def goFindMSP(distance=0, args=None):
 						thissp = regs[STACK_POINTER]
 						if thisptr.isOnStack():
 							if ptr > thissp:
-								if not silent:
+								if not g_silent:
 									dbg.log("    \\_ Add between %d & %d bytes to %s in order to land in this pattern" % (ptr - thissp, ptr - thissp + thissize, STACK_POINTER))
 								tofile += "    \\_ Add between %d & %d bytes to %s in order to land in this pattern\n" % (ptr - thissp, ptr - thissp + thissize, STACK_POINTER)
 
@@ -18354,7 +18360,7 @@ def goFindMSP(distance=0, args=None):
 				results["memory"] = memory
 
 	# 2. registers overwritten ?
-	if not silent:
+	if not g_silent:
 		dbg.log("")
 		dbg.log("[+] Examining registers")
 	tofile += "\n[+] Examining registers\n"
@@ -18402,7 +18408,7 @@ def goFindMSP(distance=0, args=None):
 					if reg == PROGRAM_COUNTER:
 						regname = "<b>%s</b>" % reg
 
-					if not silent:
+					if not g_silent:
 						if is_reversed:
 							dbg.log("    %s contains %s pattern (reversed) : 0x%s (offset %d)" % (regname, pattype, toHex(regs[reg]), offset))
 						else:
@@ -18445,7 +18451,7 @@ def goFindMSP(distance=0, args=None):
 
 					thissize = getPatternLength(regs[reg], pattype, args)
 					if thissize > 0:
-						if not silent:
+						if not g_silent:
 							dbg.log("    <b>%s</b> (0x%s) points at offset <b>%d</b> in %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
 						tofile += "    %s (0x%s) points at offset %d in %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 						registers_to[reg] = [regs[reg], offset, thissize, pattype]
@@ -18458,7 +18464,7 @@ def goFindMSP(distance=0, args=None):
 
 						thissize = getPatternLength(regs[reg], pattype, args)
 						if thissize > 0:
-							if not silent:
+							if not g_silent:
 								dbg.log("    <b>%s</b> (0x%s) points at offset <b>%d</b> in (reversed) %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
 							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 							registers_to[reg] = [regs[reg], offset, thissize, pattype]
@@ -18539,7 +18545,7 @@ def goFindMSP(distance=0, args=None):
 						strictinfo["pattern_end"]
 					))
 				for strictline in strictlines:
-					if not silent:
+					if not g_silent:
 						dbg.log(strictline)
 					tofile += "%s\n" % strictline
 			if (not strictinfo["is_string"]) or strictinfo["position"] == 0:
@@ -18571,7 +18577,7 @@ def goFindMSP(distance=0, args=None):
 							allinfo["pattern_end"]
 						))
 					for allline in alllines:
-						if not silent:
+						if not g_silent:
 							dbg.log(allline)
 						tofile += "%s\n" % allline
 
@@ -18582,7 +18588,7 @@ def goFindMSP(distance=0, args=None):
 
 	seh = {}
 	if arch == 32:
-		if not silent:
+		if not g_silent:
 			dbg.logLines("\n[+] Examining SEH chain")
 		tofile += "\n[+] Examining SEH chain\n"
 		thissehchain = dbg.getSehChain()
@@ -18633,7 +18639,7 @@ def goFindMSP(distance=0, args=None):
 								if pattype == "unicode":
 									offset = offset // 2
 
-								if not silent:
+								if not g_silent:
 									dbg.log("    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset <b>%d</b>), followed by %d bytes of cyclic data after the handler" % (toHex(chainentry[0]), pattype, nseh, offset, thissize))
 								tofile += "    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler\n" % (toHex(chainentry[0]), pattype, nseh, offset, thissize)
 
@@ -18650,7 +18656,7 @@ def goFindMSP(distance=0, args=None):
 	if STACK_POINTER in regs:
 		curresp = regs[STACK_POINTER]
 
-		if not silent:
+		if not g_silent:
 			if distance == 0:
 				extratxt = "(entire stack)"
 			else:
@@ -18679,7 +18685,7 @@ def goFindMSP(distance=0, args=None):
 		stackcounter = thisstackbase
 		sign = ""
 
-		if not silent:
+		if not g_silent:
 			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter)))
 		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter))
 
@@ -18736,7 +18742,7 @@ def goFindMSP(distance=0, args=None):
 									if (thissize % PTR_SIZE) != 0:
 										stepsize = ((thissize // PTR_SIZE) * PTR_SIZE) + PTR_SIZE
 
-									if not silent:
+									if not g_silent:
 										espoff = 0
 										espsign = "+"
 										if ((stackcounter + thissize) >= curresp):
@@ -18766,7 +18772,7 @@ def goFindMSP(distance=0, args=None):
 
 		# stack has pointer into cyclic pattern ?
 		interruptMona()
-		if not silent:
+		if not g_silent:
 			if distance == 0:
 				extratxt = "(entire stack)"
 			else:
@@ -18793,7 +18799,7 @@ def goFindMSP(distance=0, args=None):
 		sign = ""
 
 		interruptMona()
-		if not silent:
+		if not g_silent:
 			dbg.log("    Walking stack from 0x%s to 0x%s (0x%s bytes)" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter)))
 		tofile += "    Walking stack from 0x%s to 0x%s (0x%s bytes)\n" % (toHex(stackcounter), toHex(thisstacktop - PTR_SIZE), toHex(thisstacktop - PTR_SIZE - stackcounter))
 
@@ -18848,7 +18854,7 @@ def goFindMSP(distance=0, args=None):
 								thissize = getPatternLength(currptr, pattype, args)
 								if thissize > 0:
 									offsetvalue = abs(espoffset)
-									if not silent:
+									if not g_silent:
 										dbg.log("    0x%s : Pointer into %s cyclic pattern at %s%s0x%s (%s%s) : 0x%s : offset %d, length %d" % (
 											toHex(stackcounter), pattype, STACK_POINTER, sign, rmLeading(toHex(offsetvalue), "0"),
 											sign, offsetvalue, toHex(currptr), offset, thissize))
@@ -18883,7 +18889,7 @@ def goFindMSP(distance=0, args=None):
 def args2criteria(args,modulecriteria,criteria):
 
 	dbg.log("[+] Processing arguments and criteria")
-	global ptr_to_get
+	global g_ptr_to_get
 	
 	# meets access level ?
 	criteria["accesslevel"] = "X"
@@ -18929,9 +18935,9 @@ def args2criteria(args,modulecriteria,criteria):
 	# limit nr of pointers to search ?
 	if "p" in args:
 		if str(args["p"]).lower() != "true":
-			ptr_to_get = int(args["p"].strip())
-		if ptr_to_get > 0:	
-			dbg.log("    - Maximum nr of pointers to return : %d" % ptr_to_get)
+			g_ptr_to_get = int(args["p"].strip())
+		if g_ptr_to_get > 0:	
+			dbg.log("    - Maximum nr of pointers to return : %d" % g_ptr_to_get)
 	
 	# only want to see specific type of pointers ?
 	if "cp" in args:
@@ -19013,7 +19019,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 	namecrit = funcfilter.strip('"').strip("'").split(",")
 	
 	if mode == "add" or mode == "del" or mode == "list":
-		if not silent:
+		if not g_silent:
 			dbg.log("[+] Enumerating %sed functions" % query_type)
 		modulestosearch = getModulesToQuery(modulecriteria)
 		
@@ -19024,21 +19030,21 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 			tmod = MnModule(thismodule)
 			shortname = tmod.getShortName()
 			fullname = tmod.moduleFilename
-			if not silent:
+			if not g_silent:
 				dbg.log("")
 				dbg.log("    Querying module '%s' (%s)" % (fullname,shortname))
 			#syms = themod.getSymbols()
 			# get funcs
 			funcs = {}
 			if query_type == "export":
-				if not silent:
+				if not g_silent:
 					dbg.log("      Step 1: enumerating EAT")	
 				funcs = tmod.getEAT()			
 			else:
-				if not silent:
+				if not g_silent:
 					dbg.log("      Step 1: enumerating IAT")
 				funcs = tmod.getIAT()
-			if not silent:
+			if not g_silent:
 				dbg.log("        Total nr of %sed functions in %s: %d" % (query_type, thismodule, len(funcs)))
 			for func in funcs:
 				if meetsCriteria(MnPointer(func), criteria):
@@ -19081,7 +19087,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 				for crit in namecrit:
 					if crit.find("*") == -1:
 						crit = "*" + crit + "*"
-					if not silent:
+					if not g_silent:
 						dbg.log("      Step 2: Performing WinDBG Symbol lookup. (This may cause symbols to be downloaded first)")
 					# try with fullname first
 					# if no results, do shortname (but may cause results from IAT, which we don't need)
@@ -19098,7 +19104,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 							dbg.nativeCommand("!sym noisy")
 						modsearch = "x %s!%s" % (runfields[runcnt],crit)
 						output = dbg.nativeCommand(modsearch)
-						if not silent:
+						if not g_silent:
 							dbg.log("        Symbol lookup, run %d done. Processing results" % (runcnt+1))
 						if DEBUG_MODE:
 							dbg.nativeCommand("!sym quiet")
@@ -19126,12 +19132,12 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 						runcnt += 1
 						
 
-			if not silent:
+			if not g_silent:
 				deltacurrent = len(bpfuncs) - deltastart
 				if deltacurrent > 0:
 					dbg.log("        Identified %d functions in module '%s'" % (deltacurrent, fullname))
 				dbg.log("        Number of functions to break on so far: %d " % len(bpfuncs))
-		if not silent:
+		if not g_silent:
 			dbg.log("")
 			dbg.log("[+] Total nr of breakpoints to process : %d" % len(bpfuncs))
 		bp_table = {}
@@ -19553,8 +19559,8 @@ def procFindJMP(args, procUsage=""):
 	criteria={}
 	all_opcodes={}
 	
-	global ptr_to_get
-	ptr_to_get = -1
+	global g_ptr_to_get
+	g_ptr_to_get = -1
 	
 	distancestr = ""
 	mindistance = 0
@@ -19642,8 +19648,8 @@ def procFindSEH(args, procUsage=""):
 	specialcases = {}
 	all_opcodes = {}
 	
-	global ptr_to_get
-	ptr_to_get = -1
+	global g_ptr_to_get
+	g_ptr_to_get = -1
 	
 	#what is the caller function (backwards compatibility with pvefindaddr)
 	
@@ -20182,8 +20188,8 @@ def procFindROPFUNC(args):
 	logfile = MnLog("ropfunc.txt")
 	thislog = logfile.reset()
 	processResults(ropfuncs,logfile,thislog,forcelower=True)
-	global silent
-	silent = True
+	global g_silent
+	g_silent = True
 	if len(ropfuncoffsets) > 0:
 		dbg.log("")
 		dbg.log("[+] Processing offsets to pointers to interesting rop functions")
@@ -20407,7 +20413,7 @@ def procCreatePATTERN(args):
 		patternjs = str2js(pattern)
 		objpatternfile.write("\n\nJAVASCRIPT (unescape() friendly):\n",patternfile)
 		objpatternfile.write(patternjs,patternfile)
-		if not silent:
+		if not g_silent:
 			dbg.log("Note: don't copy this pattern from the log window, it might be truncated !",highlight=1)
 			dbg.log("It's better to open %s and copy the pattern from the file" % patternfile,highlight=1)
 	return
@@ -21408,7 +21414,7 @@ def procPrintHeader(args):
 	objheaderfile = MnLog(headerfilename)
 	headerfile = objheaderfile.reset(skipModuleTable=True)
 	objheaderfile.write(output,headerfile)
-	if not silent:
+	if not g_silent:
 		dbg.log("-" * 30)
 		dbg.logLines(output)
 		dbg.log("-" * 30)			
@@ -21975,9 +21981,9 @@ def procEgg(args):
 	checksumbyte = b""
 	extratext = b""
 	
-	global silent
-	oldsilent = silent
-	silent = True			
+	global g_silent
+	oldsilent = g_silent
+	g_silent = True			
 	
 	if "f" in args:
 		if type(args["f"]).__name__.lower() != "bool":
@@ -22347,7 +22353,7 @@ def procEgg(args):
 	
 	egghunter = startat + egghunter
 	
-	silent = oldsilent			
+	g_silent = oldsilent			
 	
 	#Convert binary to printable hex format
 	egghunter_hex = toniceHex(egghunter.strip().replace(b" ",b""),16)
@@ -22419,10 +22425,10 @@ def procSuggest(args):
 	shellcodesizeEIP = 0
 	nullsallowed = True
 	
-	global noheader
-	global ptr_to_get
-	global silent
-	global ptr_counter
+	global g_no_header
+	global g_ptr_to_get
+	global g_silent
+	global g_ptr_counter
 	
 	targetstr = ""
 	exploitstr = ""
@@ -22476,10 +22482,10 @@ def procSuggest(args):
 	exploitfilename="exploit.rb"
 	objexploitfile = MnLog(exploitfilename)
 
-	#ptr_to_get = 5				
-	noheader = True
+	#g_ptr_to_get = 5				
+	g_no_header = True
 	exploitfile = objexploitfile.reset(showheader = False, skipModuleTable=True)			
-	noheader = False
+	g_no_header = False
 	
 	dbg.log(" ")
 	dbg.log("[+] Preparing payload...")
@@ -22515,11 +22521,11 @@ def procSuggest(args):
 				shellcodesizeSEH = mspresults["seh"][seh][3]
 				
 	if isSEH:
-		noheader = True
+		g_no_header = True
 		exploitfilename_seh="exploit_seh.rb"
 		objexploitfile_seh = MnLog(exploitfilename_seh)
 		exploitfile_seh = objexploitfile_seh.reset(showheader=False,skipModuleTable=True)				
-		noheader = False
+		g_no_header = False
 
 	# start building exploit structure
 	
@@ -22613,13 +22619,13 @@ def procSuggest(args):
 					thissize = initialoffsetEIP - thisoffset
 				if thissize > largestsize:								
 					# can we find a jmp to that reg ?
-					silent = True
-					ptr_counter = 0
-					ptr_to_get = 1								
+					g_silent = True
+					g_ptr_counter = 0
+					g_ptr_to_get = 1								
 					jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
 					if len( jmp_pointers ) == 0:
-						ptr_counter = 0
-						ptr_to_get = 1								
+						g_ptr_counter = 0
+						g_ptr_to_get = 1								
 						modulecriteria["os"] = True
 						jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
 					modulecriteria["os"] = False
@@ -22628,7 +22634,7 @@ def procSuggest(args):
 						largestreg = thisreg
 						offsetreg = thisoffset
 						regptr = thisregptr
-					silent = False
+					g_silent = False
 		regsto = regsto.rstrip(",")
 		
 		
@@ -22775,12 +22781,12 @@ def procSuggest(args):
 				sehcriteria.pop("nonull")
 		modulecriteria["safeseh"] = False
 		#get SEH pointers
-		silent = True
-		ptr_counter = 0
-		ptr_to_get = 1					
+		g_silent = True
+		g_ptr_counter = 0
+		g_ptr_to_get = 1					
 		seh_pointers = findSEH(modulecriteria,sehcriteria)
 		jmpback = False
-		silent = False
+		g_silent = False
 		if not isSEHUnicode:
 			#did we find a pointer ?
 			if len(seh_pointers) == 0:
@@ -22789,11 +22795,11 @@ def procSuggest(args):
 				if "nonull" in sehcriteria:
 					if sehcriteria["nonull"] == True:
 						sehcriteria.pop("nonull")
-						silent = True
-						ptr_counter = 0
-						ptr_to_get = 1									
+						g_silent = True
+						g_ptr_counter = 0
+						g_ptr_to_get = 1									
 						seh_pointers = findSEH(modulecriteria,sehcriteria)
-						silent = False
+						g_silent = False
 						jmpback = True
 			if len(seh_pointers) != 0:
 				for ptrtypes in seh_pointers:
@@ -22955,8 +22961,8 @@ def procStacks(args):
 #-----proclayout-----#
 
 def procLayout(args):
-	global silent
-	silent = True
+	global g_silent
+	g_silent = True
 	include_chunks = False
 	showall = False
 	MnProc.ensure()
@@ -22983,7 +22989,7 @@ def procLayout(args):
 		if type(typeval).__name__.lower() == "bool":
 			dbg.log("Please provide a type with -t", highlight=1)
 			dbg.log("Valid types: %s" % ", ".join(valid_types), highlight=1)
-			silent = False
+			g_silent = False
 			return
 		show_categories = set()
 		for tn in [x.strip().lower() for x in typeval.split(",")]:
@@ -23002,7 +23008,7 @@ def procLayout(args):
 				dbg.log("Unknown type '%s', ignoring. Valid types: %s" % (tn, ", ".join(valid_types)), highlight=1)
 		if not show_categories:
 			dbg.log("No valid types matched. Valid types: %s" % ", ".join(valid_types), highlight=1)
-			silent = False
+			g_silent = False
 			return
 	else:
 		show_categories = set(default_categories)
@@ -23110,7 +23116,7 @@ def procLayout(args):
 
 	if len(regions) == 0:
 		dbg.log("No regions found!", highlight=1)
-		silent = False
+		g_silent = False
 		return
 
 	filename = "proclayout.txt"
@@ -23219,7 +23225,7 @@ def procLayout(args):
 	type_cmd = "%s pl -s %s" % (getAliasName(), other_type)
 	dbg.log("    You can sort by '%s' using the following command: %s" % (other_type, clickWinDBGCmd(type_cmd)))
 	dbg.log("")
-	silent = False
+	g_silent = False
 	return
 
 
@@ -24406,7 +24412,7 @@ def procFwptr(args):
 			else:
 				dbg.log("[+] Will add 0x%0x bytes between flink/blink and fwptr" % offset )			
 
-	if not silent:
+	if not g_silent:
 		if setbps:
 			dbg.log("[+] Will set breakpoints on found CALL/JMP")
 		if dopatch:
@@ -24435,7 +24441,7 @@ def procFwptr(args):
 				except:
 					pass
 	if len(pagestoquery) > 0:
-		if not silent:
+		if not g_silent:
 			dbg.log("[+] Analysing .text/.code sections")
 			dbg.updateLog()
 		for modname in pagestoquery:
@@ -24444,7 +24450,7 @@ def procFwptr(args):
 			nr_sizematch = 0
 			pagestart = pagestoquery[modname][0]
 			pageend = pagestoquery[modname][1]
-			if not silent:
+			if not g_silent:
 				dbg.log("    - Carving through %s (0x%08x - 0x%08x)" % (modname,pagestart,pageend))
 				dbg.updateLog()
 			loc = pagestart
@@ -24526,7 +24532,7 @@ def procFwptr(args):
 						dbg.log(traceback.format_exc())
 					loc = loc + 1
 					continue
-			if not silent:
+			if not g_silent:
 				dbg.log("      Found %d pointers" % tmodcnt)
 				if chunksize > 0:
 					dbg.log("      %d pointers with size match" % nr_sizematch)								
@@ -24570,7 +24576,7 @@ def procGetxAT(args,mode=""):
 	modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
 	
 	modulestosearch = getModulesToQuery(modulecriteria)
-	if not silent:
+	if not g_silent:
 		dbg.log("[+] Criteria: %s" % criteriaToText(modulecriteria))
 		dbg.log("[+] Querying %d modules" % len(modulestosearch))
 	
@@ -24586,7 +24592,7 @@ def procGetxAT(args,mode=""):
 			thismodule = thismod.getShortName()
 			thismodule_fullname = thismod.moduleFilename
 
-			if not silent:
+			if not g_silent:
 				dbg.log("")
 				dbg.log("    Querying %s of module '%s'" % (mode, thismodule_fullname))
 
@@ -24675,7 +24681,7 @@ def procGetxAT(args,mode=""):
 			dbg.log("")
 			print_dict_table(eat_table, headers, types, padding = "    ", itemsequence = [])			
 
-		if not silent:
+		if not g_silent:
 			dbg.log("")
 			dbg.log("%d entries found" % entriesfound)
 	return
@@ -24759,10 +24765,10 @@ def procSkeleton(args):
 	
 	exploitfilename="msfskeleton.rb"
 	objexploitfile = MnLog(exploitfilename)
-	global noheader
-	noheader = True
+	global g_no_header
+	g_no_header = True
 	exploitfile = objexploitfile.reset(showheader=False,skipModuleTable=True)			
-	noheader = False
+	g_no_header = False
 
 	modulecriteria = {}
 	criteria = {}
@@ -25222,9 +25228,9 @@ def procTEB(args):
 	return
 
 def procPageACL(args):
-	global silent
-	global MemoryPageACL
-	silent = True
+	global g_silent
+	global _memory_page_acl_cache
+	g_silent = True
 	findaddy = 0
 	aclfilter = ""
 	aclfilter_val = None
@@ -25254,7 +25260,7 @@ def procPageACL(args):
 		dbg.MemoryPages = {}
 	except:
 		pass
-	MemoryPageACL = {}
+	_memory_page_acl_cache = {}
 	allpages = dbg.getMemoryPages()
 	dbg.log("Total of %d pages : "% len(allpages))
 	filename="pageacl.txt"
@@ -25392,7 +25398,7 @@ def procPageACL(args):
 
 			objfile.write(tolog,aclfile)
 			dbg.log(tolog)
-	silent = False
+	g_silent = False
 	return
 
 def procMacro(args):
@@ -25768,7 +25774,7 @@ def procEnc(args):
 		if type(args["f"]).__name__.lower() != "bool":
 			binfile = getAbsolutePath(args["f"])
 			if os.path.exists(binfile):
-				if not silent:
+				if not g_silent:
 					dbg.log("[+] Reading bytes from %s" % binfile)
 				filebytes = fileToBin(binfile)
 				if len(filebytes) > 0:
@@ -25853,7 +25859,7 @@ def procEnc(args):
 			if len(encodedbytes) > 0:
 				logfile = MnLog("encoded_%s.txt" % encodertype)
 				thislog = logfile.reset(skipModuleTable=True)
-				if not silent:
+				if not g_silent:
 					dbg.log("")
 					dbg.log("Results:")
 					dbg.log("--------")
@@ -25871,13 +25877,13 @@ def procEnc(args):
 					# 1 = info
 					thislinebytes = "\\x" + "\\x".join(bin2hex(thisline[0]).split(" "))
 					logline = "  %s : %s : %s" % (thisline[0],thislinebytes,thisline[1])
-					if not silent:
+					if not g_silent:
 						dbg.log("%s" % logline)
 					logfile.write(logline,thislog)
 					fulllist_str += thislinebytes
 					fulllist_bin += thisline[0]
 
-				if not silent:
+				if not g_silent:
 					dbg.log("")
 					dbg.log("Full encoded string:")
 					dbg.log("--------------------")
@@ -26466,7 +26472,7 @@ def procUnicodeAlign(args):
 		alignresults = prepareAlignment(leaks, address, bufferRegister, timeToRun, registers)
 		# write results to file
 		if len(alignresults) > 0:
-			if not silent:
+			if not g_silent:
 				dbg.log("[+] Alignment generator finished, %d results" % len(alignresults))
 				logfile = MnLog("venetian_alignment.txt")
 				thislog = logfile.reset(skipModuleTable=True)
@@ -26642,7 +26648,7 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 		resulting_string += postfix
 		sum_bytes += additionalLength
 		
-		if not silent:
+		if not g_silent:
 			info("[+] %i resulting bytes (%i bytes injection) of Unicode code alignment. Instructions:"%(sum_bytes,sum_bytes//2))
 			info("   ", resulting_string)
 		hex_bytes = metasm(resulting_string)  # bytes expected
@@ -26652,14 +26658,14 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 		elif not isinstance(hex_bytes, (bytes, bytearray)):
 			hex_bytes = bytes(hex_bytes)
 		to_iter = bytearray(hex_bytes)  # py2/py3: iteration yields ints
-		if not silent:
+		if not g_silent:
 			display = ''.join('\\x{:02x}'.format(b) for b in to_iter)
 			info("    Unicode safe opcodes without zero bytes:")
 			info("   ", display)
 		thisresult[resulting_string] = hex_bytes      # keep bytes for later use
 
 
-		#if not silent:
+		#if not g_silent:
 		#	info("    Unicode safe opcodes without zero bytes:")
 		#	info("   ", hex_string)
 		#thisresult[resulting_string] = hex_string
@@ -26802,7 +26808,7 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 	for i in cyclic:
 		mul *= i
 
-	if not silent:
+	if not g_silent:
 		dbg.log("[+] Searching for random solutions for code alignment code in at least %i possibilities..." % mul)
 		dbg.log("    Bufferregister: %s" % bufferRegister)
 		dbg.log("    Max time: %d seconds" % timeToRun)
@@ -26840,7 +26846,7 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 			resultFound = True
 			alignresults[resultcnt] = printNicely(names, buffer_registers_4_byte_names, xs, ys, additionalLength, prefix, postfix)
 			resultcnt += 1
-			if not silent:
+			if not g_silent:
 				dbg.log("    Time elapsed so far: %s seconds" % (time.time()-beginning))
 				dbg.log("")
 		#Slightly increases probability of resetting with time
@@ -26850,7 +26856,7 @@ def generateAlignment(alignment_code_loc, bufferRegister, registers, timeToRun, 
 		if random.random() <= probability:
 			xs = [0 for i in range(0,len(originals))]
 			ys = [0 for i in range(0,len(originals))]
-	if not silent:
+	if not g_silent:
 		dbg.log("")
 		dbg.log("    Done. Total time elapsed: %s seconds" % (time.time()-beginning))
 	
@@ -27054,7 +27060,7 @@ def procSym(args):
 	"""Manage symbols: list status, fetch from server, or clean cache. WinDBG only."""
 
 	# Require at least one valid filesystem cache directory
-	cache_dirs = _ensureSymbolCache(auto_fix=False)
+	cache_dirs = mndbg._ensureSymbolCache(auto_fix=False)
 	if not cache_dirs:
 		return
 
@@ -27086,7 +27092,7 @@ def _sym_list(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbg_flavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	mndbg.dbgp("Cache dirs: %s" % cache_dirs)
@@ -27227,7 +27233,7 @@ def _sym_load(args):
 
 	modulestosearch = getModulesToQuery(modulecriteria, from_memory=True)
 
-	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
+	cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbg_flavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
 	# Parse -s for specific server/cache index
@@ -27317,8 +27323,8 @@ def _sym_load(args):
 					pdbname, guidage, http_cache, http_servers)
 			else:
 				# WinDBG .reload /f
-				success, local_path, message = dbglib.fetchSymbol(
-					reload_name, pdbname, guidage, windbgflavor=windbgflavor)
+					success, local_path, message = dbglib.fetchSymbol(
+						reload_name, pdbname, guidage, windbgflavor=g_windbg_flavor)
 
 			if success:
 				loaded += 1
@@ -27351,7 +27357,7 @@ def _sym_clean(args):
 			folders_to_clean.append(args["p"])
 
 	if len(folders_to_clean) == 0:
-		cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
+		cache_dirs, servers, sym_entries = dbglib.getSymPaths(g_windbg_flavor)
 		for cdir in cache_dirs:
 			ckey = cdir.lower()
 			if ckey not in seen_folders:
@@ -27476,15 +27482,15 @@ def procToBp(args):
 	poisyntax = ""
 	dmpsyntax = ""
 	instructionparts = []
-	global silent
-	oldsilent = silent
+	global g_silent
+	oldsilent = g_silent
 	regnames = Registers32BitsOrder[:]
 	if arch == 64:
 		# add 64bit regs as well
 		regnames = Registers64BitsOrder[:] + Registers32BitsOrder[:]
 	mndbg.dbgp("Regs used: %s" % regnames)
 	regs = getRegisters()
-	silent = True
+	g_silent = True
 	if "a" in args:
 		if type(args["a"]).__name__.lower() != "bool":
 			addy,addyok = getAddyArg(args["a"])
@@ -27575,7 +27581,7 @@ def procToBp(args):
 	thislog = logfile.reset(clear = False,showheader=False,skipModuleTable=True)
 	with open(thislog, "a") as fh:
 		fh.write(bpsyntax + "\n")
-	silent = oldsilent
+	g_silent = oldsilent
 	dbg.log("%s" % bpsyntax)
 	dbg.log("Updated %s" % thislog)
 	if executenow:
@@ -27944,7 +27950,7 @@ def procHelp(args, helpForCommand=None):
 	dbg.log("    mona.py - Exploit Development Swiss Army Knife")
 	dbgname = __DEBUGGERAPP__
 	if mndbg.isWinDBG():
-		dbgname = "%s" % windbgprettyname
+		dbgname = "%s" % g_windbg_pretty_name
 
 	dbg.log("    Written by Corelan - https://www.corelan.be")
 	dbg.log("    Project page : https://github.com/corelan/mona3")
@@ -29100,15 +29106,15 @@ def main(args):
 		if mndbg.isWinDBG():
 			pykdver = dbg.getPyKDVersionNr()
 			keystonever = ""
-			if g_keystoneLoaded:
+			if g_keystone_loaded:
 				keystonever = keystone.__version__
 			else:
 				keystonever = "<b>not loaded</b>"
-			libversions = "%s (%sbit) | PyKD: %s | Keystone-engine: %s" % (windbgprettyname, arch, pykdver, keystonever)
+			libversions = "%s (%sbit) | PyKD: %s | Keystone-engine: %s" % (g_windbg_pretty_name, arch, pykdver, keystonever)
 			dbg.log("[ -- START -- ] %s" % libversions)
 		dbg.log("")
 
-		ptr_counter = 0
+		g_ptr_counter = 0
 
 		# fill up the commands dict
 		populateCommands(args)
