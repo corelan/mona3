@@ -23014,6 +23014,26 @@ def procLayout(args):
 		_sort_val = "elements"
 	element_mode = _sort_val == "elements"
 
+	# -tree: show ancestor context for selected categories (base mode only).
+	tree_mode = "tree" in args and not element_mode
+
+	# Per-category context parents shown in tree mode to establish hierarchy.
+	_tree_context_parents = {
+		"Heap":     ["PEB"],
+		"Segment":  ["PEB", "Heap"],
+		"Chunk":    ["PEB", "Heap", "Segment"],
+		"VADBlock": ["PEB", "Heap"],
+		"Stack":    ["TEB"],
+	}
+	# Fixed indentation levels used in tree rendering (depth in the hierarchy).
+	_tree_indent = {
+		"PEB": "", "TEB": "", "Module": "",
+		"Heap": "  ",
+		"Stack": "  ",
+		"Segment": "    ", "VADBlock": "    ",
+		"Chunk": "      ",
+	}
+
 	category_mappings = {}
 	category_mappings["PEB"] = "dt _peb @$peb"
 	category_mappings["TEB"] = "%s pl -t teb; !teb" % getAliasName()
@@ -23024,11 +23044,21 @@ def procLayout(args):
 	category_mappings["Chunk"] = "%s pl -t chunk" % getAliasName()
 	category_mappings["VADBlock"] = "%s pl -t vablock" % getAliasName()
 
+	# In tree mode, collect ancestor categories needed to render context rows.
+	if tree_mode:
+		context_cats = set()
+		for cat in show_categories:
+			for parent in _tree_context_parents.get(cat, []):
+				context_cats.add(parent)
+		fetch_categories = show_categories | context_cats
+	else:
+		fetch_categories = show_categories
+
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
-	dbg.log("    Sort mode: %s" % _sort_val)
-	catlist = ",".join(show_categories)
+	dbg.log("    Sort mode: %s%s" % (_sort_val, " [tree]" if tree_mode else ""))
+	catlist = ",".join(sorted(show_categories))
 	dbg.log("    Categories to show: %s" % catlist)
-	want_chunks = include_chunks or "Chunk" in show_categories
+	want_chunks = include_chunks or "Chunk" in fetch_categories
 
 	# Build the flat region list for display.
 	# element_mode uses getSortedByElement: the hierarchy is walked recursively and
@@ -23046,7 +23076,7 @@ def procLayout(args):
 			return out
 		regions = [r for r in _flatten_hierarchical(mnproc.getSortedByElement(include_chunks=want_chunks)) if r[2] in show_categories]
 	else:
-		regions = [r for r in mnproc.getAllSorted(include_chunks=want_chunks) if r[2] in show_categories]
+		regions = [r for r in mnproc.getAllSorted(include_chunks=want_chunks) if r[2] in fetch_categories]
 
 	if len(regions) == 0:
 		dbg.log("No regions found!", highlight=1)
@@ -23071,16 +23101,19 @@ def procLayout(args):
 		start, end, category, description = region[0], region[1], region[2], region[3]
 		size  = end - start if end > start else 0
 		psize = "0x%x" % size
-		# In element_mode indentation is already baked into description; in flat mode
-		# infer it from category transitions so heap children are visually nested.
+		# In element_mode indentation is already baked into description; in tree mode
+		# use fixed per-category depth; in flat mode infer from category transitions.
 		indent = ""
 		if not element_mode:
-			if category in ("Heap", "Segment", "VADBlock"):
-				in_heap_chain = True
-			elif category == "Chunk":
-				indent = "  \\_ "
+			if tree_mode:
+				indent = _tree_indent.get(category, "")
 			else:
-				in_heap_chain = False
+				if category in ("Heap", "Segment", "VADBlock"):
+					in_heap_chain = True
+				elif category == "Chunk":
+					indent = "  \\_ "
+				else:
+					in_heap_chain = False
 		prev_category = category
 		dedup_key = (start, category)
 		if dedup_key in seen_regions:
@@ -28374,6 +28407,17 @@ Optional arguments:
                  Example: !mona pl -t chunk
                  Example: !mona pl -t heap,segment,chunk
                  Example: !mona pl -t all
+
+    -tree      : Show ancestor context rows above the selected categories so the
+                 full parent chain is visible (base sort only; ignored with -s elements).
+                 Parents are indented one level above their children:
+                   PEB
+                     Heap
+                       Segment
+                         Chunk
+                 Example: !mona pl -t chunk -tree   (PEB -> Heap -> Segment -> Chunk)
+                 Example: !mona pl -t vablock -tree (PEB -> Heap -> VADBlock)
+                 Example: !mona pl -t segment -tree (PEB -> Heap -> Segment)
 
     -s <mode>  : Sort/layout mode. Valid values:
                    base     (default) Flat list sorted by address.
