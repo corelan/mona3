@@ -1,3 +1,28 @@
+[mona 3.0.3004]
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/db57637">db57637</link> Fix Stack inheritance
+  - <link cmd="https://github.com/corelan/mona3/commit/5667caa">5667caa</link> Change t elements to match with prefix
+  - <link cmd="https://github.com/corelan/mona3/commit/5754d96">5754d96</link> Add element distinction
+  - <link cmd="https://github.com/corelan/mona3/commit/142017c">142017c</link> tree view
+  - <link cmd="https://github.com/corelan/mona3/commit/879cbbb">879cbbb</link> Fix documentation
+  - <link cmd="https://github.com/corelan/mona3/commit/6db44b5">6db44b5</link> Update default usage of pl and some of its arguments
+  - <link cmd="https://github.com/corelan/mona3/commit/fc846c6">fc846c6</link> Move mnproc initialization inside pl
+  - <link cmd="https://github.com/corelan/mona3/commit/00eb662">00eb662</link> Additional fixes
+  - <link cmd="https://github.com/corelan/mona3/commit/c18eca0">c18eca0</link> Fix chunk things for immunity
+  - <link cmd="https://github.com/corelan/mona3/commit/138f8b8">138f8b8</link> Fix granularity usage
+  - <link cmd="https://github.com/corelan/mona3/commit/3302a6e">3302a6e</link> Update commands and layout
+  - <link cmd="https://github.com/corelan/mona3/commit/459e89a">459e89a</link> Add links
+  - <link cmd="https://github.com/corelan/mona3/commit/da87a0a">da87a0a</link> Fix chunk size calculation
+  - <link cmd="https://github.com/corelan/mona3/commit/239944c">239944c</link> Heap command refactor
+  - <link cmd="https://github.com/corelan/mona3/commit/b128fbf">b128fbf</link> Update heap comand
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/dcf3c69">dcf3c69</link> release notes now have clickable links to commits
+  - <link cmd="https://github.com/corelan/mona3/commit/0021954">0021954</link> don't print clickable links to log files
+  - <link cmd="https://github.com/corelan/mona3/commit/59e5c52">59e5c52</link> introduce stripTags for proper display in Immunity and logfiles
+  - <link cmd="https://github.com/corelan/mona3/commit/77b022c">77b022c</link> remove unused click function, changed output format for heap -a
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/d228751">d228751</link> Update revision (mona: 3003, windbglib: 3002)
+
 [mona 3.0.3003]
 Peter Van Eeckhoutte:
   - 0021954 don't print clickable links to log files
