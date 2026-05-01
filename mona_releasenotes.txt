@@ -1,3 +1,30 @@
+[mona 3.0.3003]
+Peter Van Eeckhoutte:
+  - 0021954 don't print clickable links to log files
+  - 59e5c52 introduce stripTags for proper display in Immunity and logfiles
+  - 77b022c remove unused click function, changed output format for heap -a
+  - af31219 remove unused function
+  - 8b52534 fix indentation and insert check if routine needs to be interrupted
+apl3b:
+  - 138f8b8 Fix granularity usage
+  - 3302a6e Update commands and layout
+  - 459e89a Add links
+  - da87a0a Fix chunk size calculation
+  - 239944c Heap command refactor
+  - b128fbf Update heap comand
+  - c18ee10 With decoded content
+  - 5e82f5e Add spacing
+  - 1b122fa Final printing changes
+  - d9de708 More messaging changes
+  - 2e2e168 Changes in messaging
+  - a04d543 Additional dump and xor command
+  - d9f5597 Print Heap chunk header info
+  - 788c43c Update fillpattern detection for 64 bit
+  - 4fbe342 Fix merge of header decoding
+
+[windbglib 3.0.3002]
+- No file-specific commits found.
+
 [mona 3.0.3002]
 Peter Van Eeckhoutte:
   - 319b8b9 update MnLog file headers

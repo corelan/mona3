@@ -35,7 +35,7 @@ $Revision: 3333
 """
 
 __VERSION__ = '3.0'
-__REV__ = 3002
+__REV__ = 3003
 
 DEBUG_MODE = False
 
