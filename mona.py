@@ -22957,6 +22957,7 @@ def procLayout(args):
 	global silent
 	silent = True
 	include_chunks = False
+	showall = False
 	MnProc.ensure()
 
 	# -t <type> selects exactly the named categories — no implicit parents.
@@ -22988,6 +22989,8 @@ def procLayout(args):
 			if not tn:
 				continue
 			matches = [k for k in type_map if k.startswith(tn)]
+			if "all" in matches:
+				showall = True
 			if len(matches) == 1:
 				show_categories |= type_map[matches[0]]
 			elif len(matches) > 1:
@@ -23022,7 +23025,8 @@ def procLayout(args):
 
 	# -a <address>: highlight the matching row in tree mode.
 	highlight_addr = None
-	if tree_mode and "a" in args and type(args["a"]).__name__.lower() != "bool":
+	if "a" in args and type(args["a"]).__name__.lower() != "bool":
+		tree_mode = True
 		highlight_addr, _ok = getAddyArg(args["a"])
 		if not _ok:
 			dbg.log("[-] Invalid address for -a: %s" % args["a"], highlight=1)
@@ -23067,6 +23071,8 @@ def procLayout(args):
 		fetch_categories = show_categories
 
 	dbg.log("[+] Populating process layout%s..." % (" (with chunk detail)" if include_chunks else ""))
+	if highlight_addr != None:
+		dbg.log("[+] Locating entity that contains %s" % PTR_PRINT % highlight_addr)
 	dbg.log("    Sort mode: %s%s" % (_sort_val, " [tree]" if tree_mode else ""))
 	catlist = ",".join(sorted(show_categories))
 	dbg.log("    Categories to show: %s" % catlist)
@@ -23117,7 +23123,8 @@ def procLayout(args):
 	table_seq = []
 	table_starts = []       # parallel start-address list for key_col
 	seen_regions = set()   # (start, category) pairs to suppress true duplicates
-
+	highlight_addr_found = False
+	highlight_addr_info = ""
 	in_heap_chain = False
 	prev_category = ""
 	for idx, region in enumerate(regions):
@@ -23148,6 +23155,9 @@ def procLayout(args):
 				desc_entry = "<b>" + desc_entry + "</b>"
 			else:
 				desc_entry = ">>> " + desc_entry
+			highlight_addr_found = True
+			highlight_addr_info = desc_entry
+
 		table_data[idx] = (end, psize, category, desc_entry)
 		table_seq.append(idx)
 		table_starts.append(start)
@@ -23157,7 +23167,16 @@ def procLayout(args):
 	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts)
 
 	dbg.log("")
-	dbg.log("Total: %d entities" % len(table_seq))
+	dbg.log("    Total: %d entities" % len(table_seq))
+	if highlight_addr != None:
+		dbg.log("")
+		if not highlight_addr_found:
+			dbg.log("    Unfortunately, address %s was not part of one of the listed entities" % PTR_PRINT % highlight_addr)
+			if not showall:
+				wider_scope_cmd = "%s pl -a %s -t all" % (getAliasName(), PTR_PRINT % highlight_addr)
+				dbg.log("    Try running %s" % clickWinDBGCmd(wider_scope_cmd))
+		else:
+			dbg.log("    Address %s found: %s" % ((PTR_PRINT % highlight_addr),highlight_addr_info))
 	objfile.write("Total: %d entities" % len(table_seq), logfile)
 
 	# Summary
@@ -28464,10 +28483,11 @@ Optional arguments:
                  Example: !mona pl -t vablock -tree (PEB -> Heap -> VADBlock)
                  Example: !mona pl -t segment -tree (PEB -> Heap -> Segment)
 
-    -a <addr>  : (requires -tree) Highlight the row whose address range contains
+    -a <addr>  : Highlight the row whose address range contains
                  <addr> in bold (WinDBG) or with a >>> prefix (Immunity).
                  Useful for locating a specific chunk, segment, or block in the tree.
-                 Example: !mona pl -t chunk -tree -a 0x12345678
+                 Example: !mona pl -t chunk -a 0x12345678
+				 (note: this will activate -tree mode)
 
     -s <mode>  : Sort/layout mode. Valid values:
                    base     (default) Flat list sorted by address.
