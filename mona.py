@@ -23132,7 +23132,7 @@ def procLayout(args):
 			else:
 				if category in ("Heap", "Segment", "VADBlock"):
 					in_heap_chain = True
-				elif category == "Chunk":
+				elif category == "Chunk" and fetch_categories & {"Heap", "Segment"}:
 					indent = "  \\_ "
 				else:
 					in_heap_chain = False
