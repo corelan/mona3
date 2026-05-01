@@ -6559,7 +6559,7 @@ class HeapVersion(object):
 	UNKNOWN = "Unknown"
 
 
-class MnListEntry:
+class MnListEntry(object):
 	"""
 	Represents a Windows _LIST_ENTRY doubly-linked list head or node.
 
