@@ -21874,6 +21874,8 @@ def procUpdate(args):
 						seen_release_headers[header] = True
 						dbg.log("    %s" % header, highlight = True)
 						for line in section["notes"].splitlines():
+							if not isWinDBG():
+								line = stripTags(line)
 							dbg.log("    %s" % line, highlight = True)
 				else:
 					dbgp("No release note entries found between %s and %s, even after retrying backup server" % (start_header, end_header))

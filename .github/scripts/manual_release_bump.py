@@ -5,6 +5,10 @@ import subprocess
 from pathlib import Path
 
 
+AUTHOR_HANDLE_OVERRIDES = {
+    "Peter Van Eeckhoutte": "corelanc0d3r",
+}
+
 REV_PATTERN = re.compile(r"(^\s*__REV__\s*=\s*)(\d+)(\s*$)", re.MULTILINE)
 VERSION_PATTERN = re.compile(r"^\s*__VERSION__\s*=\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
 GITHUB_NOREPLY_PATTERN = re.compile(
@@ -15,6 +19,22 @@ GITHUB_NOREPLY_PATTERN = re.compile(
 
 def run_git(args):
     return subprocess.check_output(["git"] + args, text=True).strip()
+
+
+def get_commit_base_url():
+    remote = run_git(["remote", "get-url", "origin"])
+    remote = remote.strip()
+
+    if remote.endswith(".git"):
+        remote = remote[:-4]
+
+    if remote.startswith("git@github.com:"):
+        return f"https://github.com/{remote.split(':', 1)[1]}/commit"
+
+    if remote.startswith("https://github.com/"):
+        return f"{remote}/commit"
+
+    raise RuntimeError(f"Unsupported origin remote for GitHub commit links: {remote}")
 
 
 def bump_revision(filename):
@@ -49,6 +69,7 @@ def get_version_string(filename):
 
 
 def get_commits_for_file(since_ref, filename):
+    commit_base_url = get_commit_base_url()
     output = run_git([
         "log",
         "--pretty=format:%an|||%ae|||%h %s",
@@ -72,7 +93,11 @@ def get_commits_for_file(since_ref, filename):
     for author in sorted(commits_by_author):
         result_lines.append(f"{author}:")
         for commit in commits_by_author[author]:
-            result_lines.append(f"  - {commit}")
+            short_sha, subject = commit.split(" ", 1)
+            commit_url = f"{commit_base_url}/{short_sha}"
+            result_lines.append(
+                f"  - <link cmd=\"{commit_url}\">{short_sha}</link> {subject}"
+            )
 
     return "\n".join(result_lines).strip()
 
@@ -82,7 +107,7 @@ def get_author_display(author_name, author_email):
     if match:
         return match.group(1)
 
-    return author_name
+    return AUTHOR_HANDLE_OVERRIDES.get(author_name, author_name)
 
 
 def prepend_release_notes(release_notes_file, sections):
