@@ -1141,7 +1141,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	def _p(line):
 		dbg.log("%s%s" % (padding, line))
 		if logobj is not None and logfile is not None:
-			logobj.write("%s%s" % (padding, line), logfile)
+			logobj.write("%s%s" % (padding, stripTags(line)), logfile)
 
 	_p(_render_row([_ensure_text(h) for h in headers]))
 	_p(_render_row([("-" * w) for w in col_widths]))
@@ -1153,7 +1153,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 			if addr_val is not None:
 				dbg.log("%s%s" % (padding, line), address=addr_val)
 				if logobj is not None and logfile is not None:
-					logobj.write("%s%s" % (padding, line), logfile)
+					logobj.write("%s%s" % (padding, stripTags(line)), logfile)
 				continue
 		_p(line)
 
