@@ -22985,14 +22985,17 @@ def procLayout(args):
 			return
 		show_categories = set()
 		for tn in [x.strip().lower() for x in typeval.split(",")]:
-			if tn.startswith("vab") or tn.startswith("vad"):
-				tn = "vablock"
-			if tn.startswith("mod"):
-				tn = "mod"
-			if tn in type_map:
-				show_categories |= type_map[tn]
+			if not tn:
+				continue
+			matches = [k for k in type_map if k.startswith(tn)]
+			if len(matches) == 1:
+				show_categories |= type_map[matches[0]]
+			elif len(matches) > 1:
+				# Ambiguous prefix — warn and skip this token, keep processing the rest
+				dbg.log("Ambiguous type '%s' (matches: %s), please be more specific" % (
+					tn, ", ".join(sorted(matches))), highlight=1)
 			else:
-				dbg.log("Unknown type '%s', ignoring" % tn, highlight=1)
+				dbg.log("Unknown type '%s', ignoring. Valid types: %s" % (tn, ", ".join(valid_types)), highlight=1)
 		if not show_categories:
 			dbg.log("No valid types matched. Valid types: %s" % ", ".join(valid_types), highlight=1)
 			silent = False
