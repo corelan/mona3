@@ -6559,7 +6559,7 @@ class HeapVersion(object):
 	UNKNOWN = "Unknown"
 
 
-class MnListEntry:
+class MnListEntry(object):
 	"""
 	Represents a Windows _LIST_ENTRY doubly-linked list head or node.
 
@@ -9632,8 +9632,9 @@ class MnProc:
 				if chunks:
 					total   = len(chunks)
 					busy    = sum(1 for c in chunks.values() if "busy" in getHeapFlag(c.flag).lower())
-					maxfree = max((c.size * HEAPGRANULARITY for c in chunks.values()
-								   if "free" in getHeapFlag(c.flag).lower()), default=0)
+					free_sizes = [c.size * HEAPGRANULARITY for c in chunks.values()
+								  if "free" in getHeapFlag(c.flag).lower()]
+					maxfree = max(free_sizes) if free_sizes else 0
 					chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
 						total, busy, total - busy, maxfree)
 				corrupt_tag = " ** CORRUPTED **" if seg_corrupted else ""
@@ -9733,8 +9734,9 @@ class MnProc:
 				if chunks:
 					total   = len(chunks)
 					busy    = sum(1 for c in chunks.values() if "busy" in getHeapFlag(c.flag).lower())
-					maxfree = max((c.size * HEAPGRANULARITY for c in chunks.values()
-								   if "free" in getHeapFlag(c.flag).lower()), default=0)
+					free_sizes = [c.size * HEAPGRANULARITY for c in chunks.values()
+								  if "free" in getHeapFlag(c.flag).lower()]
+					maxfree = max(free_sizes) if free_sizes else 0
 					chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
 						total, busy, total - busy, maxfree)
 				corrupt_tag   = " ** CORRUPTED **" if seg_corrupted else ""
