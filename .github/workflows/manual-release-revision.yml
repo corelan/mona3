@@ -32,6 +32,7 @@ jobs:
           fetch-depth: 0
 
       - name: Bump revisions and update release notes
+        id: bump
         run: |
           args=""
 
@@ -46,6 +47,7 @@ jobs:
           python3 .github/scripts/manual_release_bump.py \
             --since "${{ inputs.since_ref }}" \
             --release-notes mona_releasenotes.txt \
+            --github-output "$GITHUB_OUTPUT" \
             $args
 
       - name: Commit changes
@@ -59,5 +61,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add mona.py windbglib.py mona_releasenotes.txt
-          git commit -m "Prepare release revision update"
+          git commit -m "${{ steps.bump.outputs.commit_message }}"
           git push

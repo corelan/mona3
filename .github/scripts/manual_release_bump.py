@@ -135,12 +135,26 @@ def cleanup_old_release_notes(release_notes_file, latest_revisions, max_revision
     path.write_text("\n\n".join(kept_sections).rstrip() + "\n", encoding="utf-8")
 
 
+def build_commit_message(latest_revisions):
+    revision_parts = [
+        f"{name}: {latest_revisions[name]}"
+        for name in ("mona", "windbglib")
+        if name in latest_revisions
+    ]
+
+    if not revision_parts:
+        return "Update revision"
+
+    return f"Update revision ({', '.join(revision_parts)})"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--since", required=True)
     parser.add_argument("--release-notes", required=True)
     parser.add_argument("--file", action="append", required=True)
     parser.add_argument("--name", action="append", required=True)
+    parser.add_argument("--github-output")
     args = parser.parse_args()
 
     if len(args.file) != len(args.name):
@@ -168,6 +182,14 @@ def main():
         latest_revisions,
         max_revision_distance=10,
     )
+
+    commit_message = build_commit_message(latest_revisions)
+    print(f"Commit message: {commit_message}")
+
+    if args.github_output:
+        github_output = Path(args.github_output)
+        with github_output.open("a", encoding="utf-8") as fh:
+            fh.write(f"commit_message={commit_message}\n")
 
 
 if __name__ == "__main__":
