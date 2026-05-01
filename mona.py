@@ -22957,6 +22957,7 @@ def procLayout(args):
 	global silent
 	silent = True
 	include_chunks = False
+	MnProc.ensure()
 
 	# Filter aliases -> internal region types they expand to
 	filter_map = {
@@ -23046,11 +23047,6 @@ def procLayout(args):
 		_sort_val = "elements"
 	element_mode = _sort_val == "elements"
 
-	# Flush cache if -walk is specified
-	if "walk" in args:
-		resetGlobals()
-		dbg.log("Cache flushed, re-walking process...")
-
 	category_mappings = {}
 	category_mappings["PEB"] = "dt _peb @$peb"
 	category_mappings["TEB"] = "%s pl -f teb; !teb" % getAliasName()
@@ -23066,7 +23062,6 @@ def procLayout(args):
 	dbg.log("    Sort mode: %s" % _sort_val)
 	catlist = ",".join(show_categories)
 	dbg.log("    Categories to show: %s" % catlist)
-	MnProc.ensure()
 	want_chunks = include_chunks or "Chunk" in show_categories
 
 	# Build the flat region list for display.
