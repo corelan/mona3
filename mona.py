@@ -544,16 +544,13 @@ def guessAliasName(current_command):
 # Add WinDBG Clickable links to values
 ###
 
-def clickCategoryCmd(category_cmd = ""):
-	cmdoutstr = category_cmd
-	if isWinDBG():
-		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (category_cmd, category_cmd)
-	return cmdoutstr
 
-def clickWinDBGCmd(windbg_cmd = ""):
+def clickWinDBGCmd(windbg_cmd = "", displaytext = ""):
 	cmdoutstr = windbg_cmd
+	if displaytext == "":
+		displaytext = windbg_cmd
 	if isWinDBG():
-		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (windbg_cmd, windbg_cmd)
+		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (windbg_cmd, displaytext)
 	return cmdoutstr
 
 def clickFetchSym(modname, displaytext = ""):
@@ -23145,7 +23142,7 @@ def procLayout(args):
 			category_cmd = ""
 			if category in category_mappings:
 				category_cmd = category_mappings[category]
-			summaryDict[category] = [1, clickCategoryCmd(category_cmd)]
+			summaryDict[category] = [1, clickWinDBGCmd(category_cmd)]
 			summarySeq.append(category)
 
 	dbg.log("")
@@ -23243,8 +23240,8 @@ def _procHeapByAddr(refvalue):
 		return "Segment @ %s" % seg_str
 
 	def _print_one_chunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
-		dbg.log("  [%s]" % label)
 		if chunk is None:
+			dbg.log("    %s" % label)
 			dbg.log("    (none)")
 			dbg.log("")
 			return
@@ -23254,17 +23251,57 @@ def _procHeapByAddr(refvalue):
 		uptr_str  = PTR_PRINT % chunk.userptr
 		heap_str  = PTR_PRINT % mheap.heapbase
 		if isWinDBG():
-			entry_str = "<link cmd=\"!heap -x %s\">%s</link>" % (entry_str, entry_str)
-			dps_count = max(1, chunk.usersize // PTR_SIZE)
-			uptr_str  = "<link cmd=\"dps %s L%x\">%s</link>" % (uptr_str, dps_count, uptr_str)
-			heap_str  = "<link cmd=\"!heap -t -a %s\">%s</link>" % (heap_str, heap_str)
-		dbg.log("    _HEAP_ENTRY          : %s" % entry_str)
-		dbg.log("    UserPtr              : %s" % uptr_str)
-		dbg.log("    UserSize             : 0x%x (%d)" % (chunk.usersize, chunk.usersize))
-		dbg.log("    State                : %s (0x%02x)" % (chunk.flagtxt, chunk.flag))
-		dbg.log("    First 8 bytes @ UserPtr: %s" % first8)
-		dbg.log("    Heap                 : %s" % heap_str)
-		dbg.log("    Context              : %s" % ctx)
+			entry_str   = clickWinDBGCmd(windbg_cmd="!heap -x %s" % entry_str, displaytext=entry_str)
+			dps_formula = "0x%x/%s" % (chunk.usersize, PTR_SIZE)
+			uptr_str    = clickWinDBGCmd(windbg_cmd="dps %s L %s" % (uptr_str, dps_formula), displaytext = uptr_str)
+			heap_str    = clickWinDBGCmd(windbg_cmd="!heap -hl -a %s" % heap_str, displaytext=heap_str)
+		chunkDict = {}
+		chunkDict[entry_str] = [uptr_str, chunk.usersize]
+		headers = ["_HEAP_ENTRY", "UserPtr", "UserSize"]
+		types = ["string", "string", "size"]
+		dbg.log("    %s found in Heap %s, %s:" % (label, heap_str, ctx))  
+		print_dict_table(chunkDict, headers, types, padding = "    ", itemsequence = [])
+		
+		#dbg.log("    _HEAP_ENTRY          : %s" % entry_str)
+		#dbg.log("    UserPtr              : %s" % uptr_str)
+		#dbg.log("    UserSize             : 0x%x (%d)" % (chunk.usersize, chunk.usersize))
+		dbg.log("    State : %s (0x%02x)" % (chunk.flagtxt, chunk.flag))
+		# to do: 
+		# if pointer at UserPtr is a symbol, print the symol
+		# if pointer at UserPtr is part of a module, print the module
+
+		# is there a string at UserPtr or UserPtr+PTR_SIZE
+
+		startpos_offsets = [0, PTR_SIZE] 
+		stringfound=False
+		stringfoundat = 0
+		string_to_print = ""
+		for readpos in startpos_offsets:
+			try:
+				stringinmemory = dbg.readString(chunk.userptr+readpos)
+				if len(stringinmemory) > 1:
+					string_type = "ansi"
+					stringfound = True
+					string_to_print = stringinmemory
+					stringfoundat = chunk.userptr+readpos
+			except:
+				continue
+			if not stringfound:
+				try:
+					stringinmemory = dbg.readString(chunk.userptr+readpos)
+					if len(stringinmemory) > 1:
+						string_type = "unicode"
+						stringfound = True
+						string_to_print = stringinmemory
+						stringfoundat = chunk.userptr+readpos
+				except:
+					continue
+		
+		if stringfound:
+			# only print the first 40 chars
+			dbg.log("    Chunk contains start of a %s string @%s : '<b>%s</b>'" % (string_type, PTR_PRINT % stringfoundat, string_to_print[:40] ))
+		else:
+			dbg.log("    First 8 bytes @ UserPtr: %s" % first8)
 		dbg.log("")
 
 	# -- gather context for found heap --
@@ -23289,9 +23326,9 @@ def _procHeapByAddr(refvalue):
 		next_chunk = sorted_chunks[idx + 1] if idx < len(sorted_chunks) - 1 else None
 		dbg.log("[+] Found chunk at %s  (heap %s)" % (PTR_PRINT % curr_chunk.chunkptr, PTR_PRINT % mH.heapbase))
 		dbg.log("")
-		_print_one_chunk("Previous Chunk", prev_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk("Current Chunk",  curr_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk("Next Chunk",     next_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk("<b>Previous</b> Chunk", prev_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk("<b>* Current</b> Chunk",  curr_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk("<b>Next</b> Chunk",     next_chunk, mH, va_blks, lfh_r, lfh_s)
 
 	elif kind == "va":
 		_, _, vaaddr, vainfo = found_result
