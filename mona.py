@@ -27871,17 +27871,33 @@ def getBanner():
 	banners[5] = bannertext
 
 	bannertext = """
-     __  __   ___   _   _     _       ____   __   __
-    |  \/  | / _ \ | \ | |   / \     |  _ \  \ \ / /
-    | |\/| || | | ||  \| |  / _ \    | |_) |  \ V / 
-    | |  | || |_| || |\  | / ___ \   |  __/    | |  
-    |_|  |_| \___/ |_| \_|/_/   \_\  |_|       |_|  
+     __  __   ___   _   _     _          ____   __   __
+    |  \/  | / _ \ | \ | |   / \        |  _ \  \ \ / /
+    | |\/| || | | ||  \| |  / _ \       | |_) |  \ V / 
+    | |  | || |_| || |\  | / ___ \   _  |  __/    | |  
+    |_|  |_| \___/ |_| \_|/_/   \_\ |_| |_|       |_|  
 
           exploit development swiss army knife
 """
 	banners[6] = bannertext
 
-	
+	bannertext = """
+    C O R E L A N
+                                                          .o8                     
+		oo.ooooo.  oooo oooo    ooo ooo. .oo.    .oooo.o .o888oo  .oooo.   oooo d8b
+		888' `88b  `88. `88.  .8'  `888P"Y88b  d88(  "8   888   `P  )88b  `888""8P
+		888   888   `88..]88..8'    888   888  `"Y88b.    888    .oP"888   888    
+		888   888    `888'`888'     888   888  o.  )88b   888 . d8(  888   888    
+		888bod8P'     `8'  `8'     o888o o888o 8""888P'   "888" `Y888""8o d888b   
+		888                                                                       
+		o888o                           www.corelan-training.com                                           
+"""
+
+	banners[7] = bannertext
+
+	# replace tabs with 2 spaces
+	for ban in banners:
+		banners[ban] = banners[ban].replace("\t","    ")
 
 	# pick random banner
 	bannerlist = []
@@ -29132,6 +29148,12 @@ def main(args):
 				command = "help"
 
 		dbg.log("")
+
+		if command == "banner":
+			dbg.logLines(getBanner(),highlight=1)
+			dbg.log()
+			return
+
 		# make a list of all supported commands and aliases
 		acceptedcommands = {}
 		acceptedaliases = {}
@@ -29150,6 +29172,7 @@ def main(args):
 
 		if command == "" or command == "-h":
 			command = "help"
+		
 
 		# is user trying to run a valid command or alias?
 		if command in acceptedcommands or command in acceptedaliases:
