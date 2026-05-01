@@ -194,131 +194,137 @@ except:
 
 ###
 #
-# Some stuff that needs to happen early on
+# Let's set up the Debugger
 #
 ###
 
 
-dbg = dbglib.Debugger()
 
+class MnDebugger:
+
+	def __init__(self):
+		self.dbg = dbglib.Debugger()
+
+	def isWinDBG(self):
+		if __DEBUGGERAPP__ == "WinDBG":
+			return True
+		return False		
+
+	def isImmunity(self):
+		if __DEBUGGERAPP__ == "Immunity Debugger":
+			return True
+		return False
+
+	def getWinDBGVersion(self):
+		"""
+		Determine whether the current debugger host appears to be WinDBGX.
+
+		Detection logic:
+			WinDBG Classic is normally launched as windbg.exe from the Windows Kits
+			Debuggers folder.
+
+			WinDBGX does not run the debugger engine directly as windbg.exe.
+			The engine host runs via EngHost.exe from the WindowsApps package path,
+			for example:
+
+				C:\\Program Files\\WindowsApps\\Microsoft.WinDbg_...\\x86\\EngHost.exe
+
+			Therefore, we detect WinDBGX by looking for strong indicators in the
+			'version' output:
+				- WindowsApps\\Microsoft.WinDbg_
+				- EngHost.exe
+				- npipe:pipe=DbgX_
+
+			These are much better indicators than the dbgeng version number,
+			because both Classic and WinDBGX report a Microsoft Windows Debugger
+			engine version in the 10.x range.
+		"""
+
+		if self.isWinDBG():
+
+			global windbgflavor
+			global windbgprettyname
+
+			if windbgflavor == "" or windbgflavor == "unknown":
+
+				version_lines = []
+
+				try:
+					output = self.dbg.nativeCommand("version")
+					version_lines = output.split("\n")
+				except:
+					self.dbgp("Unable to execute command to get WinDBG version")
+
+				if not version_lines:
+					# assume it's windbg classic
+					windbgflavor = "windbg"
+					windbgprettyname = "WinDBG Classic"
+					return
+
+
+				text = "\n".join([str(line) for line in version_lines])
+				text_l = text.lower()
+
+				windbgx_indicators = [
+					"windowsapps\\microsoft.windbg_",
+					"enghost.exe",
+					"npipe:pipe=dbgx_"
+				]
+
+				classic_indicators = [
+					"windbg.exe",
+					"\\windows kits\\10\\debuggers\\",
+					"\\windows kits\\8.1\\debuggers\\",
+					"\\windows kits\\8.0\\debuggers\\"
+				]
+
+				matched_windbgx = []
+				for indicator in windbgx_indicators:
+					if indicator in text_l:
+						matched_windbgx.append(indicator)
+
+				if matched_windbgx:
+					windbgflavor = "windbgx"
+					windbgprettyname = "WinDBGX"
+					return
+
+				matched_classic = []
+				for indicator in classic_indicators:
+					if indicator in text_l:
+						matched_classic.append(indicator)
+
+				if matched_classic:
+					windbgflavor = "windbg"
+					windbgprettyname = "WinDBG Classic"
+					return
+
+				windbgflavor = "unknown"
+				windbgprettyname = "Unknown Debugger"
+
+	def get_current_datetime(self):
+		return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+
+	def get_current_datetime_flat(self):
+		return time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time()))
+
+	def dbgp(self, s, highlight=False, errormode = False):
+		# print debug information
+		msgprefix = ""
+		if errormode:
+			msgprefix = " - ERR"
+			highlight = True
+		if DEBUG_MODE:
+			try:
+				self.dbg.log("[MONA DEBUG%s] %s | %s" % (msgprefix, self.get_current_datetime(),s), highlight=highlight)
+			except Exception as e:
+				self.dbg.log("[MONA DEBUG - error] %s | %s" % (self.get_current_datetime(), str(e)), highlight=True)
+				pass
+
+
+mndbg = MnDebugger()
+dbg = mndbg.dbg
 
 commands = {}
-
-
-
-def isWinDBG():
-	if __DEBUGGERAPP__ == "WinDBG":
-		return True
-	return False
-
-
-def isImmunity():
-	if __DEBUGGERAPP__ == "Immunity Debugger":
-		return True
-	return False
-
-
-def dbgp(s, highlight=False, errormode = False):
-	# print debug information
-	msgprefix = ""
-	if errormode:
-		msgprefix = " - ERR"
-		highlight = True
-	if DEBUG_MODE:
-		try:
-			dbg.log("[MONA DEBUG%s] %s | %s" % (msgprefix, get_current_datetime(),s), highlight=highlight)
-		except Exception as e:
-			dbg.log("[MONA DEBUG - error] %s | %s" % (get_current_datetime(), str(e)), highlight=True)
-			pass
-
-
-
-def getWinDBGVersion():
-	"""
-	Determine whether the current debugger host appears to be WinDBGX.
-
-	Detection logic:
-		WinDBG Classic is normally launched as windbg.exe from the Windows Kits
-		Debuggers folder.
-
-		WinDBGX does not run the debugger engine directly as windbg.exe.
-		The engine host runs via EngHost.exe from the WindowsApps package path,
-		for example:
-
-			C:\\Program Files\\WindowsApps\\Microsoft.WinDbg_...\\x86\\EngHost.exe
-
-		Therefore, we detect WinDBGX by looking for strong indicators in the
-		'version' output:
-			- WindowsApps\\Microsoft.WinDbg_
-			- EngHost.exe
-			- npipe:pipe=DbgX_
-
-		These are much better indicators than the dbgeng version number,
-		because both Classic and WinDBGX report a Microsoft Windows Debugger
-		engine version in the 10.x range.
-	"""
-
-	if isWinDBG():
-
-		global windbgflavor
-		global windbgprettyname
-
-		if windbgflavor == "" or windbgflavor == "unknown":
-
-			version_lines = []
-
-			try:
-				output = dbg.nativeCommand("version")
-				version_lines = output.split("\n")
-			except:
-				dbgp("Unable to execute command to get WinDBG version")
-
-			if not version_lines:
-				# assume it's windbg classic
-				windbgflavor = "windbg"
-				windbgprettyname = "WinDBG Classic"
-				return
-				
-
-			text = "\n".join([str(line) for line in version_lines])
-			text_l = text.lower()
-
-			windbgx_indicators = [
-				"windowsapps\\microsoft.windbg_",
-				"enghost.exe",
-				"npipe:pipe=dbgx_"
-			]
-
-			classic_indicators = [
-				"windbg.exe",
-				"\\windows kits\\10\\debuggers\\",
-				"\\windows kits\\8.1\\debuggers\\",
-				"\\windows kits\\8.0\\debuggers\\"
-			]
-
-			matched_windbgx = []
-			for indicator in windbgx_indicators:
-				if indicator in text_l:
-					matched_windbgx.append(indicator)
-
-			if matched_windbgx:
-				windbgflavor = "windbgx"
-				windbgprettyname = "WinDBGX"
-				return
-
-			matched_classic = []
-			for indicator in classic_indicators:
-				if indicator in text_l:
-					matched_classic.append(indicator)
-
-			if matched_classic:
-				windbgflavor = "windbg"
-				windbgprettyname = "WinDBG Classic"
-				return
-
-			windbgflavor = "unknown"
-			windbgprettyname = "Unknown Debugger"
-
 
 
 def _ensureSymbolCache(auto_fix=False):
@@ -330,14 +336,14 @@ def _ensureSymbolCache(auto_fix=False):
 	Also populates _sym_cache_dirs for use by showModuleTable.
 	"""
 	global _sym_cache_dirs
-	if not isWinDBG():
+	if not mndbg.isWinDBG():
 		return []
 
 	# this will initialize windbgflavor to either "windbg" or "windbgx"
 	# and windbgprettyname to "WinDBG Classic" or "WinDBGX"
-	getWinDBGVersion()
+	mndbg.getWinDBGVersion()
 
-	dbgp("Active Debugger Flavor: %s" % windbgprettyname)
+	mndbg.dbgp("Active Debugger Flavor: %s" % windbgprettyname)
 
 	raw = dbglib.getSymbolPath().replace(" ", "")
 	ms_symbol_server = "https://msdl.microsoft.com/download/symbols"
@@ -361,9 +367,9 @@ def _ensureSymbolCache(auto_fix=False):
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
-	dbgp("Cache_dirs: %s" % cache_dirs)
+	mndbg.dbgp("Cache_dirs: %s" % cache_dirs)
 	for d in cache_dirs:
-		dbgp("%s" % d)
+		mndbg.dbgp("%s" % d)
 
 	if cache_dirs:
 		_sym_cache_dirs = cache_dirs
@@ -417,7 +423,7 @@ def _hasSymbolsCached(mod):
 #
 # Initialization of a bunch of stuff
 #
-if isWinDBG():
+if mndbg.isWinDBG():
 	_ensureSymbolCache(auto_fix=True)
 
 osver = dbg.getOsVersion()
@@ -462,33 +468,33 @@ if not win7mode:
 def getAliasName():
 	global aliasname
 	if aliasname == "":
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 		aliasname = "!mona"
 		monaConfig = MnConfig()
 		configalias = monaConfig.get("alias")
 		if len(configalias) > 0:
 			aliasname = configalias
-			dbgp("Alias taken from mona config")
+			mndbg.dbgp("Alias taken from mona config")
 		else:
-			if isWinDBG():
+			if mndbg.isWinDBG():
 				launchcmd = getLaunchCommand()
 				if launchcmd != "": 
 					guessedname = guessAliasName(launchcmd)
 					if guessedname != "":
 						aliasname = guessedname
-						dbgp("Alias guessed using windbg alias list")
+						mndbg.dbgp("Alias guessed using windbg alias list")
 			else:
 				# Immunity, 
 				# get the actual script name
 				sname = get_script_name() 
 				if not sname == "unknown":
 					aliasname = "!%s" % sname
-		dbgp("Alias to use: %s" % aliasname)
+		mndbg.dbgp("Alias to use: %s" % aliasname)
 	return aliasname
 
 
 def getLaunchCommand():
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	launchcmd = ""
 	entire_command = ""
@@ -499,13 +505,13 @@ def getLaunchCommand():
 		launchcmd = str(sys.argv[0]).strip().strip("\"'")
 	#if launchcmd != "":
 	#	entire_command = "!py -%d.%d %s" % (sys.version_info[0], sys.version_info[1], launchcmd)
-	dbgp("LaunchCommand: %s" % launchcmd)
-	#dbgp("EntireCommand: %s" % entire_command)
+	mndbg.dbgp("LaunchCommand: %s" % launchcmd)
+	#mndbg.dbgp("EntireCommand: %s" % entire_command)
 	return launchcmd
 
 
 def guessAliasName(current_command):
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	# if WinDBG, check the aliases
 	# and see if there is one that matches with 
@@ -536,7 +542,7 @@ def guessAliasName(current_command):
 				break
 	except:
 		pass
-	dbgp("Guessed alias name: %s" % aliasname)
+	mndbg.dbgp("Guessed alias name: %s" % aliasname)
 	guessedAlias = aliasname
 	return aliasname
 
@@ -549,13 +555,13 @@ def clickWinDBGCmd(windbg_cmd = "", displaytext = ""):
 	cmdoutstr = windbg_cmd
 	if displaytext == "":
 		displaytext = windbg_cmd
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (windbg_cmd, displaytext)
 	return cmdoutstr
 
 def clickFetchSym(modname, displaytext = ""):
 	cmdoutstr = displaytext
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		cmd = "%s sym -f -m %s" % (getAliasName(), modname)
 		cmdoutstr = "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
 	return cmdoutstr
@@ -566,7 +572,7 @@ def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	displaystr = fmtted_ptr
 	if not displaytext == "":
 		displaystr = displaytext 
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		sizearg = ""
 		if chunksize > 0:
 			sizearg = "-s 0x%x" % chunksize
@@ -579,7 +585,7 @@ def clickModuleName(modname = "", displaytext = ""):
 	clickstr = modname
 	if displaytext == "":
 		displaytext = modname
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		clickstr = "<link cmd=\"%s modinfo -m %s\">%s</link>" % (getAliasName(), modname, displaytext)
 	return clickstr
 
@@ -592,7 +598,7 @@ def clickDisassemble(locstr = ""):
 def clickStackPtr(stackptr = 0):
 	stackptrstr = ""
 	fmtted_ptr = PTR_PRINT % stackptr
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		stackptrstr = "<link cmd=\"%s pageacl -a %s \">%s</link>" % (getAliasName(), fmtted_ptr, fmtted_ptr)
 	else:
 		stackptrstr = fmtted_ptr
@@ -601,7 +607,7 @@ def clickStackPtr(stackptr = 0):
 def clickPageAcl(ptrinfo = 0):
 	infoptrstr = ""
 	fmtted_ptr = PTR_PRINT % ptrinfo
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		infoptrstr = "<link cmd=\"%s pageacl -a %s \">Info</link>" % (getAliasName(), fmtted_ptr)
 	else:
 		infoptrstr = fmtted_ptr
@@ -609,7 +615,7 @@ def clickPageAcl(ptrinfo = 0):
 
 def clickPEB(pebstr = ""):
 	pebstrout = pebstr
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		pebstrout = "<link cmd=\"dt _PEB @$peb\">%s</link>" % pebstr
 	return pebstrout
 
@@ -619,7 +625,7 @@ def clickTEB(tebptr = 0, displaytext = ""):
 	if tebptrstr_display == "":
 		tebptrstr_display = tebptrstr
 	tebstrout = ""
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		tebstrout = "<link cmd=\"dt _TEB %s\">%s</link>" % (tebptrstr, tebptrstr_display)
 	return tebstrout
 
@@ -629,7 +635,7 @@ def clickHeapWinDBG(heapbase, heaptype="nt", displaytext=""):
 	if heap_display == "":
 		heap_display = heapbasestr
 	heapstrout = ""
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		if heaptype == "nt":
 			heapstrout = "<link cmd=\"dt _HEAP %s\">%s</link>" % (heapbasestr, heap_display)
 		elif heaptype == "segment":
@@ -642,7 +648,7 @@ def clickSegmentWinDBG(segmentbase, heaptype="nt", displaytext=""):
 	if segment_display == "":
 		segment_display = segmentbasestr
 	segmentstrout = ""
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		if heaptype == "nt":
 			segmentstrout = "<link cmd=\"dt _HEAP_SEGMENT %s\">%s</link>" % (segmentbasestr, segment_display)
 		elif heaptype == "segment":
@@ -735,8 +741,8 @@ def getAllRegisters():
 	"""
 	Makes a dict of all valid registers and their values on the current architecture
 	"""
-	dbgp(get_current_function_name())
-	if isImmunity():
+	mndbg.dbgp(get_current_function_name())
+	if mndbg.isImmunity():
 		return getRegisters()
 	else:
 		return dbg.getRegs()
@@ -907,11 +913,6 @@ def get_current_function_name():
         del frame	
 
 
-def get_current_datetime():
-	return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
-
-def get_current_datetime_flat():
-	return time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time()))
 
 
 def getPythonVersion():
@@ -1211,7 +1212,7 @@ def getAddyArg(argaddy):
 	addypartsint = []
 	delimchars = ["-","+","*","/","(",")","&","|",">","<"]
 	regs = getAllRegisters()
-	dbgp("getAddyArg parser: supports 0x.. / ..h hex and 0n.. / ..n decimal")
+	mndbg.dbgp("getAddyArg parser: supports 0x.. / ..h hex and 0n.. / ..n decimal")
 
 	def _tokenize_addy_expression(expr):
 		parts = []
@@ -1257,17 +1258,17 @@ def getAddyArg(argaddy):
 			if ptraddyok:
 				try:
 					ptrval = struct.unpack(PTR_FMT, dbg.readMemory(ptraddy, PTR_SIZE))[0]
-					dbgp("Dereferenced address %s, got value %s" % ((PTR_PRINT % ptraddy), (PTR_PRINT % ptrval)))
+					mndbg.dbgp("Dereferenced address %s, got value %s" % ((PTR_PRINT % ptraddy), (PTR_PRINT % ptrval)))
 					return ptrval, True
 				except Exception:
-					dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE), errormode=False)
+					mndbg.dbgp("Unable to dereference address %s, I tried reading %d bytes" % ((PTR_PRINT % ptraddy), PTR_SIZE), errormode=False)
 					return 0, False
 			return 0, False
 
 		if partlower.startswith("0n"):
 			try:
 				decval = int(partlower.replace("0n", "", 1))
-				dbgp("  Detected decimal prefix 0n, value: %d" % decval)
+				mndbg.dbgp("  Detected decimal prefix 0n, value: %d" % decval)
 				return decval, True
 			except:
 				pass
@@ -1275,18 +1276,18 @@ def getAddyArg(argaddy):
 			# Accept decimal constants ending in 'n', e.g. 10n.
 			if partlower.endswith("n") and len(partlower) > 1 and partlower[:-1].isdigit():
 				decval = int(partlower[:-1])
-				dbgp("  Detected decimal suffix n, value: %d" % decval)
+				mndbg.dbgp("  Detected decimal suffix n, value: %d" % decval)
 				return decval, True
 
 			hexpart = partlower.replace("0x", "", 1)
 			# Accept MASM-style hex constants ending in 'h', e.g. 0Ch / 10h.
 			# To avoid ambiguity with symbols/module names, only treat as hex when it starts with a digit.
 			if hexpart.endswith("h") and len(hexpart) > 1 and hexpart[0].isdigit():
-				dbgp("  Detected hex suffix h, normalized %s -> %s" % (hexpart, hexpart[:-1]))
+				mndbg.dbgp("  Detected hex suffix h, normalized %s -> %s" % (hexpart, hexpart[:-1]))
 				hexpart = hexpart[:-1]
-			dbgp("Check if hexparts %s is an address" % hexpart)
+			mndbg.dbgp("Check if hexparts %s is an address" % hexpart)
 			if isAddress(hexpart):
-				dbgp("Yes, returning %s, True" % (PTR_PRINT % hexStrToInt(hexpart)))
+				mndbg.dbgp("Yes, returning %s, True" % (PTR_PRINT % hexStrToInt(hexpart)))
 				return hexStrToInt(hexpart), True
 
 		m = getModuleObj(partclean)
@@ -1300,7 +1301,7 @@ def getAddyArg(argaddy):
 				if funcaddy > 0:
 					return funcaddy, True
 
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			try:
 				symboladdy = dbg.resolveSymbol(partclean)
 				if symboladdy != "":
@@ -1310,7 +1311,7 @@ def getAddyArg(argaddy):
 			except:
 				pass
 		
-		dbgp("Unable to resolve part %s as register, module, symbol or address. Return False" % partclean)
+		mndbg.dbgp("Unable to resolve part %s as register, module, symbol or address. Return False" % partclean)
 		return 0, False
 
 	if str(argaddy).strip().lower() == "stack":
@@ -1318,20 +1319,20 @@ def getAddyArg(argaddy):
 
 	if str(argaddy).strip().lower() in regs:
 		thisreg = str(argaddy).strip().lower()
-		dbgp("Argument %s is a register, value: %s" % (argaddy, PTR_PRINT % regs[thisreg]))
+		mndbg.dbgp("Argument %s is a register, value: %s" % (argaddy, PTR_PRINT % regs[thisreg]))
 		return regs[thisreg], True
 
 	argaddy = str(argaddy).strip().replace("`","")
 	addyparts = _tokenize_addy_expression(argaddy)
-	dbgp("Tokenized addy expression: %s" % addyparts)
+	mndbg.dbgp("Tokenized addy expression: %s" % addyparts)
 
 	partok = False
 	for part in addyparts:
 		if not part in delimchars:
 			cleaned = str(part).strip()
-			dbgp("Trying to resolve part %s" % cleaned)
+			mndbg.dbgp("Trying to resolve part %s" % cleaned)
 			partval,partok = _resolve_part(cleaned)
-			dbgp("  Resolved %s into %s, Success: %s" % (cleaned, PTR_PRINT % partval, partok))
+			mndbg.dbgp("  Resolved %s into %s, Success: %s" % (cleaned, PTR_PRINT % partval, partok))
 			if not partok:
 				break
 			addypartsint.append(partval)
@@ -2022,19 +2023,19 @@ def fileToBin(filename):
 	bytearray_content = []
 	clean_filename = _to_text(filename).replace("'", "").replace('"', "")
 
-	dbgp("fileToBin() reading file: %s" % clean_filename)
+	mndbg.dbgp("fileToBin() reading file: %s" % clean_filename)
 
 	if not os.path.isfile(clean_filename):
-		dbgp("fileToBin() error: file does not exist: %s" % clean_filename, highlight=True)
+		mndbg.dbgp("fileToBin() error: file does not exist: %s" % clean_filename, highlight=True)
 		return bytearray_content
 
 	try:
 		with open(clean_filename, "rb") as infile:
 			content = infile.read()
 		bytearray_content = [_ord(c) for c in content]
-		dbgp("fileToBin() read %d bytes from %s" % (len(bytearray_content), clean_filename))
+		mndbg.dbgp("fileToBin() read %d bytes from %s" % (len(bytearray_content), clean_filename))
 	except Exception as e:
-		dbgp("fileToBin() error reading %s: %s" % (clean_filename, str(e)), highlight=True, errormode=False)
+		mndbg.dbgp("fileToBin() error reading %s: %s" % (clean_filename, str(e)), highlight=True, errormode=False)
 		return []
 
 	return bytearray_content
@@ -2826,7 +2827,7 @@ def splitToPtrInstr(input):
 	if thisline_stripped.startswith(startswith_arg):
 		#get the pointer
 		parts = split1.split(input_stripped)
-		#dbgp("Parts: %s" % parts)
+		#mndbg.dbgp("Parts: %s" % parts)
 		part1 = parts[0].replace(newline_arg, "").replace(carriage_arg, "")
 		part1_lc = part1.lower()
 		# Accept both 32-bit (8 hex digits) and 64-bit (up to 16 hex digits) pointers.
@@ -3451,7 +3452,7 @@ def getModuleObj(modname):
 		modname_search = modname + suf	
 		
 		#WinDBG optimized
-		if isWinDBG():	
+		if mndbg.isWinDBG():	
 			for tmod_s in allmod:
 				tmod = dbg.getModule(tmod_s)
 				if not tmod == None:
@@ -3809,16 +3810,16 @@ def readPtrSizeBytes(ptr):
 	expected = PTR_SIZE
 	fmt = PTR_FMT
 	if not data or len(data) < expected:
-		dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
+		mndbg.dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
 		return 0
 	return struct.unpack(fmt, data)[0]
 
 def _parseOsVersion():
 	global osVersion
 	if osVersion is None:
-		dbgp("No OS Version known, crawling it")
+		mndbg.dbgp("No OS Version known, crawling it")
 		osrelease = dbg.getOsRelease()
-		dbgp("_parseOsVersion(): osrelease='%s' (type: %s)" % (str(osrelease), type(osrelease).__name__))
+		mndbg.dbgp("_parseOsVersion(): osrelease='%s' (type: %s)" % (str(osrelease), type(osrelease).__name__))
 
 		osVersion = {
 			"major": 0,
@@ -4259,7 +4260,7 @@ class MnConfig:
 	def __init__(self):
 		global configwarningshown
 
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		self.configfile = "mona.ini"
 
@@ -4290,9 +4291,9 @@ class MnConfig:
 		except Exception as e:
 			dbg.log(" ** Warning: unable to migrate mona.ini from %s to %s : %s" % (self.legacyfullpath, self.fullpath, str(e)), highlight=1)
 
-		dbgp("MnConfig using config file: %s" % self.fullpath)
+		mndbg.dbgp("MnConfig using config file: %s" % self.fullpath)
 
-		if isImmunity():
+		if mndbg.isImmunity():
 			try:
 				immunity_path = dbg.getImmunityPath()
 				expected_path = os.path.join(immunity_path, "PyCommands")
@@ -4312,7 +4313,7 @@ class MnConfig:
 	def list(self):
 		global configFileCache
 
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		configFileCache = {}
 		headers = ["Parameter", "Value"]
@@ -4324,11 +4325,11 @@ class MnConfig:
 				content = configfileobj.readlines()
 				configfileobj.close()
 
-				dbgp("    Reading config content line by line")
+				mndbg.dbgp("    Reading config content line by line")
 
 				for thisLine in content:
 					thisLine = thisLine.decode("latin-1").strip()
-					dbgp("    Line: %s" % thisLine)
+					mndbg.dbgp("    Line: %s" % thisLine)
 
 					if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 						thisparam, thisvalue = thisLine.split("=", 1)
@@ -4336,12 +4337,12 @@ class MnConfig:
 						thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
 						configFileCache[thisparam] = thisvalue
 
-						dbgp("Added parameter %s with value %s to configFileCache %s" % (thisparam, thisvalue, configFileCache))
+						mndbg.dbgp("Added parameter %s with value %s to configFileCache %s" % (thisparam, thisvalue, configFileCache))
 
 				print_dict_table(configFileCache, headers, types, padding="      ", itemsequence=[])
 
 			except Exception as e:
-				dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
+				mndbg.dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
 
 	def get(self, parameter):
 		"""
@@ -4357,7 +4358,7 @@ class MnConfig:
 		"""
 		global configFileCache
 
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		toreturn = ""
 		paramkey = parameter.strip().lower()
@@ -4372,12 +4373,12 @@ class MnConfig:
 					content = configfileobj.readlines()
 					configfileobj.close()
 
-					dbgp("    Reading config content line by line")
+					mndbg.dbgp("    Reading config content line by line")
 
 					for thisLine in content:
 						thisLine = thisLine.decode("latin-1").strip()
 
-						dbgp("    Line: %s" % thisLine)
+						mndbg.dbgp("    Line: %s" % thisLine)
 
 						if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 							thisparam, thisvalue = thisLine.split("=", 1)
@@ -4391,10 +4392,10 @@ class MnConfig:
 								toreturn = thisvalue
 
 				except Exception as e:
-					dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
+					mndbg.dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
 					toreturn = ""
 			else:
-				dbgp("Config file %s does not seem to exist" % self.fullpath)
+				mndbg.dbgp("Config file %s does not seem to exist" % self.fullpath)
 
 		return toreturn
 
@@ -4411,7 +4412,7 @@ class MnConfig:
 		"""
 		global configFileCache
 
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		paramkey = parameter.strip().lower()
 		paramvalue = str(paramvalue).strip()
@@ -4420,8 +4421,8 @@ class MnConfig:
 			configFileCache[paramkey] = paramvalue
 
 		if os.path.exists(self.fullpath):
-			dbgp("Editing existing config file %s" % self.fullpath)
-			dbgp("Setting parameter %s to %s" % (parameter, paramvalue))
+			mndbg.dbgp("Editing existing config file %s" % self.fullpath)
+			mndbg.dbgp("Setting parameter %s to %s" % (parameter, paramvalue))
 
 			try:
 				configfileobj = open(self.fullpath, "r")
@@ -4485,15 +4486,15 @@ class MnConfig:
 		"""
 		global configFileCache
 
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		paramdel = parameter.lower().strip()
 		if paramdel in configFileCache:
 			del configFileCache[paramdel]
 
 		if os.path.exists(self.fullpath):
-			dbgp("Editing existing config file %s" % self.fullpath)
-			dbgp("Removing / clearing parameter %s " % parameter)
+			mndbg.dbgp("Editing existing config file %s" % self.fullpath)
+			mndbg.dbgp("Removing / clearing parameter %s " % parameter)
 
 			try:
 				configfileobj = open(self.fullpath, "r")
@@ -4529,7 +4530,7 @@ class MnLog:
 	Class to perform logfile operations
 	"""
 	def __init__(self, filename, numbered=False):
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 		self.filename = filename
 		self.numbered = numbered
 
@@ -4593,10 +4594,10 @@ class MnLog:
 		Return:
 		full path to the logfile name.
 		"""	
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 		global noheader
 		if clear:
-			dbgp("Filename: %s" % self.filename)
+			mndbg.dbgp("Filename: %s" % self.filename)
 			if not silent:
 				dbg.log("")
 				if self.numbered:
@@ -4612,7 +4613,7 @@ class MnLog:
 		
 		thisconfig = MnConfig()
 		workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
-		dbgp("Workingfolder: %s" % workingfolder)
+		mndbg.dbgp("Workingfolder: %s" % workingfolder)
 
 		#strip extension from debuggedname
 		parts = debuggedname.split(".")
@@ -4665,7 +4666,7 @@ class MnLog:
 						thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
 						thisversion = thisversion.replace("'","")
 						dbgpretty = "Immunity Debugger"
-						if isWinDBG():
+						if mndbg.isWinDBG():
 							dbgpretty = windbgprettyname
 						fh.write("  Output generated by mona.py v%s.%s (%s %dbit)\n" % (thisversion, thisrevision, dbgpretty, arch))
 						fh.write("  https://www.corelan.be | https://github.com/corelan/mona3\n")
@@ -4678,7 +4679,7 @@ class MnLog:
 						currmonaargs = " ".join(x for x in currentArgs)
 						fh.write("  You ran: %s\n" % currmonaargs)
 						fh.write("=" * separatorlength + '\n')
-						fh.write("  " + get_current_datetime() + "\n")
+						fh.write("  " + mndbg.get_current_datetime() + "\n")
 						fh.write("=" * separatorlength + '\n')
 				except:
 					pass
@@ -4693,8 +4694,8 @@ class MnLog:
 				if not skipModuleTable:
 					showModuleTable(logfile)
 			except Exception as e:
-				dbgp("showModuleTable failed: %s" % str(e), errormode=False)
-				dbgp(traceback.format_exc(), errormode=False)
+				mndbg.dbgp("showModuleTable failed: %s" % str(e), errormode=False)
+				mndbg.dbgp(traceback.format_exc(), errormode=False)
 		return logfile
 		
 	def write(self,entry,logfile):
@@ -4750,7 +4751,7 @@ class MnQueue:
 	Simple queue class
 	"""
 	def __init__(self):
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		self.holder = []
 		
@@ -4909,8 +4910,8 @@ class MnModule: # TODO: Add getters
 			return iter(self.entries)
 
 	def __init__(self, modulename, mzbase=0, path=""):
-		dbgp(get_current_function_name())
-		dbgp("Creating MnModule object for module '%s'" % modulename)
+		mndbg.dbgp(get_current_function_name())
+		mndbg.dbgp("Creating MnModule object for module '%s'" % modulename)
 		self.IAT = {}
 		self.EAT = {}
 		self.internalname = modulename
@@ -5176,10 +5177,10 @@ class MnModule: # TODO: Add getters
 		module_key = self.moduleKey or self.internalname
 		if module_key in CFGTableCache:
 			self.moduleCFGTable = CFGTableCache[module_key]
-			dbgp("Returning CFG Table for %s from cache" % module_key)
+			mndbg.dbgp("Returning CFG Table for %s from cache" % module_key)
 			return self.moduleCFGTable
 
-		dbgp("Creating CFG Table for %s from memory" % module_key)
+		mndbg.dbgp("Creating CFG Table for %s from memory" % module_key)
 		
 		cfg_table = self.moduleCFGTable
 		cfg_table.reset(self.moduleBase)
@@ -5286,18 +5287,18 @@ class MnModule: # TODO: Add getters
 					cfg_table.cfg_count = cfg_count or 0
 					cfg_table.guard_flags = guard_flags or 0
 					cfg_table.guard_flag_names = [name for bit, name, desc in set_gflags]
-					dbgp("   GuardFlags       : 0x%08x" % guard_flags)
+					mndbg.dbgp("   GuardFlags       : 0x%08x" % guard_flags)
 					for bit, name, desc in set_gflags:
-						dbgp("     [+] %-40s %s" % (name, desc))
+						mndbg.dbgp("     [+] %-40s %s" % (name, desc))
 					if cfg_count:
 						if arch == 64:
-							dbgp("   CFG table        : 0x%016x  (%d entries)" % (cfg_table_va, cfg_count))
-							dbgp("   CF check fptr    : 0x%016x" % cfg_check_fp)
-							dbgp("   CF dispatch fptr : 0x%016x" % cfg_dispatch_fp)
+							mndbg.dbgp("   CFG table        : 0x%016x  (%d entries)" % (cfg_table_va, cfg_count))
+							mndbg.dbgp("   CF check fptr    : 0x%016x" % cfg_check_fp)
+							mndbg.dbgp("   CF dispatch fptr : 0x%016x" % cfg_dispatch_fp)
 						else:
-							dbgp("   CFG table        : 0x%08x  (%d entries)" % (cfg_table_va, cfg_count))
-							dbgp("   CF check fptr    : 0x%08x" % cfg_check_fp)
-							dbgp("   CF dispatch fptr : 0x%08x" % cfg_dispatch_fp)
+							mndbg.dbgp("   CFG table        : 0x%08x  (%d entries)" % (cfg_table_va, cfg_count))
+							mndbg.dbgp("   CF check fptr    : 0x%08x" % cfg_check_fp)
+							mndbg.dbgp("   CF dispatch fptr : 0x%08x" % cfg_dispatch_fp)
 
 						# read the entires in the table
 						extra_size = (guard_flags & IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_MASK) >> IMAGE_GUARD_CF_FUNCTION_TABLE_SIZE_SHIFT
@@ -5313,7 +5314,7 @@ class MnModule: # TODO: Add getters
 						content = dbg.readMemory(cfg_table_va, total_size)
 						content = _to_bytes(content)
 
-						dbgp("CFG Table content: %d bytes" % len(content))
+						mndbg.dbgp("CFG Table content: %d bytes" % len(content))
 
 						#print("[+] CFG function table")
 						#print("    Table VA    : 0x%08x" % cfg_table_va)
@@ -5325,7 +5326,7 @@ class MnModule: # TODO: Add getters
 						for i in range(cfg_count):
 							off = i * entry_size
 							entry = content[off:off + entry_size]
-							#dbgp("  %s" % bin2hex(entry))
+							#mndbg.dbgp("  %s" % bin2hex(entry))
 
 							if len(entry) < 4:
 								break
@@ -5343,14 +5344,14 @@ class MnModule: # TODO: Add getters
 							cfg_table.add_entry(rva, flag_byte, flags)
 
 					CFGTableCache[module_key] = cfg_table
-					dbgp("Added CFGTable to cache for module %s" % module_key)
+					mndbg.dbgp("Added CFGTable to cache for module %s" % module_key)
 					return cfg_table
 				
 				CFGTableCache[module_key] = cfg_table
 			return cfg_table
 
 		except Exception as e:
-			dbgp("Error - unable to get CFG Table for module %s: %s" % (module_key, str(e)), errormode=False)
+			mndbg.dbgp("Error - unable to get CFG Table for module %s: %s" % (module_key, str(e)), errormode=False)
 			CFGTableCache[module_key] = cfg_table
 			return cfg_table
 
@@ -5687,9 +5688,9 @@ class MnModule: # TODO: Add getters
 			if arch == 32:
 				outstring = "[" + modname + "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) + ", SafeSEH: " + str(self.isSafeSEH) + ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 			else:
-				dbgp("Module %s" % self.moduleKey)
-				dbgp(" ModuleCharacteristics: 0x%x" % self.moduleDllCharacteristics)
-				dbgp(" Version: %s" % self.moduleVersion)
+				mndbg.dbgp("Module %s" % self.moduleKey)
+				mndbg.dbgp(" ModuleCharacteristics: 0x%x" % self.moduleDllCharacteristics)
+				mndbg.dbgp(" Version: %s" % self.moduleVersion)
 				outstring = "[" + modname+ "] ASLR: " + str(self.isAslr) + ", Rebase: " + str(self.isRebase) +  ", CFG: " + str(self.isCFG) +  ", OS: " + str(self.isOS) + ", v" + self.moduleVersion + " (" + self.modulePath + "), 0x%x" % self.moduleDllCharacteristics 
 		else:
 			outstring = "[None]"
@@ -5762,8 +5763,8 @@ class MnModule: # TODO: Add getters
 	def getIAT(self):
 		IAT = {}
 		#dbg.log("")
-		dbgp(get_current_function_name())
-		dbgp("    Getting IAT for %s." % (self.moduleKey))
+		mndbg.dbgp(get_current_function_name())
+		mndbg.dbgp("    Getting IAT for %s." % (self.moduleKey))
 		try:
 			if not self.moduleKey in mnproc.IATCache:  # if len(self.IAT) == 0:
 				
@@ -5807,7 +5808,7 @@ class MnModule: # TODO: Add getters
 
 						if importtable_rva > 0 and importtable_size > 0:
 							importDescAddr = self.moduleBase + importtable_rva
-							dbgp("      Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
+							mndbg.dbgp("      Import table at 0x%08x, size 0x%08x" % (importDescAddr, importtable_size))
 
 							desc_index = 0
 							while True:
@@ -5839,9 +5840,9 @@ class MnModule: # TODO: Add getters
 								lookup_va = self.moduleBase + lookup_rva
 								iat_va = self.moduleBase + first_thunk
 
-								dbgp("      Import descriptor for %s" % dllname)
-								dbgp("        lookup_va : 0x%x" % lookup_va)
-								dbgp("        iat_va    : 0x%x" % iat_va)
+								mndbg.dbgp("      Import descriptor for %s" % dllname)
+								mndbg.dbgp("        lookup_va : 0x%x" % lookup_va)
+								mndbg.dbgp("        iat_va    : 0x%x" % iat_va)
 
 								thunk_index = 0
 								while True:
@@ -5902,13 +5903,13 @@ class MnModule: # TODO: Add getters
 
 									if funcname != "":
 										IAT[iat_entry_va] = funcname
-										dbgp("      Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
+										mndbg.dbgp("      Update IAT[0x%x] to %s" % (iat_entry_va, IAT[iat_entry_va]))
 
 									thunk_index += 1
 
 								desc_index += 1
 				dbg.log("      Extracted %d entries from IAT" % len(IAT))
-				dbgp("      -> We have extracted %d names from the IAT of %s" % (len(IAT), self.moduleKey))
+				mndbg.dbgp("      -> We have extracted %d names from the IAT of %s" % (len(IAT), self.moduleKey))
 
 				# METHOD 2 - Fallback in case we did not get a lot of strings.
 				# Let's say less than 10
@@ -5922,7 +5923,7 @@ class MnModule: # TODO: Add getters
 						syms = themod.getSymbols()
 						thename = ""
 						dbg.log("      %d symbols found, now filtering relevant entries" % len(syms))
-						dbgp("      %d symbols found for %s" % (len(syms), self.moduleKey))
+						mndbg.dbgp("      %d symbols found for %s" % (len(syms), self.moduleKey))
 						for sym in syms:
 							#dbg.log("   - symbol: %s" % sym)
 							if syms[sym].getType().startswith("Import"):
@@ -5937,7 +5938,7 @@ class MnModule: # TODO: Add getters
 						dbg.logLines(traceback.format_exc())
 						pass
 					# merge
-					dbgp("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
+					mndbg.dbgp("      -> We added %d additional names using method 2" % (len(IAT) - before_method2_cnt))
 
 
 				if len(IAT) == 0:
@@ -6036,14 +6037,14 @@ class MnModule: # TODO: Add getters
 									thisfuncname = thisfuncfullname.split('!')
 									if len(thisfuncname) > 1:
 										IAT[ptr] = thisfuncname[1].strip(">")
-										dbgp("      Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
+										mndbg.dbgp("      Update type4 - IAT[0x%x] to %s" % (ptr, IAT[ptr]))
 									else:
-										dbgp("      Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
-										dbgp("      thisfuncfullname: %s" % thisfuncfullname)
+										mndbg.dbgp("      Attempted to do thisfuncname[1], but not enough elements: %s" % thisfuncname)
+										mndbg.dbgp("      thisfuncfullname: %s" % thisfuncfullname)
 
 				if len(IAT) == 0:
-					dbgp("      No IAT found for module %s" % self.moduleKey)
-					dbgp("      Adding fake IAT entry in cache, to avoid trying again")
+					mndbg.dbgp("      No IAT found for module %s" % self.moduleKey)
+					mndbg.dbgp("      Adding fake IAT entry in cache, to avoid trying again")
 					# if we get here, it means we couldn't find anything
 					# avoid doing all of this again
 					# so we'll add an empty entry in the cache
@@ -6062,7 +6063,7 @@ class MnModule: # TODO: Add getters
 		return IAT
 
 	def getEAT(self):
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 		eatlist = {}
 		if len(self.EAT) == 0:
 			try:
@@ -6110,12 +6111,12 @@ class MnModule: # TODO: Add getters
 							rva_of_names = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x20, 4))[0]
 							address_of_name_ordinals = self.moduleBase + struct.unpack('<L', dbg.readMemory(eatAddr + 0x24, 4))[0]
 
-							dbgp("Export table at 0x%x, size 0x%x" % (eatAddr, exporttable_size))
-							dbgp("NumberOfFunctions: %d" % nr_of_functions)
-							dbgp("NumberOfNames: %d" % nr_of_names)
-							dbgp("AddressOfFunctions: 0x%x" % address_of_functions)
-							dbgp("AddressOfNames: 0x%x" % rva_of_names)
-							dbgp("AddressOfNameOrdinals: 0x%x" % address_of_name_ordinals)
+							mndbg.dbgp("Export table at 0x%x, size 0x%x" % (eatAddr, exporttable_size))
+							mndbg.dbgp("NumberOfFunctions: %d" % nr_of_functions)
+							mndbg.dbgp("NumberOfNames: %d" % nr_of_names)
+							mndbg.dbgp("AddressOfFunctions: 0x%x" % address_of_functions)
+							mndbg.dbgp("AddressOfNames: 0x%x" % rva_of_names)
+							mndbg.dbgp("AddressOfNameOrdinals: 0x%x" % address_of_name_ordinals)
 
 							for i in range(0, nr_of_names):
 								name_rva = struct.unpack('<L', dbg.readMemory(rva_of_names + (4 * i), 4))[0]
@@ -6130,14 +6131,14 @@ class MnModule: # TODO: Add getters
 									eatlist[eatAddress] = eatName
 
 									#if DEBUG_MODE:
-									#	dbgp("EAT[0x%x] = %s (ordinal index %d)" % (eatAddress, eatName, ordinal_index))
-							dbgp("EAT List has %d elements so far" % len(eatlist))
+									#	mndbg.dbgp("EAT[0x%x] = %s (ordinal index %d)" % (eatAddress, eatName, ordinal_index))
+							mndbg.dbgp("EAT List has %d elements so far" % len(eatlist))
 
 				self.EAT = eatlist
 			except Exception as e:
-				dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)), errormode=False)
-				dbgp("%s" % traceback.format_exc(), errormode=False)
-				dbgp("eatlist: %s" % eatlist, errormode=False)
+				mndbg.dbgp("Error getting EAT for module %s: %s" % (self.internalname, str(e)), errormode=False)
+				mndbg.dbgp("%s" % traceback.format_exc(), errormode=False)
+				mndbg.dbgp("eatlist: %s" % eatlist, errormode=False)
 				return eatlist
 		else:
 			eatlist = self.EAT
@@ -6636,27 +6637,27 @@ class MnHeap(object):
 
 		Return: str - "NT", "Segment", or "Unknown"
 		"""
-		dbgp("_detectHeapType(0x%x)" % address)
+		mndbg.dbgp("_detectHeapType(0x%x)" % address)
 		for sig_offset in MnHeap._NT_SIGNATURE_OFFSETS:
 			try:
 				sig_val = struct.unpack('<L', dbg.readMemory(address + sig_offset, 4))[0]
-				dbgp("_detectHeapType: NT sig at 0x%x = 0x%08x" % (address + sig_offset, sig_val))
+				mndbg.dbgp("_detectHeapType: NT sig at 0x%x = 0x%08x" % (address + sig_offset, sig_val))
 				if sig_val == 0xeeffeeff:
 					return "NT"
 			except Exception as e:
-				dbgp("_detectHeapType: NT sig read failed at 0x%x: %s" % (sig_offset, str(e)), errormode=False)
+				mndbg.dbgp("_detectHeapType: NT sig read failed at 0x%x: %s" % (sig_offset, str(e)), errormode=False)
 		try:
 			seg_val = struct.unpack('<L', dbg.readMemory(address + 0x010, 4))[0]
-			dbgp("_detectHeapType: Segment sig at 0x%x = 0x%08x" % (address + 0x010, seg_val))
+			mndbg.dbgp("_detectHeapType: Segment sig at 0x%x = 0x%08x" % (address + 0x010, seg_val))
 			if seg_val == 0xddeeddee:
 				return "Segment"
 		except Exception as e:
-			dbgp("_detectHeapType: Segment sig read failed: %s" % str(e), errormode=False)
-		dbgp("_detectHeapType: returning Unknown")
+			mndbg.dbgp("_detectHeapType: Segment sig read failed: %s" % str(e), errormode=False)
+		mndbg.dbgp("_detectHeapType: returning Unknown")
 		return "Unknown"
 
 	def __init__(self, address, walk_level=WalkLevel.HEAP):
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		self.heapbase     = address
 		self.walk_level   = walk_level
@@ -6743,7 +6744,7 @@ class MnHeap(object):
 		Uses ntdll symbols via getTypeSize when available (WinDBG only).
 		Returns 0 if symbols are not available or on Immunity Debugger.
 		"""
-		if not isWinDBG():
+		if not mndbg.isWinDBG():
 			return 0
 		try:
 			sz = dbg.getTypeSize("ntdll!_HEAP")
@@ -7322,28 +7323,28 @@ class MnNTHeap(MnHeap):
 		  - "reserve_size" : int
 		"""
 		if len(self.VirtualAllocdBlocks) > 0:
-			dbgp("getVirtualAllocdBlocks: return %d blocks from cache" % len(self.VirtualAllocdBlocks))
+			mndbg.dbgp("getVirtualAllocdBlocks: return %d blocks from cache" % len(self.VirtualAllocdBlocks))
 			return self.VirtualAllocdBlocks
 
 		va_offset = self._offset("VirtualAllocdBlocks")
 		listhead = self.heapbase + va_offset
-		dbgp("getVirtualAllocdBlocks: heap=0x%x listhead=0x%x (offset 0x%x)" % (self.heapbase, listhead, va_offset))
+		mndbg.dbgp("getVirtualAllocdBlocks: heap=0x%x listhead=0x%x (offset 0x%x)" % (self.heapbase, listhead, va_offset))
 
 		try:
 			entry = readPtrSizeBytes(listhead)
-			dbgp("getVirtualAllocdBlocks: Flink=0x%x" % entry)
+			mndbg.dbgp("getVirtualAllocdBlocks: Flink=0x%x" % entry)
 			while entry != listhead:
 				vab = MnVirtualAllocdBlocks(entry)
-				dbgp("getVirtualAllocdBlocks: entry=0x%x commit=0x%x reserve=0x%x" % (entry, vab.CommitSize, vab.ReserveSize))
+				mndbg.dbgp("getVirtualAllocdBlocks: entry=0x%x commit=0x%x reserve=0x%x" % (entry, vab.CommitSize, vab.ReserveSize))
 				self.VirtualAllocdBlocks[entry] = {
 					"commit_size":  vab.CommitSize,
 					"reserve_size": vab.ReserveSize,
 				}
 				entry = readPtrSizeBytes(entry)
 		except Exception as e:
-			dbgp("getVirtualAllocdBlocks: exception: %s" % str(e))
+			mndbg.dbgp("getVirtualAllocdBlocks: exception: %s" % str(e))
 
-		dbgp("getVirtualAllocdBlocks: found %d blocks" % len(self.VirtualAllocdBlocks))
+		mndbg.dbgp("getVirtualAllocdBlocks: found %d blocks" % len(self.VirtualAllocdBlocks))
 		return self.VirtualAllocdBlocks
 
 	def getLFHAddress(self):
@@ -8285,7 +8286,7 @@ class MnNTSegmentBase:
 		zero_size_steps = 0
 		last_flag_hits = 0
 		max_step = 0
-		dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
+		mndbg.dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
 			PTR_PRINT % self.BaseAddress, PTR_PRINT % self.FirstEntry, PTR_PRINT % self.LastValidEntry,
 			(self.LastValidEntry - self.FirstEntry) if self.LastValidEntry >= self.FirstEntry else 0, hdr_off, key))
 		consecutive_failures = 0
@@ -8311,7 +8312,7 @@ class MnNTSegmentBase:
 				decode_failures += 1
 				consecutive_failures += 1
 				if consecutive_failures >= 16:
-					dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
+					mndbg.dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
 						consecutive_failures, PTR_PRINT % current))
 					break
 			if saved_prevsize == 0:
@@ -8328,7 +8329,7 @@ class MnNTSegmentBase:
 			              size, prevsize, segid, flag, unused, tag)
 			if "last" in flagtxt:
 				last_flag_hits += 1
-				dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
+				mndbg.dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
 					PTR_PRINT % current, itercnt, time.time() - walk_start))
 				break
 			step = (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
@@ -8339,11 +8340,11 @@ class MnNTSegmentBase:
 			current += step
 			elapsed = time.time() - walk_start
 			if elapsed >= next_progress_log:
-				dbgp("    Segment walk progress: seg=%s current=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d elapsed=%.2fs" % (
+				mndbg.dbgp("    Segment walk progress: seg=%s current=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d elapsed=%.2fs" % (
 					PTR_PRINT % self.BaseAddress, PTR_PRINT % current, itercnt, decode_failures,
 					zero_size_steps, last_flag_hits, elapsed))
 				next_progress_log += 5.0
-		dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
+		mndbg.dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
 			PTR_PRINT % self.BaseAddress, itercnt, decode_failures, zero_size_steps, last_flag_hits,
 			max_step, time.time() - walk_start))
 
@@ -8971,15 +8972,15 @@ class MnSegment:
 		except Exception as e:
 			dbg.log("[!] getChunks: getHeapObject(0x%x) raised: %s" % (self.heapbase, e), highlight=1)
 			return allchunks
-		dbgp("getChunks: heapbase=0x%x type=%s version=%s" % (self.heapbase, mHeap.heap_type, mHeap.heap_version))
-		dbgp("getChunks: key=0x%x hdr_off=%d firstentry=0x%x lastvalid=0x%x" % (
+		mndbg.dbgp("getChunks: heapbase=0x%x type=%s version=%s" % (self.heapbase, mHeap.heap_type, mHeap.heap_version))
+		mndbg.dbgp("getChunks: key=0x%x hdr_off=%d firstentry=0x%x lastvalid=0x%x" % (
 			mHeap.getEncodingKey(), mHeap.getChunkHeaderDataOffset(), self.firstentry, self.lastvalidentry))
 		for chunk in MnChunk.walk(self.firstentry, self.lastvalidentry, mHeap, self.segmentstart):
 			# Virtual-alloc chunks are tracked separately via getVirtualAllocdBlocks().
 			if not "virtall" in getHeapFlag(chunk.flag).lower() and chunk.chunkptr not in allchunks and chunk.size > 0:
 				allchunks[chunk.chunkptr] = chunk
 		self.chunks = allchunks
-		dbgp("getChunks: returning %d chunks for segment 0x%x-0x%x" % (len(allchunks), self.firstentry, self.lastvalidentry))
+		mndbg.dbgp("getChunks: returning %d chunks for segment 0x%x-0x%x" % (len(allchunks), self.firstentry, self.lastvalidentry))
 		return allchunks
 
 """
@@ -9105,7 +9106,7 @@ class MnChunk(MnListEntry):
 		zero_size_steps = 0
 		last_flag_hits = 0
 		max_step = 0
-		dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
+		mndbg.dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
 			PTR_PRINT % segment_base, PTR_PRINT % first_entry, PTR_PRINT % last_valid_entry,
 			(last_valid_entry - first_entry) if last_valid_entry >= first_entry else 0, hdr_off, key))
 		consecutive_failures = 0
@@ -9128,11 +9129,11 @@ class MnChunk(MnListEntry):
 					unused = struct.unpack('<B', raw[7:8])[0]
 				consecutive_failures = 0
 			except Exception as e:
-				dbgp("Decode error: %s" % str(e))
+				mndbg.dbgp("Decode error: %s" % str(e))
 				decode_failures += 1
 				consecutive_failures += 1
 				if consecutive_failures >= 16:
-					dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
+					mndbg.dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
 						consecutive_failures, PTR_PRINT % current))
 					break
 			if saved_prevsize == 0:
@@ -9149,7 +9150,7 @@ class MnChunk(MnListEntry):
 			          size, prevsize, segid, flag, unused, tag)
 			if "last" in flagtxt:
 				last_flag_hits += 1
-				dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
+				mndbg.dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
 					PTR_PRINT % current, itercnt, time.time() - walk_start))
 				break
 			step = (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
@@ -9160,11 +9161,11 @@ class MnChunk(MnListEntry):
 			current += step
 			elapsed = time.time() - walk_start
 			if elapsed >= next_progress_log:
-				dbgp("    Segment walk progress: seg=%s current=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d elapsed=%.2fs" % (
+				mndbg.dbgp("    Segment walk progress: seg=%s current=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d elapsed=%.2fs" % (
 					PTR_PRINT % segment_base, PTR_PRINT % current, itercnt, decode_failures,
 					zero_size_steps, last_flag_hits, elapsed))
 				next_progress_log += 5.0
-		dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
+		mndbg.dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
 			PTR_PRINT % segment_base, itercnt, decode_failures, zero_size_steps, last_flag_hits,
 			max_step, time.time() - walk_start))
 		interruptMona()
@@ -9321,7 +9322,7 @@ class MnProc:
 	_creating_mnproc  = False  # re-entrant guard for ensure()
 
 	def __init__(self):
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		# --- process-level caches ---
 		self.CritCache = {}
@@ -9355,8 +9356,8 @@ class MnProc:
 				mnproc = cls()
 			except Exception as e:
 				dbg.log("[!] Are you connected to a process?", highlight=1)
-				dbgp("Error creating MnProc instance: %s" % str(e), errormode=False)
-				dbgp("Exception details:\n%s" % traceback.format_exc(), errormode=False)
+				mndbg.dbgp("Error creating MnProc instance: %s" % str(e), errormode=False)
+				mndbg.dbgp("Exception details:\n%s" % traceback.format_exc(), errormode=False)
 				mnproc = None
 			finally:
 				cls._creating_mnproc = False
@@ -9474,7 +9475,7 @@ class MnProc:
 	def _struct_sizes(self):
 		"""Return (peb_size, teb_size) for the current debugger and architecture."""
 		static = __DEBUGGERAPP__ == "Immunity Debugger"
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			peb_size = dbg.getTypeSize("ntdll!_PEB")
 			teb_size = dbg.getTypeSize("ntdll!_TEB")
 		elif static:
@@ -9530,7 +9531,7 @@ class MnProc:
 	def _module_entry(self, mod):
 		"""Return (start, end, "Module", desc) from an MnModule instance."""
 		dispname = mod.moduleFilename or mod.internalname
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			dispname = clickModuleName(dispname)
 		flags = [label for label, val in [
 			("ASLR", mod.isAslr), ("Rebase", mod.isRebase), ("SafeSEH", mod.isSafeSEH),
@@ -9557,7 +9558,7 @@ class MnProc:
 		Categories: "PEB", "TEB", "Stack", "Module", "Heap", "Segment", "VADBlock", "Chunk"
 		"""
 		_alias   = getAliasName()
-		_windbg  = isWinDBG()
+		_windbg  = mndbg.isWinDBG()
 		regions  = []
 		peb_size, teb_size = self._struct_sizes()
 		if self.peb is not None:
@@ -9600,15 +9601,15 @@ class MnProc:
 				fe_label = " | FrontEnd: %s" % self._FE_NAMES.get(fe_type, "0x%x" % fe_type)
 			except Exception:
 				pass
-			dbgp("Enumerating segments for heap %s" % (PTR_PRINT % heapaddr))
+			mndbg.dbgp("Enumerating segments for heap %s" % (PTR_PRINT % heapaddr))
 			segments     = mheap.getSegments()
-			dbgp("  Got %d segments" % len(segments))
-			dbgp("Enumerating vadblocks for heap %s" % (PTR_PRINT % heapaddr))
+			mndbg.dbgp("  Got %d segments" % len(segments))
+			mndbg.dbgp("Enumerating vadblocks for heap %s" % (PTR_PRINT % heapaddr))
 			va_blocks    = mheap.getVABlocks()
-			dbgp("  Got %d vadblocks" % len(va_blocks))
-			dbgp("Enumerating LFH Ranges for heap %s" % (PTR_PRINT % heapaddr))
+			mndbg.dbgp("  Got %d vadblocks" % len(va_blocks))
+			mndbg.dbgp("Enumerating LFH Ranges for heap %s" % (PTR_PRINT % heapaddr))
 			lfh_ranges   = mheap.getLFHRanges() if include_chunks else []
-			dbgp("  Got %d LFH Ranges" % len(lfh_ranges))
+			mndbg.dbgp("  Got %d LFH Ranges" % len(lfh_ranges))
 			lfh_starts   = [r[0] for r in lfh_ranges]
 			listhead     = heapaddr + mheap._offset("SegmentList")
 			listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
@@ -9625,9 +9626,9 @@ class MnProc:
 				blink    = listhead_str if blink_addr == listhead else "0x%s (%s)" % (toHex(blink_addr), _seg_name.get(blink_addr, "?"))
 				seg_base = seg_obj.BaseAddress    if seg_obj else segaddr
 				seg_end  = seg_obj.LastValidEntry if seg_obj else segaddr
-				dbgp("Enumerating Chunks in segment %s" % (PTR_PRINT % seg_base))
+				mndbg.dbgp("Enumerating Chunks in segment %s" % (PTR_PRINT % seg_base))
 				chunks   = seg_obj.getChunks() if (seg_obj and include_chunks) else {}
-				dbgp("  Got %d chunks" % len(chunks))			
+				mndbg.dbgp("  Got %d chunks" % len(chunks))			
 				chunk_info = ""
 				if chunks:
 					total   = len(chunks)
@@ -9671,7 +9672,7 @@ class MnProc:
 		  - Heap \u2192 [Segment (\u2192 [Chunk]), VADBlock]
 		"""
 		_alias   = getAliasName()
-		_windbg  = isWinDBG()
+		_windbg  = mndbg.isWinDBG()
 		regions  = []
 		peb_size, teb_size = self._struct_sizes()
 		if self.peb is not None:
@@ -10068,7 +10069,7 @@ class MnPointer:
 	def showObjectInfo(self):
 		# check if chunk is a DOM object
 		
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			cmdtorun = "dps %s L 1" % (PTR_PRINT % self.address)
 			output = dbg.nativeCommand(cmdtorun)
 			outputlower = output.lower()
@@ -10233,7 +10234,7 @@ class MnPointer:
 		"""
 		Find address in heap and print out info about heap, segment, chunk it belongs to
 		"""
-		dbgp(get_current_function_name())
+		mndbg.dbgp(get_current_function_name())
 
 		foundinheap = None
 		foundinsegment = None
@@ -10252,7 +10253,7 @@ class MnPointer:
 			for seg in mheap.getSegments():
 				if not (seg.BaseAddress <= self.address < seg.end):
 					continue
-				dbgp("Checking segment %s, looking for %s" % (PTR_PRINT % seg.address, PTR_PRINT % self.address))
+				mndbg.dbgp("Checking segment %s, looking for %s" % (PTR_PRINT % seg.address, PTR_PRINT % self.address))
 				for chunkptr, thischunk in seg.getChunks().items():
 					thissize = thischunk.size * HEAPGRANULARITY
 					if self.address >= chunkptr and self.address < (chunkptr + thissize):
@@ -10275,7 +10276,7 @@ class MnPointer:
 
 			# VA blocks
 			if foundinchunk is None:
-				dbgp("Checking VADBlocks, looking for %s" % (PTR_PRINT % self.address))
+				mndbg.dbgp("Checking VADBlocks, looking for %s" % (PTR_PRINT % self.address))
 				for vaptr, vainfo in mheap.getVABlocks().items():
 					if self.address >= vaptr and self.address <= vaptr + vainfo["commit_size"]:
 						if not silent:
@@ -10381,7 +10382,7 @@ class MnPointer:
 
 	def showHeapStackTrace(self,thischunk):
 		# show stacktrace if any
-		if isWinDBG(): 
+		if mndbg.isWinDBG(): 
 			stacktrace_address = thischunk.dph_block_information_stacktrace
 			stacktrace_index = thischunk.dph_block_information_traceindex
 			stacktrace_startstamp = 0xabcdaaaa
@@ -10426,7 +10427,7 @@ class MnPointer:
 		funcinfo = ""
 		global silent
 		silent = True
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			lncmd = "ln %s" % (PTR_PRINT % self.address)
 			lnoutput = dbg.nativeCommand(lncmd)
 			for line in lnoutput.split("\n"):
@@ -10456,7 +10457,7 @@ class MnPointer:
 	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg="", encoding_key=0, chunk_base=0):
 		dumpdata = {}
 		origdumpdata = {} 
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			addy = self.address
 			if not silent:
 				dbg.log("")
@@ -10465,7 +10466,7 @@ class MnPointer:
 				dbg.log("    Size: 0x%02x bytes" % size)
 				if (size > 0x200):
 					dps_cmd = "dps %s L 0x%x/%x" % ((PTR_PRINT % addy), size, archValue(4,8))
-					dps_link = "<link cmd=\"%s\">%s</link>" % (dps_cmd, dps_cmd) if isWinDBG() else dps_cmd
+					dps_link = "<link cmd=\"%s\">%s</link>" % (dps_cmd, dps_cmd) if mndbg.isWinDBG() else dps_cmd
 					dbg.log("    Output below will be limited to the first 0x200 bytes")
 					dbg.log("    To see the full allocation: %s" % dps_link)
 					size = 0x200
@@ -10505,8 +10506,8 @@ class MnPointer:
 								decoded_content = "%0*x" % (len(content), decoded_val)
 								xor_cmd         = "? poi(%s) ^ 0x%x" % (PTR_PRINT % loc_int, encoding_key)
 								heap_cmd        = "!heap -x %s" % (PTR_PRINT % chunk_base)
-								xor_link        = "<link cmd=\"%s\">%s</link>" % (xor_cmd, xor_cmd) if isWinDBG() else xor_cmd
-								heap_link       = "<link cmd=\"%s\">%s</link>" % (heap_cmd, heap_cmd) if isWinDBG() else heap_cmd
+								xor_link        = "<link cmd=\"%s\">%s</link>" % (xor_cmd, xor_cmd) if mndbg.isWinDBG() else xor_cmd
+								heap_link       = "<link cmd=\"%s\">%s</link>" % (heap_cmd, heap_cmd) if mndbg.isWinDBG() else heap_cmd
 								info = ["", "%s ^ %x | %s | %s" % (decoded_content, encoding_key, xor_link, heap_link), "", content]
 								dumpdata[loc_int] = info
 							elif not "??" in content and symbol.replace(" ","") == "":
@@ -10798,16 +10799,16 @@ def getSegmentsForHeap(heapbase):
 	# Minimal pre-population only: process/thread context + heap list.
 	# Segment details are then crawled only for the requested heap below.
 	MnProc.ensure()
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 	if heapbase in mnproc.segmentlistCache:
-		dbgp("getSegmentsForHeap: cache hit for 0x%x (%d segments)" % (heapbase, len(mnproc.segmentlistCache[heapbase])))
+		mndbg.dbgp("getSegmentsForHeap: cache hit for 0x%x (%d segments)" % (heapbase, len(mnproc.segmentlistCache[heapbase])))
 		return mnproc.segmentlistCache[heapbase]
 	segmentinfo = {}
 	try:
 		mHeap = MnHeap(heapbase)
-		dbgp("getSegmentsForHeap: heap type=%s version=%s" % (mHeap.heap_type, mHeap.heap_version))
+		mndbg.dbgp("getSegmentsForHeap: heap type=%s version=%s" % (mHeap.heap_type, mHeap.heap_version))
 		seglist = mHeap.getHeapSegmentList()
-		dbgp("getSegmentsForHeap: got %d segments from getHeapSegmentList" % len(seglist))
+		mndbg.dbgp("getSegmentsForHeap: got %d segments from getHeapSegmentList" % len(seglist))
 		for segaddr, sinfo in seglist.items():
 			if hasattr(sinfo, "BaseAddress"):
 				segmentinfo[segaddr] = [
@@ -10825,10 +10826,10 @@ def getSegmentsForHeap(heapbase):
 				]
 	except Exception as e:
 		if DEBUG_MODE:
-			dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)), errormode=False)
+			mndbg.dbgp("getSegmentsForHeap(0x%x): EXCEPTION: %s" % (heapbase, str(e)), errormode=False)
 			import traceback
-			dbgp(traceback.format_exc(), errormode=False)
-	dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
+			mndbg.dbgp(traceback.format_exc(), errormode=False)
+	mndbg.dbgp("getSegmentsForHeap(0x%x): returning %d segments" % (heapbase, len(segmentinfo)))
 	mnproc.segmentlistCache[heapbase] = segmentinfo
 	return segmentinfo
 
@@ -10862,7 +10863,7 @@ def meetsCriteria(pointer,criteria):
 	Boolean - True if all the conditions are met
 	"""
 	#if DEBUG_MODE:
-	#	dbgp(get_current_function_name())
+	#	mndbg.dbgp(get_current_function_name())
 	# Unicode
 	if "unicode" in criteria and not (pointer.isUnicode or pointer.unicodeTransform != ""):
 		return False
@@ -10929,7 +10930,7 @@ def search(sequences,criteria=[]):
 	Return:
 	Dictionary (opcode sequence => List of addresses)
 	"""	
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 	return searchInRange(sequences,criteria)
 	
 	
@@ -10949,11 +10950,11 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 	Return:
 	Dictionary (opcode sequence => List of addresses)
 	"""
-	dbgp(get_current_function_name())
-	dbgp("    sequences: %s" % sequences)
-	dbgp("    start: %s" % (PTR_PRINT % start))
-	dbgp("    end: %s" % (PTR_PRINT % end ))
-	dbgp("    criteria: %s" % criteria)
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("    sequences: %s" % sequences)
+	mndbg.dbgp("    start: %s" % (PTR_PRINT % start))
+	mndbg.dbgp("    end: %s" % (PTR_PRINT % end ))
+	mndbg.dbgp("    criteria: %s" % criteria)
 	
 	if not "accesslevel" in criteria:
 		criteria["accesslevel"] = "*"
@@ -11030,11 +11031,11 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 				if ( start > page_end or end < page_start ):
 					# we are outside the search range, skip
 					#if DEBUG_MODE:
-					#	dbgp("      - Page is outside of search range, skipping")
+					#	mndbg.dbgp("      - Page is outside of search range, skipping")
 					continue
 				if (not meetsAccessLevel(dbg.MemoryPages[a],criteria["accesslevel"])):
 					#if DEBUG_MODE:
-					#	dbgp("      - Page does not have required access level")
+					#	mndbg.dbgp("      - Page does not have required access level")
 					#skip this page, not executable
 					continue
 					
@@ -11053,7 +11054,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 						dbg.log("      !Skipped search of range %08x-%08x (Doesn't start with null)" % (page_start,page_end))
 					continue
 
-				dbgp("      -Trying to read page %s-%s" % ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
+				mndbg.dbgp("      -Trying to read page %s-%s" % ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 				
 				mem = dbg.MemoryPages[a].getMemory()
 
@@ -11062,20 +11063,20 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 				if not mem:
 					had_unreadable_pages = True
 
-					if isWinDBG():
+					if mndbg.isWinDBG():
 						try:
 							probe_cmd = "db %s L1" % (PTR_PRINT % page_start)
 							probe_output = dbg.nativeCommand(probe_cmd)
 						except Exception as e:
 							probe_output = ""
-							dbgp("      !WinDBG probe failed for %s: %s" % ((PTR_PRINT % page_start), str(e)), errormode=False)
+							mndbg.dbgp("      !WinDBG probe failed for %s: %s" % ((PTR_PRINT % page_start), str(e)), errormode=False)
 
 						if "??" in probe_output:
-							dbgp("      !WinDBG db probe reports unreadable memory at %s, skipping page fast" %
+							mndbg.dbgp("      !WinDBG db probe reports unreadable memory at %s, skipping page fast" %
 								 (PTR_PRINT % page_start))
 							continue
 
-					dbgp("      !Failed to read full range %s-%s, falling back to chunked reads" %
+					mndbg.dbgp("      !Failed to read full range %s-%s, falling back to chunked reads" %
 						 ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 
 					chunk_size = 0x1000
@@ -11110,7 +11111,7 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 						# Performance-first fallback: if the first chunk cannot be read,
 						# do not continue chunking this page.
 						if page_fallback_chunk_total == 1 and len(chunk) == 0:
-							dbgp("      !Fallback first chunk read failed at %s for range %s-%s, skipping rest of page" %
+							mndbg.dbgp("      !Fallback first chunk read failed at %s for range %s-%s, skipping rest of page" %
 								 ((PTR_PRINT % cursor), (PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 							break
 						if len(chunk) > 0:
@@ -11173,18 +11174,18 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 						cursor += read_len
 					if page_fallback_chunk_ok > 0:
 						fallback_pages_with_reads += 1
-						dbgp("      [+] Chunked fallback recovered readable bytes for %s-%s. Nice." %
+						mndbg.dbgp("      [+] Chunked fallback recovered readable bytes for %s-%s. Nice." %
 							 ((PTR_PRINT % page_start), (PTR_PRINT % page_end)))
 					if page_fallback_hits > 0:
 						fallback_pages_with_hits += 1
-					dbgp("      !Fallback result for range %s-%s: readable chunks %d/%d, hits=%d" %
+					mndbg.dbgp("      !Fallback result for range %s-%s: readable chunks %d/%d, hits=%d" %
 						 ((PTR_PRINT % page_start), (PTR_PRINT % page_end), page_fallback_chunk_ok, page_fallback_chunk_total, page_fallback_hits))
 					if page_fallback_chunk_ok == 0:
-						dbgp("      !Fallback did not recover readable bytes for this range")
+						mndbg.dbgp("      !Fallback did not recover readable bytes for this range")
 					elif page_fallback_hits == 0:
-						dbgp("      !Fallback recovered bytes for this range but no matches were found")
+						mndbg.dbgp("      !Fallback recovered bytes for this range but no matches were found")
 					else:
-						dbgp("      !Fallback recovered bytes and produced matches for this range")
+						mndbg.dbgp("      !Fallback recovered bytes and produced matches for this range")
 
 					continue
 
@@ -11239,16 +11240,16 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 						else:
 							found_opcodes[human_format] = page_find
 		if fallback_pages > 0:
-			dbgp("searchInRange fallback summary: pages=%d, readable_pages=%d, pages_with_hits=%d, chunk_reads_ok=%d/%d, hits=%d" %
+			mndbg.dbgp("searchInRange fallback summary: pages=%d, readable_pages=%d, pages_with_hits=%d, chunk_reads_ok=%d/%d, hits=%d" %
 				 (fallback_pages, fallback_pages_with_reads, fallback_pages_with_hits, fallback_chunk_reads_ok, fallback_chunk_reads_total, fallback_hits_total))
 			if fallback_chunk_reads_ok == 0:
-				dbgp("searchInRange fallback usefulness: no readable chunks were recovered")
+				mndbg.dbgp("searchInRange fallback usefulness: no readable chunks were recovered")
 			elif fallback_hits_total == 0:
-				dbgp("searchInRange fallback usefulness: recovered bytes but found no matches")
+				mndbg.dbgp("searchInRange fallback usefulness: recovered bytes but found no matches")
 			else:
-				dbgp("searchInRange fallback usefulness: recovered bytes and found matches")
+				mndbg.dbgp("searchInRange fallback usefulness: recovered bytes and found matches")
 		if had_unreadable_pages and not silent:
-			dbgp("[!] Some memory ranges could not be read during this search; results may be incomplete.")
+			mndbg.dbgp("[!] Some memory ranges could not be read during this search; results may be incomplete.")
 	return found_opcodes
 
 # search for byte sequences in a module
@@ -11647,11 +11648,11 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 
 	"""	
 
-	dbgp(get_current_function_name())
-	dbgp("function criteria: %s" % criteria)
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("function criteria: %s" % criteria)
 	MnProc.ensure()
 	mods = mnproc.getPEB().getModules(from_memory=from_memory, peb_order=peb_order)
-	dbgp("modules: %d entries" % len(mods))
+	mndbg.dbgp("modules: %d entries" % len(mods))
 	modulestoquery=[]
 
 	# Build exclusion set once from config
@@ -11664,8 +11665,8 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 		pass
 
 	for thismodule, modproperties in mods.items():
-		dbgp("Check if module %s should be filtered" % thismodule)
-		dbgp("  Properties: %s" % modproperties)
+		mndbg.dbgp("Check if module %s should be filtered" % thismodule)
+		mndbg.dbgp("  Properties: %s" % modproperties)
 
 		is_excluded = any(thismodule.lower().startswith(p) for p in excluded_prefixes)
 		included = True
@@ -11685,20 +11686,20 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 					keep_criteria = str_to_bool(criteria[critkey])
 					module_state = modproperties.get_property(propkey)
 
-					dbgp("   %s needs to be %s (=%s)" % (dbgname, criteria[critkey], keep_criteria))
-					dbgp("   Module state: %s" % module_state)
+					mndbg.dbgp("   %s needs to be %s (=%s)" % (dbgname, criteria[critkey], keep_criteria))
+					mndbg.dbgp("   Module state: %s" % module_state)
 
 					if module_state != keep_criteria:
 						included = False
-						dbgp("   -> mismatch! removing from list because of %s" % dbgname)
+						mndbg.dbgp("   -> mismatch! removing from list because of %s" % dbgname)
 						break
 
 		else:
 			included = False
-			dbgp("   Removing from list because it's an excluded module (mona.ini)")
+			mndbg.dbgp("   Removing from list because it's an excluded module (mona.ini)")
 
 
-		dbgp("   After criteria check: included = %s" % included)
+		mndbg.dbgp("   After criteria check: included = %s" % included)
 		# filter by path regex ?
 		mod_path = modproperties.modulePath
 		if included and ("cmp" in criteria) and criteria["cmp"]:
@@ -11721,7 +11722,7 @@ def getModulesToQuery(criteria, from_memory=False, peb_order="load"):
 				modulename = modulename.strip('"').strip("'").lower()
 				modulenamewithout = modulename.replace("*","")
 
-				dbgp("Module criteria. Check %s for %s" % (just_filename,modulenamewithout))
+				mndbg.dbgp("Module criteria. Check %s for %s" % (just_filename,modulenamewithout))
 		  
 				if len(modulenamewithout) <= len(just_filename):
 					#endswith ?
@@ -11893,12 +11894,12 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		for tline in tableinfo_display:
 			dbg.log(tline)
 	else:
-		dbgp("showModuleTable: writing %d chars to %s" % (len(thistable), logfile))
+		mndbg.dbgp("showModuleTable: writing %d chars to %s" % (len(thistable), logfile))
 		try:
 			with open(logfile,"a") as fh:
 				fh.write(thistable)
 		except Exception as e:
-			dbgp("showModuleTable: write failed: %s" % str(e), errormode=False)
+			mndbg.dbgp("showModuleTable: write failed: %s" % str(e), errormode=False)
 		
 #-----------------------------------------------------------------------#
 # This is where the action is
@@ -12010,7 +12011,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 
 					if (ptr_to_get > -1) or (cnt < 20):
 						if not silent:
-							dbgp("  %s" % ptrinfo)
+							mndbg.dbgp("  %s" % ptrinfo)
 
 						if forcelower:
 							results_dict_details[ptr] = [optext.lower(), ptrextra +ptrx.__str__().strip(), extrainfo]
@@ -12193,7 +12194,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	Dictionary (pointers)
 	"""
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	found_opcodes = {}
 	all_opcodes = {}
@@ -12248,7 +12249,7 @@ def findROPFUNC(modulecriteria={},criteria={},searchfuncs=[]):
 	nrkeys = len(modulestosearch)
 	keycnt = 1
 	for key in modulestosearch:
-		dbgp("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
+		mndbg.dbgp("Searching in IAT of %s (%d out of %d modules)" % (key, keycnt, nrkeys))
 		keycnt += 1
 		#is this module going to get rebase ?
 		themodule = MnModule(key)
@@ -12351,7 +12352,7 @@ def assemble(instructions,encoder=""):
 			if not silent:
 				dbg.log("   Could not assemble %s " % instruct)
 				dbg.log("   %s" % str(e))
-				dbgp(traceback.format_exc(), errormode=False)
+				mndbg.dbgp(traceback.format_exc(), errormode=False)
 			pass
 	if not silent:
 		dbg.log(" Full opcode : %s " % allopcodes)
@@ -12421,7 +12422,7 @@ def get_eta(startmoment, done, total):
 			del get_eta._state[state_key]
 		except Exception:
 			pass
-		return get_current_datetime()
+		return mndbg.get_current_datetime()
 
 	eta_seconds = remaining / rate
 	eta_time = now + eta_seconds
@@ -12469,7 +12470,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 
 
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 	
 	found_opcodes = {}
 	all_opcodes = {}
@@ -12605,14 +12606,14 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	startmoment = time.time()
 	for endingtype in all_opcodes:
 		if len(all_opcodes[endingtype]) > 0:
-			dbgp("In loop for endingtype %s in all_opcodes. Len(allopcodes[endingtype]) : %d" % (endingtype, len(all_opcodes[endingtype])))
+			mndbg.dbgp("In loop for endingtype %s in all_opcodes. Len(allopcodes[endingtype]) : %d" % (endingtype, len(all_opcodes[endingtype])))
 			for endingtypeptr in all_opcodes[endingtype]:
 				adcnt=adcnt+1
 				if usefiles:
 					adcnt = adcnt - 0.5
 				done = tc * updateth
 				if adcnt > done:
-					thistimestamp=get_current_datetime()
+					thistimestamp=mndbg.get_current_datetime()
 					eta = get_eta(startmoment, done, tp)
 					updatetext = "      - ({ts}) Processed {done} / {total} ({pct:.2f}%) - ETA: {eta}".format(
 						ts=thistimestamp,
@@ -12628,9 +12629,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					dbg.log(updatetext)
 					dbg.log(ropcounttxt)
 					dbg.updateLog()
-					dbgp("Number of ropgadgets: %d" % len(ropgadgets))
-					dbgp("Number of stackpivots: %d" % len(stackpivots))
-					dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
+					mndbg.dbgp("Number of ropgadgets: %d" % len(ropgadgets))
+					mndbg.dbgp("Number of stackpivots: %d" % len(stackpivots))
+					mndbg.dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
 					tc += 1				
 				if not usefiles:
 					#first get max backward instruction
@@ -12641,18 +12642,18 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						thisptr = thisopcode.getAddress()
 					except:
 						dbg.log("        ** Unable to backward disassemble at 0x%0x, depth %d, skipping location\n" % (endingtypeptr, depth+1))
-						dbgp(traceback.format_exc(), errormode=False)
+						mndbg.dbgp(traceback.format_exc(), errormode=False)
 						thisopcode = ""
 						thisptr = 0
 
 					# we now have a range to mine
 					startptr = thisptr
-					dbgp("Create & check all possible chains in range between 0x%x and 0x%x" % (startptr, endingtypeptr))
+					mndbg.dbgp("Create & check all possible chains in range between 0x%x and 0x%x" % (startptr, endingtypeptr))
 					currentmodulename = MnPointer(thisptr).belongsTo()
 					modinfo = MnModule(currentmodulename)
 					issafeseh = modinfo.isSafeSEH
 					iscfg = modinfo.isCFG
-					dbgp("Enumerating gadgets from module %s. CFG: %s" % (currentmodulename, str(iscfg)))
+					mndbg.dbgp("Enumerating gadgets from module %s. CFG: %s" % (currentmodulename, str(iscfg)))
 
 					while startptr <= endingtypeptr and startptr != 0x0:
 
@@ -12666,9 +12667,9 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 								# only lookup if it's a good gadget
 								if not startptr in ropgadgets and not startptr in interestinggadgets:
 									#if DEBUG_MODE:
-									#	dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
+									#	mndbg.dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
 									invalidinstr = False
-									#dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
+									#mndbg.dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
 									avoidunlimitedloop = 0
 									while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
 										thisopcode = dbg.disasm(chainptr)
@@ -12678,7 +12679,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											msfchain.append([chainptr,thisinstruction])
 											thisopcodebytes = thisopcodebytes + opcodesToHex(thisopcode.getDump().lower())
 											#if DEBUG_MODE:
-											#	dbgp("Current position: 0x%x" % chainptr)
+											#	mndbg.dbgp("Current position: 0x%x" % chainptr)
 											nextchainptr = dbg.disasmForwardAddressOnly(chainptr,1)
 											if nextchainptr == chainptr:
 												# problem disasmForward, just quit the loop
@@ -12686,11 +12687,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											else:
 												chainptr = nextchainptr
 											#if DEBUG_MODE:
-											#	dbgp("Next position: 0x%x" % chainptr)
+											#	mndbg.dbgp("Next position: 0x%x" % chainptr)
 										else:
 											invalidinstr = True
 										avoidunlimitedloop += 1
-									dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
+									mndbg.dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
 											fullchain = thischain + " # " + endingtype.lower()
@@ -12700,7 +12701,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											msfchain.append(["raw",thisopcodebytes])
 											if isInterestingGadget(fullchain):
 												interestinggadgets[startptr] = fullchain
-												dbgp("Added %s to interestinggadgets" % (PTR_PRINT % startptr))
+												mndbg.dbgp("Added %s to interestinggadgets" % (PTR_PRINT % startptr))
 												#this may be a good stackpivot too
 												stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance) 
 												if stackpivotdistance > 0:
@@ -12715,48 +12716,48 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 															stackpivots[stackpivotdistance] = [[startptr,fullchain]]
 														else:
 															stackpivots[stackpivotdistance].append([startptr,fullchain])
-													dbgp("Added %s to interesting gadgets" % (PTR_PRINT % startptr))
+													mndbg.dbgp("Added %s to interesting gadgets" % (PTR_PRINT % startptr))
 								
 											ropgadgets[startptr] = fullchain
-											dbgp("Added %s to ropgadgets " % (PTR_PRINT % startptr))
+											mndbg.dbgp("Added %s to ropgadgets " % (PTR_PRINT % startptr))
 
 											if bypasscfg and iscfg:
 												# only allow CFG Compatible pointers 
 												cfg_compatible_pointer = modinfo.checkCFGCompatible(startptr)
-												dbgp("Is %s (%s) CFG compatible? %s " % (PTR_PRINT % startptr,currentmodulename, cfg_compatible_pointer))											
+												mndbg.dbgp("Is %s (%s) CFG compatible? %s " % (PTR_PRINT % startptr,currentmodulename, cfg_compatible_pointer))											
 												if cfg_compatible_pointer:
 													valid_cfg_target_gadgets.append(startptr)
-													dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
+													mndbg.dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
 
 							startptr = startptr+1
 						except Exception as ropex:
-							dbgp("Error while looking for gadgets: %s" % str(ropex), errormode=False)
-							dbgp(traceback.format_exc(), errormode=False)
+							mndbg.dbgp("Error while looking for gadgets: %s" % str(ropex), errormode=False)
+							mndbg.dbgp(traceback.format_exc(), errormode=False)
 							interruptMona()
 							continue
 				else:
 					if step == 0:
 						startptr = endingtypeptr
-						dbgp("Step 0, Chain pointer %s" % (PTR_PRINT % startptr))
+						mndbg.dbgp("Step 0, Chain pointer %s" % (PTR_PRINT % startptr))
 					if step == 1:
 						thischain = endingtypeptr
 						chainptr = startptr
 						ptrx = MnPointer(chainptr)
 						modname = ptrx.belongsTo()
-						dbgp("Step 1, Chain pointer %s = module %s" % ((PTR_PRINT % startptr), modname))
+						mndbg.dbgp("Step 1, Chain pointer %s = module %s" % ((PTR_PRINT % startptr), modname))
 						issafeseh = False
 						if modname != "":
 							thism = MnModule(modname)
 							issafeseh = thism.isSafeSEH
 						if isGoodGadgetPtr(startptr,criteria) and not startptr in ropgadgets and not startptr in interestinggadgets:
-							dbgp("   Chain: %s" % thischain)
+							mndbg.dbgp("   Chain: %s" % thischain)
 							fullchain = thischain
 							if isInterestingGadget(fullchain):
-								dbgp("   This is an interesting chain")
+								mndbg.dbgp("   This is an interesting chain")
 								interestinggadgets[startptr] = fullchain
 								#this may be a good stackpivot too
 								stackpivotdistance = getStackPivotDistance(fullchain,pivotdistance)
-								dbgp("   %s: stackivot distance %d" % (fullchain, stackpivotdistance))
+								mndbg.dbgp("   %s: stackivot distance %d" % (fullchain, stackpivotdistance))
 								if stackpivotdistance > 0:
 									#safeseh or not ?
 									if issafeseh:
@@ -12774,15 +12775,15 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						step = -1
 					step += 1
 	
-	thistimestamp = get_current_datetime()
+	thistimestamp = mndbg.get_current_datetime()
 	updatetext = "      - " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
 	dbg.updateLog()
-	dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
-	dbgp("Final Number of stackpivots: %d" % len(stackpivots))
-	dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))
-	dbgp("Final Number of valid CFG target gadgets: %d" % len(valid_cfg_target_gadgets))			
+	mndbg.dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
+	mndbg.dbgp("Final Number of stackpivots: %d" % len(stackpivots))
+	mndbg.dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))
+	mndbg.dbgp("Final Number of valid CFG target gadgets: %d" % len(valid_cfg_target_gadgets))			
 
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
@@ -13113,7 +13114,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 					with open(thislog, "a") as fh:
 						fh.write(ptrinfo)
-	thistimestamp=get_current_datetime()
+	thistimestamp=mndbg.get_current_datetime()
 	objprogressfile.write("Done (" + thistimestamp+")",progressfile)
 	dbg.log("Done")
 	return interestinggadgets,ropgadgets,suggestions,vplogtxt
@@ -13224,7 +13225,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 				if usefiles:
 					adcnt = adcnt - 0.5
 				if adcnt > (tc*1000):
-					thistimestamp=get_current_datetime()
+					thistimestamp=mndbg.get_current_datetime()
 					updatetext = "      - " + str(tc*1000) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (" + str((tc*1000*100)/tp)+"%)"
 					objprogressfile.write(updatetext.strip(),progressfile)
 					dbg.log(updatetext)
@@ -13268,7 +13269,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 									jopgadgets[startptr] = fullchain
 					startptr = startptr+1
 	
-	thistimestamp=get_current_datetime()
+	thistimestamp=mndbg.get_current_datetime()
 	updatetext = "      - " + str(tp) + " / " + str(tp) + " items processed (" + thistimestamp + ") - (100%)"
 	objprogressfile.write(updatetext.strip(),progressfile)
 	dbg.log(updatetext)
@@ -13357,7 +13358,7 @@ def findFILECOMPARISON(modulecriteria={},criteria={},allfiles=[],tomatch="",chec
 		pointerlist = []
 		for thisLine in content:
 			refpointer,instr = splitToPtrInstr(thisLine)
-			dbgp("Read line with pointer %s and instruction %s" % (PTR_PRINT % refpointer,instr))
+			mndbg.dbgp("Read line with pointer %s and instruction %s" % (PTR_PRINT % refpointer,instr))
 			# Handle both bytes and string types
 			if isinstance(instr, bytes):
 				instr = instr.replace(b'\n', b'').replace(b'\r', b'').strip(b":")
@@ -14596,7 +14597,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 					dbg.log("    Adding page at 0x%08x to scope, ACL: %s" % (pageaddress, pageaccess))
 					rangestosearch.append([pagebegin, pageend])
 				else:
-					dbgp("    Skipping page at 0x%08x to scope, ACL: %s" % (pageaddress, pageaccess))
+					mndbg.dbgp("    Skipping page at 0x%08x to scope, ACL: %s" % (pageaddress, pageaccess))
 		#rangestosearch.append([base,top])
 	
 	pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" ,",",").replace("# ","#").replace(" #","#")
@@ -14618,7 +14619,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 			instrseq = b""
 			for first_pattern_instruction in first_pattern:
 				buf = dbg.assemble(first_pattern_instruction)
-				dbgp("        %s -> %s" % (first_pattern_instruction, bin2hex(buf)))
+				mndbg.dbgp("        %s -> %s" % (first_pattern_instruction, bin2hex(buf)))
 				instrseq += buf
 			# when providing bytes already,  it expects a desc/bytes tuple
 			first_pattern_flat = ";".join(first_pattern)
@@ -14688,8 +14689,8 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 				continue
 			allfound = True
 			thisdisam = thisdisam.strip("\n")
-			dbgp("Disassembly at %s: " % (PTR_PRINT % thisptr))
-			dbgp("%s" % thisdisam)
+			mndbg.dbgp("Disassembly at %s: " % (PTR_PRINT % thisptr))
+			mndbg.dbgp("%s" % thisdisam)
 			ptrcnt += 1
 			flipover += 1
 			if flipover > flipovermax:
@@ -14914,7 +14915,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 		for ranges in rangestosearch:
 			mBase = ranges[0]
 			mTop = ranges[1]
-			dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+			mndbg.dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 			dbg.updateLog()
 			searchPattern = []
 			searchPattern.append([originalPattern, bytes])
@@ -15035,7 +15036,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 				for ranges in p2prangestosearch:
 					mBase = ranges[0]
 					mTop = ranges[1]
-					dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
+					mndbg.dbgp("Searching from 0x%s to 0x%s" % (toHex(mBase),toHex(mTop)))
 					dbg.updateLog()
 					oldsilent = silent
 					silent=True
@@ -15053,7 +15054,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 							remainingpointers[ptrtype] = pointers[ptrtype]
 				thislevel += 1
 				if len(remainingpointers) == 0:
-					dbgp("[+] No more pointers left, giving up...", highlight=1)
+					mndbg.dbgp("[+] No more pointers left, giving up...", highlight=1)
 					break
 		allpointers = remainingpointers
 
@@ -15355,7 +15356,7 @@ def compareFormattedFileWithMemory(filename,format,startpos,skipmodules=False,fi
 
 		dbg.log("    Read %d bytes from file" % len(srcdata_normal))
 	except Exception as e:
-		dbgp("Error reading file %s: %s" % (filename, str(e)), errormode=False)
+		mndbg.dbgp("Error reading file %s: %s" % (filename, str(e)), errormode=False)
 		dbg.log("Error while reading file %s" % filename, highlight=1)
 		return
 
@@ -15459,7 +15460,7 @@ class MemoryComparator(object):
 	''' Solve the memory comparison problem with a special dynamic programming
 	algorithm similar to that for the LCS problem '''
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	Chunk = namedtuple('Chunk', 'unmodified i j dx dy xchunk ychunk')
 
@@ -15846,7 +15847,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	Will attempt to produce ROP chains
 	"""
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 	
 	global ptr_to_get
 	global ptr_counter
@@ -16001,7 +16002,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			if thisreg in replacelist:
 				thistarget = replacelist[thisreg]
 			
-			thistimestamp=get_current_datetime()
+			thistimestamp=mndbg.get_current_datetime()
 			dbg.log("    %s: Step %d/%d: %s" % (thistimestamp,stepcnt,len(routinedefs[routine]),thisreg))
 			stepcnt += 1
 
@@ -16829,7 +16830,7 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 	dbg.log("")
 	dbg.log("[+] Querying IATs for %s" % apiname)
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	global silent
 	oldsilent = silent
@@ -17544,12 +17545,12 @@ def isInterestingJopGadget(instructions):
 	
 	jmp = lastinstruction.split(' ')[1].strip().lower().replace(" ","")
 	
-	dbgp("jmp instruction : %s" % jmp)
+	mndbg.dbgp("jmp instruction : %s" % jmp)
 	if jmp in regs:
 		regs.remove(jmp)
 	else:
-		dbgp("jmp instruction %s not in regs list, something wrong?" % jmp)
-		dbgp("regs list: %s" % regs)
+		mndbg.dbgp("jmp instruction %s not in regs list, something wrong?" % jmp)
+		mndbg.dbgp("regs list: %s" % regs)
 	if jmp != "esp":
 		if instructions.find("pop "+jmp) > -1:
 			popfound=True
@@ -17620,10 +17621,10 @@ def readGadgetsFromFile(filename):
 		invalidcnt = 0
 		maxline = len(content)
 		for thisLine in content:
-			#dbgp("Read line from ROP file: %s" % thisLine)
+			#mndbg.dbgp("Read line from ROP file: %s" % thisLine)
 			if isAsciiString(thisLine.replace("\r","").replace("\n","")):
 				refpointer,instr = splitToPtrInstr(thisLine)
-				dbgp("  %d/%d | Pointer: %s | Instruction: %s" % (linecnt, maxline, PTR_PRINT % refpointer, instr))
+				mndbg.dbgp("  %d/%d | Pointer: %s | Instruction: %s" % (linecnt, maxline, PTR_PRINT % refpointer, instr))
 				if refpointer != -1:
 					#get ending
 					instrparts = instr.split("#")
@@ -17642,7 +17643,7 @@ def readGadgetsFromFile(filename):
 	
 def isGoodGadgetPtr(gadget,criteria):
 	#if DEBUG_MODE:
-	#	dbgp(get_current_function_name())
+	#	mndbg.dbgp(get_current_function_name())
 	MnProc.ensure()
 	if gadget in mnproc.CritCache:
 		return mnproc.CritCache[gadget]
@@ -17669,7 +17670,7 @@ def getStackPivotDistance(gadget,distance=0):
 
 	gadgets = filter(lambda x: x.strip(), gadget.split(" # "))
 
-	dbgp("Finding pivot distance in %s " % gadget)
+	mndbg.dbgp("Finding pivot distance in %s " % gadget)
 
 	if arch == 32:
 		for g in gadgets:
@@ -17709,7 +17710,7 @@ def getStackPivotDistance(gadget,distance=0):
 			elif ("qword ptr" in g or "[" in g) and "fss" not in g:
 				return 0
 				
-	dbgp("   Distance found: %d. Min wanted: %d, Max wanted: %d" % (offset, mindistance, maxdistance))
+	mndbg.dbgp("   Distance found: %d. Min wanted: %d, Max wanted: %d" % (offset, mindistance, maxdistance))
 
 	if mindistance <= offset and offset <= maxdistance:
 		return offset
@@ -18476,7 +18477,7 @@ def goFindMSP(distance=0, args=None):
 
 				# bingo. Get the possible offset due to calling conventions
 				# (unlikely on 64bit, but you never know)
-				dbgp("Instruction at %s: %s" % ((PTR_PRINT % rsp_val), opc_instruction))
+				mndbg.dbgp("Instruction at %s: %s" % ((PTR_PRINT % rsp_val), opc_instruction))
 				rip_offset = registers_to[STACK_POINTER][1]
 				rip_patterntype = registers_to[STACK_POINTER][3]
 
@@ -18484,7 +18485,7 @@ def goFindMSP(distance=0, args=None):
 				adjust_rsp = 8	# default for ret
 				extra_adjust = getOffset(opc_instruction)
 				total_adjust = adjust_rsp + extra_adjust
-				dbgp("Extra adjustment for retn offset instruction: %d" % total_adjust)
+				mndbg.dbgp("Extra adjustment for retn offset instruction: %d" % total_adjust)
 
 				warningline = "    That means we control <b>%s</b>, and %s will be adjusted with 0x%x bytes after the '%s' instruction" % (PROGRAM_COUNTER, STACK_POINTER, total_adjust, opc_instruction)
 				dbg.log(warningline)
@@ -18660,14 +18661,14 @@ def goFindMSP(distance=0, args=None):
 
 		# get stack this address belongs to
 		stacks = getStacks()
-		dbgp("Finding stack that has current value of %s : %s" % (STACK_POINTER, PTR_PRINT % curresp))
+		mndbg.dbgp("Finding stack that has current value of %s : %s" % (STACK_POINTER, PTR_PRINT % curresp))
 
 		thisstackbase = 0
 		thisstacktop = 0
 
 		if distance < 1:
 			for tstack in stacks:
-				dbgp("Stack %d : %s - %s" % (tstack, (PTR_PRINT % stacks[tstack][0]), (PTR_PRINT % stacks[tstack][1])))
+				mndbg.dbgp("Stack %d : %s - %s" % (tstack, (PTR_PRINT % stacks[tstack][0]), (PTR_PRINT % stacks[tstack][1])))
 				if (stacks[tstack][0] < curresp) and (curresp < stacks[tstack][1]):
 					thisstackbase = stacks[tstack][0]
 					thisstacktop = stacks[tstack][1]
@@ -19001,7 +19002,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 	Returns : nothing
 	"""
 	
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 	
 	query_type = query_type.lower()
 	if query_type == "export" or query_type == "eat":
@@ -19069,13 +19070,13 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 								#read pointer of imported function
 								ptr=struct.unpack(PTR_FMT,dbg.readMemory(func,PTR_SIZE))[0]
 							except Exception as e:
-								dbgp("Unable to read IAT entry at %s" % (PTR_PRINT % func), errormode=False)
+								mndbg.dbgp("Unable to read IAT entry at %s" % (PTR_PRINT % func), errormode=False)
 								pass
 							if ptr > 0:
 								if not ptr in bpfuncs:
 									bpfuncs[ptr] = funcs[func]
 
-			if isWinDBG():
+			if mndbg.isWinDBG():
 				# let's do a few searches
 				for crit in namecrit:
 					if crit.find("*") == -1:
@@ -19101,7 +19102,7 @@ def doManageBpOnFunc(modulecriteria,criteria,funcfilter,mode="add",query_type="e
 							dbg.log("        Symbol lookup, run %d done. Processing results" % (runcnt+1))
 						if DEBUG_MODE:
 							dbg.nativeCommand("!sym quiet")
-						dbgp("output: %s" % output)
+						mndbg.dbgp("output: %s" % output)
 						outputlines = output.split("\n")
 						for line in outputlines:
 							if line.replace(" ","") != "":
@@ -19284,7 +19285,7 @@ def procCleanLog(args):
 										totaldeletedsizekb += filesizekb
 										deleteindex += 1
 							except Exception as e:
-								dbgp("Unable to remove file %s: %s" % (fullpath, str(e)), errormode=False)
+								mndbg.dbgp("Unable to remove file %s: %s" % (fullpath, str(e)), errormode=False)
 				totaldeletedsizemb = "%.2f MB" % (float(totaldeletedsizekb) / 1024)
 				
 				# show results
@@ -19539,8 +19540,8 @@ def procFindJ(args, procUsage=""):
 
 
 def procFindJMP(args, procUsage=""):
-	dbgp(get_current_function_name())
-	dbgp("    args: %s" % args)
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("    args: %s" % args)
 	#default criteria
 	modulecriteria={}
 	modulecriteria["aslr"] = False
@@ -19573,7 +19574,7 @@ def procFindJMP(args, procUsage=""):
 				validregs = dbglib.Registers32BitsOrder[:] + dbglib.Registers64BitsOrder[:]
 
 			# convert the registers to lowercase
-			if not isWinDBG():
+			if not mndbg.isWinDBG():
 				validregs = listToLower(validregs)
 			if not thisreg in validregs:
 				dbg.log("Invalid register '%s'." % args["r"].strip(), highlight=1)
@@ -19617,8 +19618,8 @@ def procFindJMP(args, procUsage=""):
 		return				
 	else:
 		modulecriteria,criteria = args2criteria(args,modulecriteria,criteria)
-		dbgp("    modulecriteria: %s" % modulecriteria)
-		dbgp("    searchcriteria: %s" % criteria)
+		mndbg.dbgp("    modulecriteria: %s" % modulecriteria)
+		mndbg.dbgp("    searchcriteria: %s" % criteria)
 		# go for it !	
 		all_opcodes=findJMP(modulecriteria,criteria,args["r"].lower().strip())
 	
@@ -19803,7 +19804,7 @@ def procModuleInfo(args):
 	if p.isCFG:
 		cfgTable = p.getCFGTable()
 		if len(cfgTable) > 0:
-			dbgp("Module %s is CFG Enabled. Table at %s, %d entries" % (target_key, PTR_PRINT % cfgTable.cfg_table_va, cfgTable.cfg_count))
+			mndbg.dbgp("Module %s is CFG Enabled. Table at %s, %d entries" % (target_key, PTR_PRINT % cfgTable.cfg_table_va, cfgTable.cfg_count))
 
 	base     = p.moduleBase
 	top      = p.moduleTop
@@ -20377,7 +20378,7 @@ def procJOP(args,mode="all"):
 def procCreatePATTERN(args):
 	size = 0
 	pattern = ""
-	dbgp("Args: %s" % args)
+	mndbg.dbgp("Args: %s" % args)
 	if "?" in args and args["?"] != "":
 		size, sizeok = getIntArg(args["?"])
 		if not sizeok:
@@ -20811,7 +20812,7 @@ def procInfo(args):
 		if len(strataddress) > 0:
 			dbg.log("    String at %s: %s" % (PTR_PRINT % address, strataddress))
 
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		funcinfo = dbglib.Function(dbg,address)
 		symname = funcinfo.addressToSymbol()
 		if symname != "":
@@ -20826,7 +20827,7 @@ def procInfo(args):
 		dbg.log("    Instruction at %s : %s" % (toHex(address),opstring))
 	except:
 		pass
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		dbg.log("")
 		dbg.log("Output of !address 0x%08x:" % address)
 		output = dbg.nativeCommand("!address 0x%08x" % address)
@@ -20975,7 +20976,7 @@ def procBp(args):
 
 	if "c" in args:
 		if type(args["c"]).__name__.lower() != "bool":
-			if isWinDBG():
+			if mndbg.isWinDBG():
 				extracmd = args["c"]
 
 	if "t" not in args:
@@ -20986,7 +20987,7 @@ def procBp(args):
 		if extracmd:
 			dbg.log("[*] Extra command on hit: %s" % extracmd)
 		try:
-			if isImmunity():
+			if mndbg.isImmunity():
 				dbg.setBreakpoint(a)
 				if condition:
 					hook = MnConditionalHook(condition)
@@ -21020,7 +21021,7 @@ def procBp(args):
 
 	bpflag = bpflags[thistype][0]
 	
-	if isImmunity():
+	if mndbg.isImmunity():
 		# Immunity setHardwareBreakpoint(address, type, size)
 		# From immlib: HB_CODE=1 (Execute), HB_ACCESS=2 (R/W), HB_WRITE=3 (Write)
 		# Execute must use size 1. Read/Write use size 4 if aligned, else 2 if aligned, else 1.
@@ -21066,7 +21067,7 @@ def procBp(args):
 # ----- bf: Set a breakpoint on exported functions of a module ----- #
 def procBf(args):
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	funcfilter = ""
 	
@@ -21096,7 +21097,7 @@ def procBf(args):
 
 	if "c" in args:
 		if type(args["c"]).__name__.lower() != "bool":
-			if isWinDBG():
+			if mndbg.isWinDBG():
 				extracmd = args["c"]
 
 	if "t" in args:
@@ -21128,7 +21129,7 @@ def procBf(args):
 
 def procByteArray(args):
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	badchars = ""
 	bytesperline = 32
@@ -21441,7 +21442,7 @@ def procUpdate(args):
 	- if no newer version is found (or download failed), show release notes for the current version
 	"""
 
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 
 	def _normalize_version(v):
 		if v is None:
@@ -21485,16 +21486,16 @@ def procUpdate(args):
 		return 0
 
 	def _is_newer(cur_ver, cur_rev, new_ver, new_rev):
-		dbgp("Comparing versions: current=%s.%s new=%s.%s" % (str(cur_ver), str(cur_rev), str(new_ver), str(new_rev)))
+		mndbg.dbgp("Comparing versions: current=%s.%s new=%s.%s" % (str(cur_ver), str(cur_rev), str(new_ver), str(new_rev)))
 		return _compare_version_rev(cur_ver, cur_rev, new_ver, new_rev) < 0
 
 	def _safe_remove(filename):
 		try:
 			if filename and os.path.exists(filename):
 				os.remove(filename)
-				dbgp("Removed temporary file %s" % filename)
+				mndbg.dbgp("Removed temporary file %s" % filename)
 		except Exception as e:
-			dbgp("Unable to remove temporary file %s : %s" % (filename, str(e)), errormode=False)
+			mndbg.dbgp("Unable to remove temporary file %s : %s" % (filename, str(e)), errormode=False)
 
 	def _check_connectivity():
 		hostnames = [
@@ -21504,13 +21505,13 @@ def procUpdate(args):
 
 		for host, port in hostnames:
 			try:
-				dbgp("Checking connectivity to %s:%d" % (host, port))
+				mndbg.dbgp("Checking connectivity to %s:%d" % (host, port))
 				s = socket.create_connection((host, port), 5)
 				s.close()
-				dbgp("Connectivity check succeeded for %s:%d" % (host, port))
+				mndbg.dbgp("Connectivity check succeeded for %s:%d" % (host, port))
 				return True
 			except Exception as e:
-				dbgp("Connectivity check failed for %s:%d : %s" % (host, port, str(e)), errormode=False)
+				mndbg.dbgp("Connectivity check failed for %s:%d : %s" % (host, port, str(e)), errormode=False)
 
 		return False
 
@@ -21531,7 +21532,7 @@ def procUpdate(args):
 
 		for candidate in candidates:
 			if os.path.isfile(candidate):
-				dbgp("Located windbglib.py at %s" % candidate)
+				mndbg.dbgp("Located windbglib.py at %s" % candidate)
 				return candidate
 
 		return ""
@@ -21546,45 +21547,45 @@ def procUpdate(args):
 		last_error = ""
 		for urltype, url in [("main", main_url), ("backup", backup_url)]:
 			try:
-				dbgp("[+] Downloading %s from %s URL" % (label, urltype))
-				dbgp("Downloading %s from %s" % (label, url))
+				mndbg.dbgp("[+] Downloading %s from %s URL" % (label, urltype))
+				mndbg.dbgp("Downloading %s from %s" % (label, url))
 				tmp = urllib_urlretrieve(url)
 				srcfile = tmp[0]
-				dbgp("Temporary downloaded file for %s is %s" % (label, srcfile))
+				mndbg.dbgp("Temporary downloaded file for %s is %s" % (label, srcfile))
 				shutil.copyfile(srcfile, destfile)
-				dbgp("Saved %s to %s" % (label, destfile))
+				mndbg.dbgp("Saved %s to %s" % (label, destfile))
 
 				if validator is not None:
 					is_valid, validation_msg = validator(destfile)
 					if is_valid:
-						dbgp("%s downloaded from %s URL passed validation" % (label, urltype))
+						mndbg.dbgp("%s downloaded from %s URL passed validation" % (label, urltype))
 						return True, url
 					last_error = validation_msg
-					dbgp("%s downloaded from %s URL failed validation: %s" % (label, urltype, validation_msg))
+					mndbg.dbgp("%s downloaded from %s URL failed validation: %s" % (label, urltype, validation_msg))
 					_safe_remove(destfile)
 					continue
 
 				return True, url
 			except Exception as e:
 				last_error = str(e)
-				dbgp("Download failed for %s from %s : %s" % (label, url, str(e)), errormode=False)
+				mndbg.dbgp("Download failed for %s from %s : %s" % (label, url, str(e)), errormode=False)
 				_safe_remove(destfile)
 
 		if last_error != "":
-			dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
+			mndbg.dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
 		return False, ""
 
 	def _read_release_notes_sections(releasenotes_file):
 		sections = []
 		if not os.path.isfile(releasenotes_file):
-			dbgp("Release notes file %s does not exist" % releasenotes_file)
+			mndbg.dbgp("Release notes file %s does not exist" % releasenotes_file)
 			return sections
 
 		try:
 			with open(releasenotes_file, "rb") as fh:
 				lines = fh.readlines()
 		except Exception as e:
-			dbgp("Unable to read release notes file %s : %s" % (releasenotes_file, str(e)), errormode=False)
+			mndbg.dbgp("Unable to read release notes file %s : %s" % (releasenotes_file, str(e)), errormode=False)
 			return sections
 
 		current = None
@@ -21639,7 +21640,7 @@ def procUpdate(args):
 					out.append(section)
 					break
 
-		dbgp("Collected %d release note section(s) for %s from %s to %s" % (len(out), normalized_name, start_header, end_header))
+		mndbg.dbgp("Collected %d release note section(s) for %s from %s to %s" % (len(out), normalized_name, start_header, end_header))
 		return out, start_header, end_header
 
 	def _get_release_notes_with_retry(releasenotes_file, releasenotes_backup, filename, from_version, from_revision, to_version, to_revision):
@@ -21649,7 +21650,7 @@ def procUpdate(args):
 		if len(sections) > 0:
 			return sections, start_header, end_header
 
-		dbgp("No release notes found between %s and %s, retrying from backup URL" % (start_header, end_header))
+		mndbg.dbgp("No release notes found between %s and %s, retrying from backup URL" % (start_header, end_header))
 
 		ok_notes, notes_url = _download_with_fallback(
 			releasenotes_backup,
@@ -21659,12 +21660,12 @@ def procUpdate(args):
 		)
 
 		if ok_notes:
-			dbgp("Re-downloaded release notes from backup URL %s" % notes_url)
+			mndbg.dbgp("Re-downloaded release notes from backup URL %s" % notes_url)
 			sections, start_header, end_header = _get_release_notes_since_version(
 				releasenotes_file, filename, from_version, from_revision, to_version, to_revision
 			)
 		else:
-			dbgp("Unable to re-download release notes from backup URL")
+			mndbg.dbgp("Unable to re-download release notes from backup URL")
 
 		return sections, start_header, end_header
 
@@ -21694,10 +21695,10 @@ def procUpdate(args):
 	mona_path = os.path.abspath(inspect.stack()[0][1])
 	mona_dir = os.path.dirname(mona_path)
 
-	dbgp("Resolved mona.py path to %s" % mona_path)
-	dbgp("Resolved mona.py directory to %s" % mona_dir)
+	mndbg.dbgp("Resolved mona.py path to %s" % mona_path)
+	mndbg.dbgp("Resolved mona.py directory to %s" % mona_dir)
 
-	dbgp("Current mona.py path : %s" % mona_path)
+	mndbg.dbgp("Current mona.py path : %s" % mona_path)
 
 	files_to_process = [
 		{
@@ -21709,12 +21710,12 @@ def procUpdate(args):
 		}
 	]
 
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		windbg_path = _locate_windbglib()
 		if windbg_path == "":
-			dbgp("[!] Unable to locate windbglib.py. Will update mona.py only.")
+			mndbg.dbgp("[!] Unable to locate windbglib.py. Will update mona.py only.")
 		else:
-			dbgp("[+] Current windbglib.py path : %s" % windbg_path)
+			mndbg.dbgp("[+] Current windbglib.py path : %s" % windbg_path)
 			files_to_process.append(
 				{
 					"name": "windbglib.py",
@@ -21725,13 +21726,13 @@ def procUpdate(args):
 				}
 			)
 	else:
-		dbgp("Debugger app is not WinDBG, so only mona.py will be processed")
+		mndbg.dbgp("Debugger app is not WinDBG, so only mona.py will be processed")
 
 	releasenotes_path = os.path.abspath(os.path.join(mona_dir, "mona_releasenotes.txt"))
 	releasenotes_main = "https://github.com/corelan/mona3/raw/master/mona_releasenotes.txt"
 	releasenotes_backup = "https://www.corelan.be/mona3/mona_releasenotes.txt"
 
-	dbgp("Release notes will be stored at %s" % releasenotes_path)
+	mndbg.dbgp("Release notes will be stored at %s" % releasenotes_path)
 
 	downloaded_release_notes = False
 	ok_notes, notes_url = _download_with_fallback(
@@ -21742,9 +21743,9 @@ def procUpdate(args):
 	)
 	if ok_notes:
 		downloaded_release_notes = True
-		dbgp("Release notes downloaded successfully from %s" % notes_url)
+		mndbg.dbgp("Release notes downloaded successfully from %s" % notes_url)
 	else:
-		dbgp("Release notes could not be downloaded from main or backup URL")
+		mndbg.dbgp("Release notes could not be downloaded from main or backup URL")
 
 	release_notes_targets = []
 	seen_release_headers = {}
@@ -21757,22 +21758,22 @@ def procUpdate(args):
 		backup_url = entry["backup_url"]
 		dbg.log("")
 		dbg.log("[+] Processing %s" % name, highlight = True)
-		dbgp("Current file   : %s" % current_file)
-		dbgp("Download target: %s" % download_file)
+		mndbg.dbgp("Current file   : %s" % current_file)
+		mndbg.dbgp("Download target: %s" % download_file)
 
 		if not os.path.isfile(current_file):
-			dbgp("    [!] Current file not found: %s" % current_file)
-			dbgp("Skipping %s because current file does not exist" % name)
+			mndbg.dbgp("    [!] Current file not found: %s" % current_file)
+			mndbg.dbgp("Skipping %s because current file does not exist" % name)
 			continue
 
 		current_version, current_revision = getVersionInfo(current_file)
 
-		dbgp("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
+		mndbg.dbgp("Current version info for %s: version=%s revision=%s" % (name, current_version, current_revision))
 
 		if current_version == "" or current_revision == "0":
 			if not force_update:
-				dbgp("    [!] Unable to read current version info from %s" % current_file)
-				dbgp("Skipping %s because current version info could not be read" % name)
+				mndbg.dbgp("    [!] Unable to read current version info from %s" % current_file)
+				mndbg.dbgp("Skipping %s because current version info could not be read" % name)
 				continue
 			dbg.log("    [!] Unable to read current version info from %s (continuing due to -force)" % current_file, highlight=1)
 
@@ -21785,10 +21786,10 @@ def procUpdate(args):
 		)
 		if not ok_download:
 			dbg.log("    [-] Unable to download %s from main or backup URL" % name, highlight=1)
-			dbgp("Skipping %s because download failed or returned invalid content" % name)
+			mndbg.dbgp("Skipping %s because download failed or returned invalid content" % name)
 
 			if simulate_only:
-				dbgp("Simulation mode: using current version release notes for %s because download failed" % name)
+				mndbg.dbgp("Simulation mode: using current version release notes for %s because download failed" % name)
 				release_notes_targets.append((name, current_version, current_revision, current_version, current_revision))
 
 			_safe_remove(download_file)
@@ -21796,23 +21797,23 @@ def procUpdate(args):
 
 		new_version, new_revision = getVersionInfo(download_file)
 
-		dbgp("Downloaded version info for %s: version=%s revision=%s" % (name, new_version, new_revision))
+		mndbg.dbgp("Downloaded version info for %s: version=%s revision=%s" % (name, new_version, new_revision))
 
 		if new_version == "" or new_revision == "0":
 			dbg.log("    [-] Downloaded %s but could not read version/revision information" % name, highlight=1)
-			dbgp("Downloaded file for %s does not appear to contain valid version info" % name)
+			mndbg.dbgp("Downloaded file for %s does not appear to contain valid version info" % name)
 
 			if simulate_only:
-				dbgp("Simulation mode: using current version release notes for %s because downloaded file had invalid version info" % name)
+				mndbg.dbgp("Simulation mode: using current version release notes for %s because downloaded file had invalid version info" % name)
 				release_notes_targets.append((name, current_version, current_revision, current_version, current_revision))
-				dbgp("Not removing downloaded file so you can inspect what went wrong")
+				mndbg.dbgp("Not removing downloaded file so you can inspect what went wrong")
 			else:
 				_safe_remove(download_file)
 			continue
 
 		dbg.log("    Current : version %s / revision %s" % (current_version, current_revision))
 		dbg.log("    Download: version %s / revision %s" % (new_version, new_revision))
-		dbgp("%s downloaded from %s" % (name, used_url))
+		mndbg.dbgp("%s downloaded from %s" % (name, used_url))
 
 		if force_update:
 			if simulate_only:
@@ -21820,35 +21821,35 @@ def procUpdate(args):
 				release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 			else:
 				try:
-					dbgp("Force copying %s over %s" % (download_file, current_file))
+					mndbg.dbgp("Force copying %s over %s" % (download_file, current_file))
 					shutil.copyfile(download_file, current_file)
 					dbg.log("    [+] Forced in-place update of %s" % name, highlight=1)
 					release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 				except Exception as e:
 					dbg.log("    [-] Unable to force update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
-					dbgp("Force copy failed for %s : %s" % (name, str(e)), errormode=False)
+					mndbg.dbgp("Force copy failed for %s : %s" % (name, str(e)), errormode=False)
 		elif _is_newer(current_version, current_revision, new_version, new_revision):
 			dbg.log("    [+] Newer version found for %s" % name, highlight=1)
 
 			if simulate_only:
 				dbg.log("    [*] Simulation mode enabled - not updating %s" % name)
-				dbgp("Simulation mode active, not copying %s on top of current file" % name)
+				mndbg.dbgp("Simulation mode active, not copying %s on top of current file" % name)
 				release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 			else:
 				try:
-					dbgp("Copying %s over %s" % (download_file, current_file))
+					mndbg.dbgp("Copying %s over %s" % (download_file, current_file))
 					shutil.copyfile(download_file, current_file)
 					dbg.log("    [+] Updated %s in place" % name, highlight=1)
 					release_notes_targets.append((name, current_version, current_revision, new_version, new_revision))
 				except Exception as e:
 					dbg.log("    [-] Unable to update %s" % name, highlight=1)
 					dbg.log("        %s" % str(e))
-					dbgp("Copy failed for %s : %s" % (name, str(e)), errormode=False)
+					mndbg.dbgp("Copy failed for %s : %s" % (name, str(e)), errormode=False)
 		else:
 			dbg.log("    [+] You are already running the latest version of %s" % name)
 			if simulate_only:
-				dbgp("Simulation mode: using current version release notes for %s because no newer version was found" % name)
+				mndbg.dbgp("Simulation mode: using current version release notes for %s because no newer version was found" % name)
 				release_notes_targets.append((name, current_version, current_revision, current_version, current_revision))
 
 		_safe_remove(download_file)
@@ -21869,20 +21870,20 @@ def procUpdate(args):
 					for section in sections:
 						header = section["header"]
 						if header in seen_release_headers:
-							dbgp("Skipping duplicate release notes header %s" % header)
+							mndbg.dbgp("Skipping duplicate release notes header %s" % header)
 							continue
 						seen_release_headers[header] = True
 						dbg.log("    %s" % header, highlight = True)
 						for line in section["notes"].splitlines():
-							if not isWinDBG():
+							if not mndbg.isWinDBG():
 								line = stripTags(line)
 							dbg.log("    %s" % line, highlight = True)
 				else:
-					dbgp("No release note entries found between %s and %s, even after retrying backup server" % (start_header, end_header))
+					mndbg.dbgp("No release note entries found between %s and %s, even after retrying backup server" % (start_header, end_header))
 		elif not downloaded_release_notes:
-			dbgp("Release notes were not downloaded, so nothing will be shown")
+			mndbg.dbgp("Release notes were not downloaded, so nothing will be shown")
 		else:
-			dbgp("No release notes targets were collected, so no release notes section will be printed")
+			mndbg.dbgp("No release notes targets were collected, so no release notes section will be printed")
 
 	return "Done"
 
@@ -21945,7 +21946,7 @@ def procgetPC(args):
 		asms.append("lea %s, [8]\nnop" % pc_targetreg)
 		for asmstr in asms:
 			assembled = dbg.assemble(asmstr)
-			dbgp("[+] Assembled instruction '%s' into bytes: %s" % (asmstr.replace('\n',";"), bin2hex(assembled)))
+			mndbg.dbgp("[+] Assembled instruction '%s' into bytes: %s" % (asmstr.replace('\n',";"), bin2hex(assembled)))
 			# join the bytes together
 			bytelist = bin2hexstr(assembled)
 			output += "\n" + pc_targetreg + "| %s: %s\n" % ( asmstr.replace('\n',';'), bytelist)
@@ -22938,7 +22939,7 @@ def procStacks(args):
 				endaddress = s[1]
 				size = s[1] - s[0]
 				info = ""
-				if isWinDBG():
+				if mndbg.isWinDBG():
 					info = clickPageAcl(startaddress)
 				stackDict[str(threadid)] = [startaddress, endaddress, size, info]
 
@@ -23151,7 +23152,7 @@ def procLayout(args):
 		seen_regions.add(dedup_key)
 		desc_entry = indent + description
 		if tree_mode and highlight_addr is not None and start <= highlight_addr < end:
-			if isWinDBG():
+			if mndbg.isWinDBG():
 				desc_entry = "<b>" + desc_entry + "</b>"
 			else:
 				desc_entry = ">>> " + desc_entry
@@ -23290,7 +23291,7 @@ def _procHeapByAddr(refvalue):
 			except:
 				return "LFH Subsegment"
 		seg_str = PTR_PRINT % chunk.segmentbase
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			seg_str = "<link cmd=\"dt _HEAP_SEGMENT %s\">%s</link>" % (seg_str, seg_str)
 		return "Segment @ %s" % seg_str
 
@@ -23305,7 +23306,7 @@ def _procHeapByAddr(refvalue):
 		entry_str = PTR_PRINT % chunk.chunkptr
 		uptr_str  = PTR_PRINT % chunk.userptr
 		heap_str  = PTR_PRINT % mheap.heapbase
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			entry_str   = clickWinDBGCmd(windbg_cmd="!heap -x %s" % entry_str, displaytext=entry_str)
 			dps_formula = "0x%x/%s" % (chunk.usersize, PTR_SIZE)
 			uptr_str    = clickWinDBGCmd(windbg_cmd="dps %s L %s" % (uptr_str, dps_formula), displaytext = uptr_str)
@@ -23330,7 +23331,7 @@ def _procHeapByAddr(refvalue):
 		string_to_print = ""
 		for readpos in startpos_offsets:
 			startpos = chunk.userptr + readpos
-			dbgp("Checking if %s has a string" % PTR_PRINT % startpos )
+			mndbg.dbgp("Checking if %s has a string" % PTR_PRINT % startpos )
 			try:
 				stringinmemory = dbg.readString(startpos)
 				if len(stringinmemory) > 1:
@@ -23388,7 +23389,7 @@ def _procHeapByAddr(refvalue):
 		ptext = "<b>Previous</b> Chunk"
 		ctext = "<b>* Current</b> Chunk"
 		ntext = "<b>Next</b> Chunk"
-		if not isWinDBG():
+		if not mndbg.isWinDBG():
 			ptext = stripTags(ptext)
 			ctext = stripTags(ctext)
 			ntext = stripTags(ntext)
@@ -23888,7 +23889,7 @@ def procHeap(args):
 							# again, just store offset
 							objects = {}
 							orderedobj = []
-							if isWinDBG():
+							if mndbg.isWinDBG():
 								nrlines = int(float(blocksize) / 4)
 								cmd2run = "dds 0x%08x L 0x%x" % ((block + headersize),nrlines)
 								output = dbg.nativeCommand(cmd2run)
@@ -24886,7 +24887,7 @@ def procLoad(args):
 	dbg.log("[+] Attempting to write contents of file to %s (%s)" % (targetloc, (PTR_PRINT % addr)))
 	
 	# Use appropriate method based on debugger type
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		# WinDBG: use nativeCommand with eb (edit byte) command
 		batch_size = 16
 		log_every = True
@@ -24935,7 +24936,7 @@ def procLoad(args):
 	dbg.log("[+] Finished writing %d bytes to %s" % (total_len, (PTR_PRINT % addr)))
 
 	# let's make that location RWX to be sure
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		dbg.rVirtualProtect(addr,1,0x40)
 		dbg.log("[+] Changed ACL to RWX")
 		dbg.log("[+] Done.")
@@ -25320,7 +25321,7 @@ def procPageACL(args):
 			pagestart = page.getBaseAddress()
 			pagesize = page.getSize()
 			pageusage = ""
-			if isWinDBG():
+			if mndbg.isWinDBG():
 				pageusage = page.getUsage().strip()
 			mod = ""
 			sectionname = ""
@@ -25705,10 +25706,10 @@ def procWrite(args):
 				if len(asmparts) == 0:
 					byteerror = True
 				else:
-					dbgp("[+] Assembling the following instructions:\n%s" % "\n".join(asmparts))
+					mndbg.dbgp("[+] Assembling the following instructions:\n%s" % "\n".join(asmparts))
 					asmjoined = "\n".join(asmparts)
 					assembled = dbg.assemble(asmjoined)
-					dbgp("[+] Assembled bytes: %s" % bin2hex(assembled))
+					mndbg.dbgp("[+] Assembled bytes: %s" % bin2hex(assembled))
 					dbg.log("[+] Assembled the instruction to %s" % bin2hexstr(assembled))
 					# dbg.assemble should return raw bytes (py3) or str (py2). Coerce for safety.
 					if isinstance(assembled, bytearray):
@@ -25810,10 +25811,10 @@ def procEnc(args):
 				if len(asmparts) == 0:
 					byteerror = True
 				else:
-					dbgp("[+] Assembling the following instructions:\n%s" % "\n".join(asmparts))
+					mndbg.dbgp("[+] Assembling the following instructions:\n%s" % "\n".join(asmparts))
 					asmjoined = "\n".join(asmparts)
 					assembled = dbg.assemble(asmjoined)
-					dbgp("[+] Assembled bytes: %s" % bin2hex(assembled))
+					mndbg.dbgp("[+] Assembled bytes: %s" % bin2hex(assembled))
 					# dbg.assemble should return raw bytes (py3) or str (py2). Coerce for safety.
 					if isinstance(assembled, bytearray):
 						assembled = bytes(assembled) if PY3 else ''.join(chr(b & 0xff) for b in assembled)
@@ -25955,7 +25956,7 @@ def procString(args):
 			dbg.log("    %s" % stringinmemory, highlight=True)
 		except Exception as e:
 			dbg.log("    Unable to read string at %s" % PTR_PRINT % addy, highlight=True)
-			dbgp("Unable to read string at %s: %s" % (PTR_PRINT % addy, str(e)), errormode=True)
+			mndbg.dbgp("Unable to read string at %s: %s" % (PTR_PRINT % addy, str(e)), errormode=True)
 	if mode == "write":
 		origstring = stringtowrite
 		writtendata = ""
@@ -26013,7 +26014,7 @@ def procBPSeh(self):
 				nsehvalue = 0
 			bpsuccess = True
 			try:
-				if isWinDBG():
+				if mndbg.isWinDBG():
 					bpsuccess = dbg.setBreakpoint(sehandler)
 				else:
 					dbg.setBreakpoint(sehandler)
@@ -26159,7 +26160,7 @@ def procDumpLog(args):
 
 		for tline in contents:
 			line = ensure_text(tline)
-			dbgp("Read line from logfile: %s" % line)
+			mndbg.dbgp("Read line from logfile: %s" % line)
 			if line.startswith("alloc("):
 				size = ""
 				addy = ""
@@ -26247,7 +26248,7 @@ def procDumpLog(args):
 			dumpdata = ptrx.dumpObjectAtLocation(size,levels=levels,nestedsize=nestedsize,customthislog=thislog,customlogfile=logfile,custommsg=seqtxt)
 			if flipcnt >= flipmax:
 				flipcnt = 0
-				thistimestamp = get_current_datetime()
+				thistimestamp = mndbg.get_current_datetime()
 				eta = get_eta(startmoment, curnr, maxnr)
 				updatetext = ">> Update: {done} / {total} items processed ({ts}) - ({pct:.2f}%) - ETA: {eta}".format(
 					done=curnr,
@@ -26384,7 +26385,7 @@ def procCopy(args):
 		except Exception as e:
 			dbg.log("    *** Copy failed, check if both locations are accessible/mapped",highlight=1)
 			dbg.log("    *** %s" % str(e))
-			dbgp("    *** Traceback: %s" % traceback.format_exc(), errormode=False)
+			mndbg.dbgp("    *** Traceback: %s" % traceback.format_exc(), errormode=False)
 	return
 
 # unicode alignment routines written by floyd (http://www.floyd.ch, twitter: @floyd_ch)
@@ -27031,7 +27032,7 @@ def procEval(args):
 	# put all args together
 	argline = ""
 	if len(currentArgs) > 1:
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			for a in currentArgs[2:]:
 				argline += a
 		else:
@@ -27088,7 +27089,7 @@ def _sym_list(args):
 	cache_dirs, servers, sym_entries = dbglib.getSymPaths(windbgflavor)
 	cache_dirs = [d for d in cache_dirs if d and not d.lower().startswith(("http://", "https://"))]
 
-	dbgp("Cache dirs: %s" % cache_dirs)
+	mndbg.dbgp("Cache dirs: %s" % cache_dirs)
 
 	filtertext = criteriaToText(modulecriteria, True)
 	if filtertext:
@@ -27466,7 +27467,7 @@ def procToBp(args):
 	"""
 	Generate WinDBG syntax to create a logging breakpoint on a given location
 	"""
-	dbgp(get_current_function_name())
+	mndbg.dbgp(get_current_function_name())
 	addy = 0
 	addyerror = False
 	executenow = False
@@ -27481,7 +27482,7 @@ def procToBp(args):
 	if arch == 64:
 		# add 64bit regs as well
 		regnames = Registers64BitsOrder[:] + Registers32BitsOrder[:]
-	dbgp("Regs used: %s" % regnames)
+	mndbg.dbgp("Regs used: %s" % regnames)
 	regs = getRegisters()
 	silent = True
 	if "a" in args:
@@ -27934,7 +27935,7 @@ def procHelp(args, helpForCommand=None):
 	global scriptname	
 	scriptname = get_script_name()
 	launchcmd = getAliasName()
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		if guessedAlias != "":
 			launchcmd = guessedAlias
 		else:
@@ -27942,7 +27943,7 @@ def procHelp(args, helpForCommand=None):
 
 	dbg.log("    mona.py - Exploit Development Swiss Army Knife")
 	dbgname = __DEBUGGERAPP__
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		dbgname = "%s" % windbgprettyname
 
 	dbg.log("    Written by Corelan - https://www.corelan.be")
@@ -28009,7 +28010,7 @@ def procHelp(args, helpForCommand=None):
 
 		dbg.logLines("\n\nUsage :")
 		dbg.logLines("-------\n")
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			dbg.log("<b>!%s &lt;command&gt; &lt;parameter&gt;</b>" % launchcmd)
 			dbg.logLines("\nAvailable commands and parameters for <b>%sbit</b> architecture:\n" % str(arch))
 		else:
@@ -28064,7 +28065,7 @@ def populateCommands(args):
 	global scriptname	
 	scriptname = get_script_name()
 	launchcmd = getAliasName()
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		if guessedAlias != "":
 			launchcmd = guessedAlias
 		else:
@@ -28876,7 +28877,7 @@ Optional arguments:
 	commands["?"]				= MnCommand("?","Evaluate an expression",evalUsage,procEval,"eval",[32,64])	
 	commands["stringpos"]       = MnCommand("stringpos","Find position of memory at address in string it is part of", strposUsage, procStrPos,"strpos",[32,64])
 	commands["fillchunk"]	    = MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
 		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
@@ -29073,13 +29074,13 @@ def main(args):
 	currentArgs = copy.copy(args)
 	if ("-debug" in args):
 		DEBUG_MODE = True
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			dbglib.set_debug_mode(True)
 		dbg.log("*** Activating debug mode : %s ***" % DEBUG_MODE, highlight=True)
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			# prepare an empty log file
 			# so WinDBG can write its output to it
-			windbglogfile = MnLog("%s-mona-windbg-debug.log" % get_current_datetime_flat())
+			windbglogfile = MnLog("%s-mona-windbg-debug.log" % mndbg.get_current_datetime_flat())
 			windbglog = windbglogfile.reset(clear = True, skipModuleTable = True)
 			dbg.log("*** Writing WinDBG output to %s ***" % windbglog, highlight=True)
 			dbg.nativeCommand(".logclose")
@@ -29094,9 +29095,9 @@ def main(args):
 
 		thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
 		thisversion = thisversion.replace("'","")
-		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (get_current_datetime(),thisversion,thisrevision, arch))
+		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (mndbg.get_current_datetime(),thisversion,thisrevision, arch))
 		dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			pykdver = dbg.getPyKDVersionNr()
 			keystonever = ""
 			if g_keystoneLoaded:
@@ -29112,7 +29113,7 @@ def main(args):
 		# fill up the commands dict
 		populateCommands(args)
 
-		dbgp("Initialized %d commands" % len(commands))
+		mndbg.dbgp("Initialized %d commands" % len(commands))
 		
 		# get the options
 		last = ""
@@ -29126,7 +29127,7 @@ def main(args):
 		aline = " ".join(a for a in argcopy)
 
 		aliasname = ""
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			aliasname = getAliasName()
 			dbg.log("[+] Command used: <b>%s %s</b>" % (aliasname, justargs))		
 			if aline != "":
@@ -29151,13 +29152,13 @@ def main(args):
 			dbg.log("monaArgs: %s" % monaArgs)
 			dbg.log("-" * 50)
 
-		dbgp("Command: %s" % command)
-		dbgp("Architecture: %s" % arch)
-		dbgp("monaArgs: %s" % monaArgs)
+		mndbg.dbgp("Command: %s" % command)
+		mndbg.dbgp("Architecture: %s" % arch)
+		mndbg.dbgp("monaArgs: %s" % monaArgs)
 
 		# ----- execute the chosen command ----- #
-		dbgp("You're trying to run command '%s'" % command)
-		dbgp("Args: %s" % monaArgs)
+		mndbg.dbgp("You're trying to run command '%s'" % command)
+		mndbg.dbgp("Args: %s" % monaArgs)
 
 		# special case - if you are invoking a real command
 		# but specified -h
@@ -29188,7 +29189,7 @@ def main(args):
 
 		scriptname = get_script_name()
 		launchcmd = "!" + scriptname		
-		if isWinDBG():
+		if mndbg.isWinDBG():
 			launchcmd = aliasname
 
 		if command == "" or command == "-h":
@@ -29216,7 +29217,7 @@ def main(args):
 					if "?" in monaArgs:
 						help_for_command = monaArgs["?"]
 						helpForCommand = None
-						dbgp("You're asking for help on using the '%s' command" % help_for_command)
+						mndbg.dbgp("You're asking for help on using the '%s' command" % help_for_command)
 						if help_for_command in acceptedcommands:
 							helpForCommand = acceptedcommands[help_for_command]
 						elif help_for_command in acceptedaliases:
@@ -29236,14 +29237,14 @@ def main(args):
 		endtime = datetime.datetime.now()
 		delta = endtime - starttime
 		dbg.log("")
-		if isWinDBG():
-			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (get_current_datetime(), getAliasName(), str(delta)))
+		if mndbg.isWinDBG():
+			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
 		else:
-			dbg.log("[ -- END -- ] %s | %s took %s" % (get_current_datetime(), getAliasName(), str(delta)))
+			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
 		if yesno():
 			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
 		dbg.setStatusBar("Done")
-		if DEBUG_MODE and isWinDBG():
+		if DEBUG_MODE and mndbg.isWinDBG():
 			dbg.nativeCommand(".logclose")
 				
 	except:
@@ -29274,7 +29275,7 @@ if __name__ == "__main__":
 		dbg.log(" ***** TIME *****")
 		p.sort_stats('time', 'cum').print_stats(30)
 	# clear memory
-	if isWinDBG():
+	if mndbg.isWinDBG():
 		dbglib.clearvars()
 	try:
 		resetGlobals()
