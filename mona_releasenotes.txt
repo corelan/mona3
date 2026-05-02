@@ -1,3 +1,22 @@
+[mona 3.0.3005]
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/7b89939">7b89939</link> improve tree view
+  - <link cmd="https://github.com/corelan/mona3/commit/2fbfca8">2fbfca8</link> remove chunk inheritance in flat view
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/f89dbde">f89dbde</link> bugfix for immunity
+  - <link cmd="https://github.com/corelan/mona3/commit/66ae788">66ae788</link> cache getPtrFunction and add nativecommand statistics for windbg
+  - <link cmd="https://github.com/corelan/mona3/commit/c2dc6a1">c2dc6a1</link> bugfix in procfillchunk
+  - <link cmd="https://github.com/corelan/mona3/commit/aab3b91">aab3b91</link> rename globals. Print UserSize and  state for linked heap chunks in dumpobj routine
+  - <link cmd="https://github.com/corelan/mona3/commit/d3c896a">d3c896a</link> implement naming conventions for globals
+  - <link cmd="https://github.com/corelan/mona3/commit/b41fcd8">b41fcd8</link> add MnDebugger class
+  - <link cmd="https://github.com/corelan/mona3/commit/4bf7714">4bf7714</link> update help for procLayout
+  - <link cmd="https://github.com/corelan/mona3/commit/88ad5c9">88ad5c9</link> set tree mode automatically if -a is used
+  - <link cmd="https://github.com/corelan/mona3/commit/d33603d">d33603d</link> update banners
+
+[windbglib 3.0.3003]
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/66ae788">66ae788</link> cache getPtrFunction and add nativecommand statistics for windbg
+
 [mona 3.0.3004]
 apl3b:
   - <link cmd="https://github.com/corelan/mona3/commit/db57637">db57637</link> Fix Stack inheritance
