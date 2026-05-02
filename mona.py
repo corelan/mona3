@@ -10531,7 +10531,8 @@ class MnPointer:
 							funcinfo = funcrefparts[1].replace(" ","")
 							break
 
-			if funcinfo == "":
+			if self.functionname == "":
+				funcinfo = ""
 				memloc = self.belongsTo()
 				if not memloc == "":
 					mod = MnModule(memloc)
