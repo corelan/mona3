@@ -188,11 +188,13 @@ If you're using an older version:
   - x86: https://github.com/corelan/CorelanTraining/blob/master/pykd-ext/2.0.0.25/x86.zip
   - x64: https://github.com/corelan/CorelanTraining/blob/master/pykd-ext/2.0.0.25/x64.zip
 
-Put pykd.dll from the x86.zip file inside `%LOCALAPPDATA%\DBG\EngineExtensions32`,
-Put pykd.dll from the x64.zip file inside `%LOCALAPPDATA%\DBG\EngineExtensions`
+* Put pykd.dll from the x86.zip file inside `%LOCALAPPDATA%\DBG\EngineExtensions32`
+* Put pykd.dll from the x64.zip file inside `%LOCALAPPDATA%\DBG\EngineExtensions`
 
 All set! That should do the trick. 
+
 After loading pykd, you can now invoke `!py -3.14` to run mona.py.
+
 Adjust the instructions in the procedure below accordingly. 
 
 ---
