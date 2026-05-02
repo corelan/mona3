@@ -10,6 +10,7 @@
     - [1.1. Windows 10 and later](#11-windows-10-and-later)
     - [1.2. Windows 7](#12-windows-7)
     - [1.3. A note on 64bit](#13-a-note-on-64bit)
+    - [1.4. Can you help me run mona under Python 3.14.4?](#14-can-you-help-me-run-mona-under-python-3144)
   - 📥 [2. Install mona & windbglib](#2-install-mona-windbglib)
     - [2.1. Distributed installation](#21-distributed-installation)
     - [2.2. Centralized installation (recommended)](#22-centralized-installation-recommended)
@@ -33,7 +34,7 @@
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
 ### Highlights
-* **Python 3 Support**: Compatible with **Python 3.9.13** (via PyKD and PyKD-ext)
+* **Python 3 Support**: Compatible with **Python 3.9.13** (via PyKD and PyKD-ext). (Technically, `mona` is compatible with Python 3.14.4 as well, but  you'll have to manually install the pykd library).   We recommend using pykd-ext bootstrapper version 2.0.0.25 or later.
 * **Backwards Compatible**: Still runs on **Python 2.7.18** (via PyKD and PyKD-ext)
 * **Multi-Architecture**: Supports both ***x86 and x64*** debugging sessions *(note: not all `mona`commands are available in 64-bit)*
 * **Tested on**: Windows 7, Windows 10, and Windows 11
@@ -134,6 +135,65 @@ Mona includes a small assembly cache in `windbglib.py`... but that's not really 
  
 If `keystone-engine` is installed, `windbglib.py` will use it when needed.
 If not, support for 64-bit assembly will be very limited (to the items in the assembly cache), and some commands that take arbitrary assembly statements might fail.  
+
+<br>
+
+### 1.4. Can you help me run mona under Python 3.14.4?
+
+Yes, of course:
+
+*1.4.1. Install Python 3.14.4 (both 32bit and 64bit)*
+
+Download installers from the URLs below and run each installer
+
+* x86: https://www.python.org/ftp/python/3.14.4/python-3.14.4.exe
+* x64: https://www.python.org/ftp/python/3.14.4/python-3.14.4-amd64.exe
+
+*1.4.2. Upgrade pip:*
+
+```batch
+py -3.14-32 -m pip install --upgrade pip
+py -3.14 -m pip install --upgrade pip
+```
+
+*1.4.3. Install keystone engine:*
+
+```batch
+py -3.14-32 -m pip install keystone-engine
+py -3.14 -m pip install keystone-engine
+```
+
+*1.4.4. Download the pykd library:*
+
+  * x86: https://github.com/corelan/CorelanTraining/blob/master/pykd/pykd-0.3.4.15-cp314-win32.zip
+  * x64: https://github.com/corelan/CorelanTraining/blob/master/pykd/pykd-0.3.4.15-cp314-amd64.zip
+
+  Extract the files, you'll get 2 .whl files. Install them via pip:
+
+From the folder that contains the extracted .whl files:
+```batch
+py -3.14-32 -m pip install pykd-0.3.4.15-cp314-win32.whl
+py -3.14 -m pip install pykd-0.3.4.15-cp314-amd64.whl
+```
+
+*1.4.5. Verify that you are running pykd-ext version 2.0.0.25*
+
+Open WinDBG. Run `!load pykd` and then type `!pykd.info` to see the pykd-ext version.
+
+If you're using an older version:
+
+* Remove the existing pykd.dll files from `%LOCALAPPDATA%\DBG\EngineExtensions` and `%LOCALAPPDATA%\DBG\EngineExtensions32`
+* Download the v2.0.0.25 version here:
+
+  - x86: https://github.com/corelan/CorelanTraining/blob/master/pykd-ext/2.0.0.25/x86.zip
+  - x64: https://github.com/corelan/CorelanTraining/blob/master/pykd-ext/2.0.0.25/x64.zip
+
+Put pykd.dll from the x86.zip file inside `%LOCALAPPDATA%\DBG\EngineExtensions32`,
+Put pykd.dll from the x64.zip file inside `%LOCALAPPDATA%\DBG\EngineExtensions`
+
+All set! That should do the trick. 
+After loading pykd, you can now invoke `!py -3.14` to run mona.py.
+Adjust the instructions in the procedure below accordingly. 
 
 ---
 
@@ -262,6 +322,8 @@ Next, ***attach*** WinDBG Classic to your target process.
 !as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
 Now you can simply type `!mona` at the WinDBG Command Line.
+
+
 
 [Section B](#b-auto-loading-pykd-and-creating-an-alias-in-windbg-classic-and-windbgx) below shows how to automate this alias at startup.
 
