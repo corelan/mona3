@@ -29364,7 +29364,6 @@ def main(args):
 			dbg.nativeCommand(".logclose")
 			dbg.log("")
 			dbg.getNativeCommandStatistics(minval=2)
-				
 	except:
 		dbg.log("*" * 80,highlight=True)
 		dbg.logLines(traceback.format_exc(),highlight=True)
@@ -29395,6 +29394,7 @@ if __name__ == "__main__":
 	# clear memory
 	if mndbg.isWinDBG():
 		dbglib.clearvars()
+		dbg.log("All done.")
 	try:
 		resetGlobals()
 		dbg = None
