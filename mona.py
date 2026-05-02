@@ -14944,7 +14944,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	patternfilename = ""
 	split1 = re.compile(' ')		
 	split2 = re.compile(':')
-	split3 = re.compile("\*")		
+	split3 = re.compile("\\*")		
 	
 	if not g_silent:
 		dbg.log("    - Treating search pattern as %s" % ptype)
@@ -22436,7 +22436,7 @@ def procEgg(args):
 			jmppayload += getsize
 			jmppayload += _to_bytes(hex2bin(assemble("#push edi#push edi#push "+depreg+"#ret")))
 		elif depmethod == "copy":
-			jmppayload = _to_bytes(hex2bin(assemble("push edi\push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret")))
+			jmppayload = _to_bytes(hex2bin(assemble("push edi#push "+depdest+"#push "+depdest+"#push "+depreg+"#mov edi,"+depdest+"#ret")))
 		elif depmethod == "copy_size":
 			jmppayload += getsize
 			jmppayload += _to_bytes(hex2bin(assemble("push edi#push "+depdest+"#push " + depdest + "#push "+depreg+"#mov edi,"+depdest+"#ret")))
@@ -27971,9 +27971,9 @@ def getBanner():
 	bannertext += "    +------------------------------------------------------------------+\n"
 	bannertext += "    |                         __               __                      |\n"
 	bannertext += "    |   _________  ________  / /___ _____     / /____  ____ _____ ___  |\n"
-	bannertext += "    |  / ___/ __ \/ ___/ _ \/ / __ `/ __ \   / __/ _ \/ __ `/ __ `__ \ |\n"
+	bannertext += "    |  / ___/ __ \\/ ___/ _ \\/ / __ `/ __ \\   / __/ _ \\/ __ `/ __ `__ \\ |\n"
 	bannertext += "    | / /__/ /_/ / /  /  __/ / /_/ / / / /  / /_/  __/ /_/ / / / / / / |\n"
-	bannertext += "    | \___/\____/_/   \___/_/\__,_/_/ /_/   \__/\___/\__,_/_/ /_/ /_/  |\n"
+	bannertext += "    | \\___/\\____/_/   \\___/_/\\__,_/_/ /_/   \\__/\\___/\\__,_/_/ /_/ /_/  |\n"
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    |     https://www.corelan.be | https://www.corelan-training.com    |\n"
 	bannertext += "    |                 https://www.corelan-certified.com                |\n"
@@ -27983,20 +27983,20 @@ def getBanner():
 	bannertext = ""
 	bannertext += "    /------------------------------------------------------------------\\\n"			
 	bannertext += "    |        _ __ ___    ___   _ __    __ _     _ __   _   _           |\n"
-	bannertext += "    |       | '_ ` _ \  / _ \ | '_ \  / _` |   | '_ \ | | | |          |\n"
+	bannertext += "    |       | '_ ` _ \\  / _ \\ | '_ \\  / _` |   | '_ \\ | | | |          |\n"
 	bannertext += "    |       | | | | | || (_) || | | || (_| | _ | |_) || |_| |          |\n"
-	bannertext += "    |       |_| |_| |_| \___/ |_| |_| \__,_|(_)| .__/  \__, |          |\n"
+	bannertext += "    |       |_| |_| |_| \\___/ |_| |_| \\__,_|(_)| .__/  \\__, |          |\n"
 	bannertext += "    |                                          |_|     |___/           |\n"
-	bannertext += "    \------------------------------------------------------------------/\n"	
+	bannertext += "    \\------------------------------------------------------------------/\n"	
 	banners[1] = bannertext
 
 	bannertext = ""
 	bannertext += "    #----------------------------------------------------------------- #\n"
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    |    ____ ___  ____  ____  ____ _                                  |\n"
-	bannertext += "    |   / __ `__ \/ __ \/ __ \/ __ `/  https://www.corelan.be          |\n"
+	bannertext += "    |   / __ `__ \\/ __ \\/ __ \\/ __ `/  https://www.corelan.be          |\n"
 	bannertext += "    |  / / / / / / /_/ / / / / /_/ /  https://www.corelan-training.com |\n"
-	bannertext += "    | /_/ /_/ /_/\____/_/ /_/\__,_/  https://www.corelan-certified.com |\n"
+	bannertext += "    | /_/ /_/ /_/\\____/_/ /_/\\__,_/  https://www.corelan-certified.com |\n"
 	bannertext += "    |                                                                  |\n"
 	bannertext += "    #------------------------------------------------------------------#\n"
 	banners[2] = bannertext
@@ -28016,15 +28016,15 @@ def getBanner():
 	bannertext += "   │                                       │\n"
 	bannertext += "   │    ____               _               │\n"
 	bannertext += "   │   / ___|___  _ __ ___| | __ _ _ __    │\n"
-	bannertext += "   │  | |   / _ \| '__/ _ \ |/ _` | '_ \   │\n"
+	bannertext += "   │  | |   / _ \\| '__/ _ \\ |/ _` | '_ \\   │\n"
 	bannertext += "   │  | |__| (_) | | |  __/ | (_| | | | |  │\n"
-	bannertext += "   │   \____\___/|_|  \___|_|\__,_|_| |_|  │\n"
+	bannertext += "   │   \\____\\___/|_|  \\___|_|\\__,_|_| |_|  │\n"
 	bannertext += "   │                                       │\n"
 	bannertext += "   │    www.corelan.be                     │\n"
 	bannertext += "   └───────────────────────────────────────┘\n"
 	banners[4] = bannertext
 
-	bannertext = """
+	bannertext = r"""
     ___  ________ _   _   ___          _____ 
     |  \/  |  _  | \ | | / _ \        |____ |
     | .  . | | | |  \| |/ /_\ \ __   __   / /
@@ -28038,7 +28038,7 @@ def getBanner():
 
 	banners[5] = bannertext
 
-	bannertext = """
+	bannertext = r"""
      __  __   ___   _   _     _          ____   __   __
     |  \/  | / _ \ | \ | |   / \        |  _ \  \ \ / /
     | |\/| || | | ||  \| |  / _ \       | |_) |  \ V / 
@@ -28227,7 +28227,7 @@ Optional argument:
 
     -all : also search outside of loaded modules"""
 	
-	configUsage = """Change config of mona.py
+	configUsage = r"""Change config of mona.py
 Available options are : 
     -get   <parameter>
     -set   <parameter> <value>
@@ -28921,7 +28921,7 @@ Arguments:
     -f     : Full path to the file to read 
     -a     : address (or register) to write to""" 
 
-	cleanLogUsage = """Free up some diskspace by removing old log files from workingfolder
+	cleanLogUsage = r"""Free up some diskspace by removing old log files from workingfolder
     This command only works if you have an active workingfolder set
     For instance: %s config -set workingfolder c:\logs\%%p
 
