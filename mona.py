@@ -503,16 +503,14 @@ def getLaunchCommand():
 	mndbg.dbgp(get_current_function_name())
 
 	launchcmd = ""
-	entire_command = ""
 	
 	if '__file__' in globals():
 		launchcmd = str(__file__).strip().strip("\"'")
 	elif len(sys.argv) > 0:
 		launchcmd = str(sys.argv[0]).strip().strip("\"'")
-	#if launchcmd != "":
-	#	entire_command = "!py -%d.%d %s" % (sys.version_info[0], sys.version_info[1], launchcmd)
+
 	mndbg.dbgp("LaunchCommand: %s" % launchcmd)
-	#mndbg.dbgp("EntireCommand: %s" % entire_command)
+
 	return launchcmd
 
 
@@ -573,7 +571,6 @@ def clickFetchSym(modname, displaytext = ""):
 	return cmdoutstr
 
 def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
-	chunktrstr = ""
 	fmtted_ptr = PTR_PRINT % chunkptr
 	displaystr = fmtted_ptr
 	if not displaytext == "":
@@ -586,6 +583,61 @@ def clickChunkPtr(chunkptr = 0, chunksize = 0, displaytext = ""):
 	else:
 		chunkptrstr = fmtted_ptr
 	return chunkptrstr
+
+
+def extractChunkInfo(chunktext):
+	"""
+	Extract the first chunk row from heap text output.
+
+	Returns a flat list with:
+	[entry, user, heap, segment, size]
+
+	Supports both 32-bit and 64-bit pointer formats.
+	Returns [] if no valid chunk row could be found.
+	"""
+	if not chunktext:
+		return [0,0,0,0,0]
+
+	for rawline in chunktext.splitlines():
+		line = rawline.strip()
+		if line == "":
+			continue
+		if line.lower().startswith("entry"):
+			continue
+		if set(line) <= set("-="):
+			continue
+
+		parts = line.split()
+		if len(parts) < 5:
+			continue
+
+		entry = parts[0].replace("`", "")
+		user = parts[1].replace("`", "")
+		heap = parts[2].replace("`", "")
+		segment = parts[3].replace("`", "")
+		size = parts[4]
+
+		if not re.match(r"^[0-9a-fA-F]+$", entry):
+			continue
+		if not re.match(r"^[0-9a-fA-F]+$", user):
+			continue
+		if not re.match(r"^[0-9a-fA-F]+$", heap):
+			continue
+		if not re.match(r"^[0-9a-fA-F]+$", segment):
+			continue
+		if not re.match(r"^[0-9a-fA-F]+$", size):
+			continue
+
+		return [
+			int(entry, 16),
+			int(user, 16),
+			int(heap, 16),
+			int(segment, 16),
+			int(size, 16),
+		]
+
+	return []
+
 
 def clickModuleName(modname = "", displaytext = ""):
 	clickstr = modname
@@ -1206,7 +1258,7 @@ def multiSplit(thisarg,delimchars):
 
 def getAddyArg(argaddy):
 	"""
-	Tries to extract an address from a specified argument
+	Tries to Heap an address from a specified argument
 	addresses and values will be considered hex
 	(unless you specify 0n before a value)
 	registers, module names, module!function names and
@@ -1468,7 +1520,6 @@ def printDataArray(data,charsperline=16,prefix=b""):
 	maxlen = len(data)
 	charcnt = 0
 	charlinecnt = 0
-	linecnt = 0
 	thisline = prefix
 	lineprefix = "%04d - %04d " % (charcnt,charcnt+charsperline-1)
 	thisline += lineprefix
@@ -8280,6 +8331,7 @@ class MnNTSegmentBase:
 		Uses self._encoding_key and the architecture-derived header offset to
 		decode each _HEAP_ENTRY.  Does not need the parent MnHeap object.
 		"""
+		mndbg.dbgp(get_current_function_name())
 		key     = self._encoding_key
 		hdr_off = archValue(0, 8)
 		current = self.FirstEntry
@@ -8292,7 +8344,7 @@ class MnNTSegmentBase:
 		zero_size_steps = 0
 		last_flag_hits = 0
 		max_step = 0
-		mndbg.dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
+		mndbg.dbgp("    NT Heap Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
 			PTR_PRINT % self.BaseAddress, PTR_PRINT % self.FirstEntry, PTR_PRINT % self.LastValidEntry,
 			(self.LastValidEntry - self.FirstEntry) if self.LastValidEntry >= self.FirstEntry else 0, hdr_off, key))
 		consecutive_failures = 0
@@ -8359,14 +8411,18 @@ class MnNTSegmentBase:
 
 		Returns: dict {chunkptr: MnChunk}
 		"""
+		mndbg.dbgp(get_current_function_name())
 		if self._chunks is None:
+			mndbg.dbgp("NT Heap Segment - chunks cache is empty, walking list")
 			try:
 				self._chunks = {
 					chunk.chunkptr: chunk
 					for chunk in self._walk()
 					if "virtall" not in getHeapFlag(chunk.flag).lower() and chunk.size > 0
 				}
-			except Exception:
+				mndbg.dbgp("    %d chunks found" % len(self._chunks))
+			except Exception as e:
+				mndbg.dbgp("Error getting chunks: %s" % str(e))
 				self._chunks = {}
 		return self._chunks
 
@@ -8802,7 +8858,7 @@ class MnNT8SubSegment:
 
 class MnNT10SubSegment:
 	"""
-	Represents _HEAP_SUBSEGMENT on Windows 10/11.
+	Represents _HEAP_SUBSEGMENT on Windows 10/11d
 	Lock and SFreeListEntry order swapped vs Win8 (Lock now before SFreeListEntry).
 	x64 struct is 8 bytes smaller than Win8 x64 as a result.
 
@@ -9101,6 +9157,7 @@ class MnChunk(MnListEntry):
 			heap             - MnNTHeap, supplies encoding key and header data offset
 			segment_base     - int, base address of the containing segment
 		"""
+		mndbg.dbgp(get_current_function_name())
 		key     = heap.getEncodingKey()
 		hdr_off = heap.getChunkHeaderDataOffset()
 		current = first_entry
@@ -9112,7 +9169,7 @@ class MnChunk(MnListEntry):
 		zero_size_steps = 0
 		last_flag_hits = 0
 		max_step = 0
-		mndbg.dbgp("    Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
+		mndbg.dbgp("    MNChunk Segment walk start: seg=%s first=%s last=%s span=0x%x hdr_off=0x%x key=0x%x" % (
 			PTR_PRINT % segment_base, PTR_PRINT % first_entry, PTR_PRINT % last_valid_entry,
 			(last_valid_entry - first_entry) if last_valid_entry >= first_entry else 0, hdr_off, key))
 		consecutive_failures = 0
@@ -9174,7 +9231,10 @@ class MnChunk(MnListEntry):
 		mndbg.dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
 			PTR_PRINT % segment_base, itercnt, decode_failures, zero_size_steps, last_flag_hits,
 			max_step, time.time() - walk_start))
+		
 		interruptMona()
+
+
 
 	@staticmethod
 	def getFillPattern(addy):
@@ -9192,7 +9252,7 @@ class MnChunk(MnListEntry):
 				return "Freed"
 		return None
 
-	def fill(self, fillchar="A", start=None, size=None):
+	def fill(self, fillchar="A", start=None, size=None, offset=None):
 		"""
 		Fill chunk data with a single byte.
 
@@ -9200,6 +9260,7 @@ class MnChunk(MnListEntry):
 			fillchar - byte/char to use for filling (only first byte is used)
 			start    - optional start address override (defaults to userptr)
 			size     - optional size override (defaults to usersize)
+			offset   - start writing from this offset, allows skipping initial vftable pointer
 
 		Return:
 			(start_addr, written_size) on success, (0, 0) if nothing was written
@@ -9210,6 +9271,9 @@ class MnChunk(MnListEntry):
 			size = self.usersize
 		if size is None or size <= 0:
 			return (0, 0)
+		if offset != None:
+			start = start + offset
+			size = size - offset 
 
 		fillbyte = _normalize_single_fill_byte(fillchar)
 		if len(fillbyte) == 0:
@@ -24985,12 +25049,20 @@ def procFillChunk(args):
 	fillchar = "A"
 	allregs = getRegisters()
 	origreference = ""
+	force_fullwrite = False
+	strict_address = False
 
 	deref = False
 	refvalue = 0
 	offset = 0
 	signstuff = 1
 	customsize = 0
+
+	if "force" in args:
+		force_fullwrite = True
+
+	if "strict" in args:
+		strict_address = True
 
 	if "s" in args:
 		customsize, sizeok = getIntArg(args["s"])
@@ -25023,7 +25095,30 @@ def procFillChunk(args):
 	dbg.log("")
 	dbg.log("[+] Attempting to identify heap chunk details...")
 
+
+	def _determineWriteOffset(chunkaddress):
+		write_offset = 0
+		first_bytes_val = None
+		try:
+			first_bytes_val = struct.unpack(PTR_FMT, dbg.readMemory(chunkaddress, PTR_SIZE))[0]
+		except Exception as e:
+			mndbg.dbgp("fillchunk vtable check: Unable to read value from chunk: %s" % str(e))
+		if first_bytes_val != None:
+			first_bytes_ptr = MnPointer(first_bytes_val)
+			modname = first_bytes_ptr.belongsTo(modulesOnly=True)
+			mndbg.dbgp("First bytes belong to module %s" % modname)
+			if not modname == "":
+				dbg.log("    First %d bytes (%s) are part of %s" % (PTR_SIZE, PTR_PRINT % first_bytes_val, modname))
+				if force_fullwrite:
+					dbg.log("    You specified -force, so I will overwrite those bytes as well")
+				else:
+					dbg.log("    You did not specify -force, so I will NOT overwrite those bytes")
+					write_offset = PTR_SIZE
+		return write_offset
+
+
 	def _fillChunkFromMnProcMap():
+		dbg.log("    Enumerating heap chunks (method1)")
 		try:
 			MnProc.ensure()
 			for _h in mnproc.getPEB().getNTHeaps():
@@ -25035,44 +25130,61 @@ def procFillChunk(args):
 		if mnproc is None:
 			return False
 
-		# 1) Use MnProc's unified range map to identify the chunk range quickly.
-		chunk_start = 0
-		chunk_end = 0
-		for region in mnproc.getAllSorted():
-			if len(region) < 4:
-				continue
-			start, end, category, description = region[:4]
-			if category == "Chunk" and refvalue >= start and refvalue < end:
-				chunk_start = start
-				chunk_end = end
-				break
-
-		if chunk_start == 0:
-			return False
-
-		# 2) Find the MnChunk object in cached segment chunks.
-		for _nth in mnproc.getPEB().getNTHeaps():
-			for _seg in _nth.getSegments():
-				seg_base = _seg.BaseAddress
-				seg_end  = _seg.LastValidEntry
-				if chunk_start < seg_base or chunk_start >= seg_end:
+		try:
+			# 1) Use MnProc's unified range map to identify the chunk range quickly.
+			chunk_start = 0
+			chunk_end = 0
+			for region in mnproc.getAllSorted(include_chunks = True):
+				#mndbg.dbgp("Region: %d" % len(region))
+				if len(region) < 4:
 					continue
-				allchunks = _seg.getChunks()
-				matched_chunk = allchunks.get(chunk_start)
-				if matched_chunk is None:
-					for chunkaddr, mchunk in allchunks.items():
-						chunksize = mchunk.size * HEAPGRANULARITY
-						if chunk_start >= chunkaddr and chunk_start < (chunkaddr + chunksize):
-							matched_chunk = mchunk
-							break
-				if matched_chunk is not None and matched_chunk.usersize > 0:
-					dbg.log("[+] Heap chunk found at %s, size 0x%08x (%d) bytes [MnProc ranges]" % (
-						(PTR_PRINT % matched_chunk.chunkptr), matched_chunk.usersize, matched_chunk.usersize))
-					dbg.log("[+] Filling chunk with \\x%s, starting at %s" % (
-						bin2hex(fillchar), (PTR_PRINT % matched_chunk.userptr)))
-					matched_chunk.fill(fillchar)
-					dbg.log("[+] Done")
-					return True
+				start, end, category, description = region[:4]
+				#mndbg.dbgp("  Find chunk range: %s, start: %s, end: %s, category: %s" % (PTR_PRINT % refvalue, PTR_PRINT % start, PTR_PRINT % end, category) )
+				if category == "Chunk" and refvalue >= start and refvalue < end:
+					chunk_start = start
+					chunk_end = end
+					break
+
+			if chunk_start == 0:
+				mndbg.dbgp("Refvalue: %s, chunk_start %s - no range found!" % (PTR_PRINT % refvalue, PTR_PRINT % chunk_start) )
+				return False
+
+			mndbg.dbgp("Refvalue: %s, chunk_start %s" % (PTR_PRINT % refvalue, PTR_PRINT % chunk_start) )
+
+			# 2) Find the MnChunk object in cached segment chunks.
+			for _nth in mnproc.getPEB().getNTHeaps():
+				for _seg in _nth.getSegments():
+					seg_base = _seg.BaseAddress
+					seg_end  = _seg.LastValidEntry
+					if chunk_start < seg_base or chunk_start >= seg_end:
+						continue
+					allchunks = _seg.getChunks()
+					mndbg.dbgp("Locating address %s in dict with %d Mnchunk objects" % (PTR_PRINT % chunk_start, len(allchunks)) )
+					matched_chunk = allchunks.get(chunk_start)
+					if matched_chunk is None:
+						mndbg.dbgp("No exact match, maybe user did not specify the exact start address")
+						for chunkaddr, mchunk in allchunks.items():
+							chunksize = mchunk.size * HEAPGRANULARITY
+							if chunk_start >= chunkaddr and chunk_start < (chunkaddr + chunksize):
+								matched_chunk = mchunk
+								break
+					if matched_chunk is not None and matched_chunk.usersize > 0:
+						dbg.log("[+] Heap chunk found at %s, size 0x%x (%d) bytes [MnProc ranges]" % (
+							(PTR_PRINT % matched_chunk.chunkptr), matched_chunk.usersize, matched_chunk.usersize))
+
+						write_offset = _determineWriteOffset(matched_chunk.userptr)
+
+						if strict_address:
+							write_offset = refvalue - matched_chunk.chunkptr
+							dbg.log("[+] Strict mode, start write at address %s (offset 0x%x)" % (PTR_PRINT % refvalue, write_offset))
+						dbg.log("[+] Filling chunk with \\x%s, chunk starts at %s, skipping initial %d bytes" % (
+							bin2hex(fillchar), (PTR_PRINT % matched_chunk.userptr), write_offset))
+						matched_chunk.fill(fillchar, offset=write_offset)
+						dbg.log("[+] Done")
+						return True
+		except Exception as e:
+			mndbg.dbgp("Error while getting chunks via method1: %s" % str(e))
+
 		return False
 
 	def _fillChunkFromHeapXFallback():
@@ -25087,60 +25199,44 @@ def procFillChunk(args):
 			token = token.replace("0x", "")
 			return token
 
+		dbg.log("    Enumerating heap chunks (method2)")
 		cmd2run = "!heap -x %s" % (PTR_PRINT % refvalue)
 		output = dbg.nativeCommand(cmd2run)
-		outputlines = output.split("\n")
-		heapinfo = ""
-		for line in outputlines:
-			if line.find("[") > -1 and line.find("]") > -1 and line.find("(") > -1 and line.find(")") > -1:
-				heapinfo = line
-				break
-		if heapinfo == "":
-			dbg.log("Address is not part of a heap chunk")
+		heapinfo_fields = extractChunkInfo(output)
+		# 0 = entry, 1 = user, 2 = heap 3 = segment 4 = size (including header size)
+		entry = heapinfo_fields[0]
+		userptr = heapinfo_fields[1]
+		size = heapinfo_fields[4] - HEAPGRANULARITY
+
+		if userptr == 0:
+			dbg.log("[!] Address is not part of a heap chunk")
 			if customsize > 0:
-				dbg.log("Filling memory location starting at %s with \\x%s" % ((PTR_PRINT % refvalue),bin2hex(fillchar)))
-				dbg.log("Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
+				dbg.log("    Filling memory location starting at %s with \\x%s" % ((PTR_PRINT % refvalue),bin2hex(fillchar)))
+				dbg.log("    Number of bytes to write : %d (0x%08x)" % (customsize,customsize))
 				fillbyte = _normalize_single_fill_byte(fillchar)
 				if len(fillbyte) == 0:
-					dbg.log("Invalid fill byte specified", highlight=1)
+					dbg.log("    ** Invalid fill byte specified **", highlight=1)
 					return False
 				data = fillbyte * customsize
 				dbg.writeMemory(refvalue,data)
 				dbg.log("Done")
 				return True
-			dbg.log("Please specify a custom size with -s to fill up the memory location anyway")
+			dbg.log("    ** Please specify a custom size with -s to fill up the memory location anyway **")
 			return False
-
-		infofields = []
-		cnt = 0
-		charseen = False
-		thisfield = ""
-		while cnt < len(heapinfo):
-			if heapinfo[cnt] == " " and charseen and thisfield != "":
-				infofields.append(thisfield)
-				thisfield = ""
-			else:
-				if not heapinfo[cnt] == " ":
-					thisfield += heapinfo[cnt]
-					charseen = True
-			cnt += 1
-		if thisfield != "":
-			infofields.append(thisfield)
-		if len(infofields) > 7:
-			chunkptr = hexStrToInt(_cleanHexDword(infofields[0]))
-			userptr = hexStrToInt(_cleanHexDword(infofields[4]))
-			size = hexStrToInt(_cleanHexDword(infofields[5]))
-			if chunkptr == 0 or userptr == 0 or size == 0:
-				dbg.log("Unable to parse heap chunk details from '!heap -x' output", highlight=1)
-				return False
-			dbg.log("Heap chunk found at %s, size 0x%08x (%d) bytes" % ((PTR_PRINT % chunkptr),size,size))
-			dbg.log("Filling chunk with \\x%s, starting at %s" % (bin2hex(fillchar),(PTR_PRINT % userptr)))
+		else:
+			dbg.log("    Heap chunk found at %s, size 0x%x (%d) bytes" % ((PTR_PRINT % userptr),size,size))
+			write_offset = _determineWriteOffset(userptr)
+			if write_offset > 0:
+				dbg.log("")
+			
+			dbg.log("[+] Filling chunk with \\x%s, starting at %s, skipping %d bytes" % (
+						bin2hex(fillchar), (PTR_PRINT % userptr), write_offset))				
 			fillbyte = _normalize_single_fill_byte(fillchar)
 			if len(fillbyte) == 0:
-				dbg.log("Invalid fill byte specified", highlight=1)
+				dbg.log("    ** Invalid fill byte specified **", highlight=1)
 				return False
-			data = fillbyte * size
-			dbg.writeMemory(userptr,data)
+			data = fillbyte * (size-write_offset)
+			dbg.writeMemory(userptr+write_offset,data)
 			dbg.log("Done")
 			return True
 
@@ -25152,6 +25248,7 @@ def procFillChunk(args):
 
 	_fillChunkFromHeapXFallback()
 	return
+
 
 def procInfoDump(args):
 	allpages = dbg.getMemoryPages()
@@ -27051,7 +27148,6 @@ def procStrPos(args):
 
 
 
-
 def procFlags(args):
 	MnProc.ensure()
 	_peb = mnproc.getPEB()
@@ -28583,24 +28679,23 @@ Optional arguments:
 Optional arguments:
     -s <keywords> : only show EAT entries that contain one of these keywords"""
 	
-	deferUsage = """Set a deferred breakpoint
-
-Mandatory arguments :
-    -a <target>,<target>,... 
-    target can be an address, a modulename!functionname or module.dll+offset (hex value)
-    Warning, modulename!functionname is case sensitive !
-	""" 
-	
 
 	fillchunkUsage = """Fills a heap chunk, referenced by an address expression, with A's (or another character)
 
 Mandatory arguments :
     -a <address> : reference to heap chunk to fill (address, register, offset from register, etc)
+                   If the chunk at the address begins with what may be a vftable pointer, 
+                   that pointer will not be overwritten by default.
+                   Please note that even if the address is not the start of a chunk,
+                   the write routine will still write from the start of the chunk
+                   unless you specify -strict
 
 Optional arguments:
     -b <character or byte to use to fill up chunk>
-    -s <size> : if the referenced chunk is not found, and a size is defined with -s,
-                memory will be filled anyway, up to the specified size"""
+    -force       : Use this to force overwrite of the entire chunk (even if it begins with a vftable pointer)
+    -strict      : only write starting at the provided address forward, not from start of chunk
+    -s <size>    : if the referenced chunk is not found, and a size is defined with -s,
+                   memory will be filled anyway, up to the specified size"""
 
 	getpageACLUsage = """List all mapped pages and show the ACL associated with each page
 
@@ -28610,37 +28705,12 @@ Optional arguments:
 	
 	bpsehUsage = """Sets a breakpoint on all current SEH Handler function pointers"""
 
-	kbUsage = """Manage knowledgebase data
 
-Mandatory arguments:
-    -<type> : type can be 'list', 'set' or 'del'
-    To 'set' ( = add / update ) a KB entry, or 'del' an entry, 
-    you will need to specify 2 additional arguments:
-        -id <id> : the Knowledgebase ID
-        -value <value> : the value to add/update.  In case of lists, use a comma to separate entries.
-    The -list parameter will show all current ID's
-    To see the contents of a specific ID, use the -id <id> parameter."""
-
-	macroUsage = """Manage macros for WinDBG
-Arguments:
-    -run <macroname> : run the commands defined in the specified macro
-    -show <macroname> : show all commands defined in the specified macro
-    -add <macroname> : create a new macro
-    -set <macroname> -index <nr> -cmd <windbg command(s)> : edit a macro
-               If you set the -command value to #, the command at the specified index
-               will be removed.  If you have specified an existing index, the command 
-               at that position will be replaced, unless you've also specified the -insert parameter.
-               If you have not specified an index, the command will be appended to he list.
-    -set <macroname> -file <filename> : will tell this macro to execute all instructions in the
-               specified file. You can only enter one file per macro.
-    -del <macroname> -iamsure: remove the specified macro. Use with care, I won't ask if you're sure."""
 
 	sehchainUsage = """Displays the SEH chain for the current thread.
 This command will also attempt to display offsets and suggest a payload structure
 in case a cyclic pattern was used to overwrite the chain."""
 
-	heapCookieUsage = """Will attempt to find reliable writeable pointers that can help avoiding
-a heap cookie check during an arbitrary free on Windows XP"""
 
 	hidedebugUsage = """Will attempt to hide the debugger from the process"""
 	gflagsUsage = """Will show the currently set GFlags, based on the PEB.NtGlobalFlag value"""
@@ -28830,10 +28900,6 @@ Accepted syntax includes:
     module!functionname
     simple math operations"""
 
-	diffheapUsage = """Compare current heap layout with previously saved state
-Arguments:
-    -save     : save current state to disk 
-    -diff     : compare current state with previously saved state""" 
 
 	loadUsage = """Read the contents from a file and write to a memory location
 Arguments:
@@ -29153,8 +29219,6 @@ def main(args):
 		mndbg.dbgp("Initialized %d commands" % len(commands))
 		
 		# get the options
-		last = ""
-		arguments = []
 		command = ""
 		argcopy = copy.copy(args)
 		justargs = ""
