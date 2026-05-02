@@ -1259,7 +1259,7 @@ def multiSplit(thisarg,delimchars):
 
 def getAddyArg(argaddy):
 	"""
-	Tries to Heap an address from a specified argument
+	Tries to extract an address from a specified argument
 	addresses and values will be considered hex
 	(unless you specify 0n before a value)
 	registers, module names, module!function names and
