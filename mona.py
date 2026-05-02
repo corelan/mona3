@@ -21819,7 +21819,7 @@ def procUpdate(args):
 			"name": "mona.py",
 			"current": mona_path,
 			"download": mona_path + ".download",
-			"main_url": "https://github.com/corelan/mona3/raw/master/mona.py",
+			"main_url": "https://github.com/corelan/mona3/raw/refs/heads/main/mona.py",
 			"backup_url": "https://www.corelan.be/mona3/mona.py"
 		}
 	]
@@ -21835,7 +21835,7 @@ def procUpdate(args):
 					"name": "windbglib.py",
 					"current": windbg_path,
 					"download": windbg_path + ".download",
-					"main_url": "https://github.com/corelan/mona3/raw/master/windbglib.py",
+					"main_url": "https://github.com/corelan/mona3/raw/refs/heads/main/windbglib.py",
 					"backup_url": "https://www.corelan.be/mona3/windbglib.py"
 				}
 			)
