@@ -168,6 +168,7 @@ aliasname = ""
 _memory_page_acl_cache={}
 _config_file_cache = {}
 _cfg_table_cache = {}
+_funcptr_cache = {}
 _symbol_dirs_cache = None
 
 #
@@ -9280,6 +9281,7 @@ class MnChunk(MnListEntry):
 			return (0, 0)
 
 		data = fillbyte * size
+		mndbg.dbgp("Writing %d bytes of data to %s" % (len(data), PTR_PRINT % start))
 		try:
 			dbg.writeMemory(start, data)
 		except Exception as e:
@@ -9884,6 +9886,8 @@ class MnPointer:
 		self.HexAddress = toHex(address)
 
 		self.ownerName  = ""
+
+		self.functionname = ""
 
 		# define the characteristics of the pointer
 		byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = (0,)*8
@@ -10507,35 +10511,44 @@ class MnPointer:
 		return memloc
 
 	def getPtrFunction(self):
-		funcinfo = ""
-		global g_silent
-		g_silent = True
-		if mndbg.isWinDBG():
-			lncmd = "ln %s" % (PTR_PRINT % self.address)
-			lnoutput = dbg.nativeCommand(lncmd)
-			for line in lnoutput.split("\n"):
-				if line.replace(" ","") != "" and line.find("%08x" % self.address) > -1:
-					lineparts = line.split("|")
-					funcrefparts = lineparts[0].split(")")
-					if len(funcrefparts) > 1:
-						funcinfo = funcrefparts[1].replace(" ","")
-						break
+		global _funcptr_cache
+		mndbg.dbgp(get_current_function_name())
+		if self.address in _funcptr_cache:
+			self.functionname = _funcptr_cache[self.address]
+			mndbg.dbgp("Return function name for %s from cache: %s" % (PTR_PRINT % self.address, self.functionname))
+			return self.functionname
+		else:
+			global g_silent
+			g_silent = True
+			if mndbg.isWinDBG():
+				lncmd = "ln %s" % (PTR_PRINT % self.address)
+				lnoutput = dbg.nativeCommand(lncmd)
+				for line in lnoutput.split("\n"):
+					if line.replace(" ","") != "" and line.find("%08x" % self.address) > -1:
+						lineparts = line.split("|")
+						funcrefparts = lineparts[0].split(")")
+						if len(funcrefparts) > 1:
+							funcinfo = funcrefparts[1].replace(" ","")
+							break
 
-		if funcinfo == "":
-			memloc = self.belongsTo()
-			if not memloc == "":
-				mod = MnModule(memloc)
-				if not mod is None:
-					start = mod.moduleBase
-					offset = self.address - start
-					offsettxt = ""
-					if offset > 0:
-						offsettxt = "+0x%08x" % offset
-					else:
-						offsettxt = "__base__"
-					funcinfo = memloc+offsettxt
-		g_silent = False
-		return funcinfo
+			if funcinfo == "":
+				memloc = self.belongsTo()
+				if not memloc == "":
+					mod = MnModule(memloc)
+					if not mod is None:
+						start = mod.moduleBase
+						offset = self.address - start
+						offsettxt = ""
+						if offset > 0:
+							offsettxt = "+0x%08x" % offset
+						else:
+							offsettxt = "__base__"
+						funcinfo = memloc+offsettxt
+			self.functionname = funcinfo
+			_funcptr_cache[self.address] = funcinfo
+			g_silent = False
+			mndbg.dbgp("Resolved function name for %s: %s" % (PTR_PRINT % self.address, self.functionname))
+			return self.functionname
 
 
 	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg="", encoding_key=0, chunk_base=0):
@@ -26180,6 +26193,7 @@ def _walkSehChain(sehchain):
 		records     - OrderedDict {record_addr: [nseh_value, handler, funcname, info]}
 		overwritten - dict {record_addr: [type, offset]}  (only smashed entries)
 	"""
+	mndbg.dbgp(get_current_function_name())
 	records = OrderedDict()
 	overwritten = {}
 	for sehrecord in sehchain:
@@ -29347,6 +29361,8 @@ def main(args):
 		dbg.setStatusBar("Done")
 		if DEBUG_MODE and mndbg.isWinDBG():
 			dbg.nativeCommand(".logclose")
+			dbg.log("")
+			dbg.getNativeCommandStatistics(minval=2)
 				
 	except:
 		dbg.log("*" * 80,highlight=True)

@@ -67,6 +67,7 @@ global InstructionCache
 global PageSections
 global ModuleCache
 global FuncCache
+global NativeCommandCache
 
 global currentPID
 global currentTEBAddress
@@ -88,6 +89,7 @@ PageSections = {}
 ModuleCache = {}
 FuncCache = {}
 disAsmCache = {}
+NativeCommandCache = {}
 
 Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
 Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
@@ -3529,7 +3531,16 @@ class Debugger:
 	Commands
 	"""
 	def nativeCommand(self,cmd2run):
-		dbgp(get_current_function_name())
+		# nativecommands are heavy
+		# keep statistics
+		if DEBUG_MODE:
+			funcname = get_current_function_name()
+			dbgp(funcname)
+			global NativeCommandCache
+			if not cmd2run in NativeCommandCache:
+				NativeCommandCache[cmd2run] = [funcname]
+			else:
+				NativeCommandCache[cmd2run].append(funcname)
 
 		try:
 			dbgp("nativeCommand: %s" % cmd2run)
@@ -3543,6 +3554,45 @@ class Debugger:
 			dbgp("Error executing command '%s': %s" % (cmd2run, str(e)), errormode=False)
 			dbgp("%s" % traceback.format_exc(), errormode=False)
 			return ""
+
+	def getNativeCommandStatistics(self, minval=1):
+		dbgp(get_current_function_name())
+		global NativeCommandCache
+
+		if not NativeCommandCache:
+			dbgp("No nativeCommand statistics available")
+			return
+
+		dbgp("nativeCommand statistics (commands called more than %d times)" % minval)
+		dbgp("-" * 80)
+
+		stats = []
+		for cmd2run, callers in NativeCommandCache.items():
+			total_calls = len(callers)
+			if total_calls <= minval:
+				continue
+
+			per_caller = {}
+			for caller in callers:
+				if caller not in per_caller:
+					per_caller[caller] = 0
+				per_caller[caller] += 1
+
+			stats.append((total_calls, cmd2run, per_caller))
+
+		if len(stats) == 0:
+			dbgp("No nativeCommand entries matched the minimum threshold")
+			return
+
+		stats.sort(key=lambda item: (-item[0], item[1]))
+
+		for total_calls, cmd2run, per_caller in stats:
+			dbgp("[%d] %s" % (total_calls, cmd2run))
+			caller_stats = sorted(per_caller.items(), key=lambda item: (-item[1], item[0]))
+			for caller, caller_count in caller_stats:
+				dbgp("    - %d x %s" % (caller_count, caller))
+		dbgp("-" * 80)
+
 
 	"""
 	SEH
