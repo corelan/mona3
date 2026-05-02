@@ -70,7 +70,6 @@ else:
 
 __DEBUGGERAPP__ = ''
 arch = 32
-win7mode = False
 
 try:
 	import immlib as dbglib
@@ -187,6 +186,7 @@ g_windbg_flavor = ""
 g_windbg_pretty_name = ""
 g_os_version = None
 g_heap_cmd_prefix = None
+g_win7_mode = False
 
 
 
@@ -434,26 +434,26 @@ if mndbg.isWinDBG():
 
 osver = dbg.getOsVersion()
 if osver in ["6", "7", "8", "10", "11", "vista", "win7", "2008server", "win8", "win8.1", "win10", "win11"]:
-	win7mode = True
+	g_win7_mode = True
 
 # Fallback: parse getOsRelease() for major version >= 6
-if not win7mode:
+if not g_win7_mode:
 	try:
 		_osrel = dbg.getOsRelease()
 		if isinstance(_osrel, tuple):
 			if int(_osrel[0]) >= 6:
-				win7mode = True
+				g_win7_mode = True
 		else:
 			_parts = str(_osrel).split(".")
 			if len(_parts) >= 1 and int(_parts[0]) >= 6:
-				win7mode = True
+				g_win7_mode = True
 	except:
 		pass
 
-# If win7mode still not set, log diagnostics
-if not win7mode:
+# If g_win7_mode still not set, log diagnostics
+if not g_win7_mode:
 	try:
-		dbg.log("[!] win7mode=False. getOsVersion()='%s' (type:%s)" % (str(osver), type(osver).__name__))
+		dbg.log("[!] g_win7_mode=False. getOsVersion()='%s' (type:%s)" % (str(osver), type(osver).__name__))
 		try:
 			_r = dbg.getOsRelease()
 			dbg.log("[!] getOsRelease()='%s' (type:%s)" % (str(_r), type(_r).__name__))
@@ -2673,9 +2673,9 @@ def readString(address):
 	return toreturn
 
 def getSegmentEnd(segmentstart):
-	os = dbg.getOsVersion()
+	#os = dbg.getOsVersion()
 	offset = 0x24
-	if win7mode:
+	if g_win7_mode:
 		offset = 0x28
 	segmentend = struct.unpack(PTR_FMT,dbg.readMemory(segmentstart + offset,PTR_SIZE))[0]
 	return segmentend
@@ -2693,7 +2693,7 @@ def getHeapFlag(flag):
 	0x40 : "Internal/FFU-2",
 	0x80 : "Internal/No Coalesce"
 	}
-	#if win7mode:
+	#if g_win7_mode:
 	#	flags[0x8] = "Internal"
 	if flag in flags:
 		return flags[flag]
@@ -8299,7 +8299,7 @@ class MnNTSegmentBase:
 		while current < last:
 			size = segid = flag = unused = tag = 0
 			try:
-				if key == 0 and not win7mode:
+				if key == 0 and not g_win7_mode:
 					raw    = dbg.readMemory(current + hdr_off, 8)
 					size   = struct.unpack('<H', raw[0:2])[0]
 					segid  = struct.unpack('<B', raw[4:5])[0]
@@ -9119,7 +9119,7 @@ class MnChunk(MnListEntry):
 		while current < last_valid_entry:
 			size = segid = flag = unused = tag = 0
 			try:
-				if key == 0 and not win7mode:
+				if key == 0 and not g_win7_mode:
 					raw    = dbg.readMemory(current + hdr_off, 8)
 					size   = struct.unpack('<H', raw[0:2])[0]
 					segid  = struct.unpack('<B', raw[4:5])[0]
@@ -9229,7 +9229,7 @@ class MnChunk(MnListEntry):
 		chunkshown = False
 		if self.chunktype == "chunk":
 			dbg.log("    _HEAP @ %08x, Segment @ %08x" % (self.heapbase,self.segmentbase))
-			if win7mode:
+			if g_win7_mode:
 				iHeap = MnHeap(self.heapbase)
 				if iHeap.usesLFH():
 					dbg.log("    Heap has LFH enabled. LFH Heap starts at 0x%08x" % iHeap.getLFHAddress())
@@ -9281,6 +9281,7 @@ class MnChunk(MnListEntry):
 				dbg.log("      Data : %s" % contents)
 			dbg.log("")
 		return
+
 
 	def showChunkLine(self,showdata = False):
 		return
@@ -10072,6 +10073,19 @@ class MnPointer:
 		return [foundinheap, foundinsegment, foundinva, foundinchunk]
 
 
+	def toHeapChunk(self):
+		# populate process layout
+		mndbg.dbgp(get_current_function_name())
+		mndbg.dbgp("Trying to link %s to a heap Chunk" % (PTR_PRINT % self.address))
+		mndbg.dbgp("Enumerate process regions")
+		regions = [r for r in mnproc.getAllSorted(include_chunks=True)]
+		for idx, region in enumerate(regions):
+			start, end, category, description = region[0], region[1], region[2], region[3]
+			size  = end - start if end > start else 0
+			psize = "0x%x" % size
+			dbgp("  %s, category %s, description %s" % (PTR_PRINT % start, category, description) )	
+
+
 	def showObjectInfo(self):
 		# check if chunk is a DOM object
 		
@@ -10235,7 +10249,6 @@ class MnPointer:
 		return
 
 
-
 	def showHeapBlockInfo(self):
 		"""
 		Find address in heap and print out info about heap, segment, chunk it belongs to
@@ -10300,7 +10313,7 @@ class MnPointer:
 			# perhaps chunk is in FEA
 			# if it is, it won't be a VA chunk
 			if foundinva is None:
-				if not win7mode:
+				if not g_win7_mode:
 					mHeap = MnHeap(heapbase)
 					foundinlal = False
 					foundinfreelist = False
@@ -10459,6 +10472,7 @@ class MnPointer:
 					funcinfo = memloc+offsettxt
 		g_silent = False
 		return funcinfo
+
 
 	def dumpObjectAtLocation(self,size,levels=0,nestedsize=0,customthislog="",customlogfile="", custommsg="", encoding_key=0, chunk_base=0):
 		dumpdata = {}
@@ -10629,6 +10643,7 @@ class MnPointer:
 				dbg.log(heapdataline)
 		return
 
+
 	def getLocInfo(self,loc,addy,startaddy,endaddy):
 		locinfo = []
 
@@ -10652,8 +10667,24 @@ class MnPointer:
 			if "Stack" in memloc:
 				extra = "(%s) " % memloc
 			elif "Heap" in memloc:
+				# get the chunk size and state. Populate the info if needed
+				chunkinfo = ""
+				heapinfo = ptrx.getHeapInfo()
+				heapaddy = heapinfo[0]
+				chunkobj = heapinfo[3]
+				flag = chunkobj.flag
+				flag_txt = getHeapFlag(flag)
+				mndbg.dbgp("flags: %s" % getHeapFlag(flag))
+
+				if not heapaddy == None:
+					if heapaddy > 0:
+						chunkaddy = chunkobj.chunkptr
+						size = chunkobj.usersize
+						state = flag_txt
+						chunkinfo = " UserSize 0x%x (%s) " % (size, state)
+
 				memloctxt = clickChunkPtr(addy, displaytext = "Heap")
-				extra = "(%s) " % memloctxt
+				extra = "(%s)%s " % (memloctxt, chunkinfo)
 			else:
 				detailmemloc = ptrx.getPtrFunction()
 				extra = " (%s.%s)" % (memloc,detailmemloc)
@@ -10669,9 +10700,9 @@ class MnPointer:
 				ptrinfo = outputlines[0][archValue(19,37):]
 				if ptrinfo.replace(" ","") != "":
 					if "vftable" in ptrinfo or "Heap" in memloc:
-						locinfo = ["ptr_obj","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
+						locinfo = ["ptr_obj","%s | ptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
 					else:
-						locinfo = ["ptr","%sptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
+						locinfo = ["ptr","%s | ptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
 					return locinfo
 
 		if ismapped:
@@ -10777,7 +10808,6 @@ class MnPointer:
 		return ["","",""]
 
 
-		
 #---------------------------------------#
 #  Various functions                    #
 #---------------------------------------#
@@ -23448,7 +23478,7 @@ def procHeap(args):
 			segmentlist = []
 			for segment in segments:
 				segmentlist.append(segment)
-			if not win7mode:
+			if not g_win7_mode:
 				segmentlist.sort()
 			segmentinfo = ""
 			for segment in segmentlist:
@@ -23460,7 +23490,7 @@ def procHeap(args):
 			keyinfo = ""
 			if heap == getDefaultProcessHeap():
 				defheap = "* Default process heap"
-			if win7mode:
+			if g_win7_mode:
 				iHeap = MnHeap(heap)
 				if iHeap.isCorrupted():
 					nt_sig = None
@@ -23635,7 +23665,7 @@ def procHeap(args):
 			frontendinfo = []
 			frontendheapptr = 0
 			frontendheaptype = 0
-			if win7mode:
+			if g_win7_mode:
 				heapkey = mHeap.getEncodingKey()
 				if mHeap.usesLFH():
 					frontendheaptype = 0x2
@@ -23647,7 +23677,7 @@ def procHeap(args):
 			dbg.log("[+] Processing heap 0x%08x - %s%s" % (heapbase, heapname, heapbase_extra))
 
 			if searchtype == "fea":
-				if win7mode:
+				if g_win7_mode:
 					searchtype = "lfh"
 				else:
 					searchtype = "lal"
@@ -23655,9 +23685,9 @@ def procHeap(args):
 					searchtype = "freelist"
 
 			# LookAsideList
-			if searchtype == "lal" or (searchtype == "all" and not win7mode):
+			if searchtype == "lal" or (searchtype == "all" and not g_win7_mode):
 				lalindex = 0
-				if win7mode:
+				if g_win7_mode:
 					dbg.log(" !! This version of the OS doesn't have a LookAside List !!")
 				else:
 					dbg.log("[+] FrontEnd Allocator : LookAsideList")
@@ -23691,7 +23721,7 @@ def procHeap(args):
 						dbg.log("[+] No LookAsideList found for this heap")
 						dbg.log("")
 
-			if searchtype == "lfh" or (searchtype == "all" and win7mode):
+			if searchtype == "lfh" or (searchtype == "all" and g_win7_mode):
 				dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
 				dbg.log("     ** Not implemented yet **")
 				
@@ -23767,7 +23797,7 @@ def procHeap(args):
 
 				for seg in segments:
 					sortedsegments.append(seg)
-				if not win7mode:
+				if not g_win7_mode:
 					sortedsegments.sort()
 				segmentcnt = 0
 				minstringlen = minstringlength
@@ -24143,7 +24173,7 @@ def procHeap(args):
 				sortedsegments = []
 				for seg in segments:
 					sortedsegments.append(seg)
-				if not win7mode:
+				if not g_win7_mode:
 					sortedsegments.sort()
 				vablocks = []
 				# VirtualAllocdBlocks
@@ -26320,7 +26350,8 @@ def procDumpObj(args):
 					if heapaddy > 0:
 						chunkaddy = chunkobj.chunkptr
 						size = chunkobj.usersize
-						dbg.log("    Address found in chunk 0x%08x, heap 0x%08x, (user)size 0x%02x" % (chunkaddy, heapaddy, size))
+						state = getHeapFlag(chunkobj.flag)
+						dbg.log("    Address found in chunk 0x%08x, heap 0x%08x, UserSize 0x%02x, %s" % (chunkaddy, heapaddy, size, state))
 						addy = chunkobj.userptr
 						if size > 0xfff:
 							dbg.log("    I'll only dump 0xfff bytes from the object, for performance reasons")
