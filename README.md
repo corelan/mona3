@@ -34,7 +34,7 @@
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
 ### Highlights
-* **Python 3 Support**: Compatible with **Python 3.9.13** (via PyKD and PyKD-ext). (Technically, `mona` is compatible with Python 3.14.4 as well, but  you'll have to manually install the pykd library).   We recommend using pykd-ext bootstrapper version 2.0.0.25 or later.
+* **Python 3 Support**: Compatible with **Python 3.9.13** (via PyKD and PyKD-ext). (Technically, `mona` is compatible with Python 3.14.4 as well, but you'll have to install the pykd library manually. Instructions are provided below).   We recommend using pykd-ext bootstrapper version 2.0.0.25 or later.
 * **Backwards Compatible**: Still runs on **Python 2.7.18** (via PyKD and PyKD-ext)
 * **Multi-Architecture**: Supports both ***x86 and x64*** debugging sessions *(note: not all `mona`commands are available in 64-bit)*
 * **Tested on**: Windows 7, Windows 10, and Windows 11
@@ -53,7 +53,7 @@ This repository contains the necessary Python files to run **Mona v3** under **W
 
 ### 1.1. Windows 10 and later
 
-**For Windows 10 and later**, we recommend using the `CorelanPyKDInstall.ps` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
+**For Windows 10 and later**, we recommend using the `CorelanPyKDInstall.ps1` PowerShell script from [the CorelanTraining repo](https://github.com/corelan/CorelanTraining).
 
 The script will automatically:
 
@@ -168,7 +168,7 @@ py -3.14 -m pip install keystone-engine
   * x86: https://github.com/corelan/CorelanTraining/raw/refs/heads/master/pykd/pykd-python3.14-package-x86.zip
   * x64: https://github.com/corelan/CorelanTraining/raw/refs/heads/master/pykd/pykd-python3.14-package-x64.zip
 
-  Extract the files, you'll get a few files, including 2 .whl files. Install them via pip.
+  Extract the files, you'll get 2 .whl files (and some other files). Install the Python wheels (the .whl files) via pip.
 
 From the folder that contains the extracted .whl files (verify the actual filenames):
 ```batch
