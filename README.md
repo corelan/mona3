@@ -165,15 +165,15 @@ py -3.14 -m pip install keystone-engine
 
 *1.4.4. Download the pykd library:*
 
-  * x86: https://github.com/corelan/CorelanTraining/blob/master/pykd/pykd-0.3.4.15-cp314-win32.zip
-  * x64: https://github.com/corelan/CorelanTraining/blob/master/pykd/pykd-0.3.4.15-cp314-amd64.zip
+  * x86: https://github.com/corelan/CorelanTraining/raw/refs/heads/master/pykd/pykd-python3.14-package-x86.zip
+  * x64: https://github.com/corelan/CorelanTraining/raw/refs/heads/master/pykd/pykd-python3.14-package-x64.zip
 
-  Extract the files, you'll get 2 .whl files. Install them via pip:
+  Extract the files, you'll get a few files, including 2 .whl files. Install them via pip.
 
-From the folder that contains the extracted .whl files:
+From the folder that contains the extracted .whl files (verify the actual filenames):
 ```batch
-py -3.14-32 -m pip install pykd-0.3.4.15-cp314-win32.whl
-py -3.14 -m pip install pykd-0.3.4.15-cp314-amd64.whl
+py -3.14-32 -m pip install pykd-0.3.4.15+g19ddf62-cp314-win32.whl
+py -3.14 -m pip install pykd-0.3.4.15+g19ddf62-cp314-win-amd64.whl
 ```
 
 *1.4.5. Verify that you are running pykd-ext version 2.0.0.25*
