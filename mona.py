@@ -18513,8 +18513,8 @@ def goFindMSP(distance=0, args=None):
 						offset = offset // 2
 
 					regname = reg
-					if reg == PROGRAM_COUNTER:
-						regname = "<b>%s</b>" % reg
+					#if reg == PROGRAM_COUNTER:
+					#	regname = "<b>%s</b>" % reg
 
 					if not g_silent:
 						if is_reversed:
@@ -18560,7 +18560,7 @@ def goFindMSP(distance=0, args=None):
 					thissize = getPatternLength(regs[reg], pattype, args)
 					if thissize > 0:
 						if not g_silent:
-							dbg.log("    <b>%s</b> (0x%s) points at offset <b>%d</b> in %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+							dbg.log("    %s (0x%s) points at offset %d in %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
 						tofile += "    %s (0x%s) points at offset %d in %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 						registers_to[reg] = [regs[reg], offset, thissize, pattype]
 				else:
@@ -18573,7 +18573,7 @@ def goFindMSP(distance=0, args=None):
 						thissize = getPatternLength(regs[reg], pattype, args)
 						if thissize > 0:
 							if not g_silent:
-								dbg.log("    <b>%s</b> (0x%s) points at offset <b>%d</b> in (reversed) %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
+								dbg.log("    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?" % (reg, toHex(regs[reg]), offset, pattype, thissize))
 							tofile += "    %s (0x%s) points at offset %d in (reversed) %s pattern (length %d) <- trampoline?\n" % (reg, toHex(regs[reg]), offset, pattype, thissize)
 							registers_to[reg] = [regs[reg], offset, thissize, pattype]
 
@@ -18748,7 +18748,7 @@ def goFindMSP(distance=0, args=None):
 									offset = offset // 2
 
 								if not g_silent:
-									dbg.log("    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset <b>%d</b>), followed by %d bytes of cyclic data after the handler" % (toHex(chainentry[0]), pattype, nseh, offset, thissize))
+									dbg.log("    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler" % (toHex(chainentry[0]), pattype, nseh, offset, thissize))
 								tofile += "    SEH record (nseh field) at 0x%s overwritten with %s pattern : 0x%s (offset %d), followed by %d bytes of cyclic data after the handler\n" % (toHex(chainentry[0]), pattype, nseh, offset, thissize)
 
 								if (chainentry[0] + 4) not in seh:
