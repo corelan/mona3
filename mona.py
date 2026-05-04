@@ -31117,9 +31117,11 @@ Common models:
 	    - a separate variables object with the expanded values
 
 	Request generation notes:
-	    If no supported OpenAI or Anthropic SDK is available, tellme still builds and saves the request file.
-	    You can then either install one of those SDKs and use an API key, or submit the saved request manually
-	    in ChatGPT, Grok, or another AI tool.
+	    tellme can always build and save the request file, even if no supported OpenAI or Anthropic SDK is installed
+	    and/or no API key is configured.
+	    That means manual submission is a supported workflow:
+	    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
+	    If you prefer direct API calls from mona instead, install a supported SDK and configure an API key.
 	    With -dryrun, tellme saves the request file and prints only the saved file path instead of dumping the
 	    full request to the debugger console.
 

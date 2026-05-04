@@ -598,6 +598,8 @@ set ANTHROPIC_TIMEOUT=60
 
 If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model or timeout for a single request with `-model` and `-timeout`.
 
+`tellme` can still build and save a request even if you do not have the provider libraries installed and/or you have not configured any API keys. That manual-request flow is supported: generate the request file, then paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
+
 If you use `-dryrun`, `tellme` will build the full request and save it to a file without calling the API. You can then open that file and paste the request into a browser-based AI session such as ChatGPT, Grok, or a similar tool.
 
 When the faulting instruction references heap-backed addresses, `tellme` also collects adjacent heap context for those references. This includes previous/current/next chunk metadata where available, `dps` dumps for the chunk entries, and both `!heap -p -a` and `!heap -x` (or `!ext.heap -p -a` and `!ext.heap -x` in WinDBGX) where tellme performs heap command lookups. Large chunk dumps are capped to `0x200 / PTR_SIZE` lines.
