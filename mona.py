@@ -1048,6 +1048,17 @@ def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40):
 	return result
 
 
+def _tellme_get_call_stack(command="kb"):
+	result = OrderedDict()
+	result["command"] = command
+	try:
+		result["output"] = _tellme_format_text(ensure_text(dbg.nativeCommand(command)).strip(), max_len=8192)
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: call stack lookup failed using '%s': %s" % (command, str(e)), errormode=False)
+	return result
+
+
 def _tellme_get_heap_chunk_metadata(address):
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
@@ -1100,7 +1111,7 @@ def _tellme_get_module_summary(address):
 			return summary
 		mod = mnproc.getModuleForAddress(address)
 		if mod:
-			summary["name"] = mod.moduleName
+			summary["name"] = mod.moduleKey
 			summary["path"] = mod.modulePath
 			summary["base"] = PTR_PRINT % mod.moduleBase
 			summary["top"] = PTR_PRINT % mod.moduleTop
@@ -1274,8 +1285,7 @@ def collectTellMeCurrentFunctionContext(address):
 	for label, cmd in [
 		("nearest_symbol_output", "ln %s" % (PTR_PRINT % address)),
 		("disasm_before", "ub %s L10" % (PTR_PRINT % address)),
-		("disasm_after", "u %s L20" % (PTR_PRINT % address)),
-		("call_stack", "k")
+		("disasm_after", "u %s L20" % (PTR_PRINT % address))
 	]:
 		try:
 			output = dbg.nativeCommand(cmd)
@@ -1283,6 +1293,8 @@ def collectTellMeCurrentFunctionContext(address):
 		except Exception as e:
 			context[label + "_error"] = str(e)
 			mndbg.dbgp("tellme: nativeCommand '%s' failed: %s" % (cmd, str(e)), errormode=False)
+
+	context["call_stack"] = _tellme_get_call_stack("kb")
 
 	return context
 
@@ -1487,7 +1499,6 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 		return info
 
 	info["matched_registers"] = matched_registers
-	info["contents"] = file_contents
 	for line_index, raw_line in enumerate(file_lines):
 		line_lower = raw_line.lower()
 		entry_matches = []
@@ -1502,6 +1513,16 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 		entry = OrderedDict()
 		entry["line_number"] = line_index + 1
 		entry["line"] = raw_line
+		context_start = max(0, line_index - 5)
+		context_end = min(len(file_lines), line_index + 6)
+		context_lines = []
+		for context_index in xrange(context_start, context_end):
+			context_lines.append(OrderedDict([
+				("line_number", context_index + 1),
+				("line", file_lines[context_index]),
+				("is_match", context_index == line_index)
+			]))
+		entry["context_lines"] = context_lines
 		entry["matched_registers"] = entry_matches
 		entry["heap_chunk_metadata"] = []
 		seen_heap_addresses = set()
@@ -1607,7 +1628,7 @@ def collectTellMeContext(question_type="", heapdynamics_files=None):
 		context["stack_page"] = _tellme_get_page_summary(sp)
 		context["stack_memory"] = _tellme_read_memory(sp, 0x100, "stack_memory")
 
-	context["cyclic_pattern_length"] = 20280
+	context["call_stack"] = _tellme_get_call_stack("kb")
 
 	return context
 
@@ -1619,9 +1640,10 @@ def buildTellMePrompt(question_type, context):
 	if question_type == "1":
 		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on crash triage and immediate exploit-relevant observations.
+Refer to all context components provided in the request. If a component is present but not useful, say briefly why instead of ignoring it.
 Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
-If a cyclic pattern appears anywhere in registers, stack, or nearby memory, identify the pattern values and tell us the likely offsets those values correspond to.
-Use the supplied full cyclic pattern reference to determine offsets directly when possible.
+Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
+If a cyclic pattern appears anywhere in registers, stack, or nearby memory, point it out and explain why it looks like a cyclic pattern. If you can only infer it probabilistically, say so clearly.
 Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, or heap metadata corruption.
 Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
 Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
@@ -1631,6 +1653,7 @@ Keep the answer practical and precise."""
 	elif question_type == "2":
 		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on the current function and the current instruction context.
+Refer to all context components provided in the request. If a component is present but not useful, say briefly why instead of ignoring it.
 Use the supplied symbol information, nearby disassembly, call stack, module information, and current registers to explain what function or code region we appear to be in, what the current instruction is doing, and what likely happened immediately before reaching it.
 If symbol information is missing or ambiguous, say so clearly and fall back to describing the code region and instruction window instead of inventing a function name.
 Be specific, but do not invent facts that are not present in the snapshot."""
@@ -1638,9 +1661,6 @@ Be specific, but do not invent facts that are not present in the snapshot."""
 		raise ValueError("Question type '9' must be built from a template file with -f")
 	else:
 		raise ValueError("Unsupported question type '%s'. Customize buildTellMePrompt() to add more profiles." % question_type)
-
-	if question_type == "1":
-		base_context += "\n\nFull cyclic pattern reference (length 20280):\n" + getTellMePattern()
 
 	return instructions + "\n\nDebugger context:\n" + base_context
 
@@ -1832,45 +1852,30 @@ def logTellMeProviderError(engine, err):
 	dbg.log("    Message       : %s" % _tellme_get_error_message(err), highlight=1)
 
 
-def _tellme_line_prefix(line):
-	stripped = line.lstrip()
-	indent = line[:len(line) - len(stripped)]
-	for marker in ["- ", "* ", "+ "]:
-		if stripped.startswith(marker):
-			return indent + marker, indent + (" " * len(marker))
-	m = re.match(r"^(\d+\.\s+)(.*)$", stripped)
-	if m:
-		prefix = indent + m.group(1)
-		return prefix, indent + (" " * len(m.group(1)))
-	return indent, indent
+def _tellme_is_timeout_error(engine, err):
+	try:
+		if engine == "openai" and openai_sdk is not None and isinstance(err, openai_sdk.APITimeoutError):
+			return True
+	except Exception:
+		pass
+
+	err_cls = err.__class__.__name__
+	if "Timeout" in err_cls:
+		return True
+	if isinstance(err, socket.timeout):
+		return True
+
+	try:
+		message = _tellme_get_error_message(err).lower()
+	except Exception:
+		message = str(err).lower()
+	return ("timeout" in message) or ("timed out" in message)
 
 
-def formatTellMeResponseLines(answer, width=78):
+def formatTellMeResponseLines(answer):
 	lines = []
 	for raw_line in answer.splitlines():
-		line = raw_line.replace("\t", "    ").rstrip()
-		if line == "":
-			lines.append("")
-			continue
-		initial_indent, subsequent_indent = _tellme_line_prefix(line)
-		content = line[len(initial_indent):] if line.startswith(initial_indent) else line.lstrip()
-		if content == "":
-			lines.append(initial_indent.rstrip())
-			continue
-		wrapped = textwrap.wrap(
-			content,
-			width=width,
-			initial_indent=initial_indent,
-			subsequent_indent=subsequent_indent,
-			replace_whitespace=False,
-			drop_whitespace=True,
-			break_long_words=False,
-			break_on_hyphens=False
-		)
-		if wrapped:
-			lines.extend(wrapped)
-		else:
-			lines.append(initial_indent + content)
+		lines.append(raw_line.replace("\t", "    ").rstrip())
 	return lines
 
 
@@ -1969,13 +1974,6 @@ def _tellme_render_modules_text():
 	return "\n".join(lines)
 
 
-def _tellme_render_pattern_text():
-	try:
-		return getTellMePattern()
-	except Exception as e:
-		return "Unable to generate cyclic pattern: %s" % str(e)
-
-
 def _tellme_template_var_ref(var_name):
 	return "{{%s}}" % var_name
 
@@ -1995,7 +1993,6 @@ def buildTellMePromptFromTemplateFile(template_path):
 		("segments", lambda: _tellme_render_layout_categories_text(set(["Heap", "Segment"]), include_chunks=False)),
 		("chunks", lambda: _tellme_render_layout_categories_text(set(["Chunk", "VADBlock"]), include_chunks=True)),
 		("modules", _tellme_render_modules_text),
-		("pattern", _tellme_render_pattern_text),
 	])
 
 	used_variables = OrderedDict()
@@ -2028,8 +2025,8 @@ def buildTellMePromptFromTemplateFile(template_path):
 
 
 def writeTellMeRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
-	mndbg.dbgp("tellme: writing AI request to tellme_request.json")
-	logfile = MnLog("tellme_request.json")
+	mndbg.dbgp("tellme: writing AI request to tellme_request.md")
+	logfile = MnLog("tellme_request.md")
 	thislog = logfile.reset(showheader=False, skipModuleTable=True)
 	logfile.write("AI engine : %s" % engine, thislog)
 	logfile.write("Model     : %s" % model, thislog)
@@ -2089,7 +2086,7 @@ def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="",
 
 def callTellMeOpenAI(api_key, model, prompt):
 	mndbg.dbgp("tellme: calling OpenAI model '%s'" % model)
-	client = OpenAI(api_key=api_key, timeout=45.0, max_retries=2)
+	client = OpenAI(api_key=api_key, timeout=45.0, max_retries=0)
 	response = client.responses.create(
 		model=model,
 		input=prompt
@@ -22457,16 +22454,38 @@ def procTellMe(args):
 		return
 
 	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
+	request_logfile_path = writeTellMeRequestLog(
+		engine,
+		model,
+		question_type,
+		prompt,
+		template_file=template_file,
+		target_address=target_address,
+		target_address_source=target_address_source
+	)
 
-	try:
-		if engine == "openai":
-			answer, request_id = callTellMeOpenAI(api_key, model, prompt)
-		else:
-			answer, request_id = callTellMeAnthropic(api_key, model, prompt)
-	except Exception as e:
-		mndbg.dbgp("tellme: provider call failed:\n%s" % traceback.format_exc(), errormode=False)
-		logTellMeProviderError(engine, e)
-		return
+	max_attempts = 3
+	answer = ""
+	request_id = ""
+	for attempt in xrange(1, max_attempts + 1):
+		dbg.log("    Attempt %d" % attempt)
+		try:
+			if engine == "openai":
+				answer, request_id = callTellMeOpenAI(api_key, model, prompt)
+			else:
+				answer, request_id = callTellMeAnthropic(api_key, model, prompt)
+			break
+		except Exception as e:
+			mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
+				attempt,
+				max_attempts,
+				traceback.format_exc()
+			), errormode=False)
+			logTellMeProviderError(engine, e)
+			if not _tellme_is_timeout_error(engine, e) or attempt >= max_attempts:
+				return
+			dbg.log("    Retrying in 10 seconds... (attempt %d/%d)" % (attempt + 1, max_attempts), highlight=1)
+			time.sleep(10)
 
 	if request_id:
 		dbg.log("    Request id: %s" % request_id)
@@ -30561,8 +30580,6 @@ Common models:
 	    [segments] = all heaps and their segments
 	    [chunks]   = all chunks and virtual-allocated blocks in the process
 	    [modules]  = all loaded modules with mitigation properties
-	    [pattern]  = cyclic pattern of 20280 bytes
-
 	For -q 9, placeholders are not pasted inline.
 	They are converted into named variables such as {{regs}} and {{stack}},
 	and the final request sent to the AI contains:
