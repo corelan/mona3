@@ -1,3 +1,17 @@
+[mona 3.0.3007]
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/1e43df1">1e43df1</link> hide key contents in mona config -list and set default model to -1
+  - <link cmd="https://github.com/corelan/mona3/commit/9cdfe80">9cdfe80</link> update usage and default models
+  - <link cmd="https://github.com/corelan/mona3/commit/6e920e5">6e920e5</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/8c89103">8c89103</link> added mona tellme function
+  - <link cmd="https://github.com/corelan/mona3/commit/c8097a1">c8097a1</link> fix output formatting bug in findmsp
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
+
+[windbglib 3.0.3005]
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
+
 [mona 3.0.3006]
 corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/c8097a1">c8097a1</link> fix output formatting bug in findmsp
