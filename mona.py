@@ -2027,10 +2027,10 @@ def buildTellMePromptFromTemplateFile(template_path):
 	)
 
 
-def writeTellMeResponseLog(engine, model, question_type, request_id, prompt, ai_response_lines, template_file="", target_address=0, target_address_source=""):
-	mndbg.dbgp("tellme: writing AI response to tellme.txt")
-	logfile = MnLog("tellme.txt")
-	thislog = logfile.reset()
+def writeTellMeRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
+	mndbg.dbgp("tellme: writing AI request to tellme_request.json")
+	logfile = MnLog("tellme_request.json")
+	thislog = logfile.reset(showheader=False, skipModuleTable=True)
 	logfile.write("AI engine : %s" % engine, thislog)
 	logfile.write("Model     : %s" % model, thislog)
 	logfile.write("Question  : %s" % question_type, thislog)
@@ -2048,6 +2048,24 @@ def writeTellMeResponseLog(engine, model, question_type, request_id, prompt, ai_
 	for line in prompt.splitlines():
 		logfile.write(line.replace("\t", "    "), thislog)
 	logfile.write("PROMPT END", thislog)
+	return thislog
+
+
+def writeTellMeResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source=""):
+	mndbg.dbgp("tellme: writing AI response to tellme_response.md")
+	logfile = MnLog("tellme_response.md")
+	thislog = logfile.reset()
+	logfile.write("AI engine : %s" % engine, thislog)
+	logfile.write("Model     : %s" % model, thislog)
+	logfile.write("Question  : %s" % question_type, thislog)
+	if request_id:
+		logfile.write("Request id: %s" % request_id, thislog)
+	if template_file != "":
+		logfile.write("Template  : %s" % template_file, thislog)
+	if isinstance(target_address, int) and target_address > 0:
+		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
+		if target_address_source != "":
+			logfile.write("Target src: %s" % target_address_source, thislog)
 	logfile.write("", thislog)
 	logfile.write("AI response:", thislog)
 	logfile.write("------------", thislog)
@@ -2057,25 +2075,16 @@ def writeTellMeResponseLog(engine, model, question_type, request_id, prompt, ai_
 
 
 def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="", target_address=0, target_address_source=""):
-	mndbg.dbgp("tellme: writing dry run prompt to dryrun.txt")
-	logfile = MnLog("dryrun.txt")
-	thislog = logfile.reset()
-	logfile.write("AI engine : %s" % engine, thislog)
-	logfile.write("Model     : %s" % model, thislog)
-	logfile.write("Question  : %s" % question_type, thislog)
-	if template_file != "":
-		logfile.write("Template  : %s" % template_file, thislog)
-	if isinstance(target_address, int) and target_address > 0:
-		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
-		if target_address_source != "":
-			logfile.write("Target src: %s" % target_address_source, thislog)
-	logfile.write("", thislog)
-	logfile.write("PROMPT BEGIN", thislog)
-	logfile.write("------------", thislog)
-	for line in prompt.splitlines():
-		logfile.write(line.replace("\t", "    "), thislog)
-	logfile.write("PROMPT END", thislog)
-	return thislog
+	mndbg.dbgp("tellme: writing dry run prompt to tellme_request.md")
+	return writeTellMeRequestLog(
+		engine,
+		model,
+		question_type,
+		prompt,
+		template_file=template_file,
+		target_address=target_address,
+		target_address_source=target_address_source
+	)
 
 
 def callTellMeOpenAI(api_key, model, prompt):
@@ -22462,12 +22471,21 @@ def procTellMe(args):
 	if request_id:
 		dbg.log("    Request id: %s" % request_id)
 	ai_response_lines = formatTellMeResponseLines(answer)
-	logfile_path = writeTellMeResponseLog(
+	request_logfile_path = writeTellMeRequestLog(
+		engine,
+		model,
+		question_type,
+		prompt,
+		request_id=request_id,
+		template_file=template_file,
+		target_address=target_address,
+		target_address_source=target_address_source
+	)
+	response_logfile_path = writeTellMeResponseLog(
 		engine,
 		model,
 		question_type,
 		request_id,
-		prompt,
 		ai_response_lines,
 		template_file=template_file,
 		target_address=target_address,
@@ -22481,7 +22499,8 @@ def procTellMe(args):
 		dbg.log("    <empty response>")
 	else:
 		dbg.log("")
-		dbg.log("    Saved to %s" % logfile_path)
+		dbg.log("    Request saved to %s" % request_logfile_path)
+		dbg.log("    Response saved to %s" % response_logfile_path)
 
 # ----- dump: Dump some memory to a file ----- #
 def procDump(args):
