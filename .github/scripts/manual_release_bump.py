@@ -160,7 +160,7 @@ def cleanup_old_release_notes(release_notes_file, latest_revisions, max_revision
     path.write_text("\n\n".join(kept_sections).rstrip() + "\n", encoding="utf-8")
 
 
-def build_commit_message(latest_revisions):
+def build_commit_message(latest_revisions, prefix="Update revision", suffix=""):
     revision_parts = [
         f"{name}: {latest_revisions[name]}"
         for name in ("mona", "windbglib")
@@ -168,9 +168,15 @@ def build_commit_message(latest_revisions):
     ]
 
     if not revision_parts:
-        return "Update revision"
+        commit_message = prefix
+    else:
+        commit_message = f"{prefix} ({', '.join(revision_parts)})"
 
-    return f"Update revision ({', '.join(revision_parts)})"
+    suffix = suffix.strip()
+    if suffix:
+        commit_message = f"{commit_message} {suffix}"
+
+    return commit_message
 
 
 def main():
@@ -179,6 +185,8 @@ def main():
     parser.add_argument("--release-notes", required=True)
     parser.add_argument("--file", action="append", required=True)
     parser.add_argument("--name", action="append", required=True)
+    parser.add_argument("--commit-message-prefix", default="Update revision")
+    parser.add_argument("--commit-message-suffix", default="")
     parser.add_argument("--github-output")
     args = parser.parse_args()
 
@@ -208,7 +216,11 @@ def main():
         max_revision_distance=10,
     )
 
-    commit_message = build_commit_message(latest_revisions)
+    commit_message = build_commit_message(
+        latest_revisions,
+        prefix=args.commit_message_prefix,
+        suffix=args.commit_message_suffix,
+    )
     print(f"Commit message: {commit_message}")
 
     if args.github_output:

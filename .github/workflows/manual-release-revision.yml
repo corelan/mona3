@@ -16,6 +16,14 @@ on:
         description: "Summarize commits since this ref/tag/sha"
         required: true
         default: "HEAD~10"
+      commit_message_prefix:
+        description: "Commit message prefix"
+        required: false
+        default: "Update revision"
+      commit_message_suffix:
+        description: "Optional text appended to the commit message"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -47,6 +55,8 @@ jobs:
           python3 .github/scripts/manual_release_bump.py \
             --since "${{ inputs.since_ref }}" \
             --release-notes mona_releasenotes.txt \
+            --commit-message-prefix "${{ inputs.commit_message_prefix }}" \
+            --commit-message-suffix "${{ inputs.commit_message_suffix }}" \
             --github-output "$GITHUB_OUTPUT" \
             $args
 
