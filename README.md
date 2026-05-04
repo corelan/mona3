@@ -25,6 +25,8 @@
   - [C. Running Mona in WinDBG Classic on Windows 7](#c-running-mona-in-windbg-classic-on-windows-7)
   - [D. Helping Python find its libraries](#d-helping-python-find-its-libraries)
   - [E. Running Mona in Immunity](#e-running-mona-in-immunity)
+- 🧠 [AI integration](#ai-integration)
+- 📚 [More information](#more-information)
 - 🙏 [Thank you](#thank-you)
 - 🐛 [Found a bug?](#found-a-bug)
 - 🤝 [Want to contribute?](#want-to-contribute)
@@ -535,6 +537,75 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 * Select the first icon in the list and click OK
 * Click OK to save the changes
 
+
+---
+
+<a id="ai-integration"></a>
+# 🧠 AI integration
+
+Mona includes AI-assisted analysis through the `tellme` command. It can inspect the current WinDBG context and send that context to a supported AI provider to help explain what is happening, summarize findings, or assist with next-step analysis.
+
+At the moment, `mona` supports these AI engines:
+
+* `openai`
+* `anthropic`
+
+To use AI integration, install the corresponding Python library for every Python version you plan to use with `mona`.
+
+For example, if you run `mona` with both Python 3.9 and Python 3.14, then you should install the provider library into both Python environments.
+
+Example installs:
+
+```batch
+py -3.9-32 -m pip install openai
+py -3.9 -m pip install openai
+py -3.14-32 -m pip install openai
+py -3.14 -m pip install openai
+```
+
+```batch
+py -3.9-32 -m pip install anthropic
+py -3.9 -m pip install anthropic
+py -3.14-32 -m pip install anthropic
+py -3.14 -m pip install anthropic
+```
+
+Once the library is installed, configure the API key either with environment variables or via the `mona` config. You can also optionally set a default model.
+
+Examples using `mona` config:
+
+```python
+!mona config -set openai.key <your OpenAI API key>
+!mona config -set openai.model gpt-5.4
+!mona config -set anthropic.key <your Anthropic API key>
+!mona config -set anthropic.model claude-opus-4-20250514
+```
+
+Examples using environment variables:
+
+```batch
+set OPENAI_API_KEY=<your OpenAI API key>
+set OPENAI_MODEL=gpt-5.4
+set ANTHROPIC_API_KEY=<your Anthropic API key>
+set ANTHROPIC_MODEL=claude-opus-4-20250514
+```
+
+If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model for a single request with the `-model` argument.
+
+Example usage:
+
+```python
+!mona tellme -ai openai -q 1
+!mona tellme -ai anthropic -q 2
+```
+
+
+---
+
+<a id="more-information"></a>
+# 📚 More information
+
+For additional documentation, examples, and background information, check the [Mona wiki](https://github.com/corelan/mona3/wiki).
 
 
 
