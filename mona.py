@@ -119,6 +119,7 @@ import binascii
 import itertools
 import traceback
 import json
+import textwrap
 from collections import OrderedDict
 import bisect
 import math
@@ -183,11 +184,14 @@ g_ptr_to_get = -1
 g_silent = False
 g_no_header = False
 g_keystone_loaded = False
+g_openai_loaded = False
+g_anthropic_loaded = False
 g_windbg_flavor = ""
 g_windbg_pretty_name = ""
 g_os_version = None
 g_heap_cmd_prefix = None
 g_win7_mode = False
+g_tellme_pattern_cache = None
 
 
 
@@ -202,6 +206,35 @@ try:
 	g_keystone_loaded = True
 except:
 	g_keystone_loaded = False
+
+
+# py -3.9-32 -m pip install openai
+# py -3.9 -m pip install openai
+# py -3.14-32 -m pip install openai
+# py -3.14 -m pip install openai
+
+# py -3.9-32 -m pip install anthropic
+# py -3.9 -m pip install anthropic
+# py -3.14-32 -m pip install anthropic
+# py -3.14 -m pip install anthropic
+
+openai_sdk = None
+OpenAI = None
+try:
+	import openai as openai_sdk
+	from openai import OpenAI
+	g_openai_loaded = True
+except Exception:
+	g_openai_loaded = False
+
+anthropic_sdk = None
+Anthropic = None
+try:
+	import anthropic as anthropic_sdk
+	from anthropic import Anthropic
+	g_anthropic_loaded = True
+except Exception:
+	g_anthropic_loaded = False
 
 
 ###
@@ -861,6 +894,896 @@ def _safe_int(v):
 		return int(str(v).strip().replace("'", "").replace('"', ""))
 	except:
 		return 0
+
+
+def getAvailableAIEngines():
+	engines = []
+	if g_openai_loaded:
+		engines.append("openai")
+	if g_anthropic_loaded:
+		engines.append("anthropic")
+	return engines
+
+
+def _tellme_format_text(value, max_len=512):
+	try:
+		text = ensure_text(value)
+	except Exception:
+		try:
+			text = str(value)
+		except Exception:
+			text = "<unprintable>"
+	if len(text) > max_len:
+		return text[:max_len] + "... <truncated>"
+	return text
+
+
+def _tellme_format_hex_ascii(raw, max_len=0x80):
+	if raw is None:
+		return {"hex": "", "ascii": ""}
+	if len(raw) > max_len:
+		raw = raw[:max_len]
+	hexdata = binascii.hexlify(raw).decode("ascii")
+	ascii_data = "".join([chr(b) if 32 <= b <= 126 else "." for b in bytearray(raw)])
+	return {"hex": hexdata, "ascii": ascii_data}
+
+
+def _tellme_read_memory(address, size, label):
+	result = {
+		"label": label,
+		"address": PTR_PRINT % address,
+		"size": size,
+	}
+	try:
+		mndbg.dbgp("tellme: reading %s at %s (%d bytes)" % (label, PTR_PRINT % address, size))
+		raw = dbg.readMemory(address, size)
+		result.update(_tellme_format_hex_ascii(raw, max_len=size))
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: unable to read %s at %s: %s" % (label, PTR_PRINT % address, str(e)), errormode=False)
+	return result
+
+
+def _tellme_get_page_summary(address):
+	summary = {"address": PTR_PRINT % address}
+	try:
+		page = dbg.getMemoryPageByAddress(address)
+		if page:
+			summary["base"] = PTR_PRINT % page.getBaseAddress()
+			summary["end"] = PTR_PRINT % (page.getBaseAddress() + page.getSize())
+			summary["size"] = page.getSize()
+			summary["access"] = page.getAccess(human=True)
+			try:
+				section = page.getSection()
+				if section:
+					summary["section"] = section
+			except Exception:
+				pass
+	except Exception as e:
+		summary["error"] = str(e)
+		mndbg.dbgp("tellme: page lookup failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+	return summary
+
+
+def _tellme_get_module_summary(address):
+	summary = {"address": PTR_PRINT % address}
+	try:
+		if mnproc is None:
+			summary["error"] = "No active process context"
+			return summary
+		mod = mnproc.getModuleForAddress(address)
+		if mod:
+			summary["name"] = mod.moduleName
+			summary["path"] = mod.modulePath
+			summary["base"] = PTR_PRINT % mod.moduleBase
+			summary["top"] = PTR_PRINT % mod.moduleTop
+			summary["size"] = mod.moduleSize
+			summary["offset"] = "0x%x" % (address - mod.moduleBase)
+		else:
+			summary["name"] = ""
+	except Exception as e:
+		summary["error"] = str(e)
+		mndbg.dbgp("tellme: module lookup failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+	return summary
+
+
+def _tellme_get_disasm_summary(address, depth=8):
+	result = {
+		"address": PTR_PRINT % address,
+		"current": "",
+		"nearby": []
+	}
+	try:
+		op = dbg.disasm(address)
+		result["current"] = _tellme_format_text(getDisasmInstruction(op))
+	except Exception as e:
+		result["current_error"] = str(e)
+		mndbg.dbgp("tellme: failed to disassemble current instruction at %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+
+	try:
+		curr = address
+		for _ in range(depth):
+			op = dbg.disasm(curr)
+			instr = _tellme_format_text(getDisasmInstruction(op))
+			result["nearby"].append({
+				"address": PTR_PRINT % curr,
+				"instruction": instr
+			})
+			next_addr = dbg.disasmForwardAddressOnly(curr, 1)
+			if next_addr == curr:
+				break
+			curr = next_addr
+	except Exception as e:
+		result["nearby_error"] = str(e)
+		mndbg.dbgp("tellme: failed while collecting nearby disassembly at %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+	return result
+
+
+def tellMeHasCurrentInstruction(address):
+	if not isinstance(address, int) or address <= 0:
+		return False, "Program counter is not a valid address"
+	try:
+		page = dbg.getMemoryPageByAddress(address)
+		if page:
+			access = page.getAccess(human=True)
+			if "NOACCESS" in access:
+				return False, "Program counter points to a PAGE_NOACCESS region"
+	except Exception:
+		pass
+	try:
+		op = dbg.disasm(address)
+		instr = getDisasmInstruction(op).strip()
+		if instr == "":
+			return False, "No instruction text was returned for the current program counter"
+		return True, instr
+	except Exception as e:
+		return False, str(e)
+
+
+def collectTellMeCurrentFunctionContext(address):
+	context = {
+		"address": PTR_PRINT % address,
+		"symbol": "",
+		"symbol_offset": "",
+		"nearest_symbol_output": "",
+		"disasm_before": "",
+		"disasm_after": "",
+		"call_stack": ""
+	}
+	mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
+
+	try:
+		fname, foffset = getFunctionName(address)
+		context["symbol"] = fname
+		context["symbol_offset"] = foffset
+	except Exception as e:
+		context["symbol_error"] = str(e)
+		mndbg.dbgp("tellme: getFunctionName failed: %s" % str(e), errormode=False)
+
+	try:
+		funcinfo = dbglib.Function(dbg, address)
+		symname = ensure_text(funcinfo.addressToSymbol())
+		if symname != "":
+			context["address_to_symbol"] = symname
+	except Exception as e:
+		context["address_to_symbol_error"] = str(e)
+		mndbg.dbgp("tellme: addressToSymbol failed: %s" % str(e), errormode=False)
+
+	for label, cmd in [
+		("nearest_symbol_output", "ln %s" % (PTR_PRINT % address)),
+		("disasm_before", "ub %s L10" % (PTR_PRINT % address)),
+		("disasm_after", "u %s L20" % (PTR_PRINT % address)),
+		("call_stack", "k")
+	]:
+		try:
+			output = dbg.nativeCommand(cmd)
+			context[label] = ensure_text(output).strip()
+		except Exception as e:
+			context[label + "_error"] = str(e)
+			mndbg.dbgp("tellme: nativeCommand '%s' failed: %s" % (cmd, str(e)), errormode=False)
+
+	return context
+
+
+def _tellme_extract_instruction_registers(instruction_text, regs):
+	registers = []
+	if not instruction_text or not regs:
+		return registers
+	reg_names = []
+	for reg_name, reg_value in regs.items():
+		if isinstance(reg_value, int):
+			reg_names.append(str(reg_name).lower())
+	for reg_name in sorted(set(reg_names), key=lambda item: (-len(item), item)):
+		if re.search(r"(?<![a-z0-9_])%s(?![a-z0-9_])" % re.escape(reg_name), instruction_text.lower()):
+			registers.append(reg_name)
+	return registers
+
+
+def _tellme_find_layout_region(address, layout_regions):
+	for start, end, category, description in layout_regions:
+		if category not in ["Chunk", "VADBlock"]:
+			continue
+		if start <= address < end:
+			return {
+				"category": category,
+				"start": start,
+				"end": end,
+				"description": _tellme_format_text(description, max_len=1024)
+			}
+	return None
+
+
+def _tellme_collect_instruction_heap_context(regs, pc):
+	info = {
+		"instruction": "",
+		"referenced_registers": [],
+		"references": []
+	}
+	if not isinstance(pc, int) or pc <= 0:
+		return info
+	try:
+		op = dbg.disasm(pc)
+		instruction_text = _tellme_format_text(getDisasmInstruction(op))
+		info["instruction"] = instruction_text
+	except Exception as e:
+		info["instruction_error"] = str(e)
+		mndbg.dbgp("tellme: unable to disassemble current instruction for heap context: %s" % str(e), errormode=False)
+		return info
+
+	referenced_registers = _tellme_extract_instruction_registers(instruction_text, regs)
+	info["referenced_registers"] = referenced_registers
+	if len(referenced_registers) == 0:
+		return info
+
+	try:
+		if mnproc is None:
+			info["layout_error"] = "No active process context"
+			return info
+		layout_regions = [r for r in mnproc.getAllSorted(include_chunks=True) if r[2] in ["Chunk", "VADBlock"]]
+		info["layout_region_count"] = len(layout_regions)
+	except Exception as e:
+		info["layout_error"] = str(e)
+		mndbg.dbgp("tellme: failed to enumerate chunk/vad layout: %s" % str(e), errormode=False)
+		return info
+
+	lower_regs = {}
+	for reg_name, reg_value in regs.items():
+		lower_regs[str(reg_name).lower()] = reg_value
+
+	for reg_name in referenced_registers:
+		reg_value = lower_regs.get(reg_name)
+		if not isinstance(reg_value, int) or reg_value <= 0:
+			continue
+		entry = OrderedDict()
+		entry["register"] = reg_name
+		entry["value"] = PTR_PRINT % reg_value
+		entry["instruction"] = instruction_text
+		layout_region = _tellme_find_layout_region(reg_value, layout_regions)
+		if layout_region is None:
+			entry["match"] = "none"
+			info["references"].append(entry)
+			continue
+
+		entry["match"] = layout_region["category"]
+		entry["region_start"] = PTR_PRINT % layout_region["start"]
+		entry["region_end"] = PTR_PRINT % layout_region["end"]
+		entry["region_offset"] = "0x%x" % (reg_value - layout_region["start"])
+		entry["region_description"] = layout_region["description"]
+
+		try:
+			ptrx = MnPointer(reg_value)
+			foundinheap, foundinsegment, foundinva, foundinchunk = ptrx.getHeapInfo()
+			if foundinheap:
+				entry["heap"] = PTR_PRINT % foundinheap
+			if foundinsegment:
+				entry["segment"] = PTR_PRINT % foundinsegment
+			if foundinva:
+				entry["vad_base"] = PTR_PRINT % foundinva
+			if hasattr(foundinchunk, "chunkptr"):
+				entry["chunk_ptr"] = PTR_PRINT % foundinchunk.chunkptr
+				entry["user_ptr"] = PTR_PRINT % foundinchunk.userptr
+				entry["user_size"] = "0x%x" % foundinchunk.usersize
+				entry["chunk_size"] = "0x%x" % (foundinchunk.size * HEAPGRANULARITY)
+				entry["state"] = getHeapFlag(foundinchunk.flag)
+				entry["chunk_offset"] = "0x%x" % (reg_value - foundinchunk.chunkptr)
+				if reg_value >= foundinchunk.userptr:
+					entry["user_offset"] = "0x%x" % (reg_value - foundinchunk.userptr)
+				chunk_dump_size = min(max(foundinchunk.usersize, 0), 0x100)
+				if chunk_dump_size > 0:
+					entry["chunk_contents"] = _tellme_read_memory(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % reg_name)
+				entry["referenced_memory"] = _tellme_read_memory(reg_value, min(0x40, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % reg_name)
+			elif isinstance(foundinchunk, dict):
+				commit_size = int(foundinchunk.get("commit_size", 0))
+				reserve_size = int(foundinchunk.get("reserve_size", 0))
+				entry["commit_size"] = "0x%x" % commit_size
+				entry["reserve_size"] = "0x%x" % reserve_size
+				read_size = min(0x100, max((layout_region["end"] - reg_value), 0x10))
+				entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % reg_name)
+		except Exception as e:
+			entry["heap_lookup_error"] = str(e)
+			mndbg.dbgp("tellme: heap lookup for register '%s' failed: %s" % (reg_name, str(e)), errormode=False)
+		info["references"].append(entry)
+
+	return info
+
+
+def getTellMePattern():
+	global g_tellme_pattern_cache
+	if g_tellme_pattern_cache is None:
+		mndbg.dbgp("tellme: generating reusable cyclic pattern (20280 bytes)")
+		g_tellme_pattern_cache = createPattern(20280, {})
+	return g_tellme_pattern_cache
+
+
+def collectTellMeContext(question_type=""):
+	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
+	context = {
+		"debugger": __DEBUGGERAPP__,
+		"debugger_flavor": g_windbg_pretty_name,
+		"architecture": arch,
+		"pointer_size": PTR_SIZE,
+		"python_version": getPythonVersion(),
+		"timestamp": mndbg.get_current_datetime(),
+		"registers": {},
+		"program_counter": "",
+		"stack_pointer": "",
+	}
+
+	try:
+		regs = getAllRegisters()
+		context["registers"] = OrderedDict()
+		for reg_name in sorted(regs.keys()):
+			reg_val = regs[reg_name]
+			if isinstance(reg_val, int):
+				context["registers"][reg_name.lower()] = PTR_PRINT % reg_val
+			else:
+				context["registers"][reg_name.lower()] = _tellme_format_text(reg_val)
+	except Exception as e:
+		context["registers_error"] = str(e)
+		mndbg.dbgp("tellme: failed to collect registers: %s" % str(e), errormode=False)
+		regs = {}
+
+	pc = regs.get(PROGRAM_COUNTER, 0)
+	sp = regs.get(STACK_POINTER, 0)
+	if isinstance(pc, int) and pc > 0:
+		context["program_counter"] = PTR_PRINT % pc
+		context["pc_disasm"] = _tellme_get_disasm_summary(pc)
+		context["pc_page"] = _tellme_get_page_summary(pc)
+		context["pc_module"] = _tellme_get_module_summary(pc)
+		context["pc_memory"] = _tellme_read_memory(pc, 0x40, "pc_memory")
+		if question_type == "1":
+			try:
+				context["instruction_heap_references"] = _tellme_collect_instruction_heap_context(regs, pc)
+			except Exception as e:
+				context["instruction_heap_references_error"] = str(e)
+				mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
+
+	if isinstance(sp, int) and sp > 0:
+		context["stack_pointer"] = PTR_PRINT % sp
+		context["stack_page"] = _tellme_get_page_summary(sp)
+		context["stack_memory"] = _tellme_read_memory(sp, 0x100, "stack_memory")
+
+	context["cyclic_pattern_length"] = 20280
+
+	return context
+
+
+def buildTellMePrompt(question_type, context):
+	mndbg.dbgp("tellme: building prompt for question type '%s'" % question_type)
+	base_context = json.dumps(context, indent=2, sort_keys=False)
+
+	if question_type == "1":
+		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+Focus on crash triage and immediate exploit-relevant observations.
+Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
+If a cyclic pattern appears anywhere in registers, stack, or nearby memory, identify the pattern values and tell us the likely offsets those values correspond to.
+Use the supplied full cyclic pattern reference to determine offsets directly when possible.
+Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, or heap metadata corruption.
+Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
+If control appears partial or uncertain, say so explicitly.
+Keep the answer practical and precise."""
+	elif question_type == "2":
+		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+Focus on the current function and the current instruction context.
+Use the supplied symbol information, nearby disassembly, call stack, module information, and current registers to explain what function or code region we appear to be in, what the current instruction is doing, and what likely happened immediately before reaching it.
+If symbol information is missing or ambiguous, say so clearly and fall back to describing the code region and instruction window instead of inventing a function name.
+Be specific, but do not invent facts that are not present in the snapshot."""
+	elif question_type == "9":
+		raise ValueError("Question type '9' must be built from a template file with -f")
+	else:
+		raise ValueError("Unsupported question type '%s'. Customize buildTellMePrompt() to add more profiles." % question_type)
+
+	if question_type == "1":
+		base_context += "\n\nFull cyclic pattern reference (length 20280):\n" + getTellMePattern()
+
+	return instructions + "\n\nDebugger context:\n" + base_context
+
+
+def getTellMeModelAndKey(engine, mona_config):
+	key_name = "%s.key" % engine
+	model_name = "%s.model" % engine
+	api_key = mona_config.get(key_name).strip()
+	model = mona_config.get(model_name).strip()
+
+	env_key_name = ""
+	env_model_name = ""
+	if engine == "openai":
+		env_key_name = "OPENAI_API_KEY"
+		env_model_name = "OPENAI_MODEL"
+	elif engine == "anthropic":
+		env_key_name = "ANTHROPIC_API_KEY"
+		env_model_name = "ANTHROPIC_MODEL"
+
+	if api_key == "" and env_key_name != "":
+		api_key = os.environ.get(env_key_name, "").strip()
+		if api_key != "":
+			mndbg.dbgp("tellme: using environment fallback for %s.key via %s" % (engine, env_key_name))
+
+	if model == "" and env_model_name != "":
+		model = os.environ.get(env_model_name, "").strip()
+		if model != "":
+			mndbg.dbgp("tellme: using environment fallback for %s.model via %s" % (engine, env_model_name))
+
+	if model == "":
+		if engine == "openai":
+			model = "gpt-5.2"
+		elif engine == "anthropic":
+			model = "claude-opus-4-6"
+
+	return api_key, model
+
+
+def getTellMeTestModel(engine):
+	if engine == "openai":
+		return "gpt-5.4-nano"
+	if engine == "anthropic":
+		return "claude-3-haiku-20240307"
+	return ""
+
+
+def _tellme_extract_error_payload(err):
+	payload = {}
+	for attr in ["request_id", "status_code", "code", "param", "type"]:
+		try:
+			value = getattr(err, attr, None)
+			if value not in [None, ""]:
+				payload[attr] = value
+		except Exception:
+			pass
+
+	body = None
+	for attr in ["body", "response"]:
+		try:
+			body = getattr(err, attr, None)
+			if body:
+				break
+		except Exception:
+			pass
+	if body not in [None, ""]:
+		payload["body"] = body
+	return payload
+
+
+def _tellme_get_nested_error_dict(err):
+	payload = _tellme_extract_error_payload(err)
+	body = payload.get("body", None)
+	if isinstance(body, dict):
+		if "error" in body and isinstance(body["error"], dict):
+			return body["error"]
+		return body
+	return {}
+
+
+def _tellme_get_error_message(err):
+	nested = _tellme_get_nested_error_dict(err)
+	for key in ["message", "error", "detail"]:
+		value = nested.get(key, "")
+		if value:
+			return ensure_text(value)
+	raw = str(err).strip()
+	if raw:
+		return raw
+	return err.__class__.__name__
+
+
+def _tellme_log_error_details(prefix, payload):
+	if "request_id" in payload:
+		dbg.log("    %s request id : %s" % (prefix, payload["request_id"]), highlight=1)
+	if "status_code" in payload:
+		dbg.log("    %s status     : %s" % (prefix, payload["status_code"]), highlight=1)
+	if "code" in payload:
+		dbg.log("    %s code       : %s" % (prefix, payload["code"]), highlight=1)
+	if "param" in payload:
+		dbg.log("    %s param      : %s" % (prefix, payload["param"]), highlight=1)
+
+
+def _tellme_log_openai_error(err):
+	payload = _tellme_extract_error_payload(err)
+	nested = _tellme_get_nested_error_dict(err)
+	message = _tellme_get_error_message(err)
+	error_type = nested.get("type", "") or err.__class__.__name__
+	error_code = nested.get("code", "") or payload.get("code", "")
+
+	if error_type == "insufficient_quota" or error_code == "insufficient_quota":
+		dbg.log("[!] OpenAI request failed: quota exceeded", highlight=1)
+		dbg.log("    Your API account does not currently have enough quota or billing available.", highlight=1)
+	elif isinstance(err, openai_sdk.RateLimitError):
+		dbg.log("[!] OpenAI request failed: rate limit exceeded", highlight=1)
+		dbg.log("    Too many requests were sent in a short time. Retry later or use a smaller/cheaper test model.", highlight=1)
+	elif isinstance(err, openai_sdk.AuthenticationError):
+		dbg.log("[!] OpenAI request failed: authentication error", highlight=1)
+		dbg.log("    Check the API key value and make sure the account/project can use the selected model.", highlight=1)
+	elif isinstance(err, openai_sdk.PermissionDeniedError):
+		dbg.log("[!] OpenAI request failed: permission denied", highlight=1)
+		dbg.log("    The key is valid, but it does not have access to this operation or model.", highlight=1)
+	elif isinstance(err, openai_sdk.BadRequestError):
+		dbg.log("[!] OpenAI request failed: invalid request", highlight=1)
+		dbg.log("    The model name, prompt, or request parameters were rejected by the API.", highlight=1)
+	elif isinstance(err, openai_sdk.APIConnectionError):
+		dbg.log("[!] OpenAI request failed: connection error", highlight=1)
+		dbg.log("    Check internet access, proxy/firewall settings, and whether the API endpoint is reachable.", highlight=1)
+	elif isinstance(err, openai_sdk.APITimeoutError):
+		dbg.log("[!] OpenAI request failed: timeout", highlight=1)
+		dbg.log("    The request took too long. Retry or reduce the amount of context being sent.", highlight=1)
+	elif isinstance(err, openai_sdk.APIStatusError):
+		dbg.log("[!] OpenAI request failed: API status error", highlight=1)
+	else:
+		dbg.log("[!] OpenAI request failed", highlight=1)
+
+	if message:
+		dbg.log("    Message       : %s" % message, highlight=1)
+	_tellme_log_error_details("OpenAI", payload)
+
+
+def _tellme_log_anthropic_error(err):
+	payload = _tellme_extract_error_payload(err)
+	message = _tellme_get_error_message(err)
+	err_cls = err.__class__.__name__
+
+	if "RateLimit" in err_cls:
+		dbg.log("[!] Anthropic request failed: rate limit exceeded", highlight=1)
+		dbg.log("    Too many requests were sent in a short time. Retry later or use the cheaper test model.", highlight=1)
+	elif "Authentication" in err_cls:
+		dbg.log("[!] Anthropic request failed: authentication error", highlight=1)
+		dbg.log("    Check the API key value and make sure the account can use the selected model.", highlight=1)
+	elif "Permission" in err_cls:
+		dbg.log("[!] Anthropic request failed: permission denied", highlight=1)
+		dbg.log("    The key is valid, but it does not have access to this operation or model.", highlight=1)
+	elif "Connection" in err_cls:
+		dbg.log("[!] Anthropic request failed: connection error", highlight=1)
+		dbg.log("    Check internet access, proxy/firewall settings, and whether the API endpoint is reachable.", highlight=1)
+	elif "Timeout" in err_cls:
+		dbg.log("[!] Anthropic request failed: timeout", highlight=1)
+		dbg.log("    The request took too long. Retry or reduce the amount of context being sent.", highlight=1)
+	elif "BadRequest" in err_cls or "Unprocessable" in err_cls or "RequestTooLarge" in err_cls:
+		dbg.log("[!] Anthropic request failed: invalid request", highlight=1)
+		dbg.log("    The model name, prompt, or request parameters were rejected by the API.", highlight=1)
+	else:
+		dbg.log("[!] Anthropic request failed", highlight=1)
+
+	if message:
+		dbg.log("    Message       : %s" % message, highlight=1)
+	_tellme_log_error_details("Anthropic", payload)
+
+
+def logTellMeProviderError(engine, err):
+	mndbg.dbgp("tellme: formatting provider error for engine '%s'" % engine)
+	if engine == "openai" and openai_sdk is not None:
+		try:
+			_tellme_log_openai_error(err)
+			return
+		except Exception:
+			mndbg.dbgp("tellme: OpenAI error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
+
+	if engine == "anthropic":
+		try:
+			_tellme_log_anthropic_error(err)
+			return
+		except Exception:
+			mndbg.dbgp("tellme: Anthropic error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
+
+	dbg.log("[!] %s request failed" % engine.capitalize(), highlight=1)
+	dbg.log("    Message       : %s" % _tellme_get_error_message(err), highlight=1)
+
+
+def _tellme_line_prefix(line):
+	stripped = line.lstrip()
+	indent = line[:len(line) - len(stripped)]
+	for marker in ["- ", "* ", "+ "]:
+		if stripped.startswith(marker):
+			return indent + marker, indent + (" " * len(marker))
+	m = re.match(r"^(\d+\.\s+)(.*)$", stripped)
+	if m:
+		prefix = indent + m.group(1)
+		return prefix, indent + (" " * len(m.group(1)))
+	return indent, indent
+
+
+def formatTellMeResponseLines(answer, width=78):
+	lines = []
+	for raw_line in answer.splitlines():
+		line = raw_line.replace("\t", "    ").rstrip()
+		if line == "":
+			lines.append("")
+			continue
+		initial_indent, subsequent_indent = _tellme_line_prefix(line)
+		content = line[len(initial_indent):] if line.startswith(initial_indent) else line.lstrip()
+		if content == "":
+			lines.append(initial_indent.rstrip())
+			continue
+		wrapped = textwrap.wrap(
+			content,
+			width=width,
+			initial_indent=initial_indent,
+			subsequent_indent=subsequent_indent,
+			replace_whitespace=False,
+			drop_whitespace=True,
+			break_long_words=False,
+			break_on_hyphens=False
+		)
+		if wrapped:
+			lines.extend(wrapped)
+		else:
+			lines.append(initial_indent + content)
+	return lines
+
+
+def _tellme_render_registers_text():
+	lines = []
+	try:
+		regs = getAllRegisters()
+		for reg_name in sorted(regs.keys()):
+			reg_val = regs[reg_name]
+			if isinstance(reg_val, int):
+				lines.append("%s = %s" % (reg_name.lower(), PTR_PRINT % reg_val))
+			else:
+				lines.append("%s = %s" % (reg_name.lower(), _tellme_format_text(reg_val)))
+	except Exception as e:
+		lines.append("Unable to read registers: %s" % str(e))
+	return "\n".join(lines)
+
+
+def _tellme_render_stack_text(max_bytes=0x1000):
+	lines = []
+	try:
+		if mnproc is None:
+			return "Unable to resolve current process context"
+		teb = mnproc.getCurrentTEB()
+		regs = getAllRegisters()
+		sp = regs.get(STACK_POINTER, 0)
+		if teb is None or not isinstance(sp, int) or sp <= 0:
+			return "Unable to resolve current stack context"
+		start = max(teb.StackLimit, sp)
+		end = min(teb.StackBase, start + max_bytes)
+		lines.append("Current stack range: %s - %s (SP=%s)" % (PTR_PRINT % start, PTR_PRINT % end, PTR_PRINT % sp))
+		if end <= start:
+			lines.append("No readable stack range selected")
+			return "\n".join(lines)
+		cursor = start
+		while cursor < end:
+			read_len = min(16, end - cursor)
+			try:
+				raw = dbg.readMemory(cursor, read_len)
+				ascii_data = "".join([chr(b) if 32 <= b <= 126 else "." for b in bytearray(raw)])
+				hex_data = " ".join(["%02x" % b for b in bytearray(raw)])
+				lines.append("%s : %-47s | %s" % (PTR_PRINT % cursor, hex_data, ascii_data))
+			except Exception as e:
+				lines.append("%s : <unreadable> (%s)" % (PTR_PRINT % cursor, str(e)))
+			cursor += read_len
+		if end < teb.StackBase:
+			lines.append("... truncated at 0x%x bytes from current stack pointer" % max_bytes)
+	except Exception as e:
+		lines.append("Unable to render stack contents: %s" % str(e))
+	return "\n".join(lines)
+
+
+def _tellme_render_layout_categories_text(categories, include_chunks=True):
+	lines = []
+	try:
+		if mnproc is None:
+			return "Unable to resolve current process context"
+		for start, end, category, description in mnproc.getAllSorted(include_chunks=include_chunks):
+			if category in categories:
+				lines.append("%s - %s | %s | %s" % (
+					PTR_PRINT % start,
+					PTR_PRINT % end,
+					category,
+					stripTags(description)
+				))
+	except Exception as e:
+		lines.append("Unable to collect layout categories %s: %s" % (",".join(sorted(categories)), str(e)))
+	return "\n".join(lines)
+
+
+def _tellme_render_modules_text():
+	lines = []
+	try:
+		if mnproc is None:
+			return "Unable to resolve current process context"
+		items = sorted(mnproc.getPEB().getModules().items(), key=lambda x: x[1].moduleBase)
+		for _, mod in items:
+			lines.append(
+				"%s | base=%s | end=%s | size=0x%x | rebase=%s | aslr=%s | safeseh=%s | cfg=%s | nx=%s | osdll=%s | version=%s | path=%s" % (
+					mod.moduleFilename or mod.moduleKey,
+					PTR_PRINT % mod.moduleBase,
+					PTR_PRINT % mod.moduleTop,
+					mod.moduleSize,
+					str(mod.isRebase),
+					str(mod.isAslr),
+					str(mod.isSafeSEH),
+					str(mod.isCFG),
+					str(mod.isNX),
+					str(mod.isOS),
+					str(mod.moduleVersion),
+					str(mod.modulePath)
+				)
+			)
+	except Exception as e:
+		lines.append("Unable to collect module information: %s" % str(e))
+	return "\n".join(lines)
+
+
+def _tellme_render_pattern_text():
+	try:
+		return getTellMePattern()
+	except Exception as e:
+		return "Unable to generate cyclic pattern: %s" % str(e)
+
+
+def _tellme_template_var_ref(var_name):
+	return "{{%s}}" % var_name
+
+
+def buildTellMePromptFromTemplateFile(template_path):
+	mndbg.dbgp("tellme: building prompt from template file %s" % template_path)
+	try:
+		with open(template_path, "rb") as fh:
+			template_text = fh.read().decode("latin-1")
+	except Exception as e:
+		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
+
+	placeholder_builders = OrderedDict([
+		("regs", _tellme_render_registers_text),
+		("stack", _tellme_render_stack_text),
+		("heap", lambda: _tellme_render_layout_categories_text(set(["Heap", "Segment"]), include_chunks=False)),
+		("segments", lambda: _tellme_render_layout_categories_text(set(["Heap", "Segment"]), include_chunks=False)),
+		("chunks", lambda: _tellme_render_layout_categories_text(set(["Chunk", "VADBlock"]), include_chunks=True)),
+		("modules", _tellme_render_modules_text),
+		("pattern", _tellme_render_pattern_text),
+	])
+
+	used_variables = OrderedDict()
+	found_placeholders = re.findall(r"\[([A-Za-z0-9_]+)\]", template_text)
+	for placeholder_name in found_placeholders:
+		var_name = placeholder_name.lower()
+		if var_name not in placeholder_builders:
+			raise ValueError("Unknown template placeholder '[%s]'" % placeholder_name)
+		if var_name not in used_variables:
+			mndbg.dbgp("tellme: expanding template marker [%s]" % var_name)
+			used_variables[var_name] = placeholder_builders[var_name]()
+
+	for var_name in used_variables:
+		marker_re = re.compile(r"\[%s\]" % re.escape(var_name), re.IGNORECASE)
+		template_text = marker_re.sub(_tellme_template_var_ref(var_name), template_text)
+
+	request_payload = OrderedDict()
+	request_payload["mode"] = "template"
+	request_payload["template_file"] = template_path
+	request_payload["template"] = template_text
+	request_payload["variables"] = used_variables
+
+	return (
+		"You are analyzing a debugger request template from mona.py running under WinDBG.\n"
+		"Use the 'template' field as the user's request body.\n"
+		"References such as {{regs}} or {{stack}} refer to entries under 'variables'.\n"
+		"Resolve those references using the provided variable values and answer the request without inventing missing data.\n\n"
+		"Template request JSON:\n%s" % json.dumps(request_payload, indent=2)
+	)
+
+
+def writeTellMeResponseLog(engine, model, question_type, request_id, prompt, ai_response_lines, template_file="", target_address=0, target_address_source=""):
+	mndbg.dbgp("tellme: writing AI response to tellme.txt")
+	logfile = MnLog("tellme.txt")
+	thislog = logfile.reset()
+	logfile.write("AI engine : %s" % engine, thislog)
+	logfile.write("Model     : %s" % model, thislog)
+	logfile.write("Question  : %s" % question_type, thislog)
+	if request_id:
+		logfile.write("Request id: %s" % request_id, thislog)
+	if template_file != "":
+		logfile.write("Template  : %s" % template_file, thislog)
+	if isinstance(target_address, int) and target_address > 0:
+		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
+		if target_address_source != "":
+			logfile.write("Target src: %s" % target_address_source, thislog)
+	logfile.write("", thislog)
+	logfile.write("PROMPT BEGIN", thislog)
+	logfile.write("------------", thislog)
+	for line in prompt.splitlines():
+		logfile.write(line.replace("\t", "    "), thislog)
+	logfile.write("PROMPT END", thislog)
+	logfile.write("", thislog)
+	logfile.write("AI response:", thislog)
+	logfile.write("------------", thislog)
+	for line in ai_response_lines:
+		logfile.write(stripTags(line), thislog)
+	return thislog
+
+
+def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="", target_address=0, target_address_source=""):
+	mndbg.dbgp("tellme: writing dry run prompt to dryrun.txt")
+	logfile = MnLog("dryrun.txt")
+	thislog = logfile.reset()
+	logfile.write("AI engine : %s" % engine, thislog)
+	logfile.write("Model     : %s" % model, thislog)
+	logfile.write("Question  : %s" % question_type, thislog)
+	if template_file != "":
+		logfile.write("Template  : %s" % template_file, thislog)
+	if isinstance(target_address, int) and target_address > 0:
+		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
+		if target_address_source != "":
+			logfile.write("Target src: %s" % target_address_source, thislog)
+	logfile.write("", thislog)
+	logfile.write("PROMPT BEGIN", thislog)
+	logfile.write("------------", thislog)
+	for line in prompt.splitlines():
+		logfile.write(line.replace("\t", "    "), thislog)
+	logfile.write("PROMPT END", thislog)
+	return thislog
+
+
+def callTellMeOpenAI(api_key, model, prompt):
+	mndbg.dbgp("tellme: calling OpenAI model '%s'" % model)
+	client = OpenAI(api_key=api_key, timeout=45.0, max_retries=2)
+	response = client.responses.create(
+		model=model,
+		input=prompt
+	)
+	request_id = getattr(response, "_request_id", "")
+	if request_id:
+		mndbg.dbgp("tellme: OpenAI request id: %s" % request_id)
+	output_text = getattr(response, "output_text", "")
+	if output_text:
+		return output_text, request_id
+	try:
+		return str(response.output[0].content[0].text), request_id
+	except Exception:
+		raise RuntimeError("OpenAI returned an empty or unexpected response payload")
+
+
+def _anthropic_extract_text(message):
+	parts = []
+	content = getattr(message, "content", [])
+	for item in content:
+		try:
+			item_type = getattr(item, "type", "")
+			if item_type == "text":
+				parts.append(getattr(item, "text", ""))
+		except Exception:
+			pass
+	return "\n".join([p for p in parts if p]).strip()
+
+
+def callTellMeAnthropic(api_key, model, prompt):
+	mndbg.dbgp("tellme: calling Anthropic model '%s'" % model)
+	client = Anthropic(api_key=api_key, timeout=45.0)
+	message = client.messages.create(
+		model=model,
+		max_tokens=1024,
+		messages=[
+			{
+				"role": "user",
+				"content": prompt
+			}
+		]
+	)
+	response_id = getattr(message, "id", "")
+	if response_id:
+		mndbg.dbgp("tellme: Anthropic response id: %s" % response_id)
+	text = _anthropic_extract_text(message)
+	if text:
+		return text, response_id
+	raise RuntimeError("Anthropic returned an empty or unexpected response payload")
 
 
 def _ord(x):
@@ -4392,7 +5315,7 @@ class MnConfig:
 					if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 						thisparam, thisvalue = thisLine.split("=", 1)
 						thisparam = thisparam.strip().lower()
-						thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
+						thisvalue = thisvalue.strip().replace("\n", "").replace("\r", "")
 						_config_file_cache[thisparam] = thisvalue
 
 						mndbg.dbgp("Added parameter %s with value %s to _config_file_cache %s" % (thisparam, thisvalue, _config_file_cache))
@@ -4441,7 +5364,7 @@ class MnConfig:
 						if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 							thisparam, thisvalue = thisLine.split("=", 1)
 							thisparam = thisparam.strip().lower()
-							thisvalue = thisvalue.strip().lower().replace("\n", "").replace("\r", "")
+							thisvalue = thisvalue.strip().replace("\n", "").replace("\r", "")
 
 							if thisparam not in _config_file_cache:
 								_config_file_cache[thisparam] = thisvalue
@@ -20948,6 +21871,227 @@ def procInfo(args):
 		dbg.logLines(output)
 	dbg.log("")
 
+# ----- tellme: Ask an AI engine to analyze the current debugger state ----- #
+def procTellMe(args):
+	mndbg.dbgp("tellme: command invoked with args %s" % str(args))
+
+	if not mndbg.isWinDBG():
+		dbg.log("The 'tellme' command is only available under WinDBG", highlight=1)
+		return
+
+	available_engines = getAvailableAIEngines()
+	mndbg.dbgp("tellme: available AI engines: %s" % ", ".join(available_engines))
+	if len(available_engines) == 0:
+		dbg.log("No supported AI engine is available. Install the 'openai' or 'anthropic' Python library first.", highlight=1)
+		return
+
+	engine = args.get("ai", "").strip().lower()
+	if engine == "":
+		engine = available_engines[0]
+		dbg.log("[+] No -ai value specified, defaulting to '%s'" % engine)
+
+	if engine not in ["openai", "anthropic"]:
+		dbg.log("Invalid AI engine '%s'. Valid values: openai, anthropic" % engine, highlight=1)
+		return
+
+	if engine not in available_engines:
+		dbg.log("The '%s' engine is not available in this Python environment. Available: %s" % (
+			engine, ", ".join(available_engines)
+		), highlight=1)
+		return
+
+	if "q" not in args:
+		dbg.log("Please select a question profile with -q", highlight=1)
+		dbg.log("")
+		dbg.log("Available questions:")
+		dbg.log("    -q 1 : analyse the crash context")
+		dbg.log("    -q 2 : analyse the current function")
+		dbg.log("    -q 9 : use a request template from -f <file>")
+		return
+
+	question_type = str(args.get("q", "")).strip()
+	mndbg.dbgp("tellme: selected question type '%s'" % question_type)
+	dryrun = ("dryrun" in args)
+	testmode = ("test" in args)
+	mndbg.dbgp("tellme: dryrun=%s, testmode=%s" % (str(dryrun), str(testmode)))
+	target_address = 0
+	target_address_source = PROGRAM_COUNTER.upper()
+
+	if mnproc is None:
+		mndbg.dbgp("tellme: initializing shared process context")
+		MnProc.ensure()
+	if mnproc is None:
+		dbg.log("Unable to initialize process context for tellme", highlight=1)
+		return
+
+	if "a" in args:
+		target_address, addyok = getAddyArg(args["a"])
+		if not addyok:
+			dbg.log("Please specify a valid address/register/module/module!function/symbol expression with -a", highlight=1)
+			return
+		target_address_source = "-a"
+		mndbg.dbgp("tellme: using target address override %s from -a" % (PTR_PRINT % target_address))
+
+	template_file = ""
+	if question_type == "9":
+		if "f" not in args or type(args["f"]).__name__.lower() == "bool":
+			dbg.log("Question profile '-q 9' requires -f <file>", highlight=1)
+			return
+		template_file = getAbsolutePath(str(args["f"]).replace('"', "").replace("'", ""))
+		if not os.path.isfile(template_file):
+			dbg.log("Unable to find/read template file %s" % template_file, highlight=1)
+			return
+		mndbg.dbgp("tellme: using template file %s for q9" % template_file)
+
+	mona_config = MnConfig()
+	api_key, model = getTellMeModelAndKey(engine, mona_config)
+	mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (engine, model))
+
+	if testmode:
+		test_model = getTellMeTestModel(engine)
+		if test_model != "":
+			model = test_model
+			dbg.log("[+] Test mode enabled, overriding model to '%s'" % model)
+			mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (model, engine))
+
+	if api_key == "":
+		dbg.log("    Missing API key '%s.key'" % engine, highlight=1)
+		dbg.log("    To configure API access, do the following:")
+		dbg.log("    1. Create or retrieve an API key for your chosen provider")
+		dbg.log("    2. Store it in mona's config file, or set the matching environment variable")
+		dbg.log("    3. Optionally configure the model name")
+		dbg.log("")
+		dbg.log("    OpenAI:")
+		dbg.log("      %s config -set openai.key <your OpenAI API key>" % getAliasName())
+		dbg.log("      %s config -set openai.model gpt-5.2" % getAliasName())
+		dbg.log("      or (globally):")
+		dbg.log("      set OPENAI_API_KEY=<your OpenAI API key>")
+		dbg.log("      set OPENAI_MODEL=gpt-5.2")
+		dbg.log("")
+		dbg.log("    Anthropic:")
+		dbg.log("      %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
+		dbg.log("      %s config -set anthropic.model claude-opus-4-6" % getAliasName())
+		dbg.log("      or (globally):")
+		dbg.log("      set ANTHROPIC_API_KEY=<your Anthropic API key>")
+		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-6")
+		dbg.log("")
+		dbg.log("    mona.ini values take precedence over environment variables")
+		dbg.log("")
+		dbg.log("    Then run:")
+		dbg.log("      %s tellme -ai %s -q %s" % (getAliasName(), engine, question_type))
+		dbg.log("")
+		dbg.log("    Run '%s help tellme' to see the full usage text" % getAliasName())
+		return
+
+	if model == "":
+		dbg.log("Missing config value '%s.model'. Set it with '%s config -set %s.model <model>'" % (
+			engine, getAliasName(), engine
+		), highlight=1)
+		return
+
+	try:
+		context = collectTellMeContext(question_type)
+	except Exception as e:
+		dbg.log("Failed to collect debugger context: %s" % str(e), highlight=1)
+		mndbg.dbgp("tellme: context collection failed:\n%s" % traceback.format_exc(), errormode=False)
+		return
+
+	if question_type == "2":
+		if target_address == 0:
+			regs = getAllRegisters()
+			target_address = regs.get(PROGRAM_COUNTER, 0)
+		context["analysis_target"] = {
+			"address": PTR_PRINT % target_address if isinstance(target_address, int) and target_address > 0 else "",
+			"source": target_address_source
+		}
+		has_instr, instr_reason = tellMeHasCurrentInstruction(target_address)
+		mndbg.dbgp("tellme: q2 current-instruction check: %s (%s)" % (str(has_instr), instr_reason))
+		if not has_instr:
+			dbg.log("Cannot use '-q 2' because there is no valid current instruction at %s" % target_address_source, highlight=1)
+			dbg.log("    Reason: %s" % instr_reason, highlight=1)
+			dbg.log("    This usually means there is no reliable current function to analyse.", highlight=1)
+			dbg.log("    Try '-q 1' instead, or provide a valid code address with -a to analyse.", highlight=1)
+			return
+		try:
+			context["current_function"] = collectTellMeCurrentFunctionContext(target_address)
+		except Exception as e:
+			context["current_function_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
+
+	try:
+		if question_type == "9":
+			prompt = buildTellMePromptFromTemplateFile(template_file)
+		else:
+			prompt = buildTellMePrompt(question_type, context)
+	except Exception as e:
+		dbg.log("Failed to build the prompt for question type '%s': %s" % (question_type, str(e)), highlight=1)
+		mndbg.dbgp("tellme: prompt generation failed:\n%s" % traceback.format_exc(), errormode=False)
+		return
+
+	mndbg.dbgp("tellme: prompt length is %d bytes" % len(prompt))
+
+	if dryrun:
+		dryrun_logfile = writeTellMeDryRunLog(
+			engine,
+			model,
+			question_type,
+			prompt,
+			template_file=template_file,
+			target_address=target_address,
+			target_address_source=target_address_source
+		)
+		dbg.log("[+] Dry run requested. No API request will be made.")
+		dbg.log("    Engine : %s" % engine)
+		dbg.log("    Model  : %s" % model)
+		dbg.log("    Q Type : %s" % question_type)
+		if template_file != "":
+			dbg.log("    File   : %s" % template_file)
+		if target_address_source == "-a":
+			dbg.log("    Target : %s (%s)" % (PTR_PRINT % target_address, target_address_source))
+		dbg.log("")
+		dbg.log("[+] Prompt that would be sent:")
+		for line in prompt.splitlines():
+			dbg.log("    %s" % line)
+		dbg.log("")
+		dbg.log("    Saved to %s" % dryrun_logfile)
+		return
+
+	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
+
+	try:
+		if engine == "openai":
+			answer, request_id = callTellMeOpenAI(api_key, model, prompt)
+		else:
+			answer, request_id = callTellMeAnthropic(api_key, model, prompt)
+	except Exception as e:
+		mndbg.dbgp("tellme: provider call failed:\n%s" % traceback.format_exc(), errormode=False)
+		logTellMeProviderError(engine, e)
+		return
+
+	if request_id:
+		dbg.log("    Request id: %s" % request_id)
+	ai_response_lines = formatTellMeResponseLines(answer)
+	logfile_path = writeTellMeResponseLog(
+		engine,
+		model,
+		question_type,
+		request_id,
+		prompt,
+		ai_response_lines,
+		template_file=template_file,
+		target_address=target_address,
+		target_address_source=target_address_source
+	)
+	dbg.log("")
+	dbg.log("[+] AI response:")
+	for line in ai_response_lines:
+		dbg.log("    %s" % line)
+	if answer.strip() == "":
+		dbg.log("    <empty response>")
+	else:
+		dbg.log("")
+		dbg.log("    Saved to %s" % logfile_path)
+
 # ----- dump: Dump some memory to a file ----- #
 def procDump(args):
 	
@@ -28939,6 +30083,75 @@ Optional arguments:
     -d <number>  : Minimum age of the log file to delete (default: 30). Set to -d 0 to do a full cleanup
     -stat        : Show matching files and age/size statistics without deleting anything""" % launchcmd
 
+	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
+
+This command is only available:
+    - under WinDBG
+    - when at least one supported AI Python SDK is installed
+
+Supported engines:
+    - openai
+    - anthropic
+
+Configuration:
+    Choose one of these approaches:
+
+    1. Store settings in mona.ini:
+    %s config -set openai.key <your OpenAI API key>
+    %s config -set openai.model gpt-5.2
+    %s config -set anthropic.key <your Anthropic API key>
+    %s config -set anthropic.model claude-opus-4-6
+
+    2. Or use environment variables instead:
+    - OPENAI_API_KEY
+    - OPENAI_MODEL
+    - ANTHROPIC_API_KEY
+    - ANTHROPIC_MODEL
+
+Precedence:
+    If both are present, mona.ini values take precedence over environment variables
+
+	Arguments:
+	    -ai <engine> : AI engine to use. If omitted, mona uses the first available engine
+	    -q <number>  : Required. Prompt profile to use:
+	                   1 = analyse the crash context
+	                   2 = analyse the current function
+	                   9 = load a request template from -f <file>
+	    -a <address> : Optional code address/register/module!symbol/expression to analyse.
+	                   Primarily useful with -q 2 when EIP/RIP is already corrupted
+	    -f <file>    : Required for -q 9. Template file whose placeholders become named request variables
+	    -dryrun      : Build and display the full prompt/context, but do not call the API
+	    -test        : Override the configured model with a lower-cost test model
+
+	Examples:
+	    %s tellme -ai openai -q 1
+	    %s tellme -ai anthropic -q 2
+	    %s tellme -ai openai -q 2 -a kernel32!CreateFileW
+	    %s tellme -ai openai -q 2 -a eip
+	    %s tellme -ai openai -q 9 -f request.txt
+	    %s tellme -ai openai -q 1 -dryrun
+	    %s tellme -ai openai -q 1 -test
+
+	Template placeholders for -q 9:
+	    [regs]     = current registers and values
+	    [stack]    = current stack contents near the stack pointer
+	    [heap]     = all heaps and their segments
+	    [segments] = all heaps and their segments
+	    [chunks]   = all chunks and virtual-allocated blocks in the process
+	    [modules]  = all loaded modules with mitigation properties
+	    [pattern]  = cyclic pattern of 20280 bytes
+
+	For -q 9, placeholders are not pasted inline anymore.
+	They are converted into named variables such as {{regs}} and {{stack}},
+	and the final request sent to the AI contains:
+	    - the template text with those variable references
+	    - a separate variables object with the expanded values
+
+	Test model overrides:
+	    - OpenAI   : gpt-5.4-nano
+	    - Anthropic: claude-3-haiku-20240307
+		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
+
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
@@ -29002,6 +30215,8 @@ Optional arguments:
 		commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc",[32,64])
 		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
 		commands["sym"]				= MnCommand("sym","Manage symbols: list status or clean cache", symUsage, procSym,"",[32,64])
+		if len(getAvailableAIEngines()) > 0:
+			commands["tellme"]		= MnCommand("tellme","Ask an AI engine to analyze the current WinDBG context",tellmeUsage,procTellMe,"tm",[32,64])
 	return
 
 #
@@ -29208,167 +30423,176 @@ def main(args):
 		if (__DEBUGGERAPP__ == "WinDBG"):
 			dbglib.set_debug_mode(False)
 
-	try:
-		starttime = datetime.datetime.now()
+		try:
+			starttime = datetime.datetime.now()
 
-		thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
-		thisversion = thisversion.replace("'","")
-		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (mndbg.get_current_datetime(),thisversion,thisrevision, arch))
-		dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
-		if mndbg.isWinDBG():
-			pykdver = dbg.getPyKDVersionNr()
-			keystonever = ""
-			if g_keystone_loaded:
-				keystonever = keystone.__version__
-			else:
-				keystonever = "<b>not loaded</b>"
-			libversions = "%s (%sbit) | PyKD: %s | Keystone-engine: %s" % (g_windbg_pretty_name, arch, pykdver, keystonever)
-			dbg.log("[ -- START -- ] %s" % libversions)
-		dbg.log("")
-
-		g_ptr_counter = 0
-
-		# fill up the commands dict
-		populateCommands(args)
-
-		mndbg.dbgp("Initialized %d commands" % len(commands))
-		
-		# get the options
-		command = ""
-		argcopy = copy.copy(args)
-		justargs = ""
-		if len(argcopy) > 1:
-			justargs = " ".join(a for a in argcopy[1:])
-
-		aline = " ".join(a for a in argcopy)
-
-		aliasname = ""
-		if mndbg.isWinDBG():
-			aliasname = getAliasName()
-			dbg.log("[+] Command used: <b>%s %s</b>" % (aliasname, justargs))		
-			if aline != "":
-				dbg.log("    >>>> %s" % (aline))
-		else:
-			scriptname = "mona"
-			aline = ("%s " % getAliasName()) + aline
-			dbg.log("[+] Command used: %s" % aline)
-
-		if DEBUG_MODE:
-			dbg.log("[+] Debug mode on")
-
-		# in case we're not using Immunity
-		if "-showargs" in args:
-			dbg.log("-" * 50)
-			dbg.log("args: %s" % args)
-
-		command, monaArgs = _parse_mona_args_with_argparse(args)
-
-		if "-showargs" in args:
-			dbg.log("command: %s" % command)
-			dbg.log("monaArgs: %s" % monaArgs)
-			dbg.log("-" * 50)
-
-		mndbg.dbgp("Command: %s" % command)
-		mndbg.dbgp("Architecture: %s" % arch)
-		mndbg.dbgp("monaArgs: %s" % monaArgs)
-
-		# ----- execute the chosen command ----- #
-		mndbg.dbgp("You're trying to run command '%s'" % command)
-		mndbg.dbgp("Args: %s" % monaArgs)
-
-		# special case - if you are invoking a real command
-		# but specified -h
-		# then I need to run 'help' on that command
-		if "h" in monaArgs:
-			if monaArgs["h"] == True:
-				# move the actual command to "?"
-				monaArgs["?"] = command
-				command = "help"
-
-		dbg.log("")
-
-		if command == "banner":
-			dbg.logLines(getBanner(),highlight=1)
-			dbg.log()
-			return
-
-		# make a list of all supported commands and aliases
-		acceptedcommands = {}
-		acceptedaliases = {}
-		for monacommand in commands:
-			maincmd = commands[monacommand].name
-			aliascmd = commands[monacommand].alias
-			acceptedcommands[maincmd] = commands[monacommand]
-			acceptedaliases[aliascmd] = commands[monacommand]
-
-		invokingCommand = None
-
-		scriptname = get_script_name()
-		launchcmd = "!" + scriptname		
-		if mndbg.isWinDBG():
-			launchcmd = aliasname
-
-		if command == "" or command == "-h":
-			command = "help"
-		
-
-		# is user trying to run a valid command or alias?
-		if command in acceptedcommands or command in acceptedaliases:
-			# good. is it accepted on this architecture?
-			arch_compatible = False
-			if command in acceptedcommands:
-				if arch in acceptedcommands[command].supportedarchs:
-					arch_compatible = True
-					invokingCommand = acceptedcommands[command]
-			if command in acceptedaliases:
-				if arch in acceptedaliases[command].supportedarchs:
-					arch_compatible = True
-					invokingCommand = acceptedaliases[command]
-
-			if not arch_compatible:
-				dbg.log("*** Sorry, command '%s' is not supported in %sbit ***" % (command, str(arch)), highlight = 1)
-			else:
-				# 'help' is a special case
-				if invokingCommand.name == "help":
-					if "?" in monaArgs:
-						help_for_command = monaArgs["?"]
-						helpForCommand = None
-						mndbg.dbgp("You're asking for help on using the '%s' command" % help_for_command)
-						if help_for_command in acceptedcommands:
-							helpForCommand = acceptedcommands[help_for_command]
-						elif help_for_command in acceptedaliases:
-							helpForCommand = acceptedaliases[help_for_command]
-						invokingCommand.parseProc(monaArgs, helpForCommand )	
-					else:
-						invokingCommand.parseProc(monaArgs)	
+			thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
+			thisversion = thisversion.replace("'","")
+			dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (mndbg.get_current_datetime(),thisversion,thisrevision, arch))
+			dbg.log("[ -- START -- ] %s (%sbit)" % (g_windbg_pretty_name, arch))
+			dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
+			if mndbg.isWinDBG():
+				pykdver = dbg.getPyKDVersionNr()
+				keystonever = ""
+				openaiver = "<b>not loaded</b>"
+				anthropicver = "<b>not loaded</b>"
+				if g_keystone_loaded:
+					keystonever = keystone.__version__
 				else:
-					invokingCommand.parseProc(monaArgs)
-		else:
-			dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
+					keystonever = "<b>not loaded</b>"
+				if g_openai_loaded and openai_sdk is not None:
+					openaiver = getattr(openai_sdk, "__version__", "loaded")
+				if g_anthropic_loaded and anthropic_sdk is not None:
+					anthropicver = getattr(anthropic_sdk, "__version__", "loaded")
+				libversions = "PyKD: %s | Keystone-engine: %s | OpenAI: %s | Anthropic: %s" % (
+					pykdver, keystonever, openaiver, anthropicver
+				)
+				dbg.log("[ -- START -- ] %s" % libversions)
 			dbg.log("")
-			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (getAliasName(), str(arch)), highlight=True)
 
-		
-		# ----- report ----- #
-		endtime = datetime.datetime.now()
-		delta = endtime - starttime
-		dbg.log("")
-		if mndbg.isWinDBG():
-			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-		else:
-			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-		if yesno():
-			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
-		dbg.setStatusBar("Done")
-		if DEBUG_MODE and mndbg.isWinDBG():
-			dbg.nativeCommand(".logclose")
+			g_ptr_counter = 0
+
+			# fill up the commands dict
+			populateCommands(args)
+
+			mndbg.dbgp("Initialized %d commands" % len(commands))
+			
+			# get the options
+			command = ""
+			argcopy = copy.copy(args)
+			justargs = ""
+			if len(argcopy) > 1:
+				justargs = " ".join(a for a in argcopy[1:])
+
+			aline = " ".join(a for a in argcopy)
+
+			aliasname = ""
+			if mndbg.isWinDBG():
+				aliasname = getAliasName()
+				dbg.log("[+] Command used: <b>%s %s</b>" % (aliasname, justargs))		
+				if aline != "":
+					dbg.log("    >>>> %s" % (aline))
+			else:
+				scriptname = "mona"
+				aline = ("%s " % getAliasName()) + aline
+				dbg.log("[+] Command used: %s" % aline)
+
+			if DEBUG_MODE:
+				dbg.log("[+] Debug mode on")
+
+			# in case we're not using Immunity
+			if "-showargs" in args:
+				dbg.log("-" * 50)
+				dbg.log("args: %s" % args)
+
+			command, monaArgs = _parse_mona_args_with_argparse(args)
+
+			if "-showargs" in args:
+				dbg.log("command: %s" % command)
+				dbg.log("monaArgs: %s" % monaArgs)
+				dbg.log("-" * 50)
+
+			mndbg.dbgp("Command: %s" % command)
+			mndbg.dbgp("Architecture: %s" % arch)
+			mndbg.dbgp("monaArgs: %s" % monaArgs)
+
+			# ----- execute the chosen command ----- #
+			mndbg.dbgp("You're trying to run command '%s'" % command)
+			mndbg.dbgp("Args: %s" % monaArgs)
+
+			# special case - if you are invoking a real command
+			# but specified -h
+			# then I need to run 'help' on that command
+			if "h" in monaArgs:
+				if monaArgs["h"] == True:
+					# move the actual command to "?"
+					monaArgs["?"] = command
+					command = "help"
+
 			dbg.log("")
-			dbg.getNativeCommandStatistics(minval=2)
-	except:
-		dbg.log("*" * 80,highlight=True)
-		dbg.logLines(traceback.format_exc(),highlight=True)
-		dbg.log("*" * 80,highlight=True)
-		dbg.error(traceback.format_exc())
+
+			if command == "banner":
+				dbg.logLines(getBanner(),highlight=1)
+				dbg.log()
+				return
+
+			# make a list of all supported commands and aliases
+			acceptedcommands = {}
+			acceptedaliases = {}
+			for monacommand in commands:
+				maincmd = commands[monacommand].name
+				aliascmd = commands[monacommand].alias
+				acceptedcommands[maincmd] = commands[monacommand]
+				acceptedaliases[aliascmd] = commands[monacommand]
+
+			invokingCommand = None
+
+			scriptname = get_script_name()
+			launchcmd = "!" + scriptname		
+			if mndbg.isWinDBG():
+				launchcmd = aliasname
+
+			if command == "" or command == "-h":
+				command = "help"
+			
+
+			# is user trying to run a valid command or alias?
+			if command in acceptedcommands or command in acceptedaliases:
+				# good. is it accepted on this architecture?
+				arch_compatible = False
+				if command in acceptedcommands:
+					if arch in acceptedcommands[command].supportedarchs:
+						arch_compatible = True
+						invokingCommand = acceptedcommands[command]
+				if command in acceptedaliases:
+					if arch in acceptedaliases[command].supportedarchs:
+						arch_compatible = True
+						invokingCommand = acceptedaliases[command]
+
+				if not arch_compatible:
+					dbg.log("*** Sorry, command '%s' is not supported in %sbit ***" % (command, str(arch)), highlight = 1)
+				else:
+					# 'help' is a special case
+					if invokingCommand.name == "help":
+						if "?" in monaArgs:
+							help_for_command = monaArgs["?"]
+							helpForCommand = None
+							mndbg.dbgp("You're asking for help on using the '%s' command" % help_for_command)
+							if help_for_command in acceptedcommands:
+								helpForCommand = acceptedcommands[help_for_command]
+							elif help_for_command in acceptedaliases:
+								helpForCommand = acceptedaliases[help_for_command]
+							invokingCommand.parseProc(monaArgs, helpForCommand )	
+						else:
+							invokingCommand.parseProc(monaArgs)	
+					else:
+						invokingCommand.parseProc(monaArgs)
+			else:
+				dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
+				dbg.log("")
+				dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (getAliasName(), str(arch)), highlight=True)
+
+			
+			# ----- report ----- #
+			endtime = datetime.datetime.now()
+			delta = endtime - starttime
+			dbg.log("")
+			if mndbg.isWinDBG():
+				dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+			else:
+				dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+			if yesno():
+				dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
+			dbg.setStatusBar("Done")
+			if DEBUG_MODE and mndbg.isWinDBG():
+				dbg.nativeCommand(".logclose")
+				dbg.log("")
+				dbg.getNativeCommandStatistics(minval=2)
+		except:
+			dbg.log("*" * 80,highlight=True)
+			dbg.logLines(traceback.format_exc(),highlight=True)
+			dbg.log("*" * 80,highlight=True)
+			dbg.error(traceback.format_exc())
 	return ""
 
 
@@ -29394,7 +30618,8 @@ if __name__ == "__main__":
 	# clear memory
 	if mndbg.isWinDBG():
 		dbglib.clearvars()
-		dbg.log("All done.")
+		dbg.log("")
+		dbg.log("[+] All done.")
 	try:
 		resetGlobals()
 		dbg = None
