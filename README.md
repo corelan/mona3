@@ -572,15 +572,17 @@ py -3.14 -m pip install anthropic
 
 Once the library is installed, configure the API key either with environment variables or via the `mona` config. You can also optionally set a default model.
 
+The default request timeout is `60` seconds. You only need to set an engine-specific timeout when you want a different default for that provider, or override a single request with `-timeout`.
+
 Examples using `mona` config:
 
 ```python
 !mona config -set openai.key <your OpenAI API key>
 !mona config -set openai.model gpt-5.4
-!mona config -set openai.timeout 90
+!mona config -set openai.timeout 60
 !mona config -set anthropic.key <your Anthropic API key>
 !mona config -set anthropic.model claude-opus-4-20250514
-!mona config -set anthropic.timeout 90
+!mona config -set anthropic.timeout 60
 ```
 
 Examples using environment variables:
@@ -588,13 +590,15 @@ Examples using environment variables:
 ```batch
 set OPENAI_API_KEY=<your OpenAI API key>
 set OPENAI_MODEL=gpt-5.4
-set OPENAI_TIMEOUT=90
+set OPENAI_TIMEOUT=60
 set ANTHROPIC_API_KEY=<your Anthropic API key>
 set ANTHROPIC_MODEL=claude-opus-4-20250514
-set ANTHROPIC_TIMEOUT=90
+set ANTHROPIC_TIMEOUT=60
 ```
 
 If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model or timeout for a single request with `-model` and `-timeout`.
+
+If you use `-dryrun`, `tellme` will build the full request and save it to a file without calling the API. You can then open that file and paste the request into a browser-based AI session such as ChatGPT, Grok, or a similar tool.
 
 Example usage:
 
@@ -602,6 +606,7 @@ Example usage:
 !mona tellme -ai openai -q 1
 !mona tellme -ai anthropic -q 2
 !mona tellme -ai openai -q 1 -timeout 120
+!mona tellme -ai openai -q 1 -dryrun
 ```
 
 
