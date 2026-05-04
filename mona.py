@@ -1909,6 +1909,7 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		context["stack_page"] = _tellme_get_page_summary(sp)
 		context["stack_memory"] = _tellme_read_memory(sp, 0x100, "stack_memory")
 
+	context["ntglobal_flag"] = _tellme_get_ntglobalflag_summary()
 	context["call_stack"] = _tellme_get_call_stack("kb")
 	if additional_context_files is None:
 		additional_context_files = []
@@ -2306,6 +2307,33 @@ def _tellme_render_modules_text():
 	return "\n".join(lines)
 
 
+def _tellme_get_ntglobalflag_summary():
+	info = OrderedDict()
+	try:
+		if mnproc is None:
+			return {"error": "Unable to resolve current process context"}
+		peb = mnproc.getPEB()
+		current_flag = peb.getNtGlobalFlag()
+		flag_values = peb.getNtGlobalFlagValues(current_flag)
+		info["value"] = "0x%08x" % current_flag
+		info["flags"] = []
+		for flag_value in flag_values:
+			short_name, description = peb.getNtGlobalFlagValueData(flag_value)
+			info["flags"].append(OrderedDict([
+				("value", "0x%08x" % flag_value),
+				("short_name", short_name),
+				("description", description),
+				("display", peb.getNtGlobalFlagValueName(flag_value))
+			]))
+		if len(info["flags"]) == 0:
+			info["summary"] = "No GFlags set"
+		else:
+			info["summary"] = ", ".join([entry["display"] for entry in info["flags"]])
+	except Exception as e:
+		info["error"] = str(e)
+	return info
+
+
 def _tellme_build_request_variables(context):
 	variables = OrderedDict()
 	preferred_keys = [
@@ -2324,6 +2352,7 @@ def _tellme_build_request_variables(context):
 		"pc_memory",
 		"stack_page",
 		"stack_memory",
+		"ntglobal_flag",
 		"call_stack",
 		"instruction_heap_references",
 		"heapdynamics",
