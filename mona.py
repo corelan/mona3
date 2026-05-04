@@ -1428,6 +1428,7 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 	info["instruction"] = ""
 	info["referenced_registers"] = []
 	info["file"] = ""
+	info["file_contents"] = ""
 	info["matched_registers"] = []
 	info["matched_entries"] = []
 
@@ -1485,6 +1486,7 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 		mndbg.dbgp("tellme: unable to read heapdynamics file %s: %s" % (file_path, str(e)), errormode=False)
 		return info
 
+	info["file_contents"] = file_contents
 	file_contents_lower = file_contents.lower()
 	file_lines = file_contents.splitlines()
 	matched_registers = []
@@ -1545,6 +1547,17 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 		info["matched_entries"].append(entry)
 
 	return info
+
+
+def _tellme_build_heapdynamics_mini(heapdynamics):
+	mini_contexts = []
+	for info in heapdynamics:
+		mini = OrderedDict()
+		for key in ["instruction", "referenced_registers", "file", "matched_registers", "matched_entries"]:
+			if key in info:
+				mini[key] = info[key]
+		mini_contexts.append(mini)
+	return mini_contexts
 
 
 def _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files=None):
@@ -1619,6 +1632,7 @@ def collectTellMeContext(question_type="", heapdynamics_files=None):
 			heapdynamics = _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files)
 			if len(heapdynamics) > 0:
 				context["heapdynamics"] = heapdynamics
+				context["heapdynamics_mini"] = _tellme_build_heapdynamics_mini(heapdynamics)
 		except Exception as e:
 			context["heapdynamics_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
@@ -1635,26 +1649,26 @@ def collectTellMeContext(question_type="", heapdynamics_files=None):
 
 def buildTellMePrompt(question_type, context):
 	mndbg.dbgp("tellme: building prompt for question type '%s'" % question_type)
-	base_context = json.dumps(context, indent=2, sort_keys=False)
+	request_variables = _tellme_build_request_variables(context)
 
 	if question_type == "1":
 		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on crash triage and immediate exploit-relevant observations.
-Refer to all context components provided in the request. If a component is present but not useful, say briefly why instead of ignoring it.
+Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
 Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
 Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
 If a cyclic pattern appears anywhere in registers, stack, or nearby memory, point it out and explain why it looks like a cyclic pattern. If you can only infer it probabilistically, say so clearly.
 Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, or heap metadata corruption.
 Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
 Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
-Saved return pointers collected from alloc/free log entries indicate where the corresponding allocation or free operation was made from. Use heapdynamics matched entries, their saved return pointers, symbol names, backward disassembly, full instruction windows, and the other supplied heap/register/memory context together to investigate the issue more deeply.
+Saved return pointers collected from alloc/free log entries indicate where the corresponding allocation or free operation was made from. Use heapdynamics_mini for the focused matches tied to the faulting instruction, and use heapdynamics when you need broader file-wide context. Combine those entries, their saved return pointers, symbol names, backward disassembly, full instruction windows, and the other supplied heap/register/memory context to investigate the issue more deeply.
 Explain what the likely exploitation steps would be from this state, and how likely the vulnerability appears to be exploitable in practice based on the available evidence.
 If control appears partial or uncertain, say so explicitly.
 Keep the answer practical and precise."""
 	elif question_type == "2":
 		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on the current function and the current instruction context.
-Refer to all context components provided in the request. If a component is present but not useful, say briefly why instead of ignoring it.
+Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
 Use the supplied symbol information, nearby disassembly, call stack, module information, and current registers to explain what function or code region we appear to be in, what the current instruction is doing, and what likely happened immediately before reaching it.
 If symbol information is missing or ambiguous, say so clearly and fall back to describing the code region and instruction window instead of inventing a function name.
 Be specific, but do not invent facts that are not present in the snapshot."""
@@ -1663,7 +1677,8 @@ Be specific, but do not invent facts that are not present in the snapshot."""
 	else:
 		raise ValueError("Unsupported question type '%s'. Customize buildTellMePrompt() to add more profiles." % question_type)
 
-	return instructions + "\n\nDebugger context:\n" + base_context
+	request_payload = _tellme_build_request_payload("profile", question_type, request_variables)
+	return instructions + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
 
 
 def getTellMeModelAndKey(engine, mona_config):
@@ -1702,7 +1717,7 @@ def getTellMeModelAndKey(engine, mona_config):
 
 def getTellMeTimeout(engine, mona_config, args=None):
 	timeout_name = "%s.timeout" % engine
-	timeout = 45.0
+	timeout = 60.0
 	timeout_source = "default"
 	timeout_raw = mona_config.get(timeout_name).strip()
 	if timeout_raw != "":
@@ -2013,11 +2028,56 @@ def _tellme_render_modules_text():
 	return "\n".join(lines)
 
 
+def _tellme_build_request_variables(context):
+	variables = OrderedDict()
+	preferred_keys = [
+		"debugger",
+		"debugger_flavor",
+		"architecture",
+		"pointer_size",
+		"python_version",
+		"timestamp",
+		"registers",
+		"program_counter",
+		"stack_pointer",
+		"pc_disasm",
+		"pc_page",
+		"pc_module",
+		"pc_memory",
+		"stack_page",
+		"stack_memory",
+		"call_stack",
+		"instruction_heap_references",
+		"heapdynamics",
+		"analysis_target",
+		"current_function",
+	]
+	for key in preferred_keys:
+		if key in context:
+			variables[key] = context[key]
+	for key in context:
+		if key not in variables:
+			variables[key] = context[key]
+	return variables
+
+
+def _tellme_build_request_payload(mode, question_type, variables, template_text="", template_file=""):
+	request_payload = OrderedDict()
+	request_payload["mode"] = mode
+	request_payload["question_type"] = question_type
+	if template_file != "":
+		request_payload["template_file"] = template_file
+	if template_text != "":
+		request_payload["template"] = template_text
+	request_payload["variables"] = variables
+	return request_payload
+
+
 def _tellme_template_var_ref(var_name):
 	return "{{%s}}" % var_name
 
 
-def buildTellMePromptFromTemplateFile(template_path):
+def buildTellMePromptFromTemplateFile(template_path, context, question_type="9"):
 	mndbg.dbgp("tellme: building prompt from template file %s" % template_path)
 	try:
 		with open(template_path, "rb") as fh:
@@ -2025,39 +2085,38 @@ def buildTellMePromptFromTemplateFile(template_path):
 	except Exception as e:
 		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
 
-	placeholder_builders = OrderedDict([
-		("regs", _tellme_render_registers_text),
-		("stack", _tellme_render_stack_text),
-		("heap", lambda: _tellme_render_layout_categories_text(set(["Heap", "Segment"]), include_chunks=False)),
-		("segments", lambda: _tellme_render_layout_categories_text(set(["Heap", "Segment"]), include_chunks=False)),
-		("chunks", lambda: _tellme_render_layout_categories_text(set(["Chunk", "VADBlock"]), include_chunks=True)),
-		("modules", _tellme_render_modules_text),
-	])
-
+	available_variables = _tellme_build_request_variables(context)
 	used_variables = OrderedDict()
 	found_placeholders = re.findall(r"\[([A-Za-z0-9_]+)\]", template_text)
 	for placeholder_name in found_placeholders:
 		var_name = placeholder_name.lower()
-		if var_name not in placeholder_builders:
-			raise ValueError("Unknown template placeholder '[%s]'" % placeholder_name)
+		if var_name not in available_variables:
+			raise ValueError(
+				"Unknown template placeholder '[%s]'. Available variables: %s" % (
+					placeholder_name,
+					", ".join(available_variables.keys())
+				)
+			)
 		if var_name not in used_variables:
 			mndbg.dbgp("tellme: expanding template marker [%s]" % var_name)
-			used_variables[var_name] = placeholder_builders[var_name]()
+			used_variables[var_name] = available_variables[var_name]
 
 	for var_name in used_variables:
 		marker_re = re.compile(r"\[%s\]" % re.escape(var_name), re.IGNORECASE)
 		template_text = marker_re.sub(_tellme_template_var_ref(var_name), template_text)
 
-	request_payload = OrderedDict()
-	request_payload["mode"] = "template"
-	request_payload["template_file"] = template_path
-	request_payload["template"] = template_text
-	request_payload["variables"] = used_variables
+	request_payload = _tellme_build_request_payload(
+		"template",
+		question_type,
+		used_variables,
+		template_text=template_text,
+		template_file=template_path
+	)
 
 	return (
 		"You are analyzing a debugger request template from mona.py running under WinDBG.\n"
 		"Use the 'template' field as the user's request body.\n"
-		"References such as {{regs}} or {{stack}} refer to entries under 'variables'.\n"
+		"References such as {{registers}} or {{pc_disasm}} refer to entries under 'variables'.\n"
 		"Resolve those references using the provided variable values and answer the request without inventing missing data.\n\n"
 		"Template request JSON:\n%s" % json.dumps(request_payload, indent=2)
 	)
@@ -2123,7 +2182,7 @@ def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="",
 	)
 
 
-def callTellMeOpenAI(api_key, model, prompt, timeout_seconds=45.0):
+def callTellMeOpenAI(api_key, model, prompt, timeout_seconds=60.0):
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)
 	response = client.responses.create(
@@ -2155,7 +2214,7 @@ def _anthropic_extract_text(message):
 	return "\n".join([p for p in parts if p]).strip()
 
 
-def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=45.0):
+def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=60.0):
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = Anthropic(api_key=api_key, timeout=timeout_seconds)
 	message = client.messages.create(
@@ -22303,32 +22362,22 @@ def procTellMe(args):
 
 	available_engines = getAvailableAIEngines(reason="procTellMe", refresh=True)
 	mndbg.dbgp("tellme: available AI engines: %s" % ", ".join(available_engines))
-	if len(available_engines) == 0:
-		dbg.log("No supported AI engine is available. Install the 'openai' or 'anthropic' Python library first.", highlight=1)
-		dbg.log("    Python executable: %s" % sys.executable, highlight=1)
-		if sys.version_info[0] == 3 and sys.version_info[1] < 9:
-			if "may only be initialized once per interpreter process" in g_openai_import_error:
-				dbg.log("    Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
-					sys.version_info[0], sys.version_info[1]
-				), highlight=1)
-				dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.", highlight=1)
-				dbg.log("             On Windows 7 / Python 3.8, restarting WinDBG is the practical workaround.", highlight=1)
-		if g_openai_import_error != "":
-			dbg.log("    OpenAI import error: %s" % g_openai_import_error.splitlines()[-1], highlight=1)
-		if g_anthropic_import_error != "":
-			dbg.log("    Anthropic import error: %s" % g_anthropic_import_error.splitlines()[-1], highlight=1)
-		return
+	manual_only_mode = (len(available_engines) == 0)
 
 	engine = args.get("ai", "").strip().lower()
 	if engine == "":
-		engine = available_engines[0]
-		dbg.log("[+] No -ai value specified, defaulting to '%s'" % engine)
+		if manual_only_mode:
+			engine = "manual"
+			dbg.log("[+] No -ai value specified, defaulting to manual request generation")
+		else:
+			engine = available_engines[0]
+			dbg.log("[+] No -ai value specified, defaulting to '%s'" % engine)
 
-	if engine not in ["openai", "anthropic"]:
+	if engine not in ["openai", "anthropic", "manual"]:
 		dbg.log("Invalid AI engine '%s'. Valid values: openai, anthropic" % engine, highlight=1)
 		return
 
-	if engine not in available_engines:
+	if (not manual_only_mode) and engine not in available_engines:
 		dbg.log("The '%s' engine is not available in this Python environment. Available: %s" % (
 			engine, ", ".join(available_engines)
 		), highlight=1)
@@ -22401,7 +22450,7 @@ def procTellMe(args):
 			dbg.log("[+] Test mode enabled, overriding model to '%s'" % model)
 			mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (model, engine))
 
-	if api_key == "":
+	if api_key == "" and not dryrun and not manual_only_mode:
 		dbg.log("    Missing API key '%s.key'" % engine, highlight=1)
 		dbg.log("    To configure API access, do the following:")
 		dbg.log("    1. Create or retrieve an API key for your chosen provider")
@@ -22432,10 +22481,10 @@ def procTellMe(args):
 		dbg.log("    Then run:")
 		dbg.log("      %s tellme -ai %s -q %s" % (getAliasName(), engine, question_type))
 		dbg.log("")
-		dbg.log("    Run '%s help tellme' to see the full usage text" % getAliasName())
+		dbg.log("    Run '%s tellme -h' to see the full usage text" % getAliasName())
 		return
 
-	if model == "":
+	if model == "" and not dryrun and not manual_only_mode:
 		dbg.log("Missing config value '%s.model'. Set it with '%s config -set %s.model <model>'" % (
 			engine, getAliasName(), engine
 		), highlight=1)
@@ -22492,7 +22541,7 @@ def procTellMe(args):
 
 	try:
 		if question_type == "9":
-			prompt = buildTellMePromptFromTemplateFile(template_file)
+			prompt = buildTellMePromptFromTemplateFile(template_file, context, question_type=question_type)
 		else:
 			prompt = buildTellMePrompt(question_type, context)
 	except Exception as e:
@@ -22501,6 +22550,36 @@ def procTellMe(args):
 		return
 
 	mndbg.dbgp("tellme: prompt length is %d bytes" % len(prompt))
+
+	if manual_only_mode:
+		request_logfile_path = writeTellMeRequestLog(
+			engine,
+			model,
+			question_type,
+			prompt,
+			template_file=template_file,
+			target_address=target_address,
+			target_address_source=target_address_source
+		)
+		dbg.log("[+] No supported AI SDK is available in this Python environment.", highlight=1)
+		dbg.log("    Request saved to %s" % request_logfile_path)
+		dbg.log("    Python executable: %s" % sys.executable, highlight=1)
+		if sys.version_info[0] == 3 and sys.version_info[1] < 9:
+			if "may only be initialized once per interpreter process" in g_openai_import_error:
+				dbg.log("    Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
+					sys.version_info[0], sys.version_info[1]
+				), highlight=1)
+				dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.", highlight=1)
+				dbg.log("             On Windows 7 / Python 3.8, restarting WinDBG is the practical workaround.", highlight=1)
+		if g_openai_import_error != "":
+			dbg.log("    OpenAI import error: %s" % g_openai_import_error.splitlines()[-1], highlight=1)
+		if g_anthropic_import_error != "":
+			dbg.log("    Anthropic import error: %s" % g_anthropic_import_error.splitlines()[-1], highlight=1)
+		dbg.log("")
+		dbg.log("    Options:")
+		dbg.log("    1. Install the OpenAI or Anthropic Python SDK and use tellme with an API key.")
+		dbg.log("    2. Submit the saved request manually in ChatGPT, Grok, or another AI tool.")
+		return
 
 	if dryrun:
 		dryrun_logfile = writeTellMeDryRunLog(
@@ -22520,12 +22599,7 @@ def procTellMe(args):
 			dbg.log("    File   : %s" % template_file)
 		if target_address_source == "-a":
 			dbg.log("    Target : %s (%s)" % (PTR_PRINT % target_address, target_address_source))
-		dbg.log("")
-		dbg.log("[+] Prompt that would be sent:")
-		for line in prompt.splitlines():
-			dbg.log("    %s" % line)
-		dbg.log("")
-		dbg.log("    Saved to %s" % dryrun_logfile)
+		dbg.log("    Saved  : %s" % dryrun_logfile)
 		return
 
 	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
@@ -30634,14 +30708,15 @@ Default models:
     - Anthropic: claude-opus-4-20250514
 
 Default timeout:
-    - 45 seconds per request
+    - 60 seconds per request
 
 Common models:
     - OpenAI   : gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano
     - Anthropic: claude-opus-4-1-20250805, claude-opus-4-20250514, claude-sonnet-4-20250514, claude-3-5-haiku-20241022
 
 	Arguments:
-	    -ai <engine> : AI engine to use. If omitted, mona uses the first available engine
+	    -ai <engine> : AI engine to use. If omitted, mona uses the first available engine,
+	                   or manual request generation when no supported SDK is installed
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	    -q <number>  : Required. Prompt profile to use:
@@ -30652,10 +30727,10 @@ Common models:
 	                   Primarily useful with -q 2 when EIP/RIP is already corrupted
 	    -l <files>   : Optional comma-separated heapdynamics files, for example -l "file1,file2"
 	                   If omitted, tellme will look for c:\\alloc.txt
-	                   If a file contains at least one referenced register value, the full file
-	                   contents are added to the request as heapdynamics context in the order given
-	    -f <file>    : Required for -q 9. Template file whose placeholders become named request variables
-	    -dryrun      : Build and display the full prompt/context, but do not call the API
+	                   Full file contents are added under [heapdynamics], and focused matches
+	                   for addresses referenced by the current instruction are added under [heapdynamics_mini]
+	    -f <file>    : Required for -q 9. Template file whose [variable] placeholders resolve against the debugger context variables below
+	    -dryrun      : Build the request file, but do not call the API or print the full request on screen
 	    -test        : Override the configured model with a lower-cost test model
 
 	Examples:
@@ -30669,18 +30744,42 @@ Common models:
 	    %s tellme -ai openai -q 1 -dryrun
 	    %s tellme -ai openai -q 1 -test
 
-	Template placeholders for -q 9:
-	    [regs]     = current registers and values
-	    [stack]    = current stack contents near the stack pointer
-	    [heap]     = all heaps and their segments
-	    [segments] = all heaps and their segments
-	    [chunks]   = all chunks and virtual-allocated blocks in the process
-	    [modules]  = all loaded modules with mitigation properties
+	Debugger context variables:
+	    [debugger]                    = debugger backend name
+	    [debugger_flavor]             = human-readable debugger flavor
+	    [architecture]                = target architecture
+	    [pointer_size]                = pointer width in bytes
+	    [python_version]              = Python version hosting mona
+	    [timestamp]                   = local timestamp when the request was built
+	    [registers]                   = current register set and values
+	    [program_counter]             = current instruction pointer
+	    [stack_pointer]               = current stack pointer
+	    [pc_disasm]                   = current instruction plus nearby disassembly
+	    [pc_page]                     = memory page summary for the current instruction pointer
+	    [pc_module]                   = module summary for the current instruction pointer
+	    [pc_memory]                   = raw bytes near the current instruction pointer
+	    [stack_page]                  = memory page summary for the current stack pointer
+	    [stack_memory]                = raw bytes near the current stack pointer
+	    [call_stack]                  = WinDBG call stack output
+	    [instruction_heap_references] = heap/chunk/pointer context for registers referenced by the current instruction
+	    [heapdynamics]                = full heapdynamics file contents plus matched-register metadata and saved return-pointer context
+	    [heapdynamics_mini]           = only the matched heapdynamics lines and nearby context for addresses referenced by the current instruction
+	    [analysis_target]             = resolved target address/source for -q 2
+	    [current_function]            = current function symbol/disassembly context for -q 2
+	    Error variables may also appear when collection fails, for example [registers_error], [instruction_heap_references_error], or [heapdynamics_error]
+	For -q 1, -q 2, and -q 9, the final request sent to the AI uses the same structured 'variables' object.
 	For -q 9, placeholders are not pasted inline.
-	They are converted into named variables such as {{regs}} and {{stack}},
+	They are converted into named references such as {{registers}} and {{pc_disasm}},
 	and the final request sent to the AI contains:
 	    - the template text with those variable references
 	    - a separate variables object with the expanded values
+
+	Request generation notes:
+	    If no supported OpenAI or Anthropic SDK is available, tellme still builds and saves the request file.
+	    You can then either install one of those SDKs and use an API key, or submit the saved request manually
+	    in ChatGPT, Grok, or another AI tool.
+	    With -dryrun, tellme saves the request file and prints only the saved file path instead of dumping the
+	    full request to the debugger console.
 
 	Test model overrides:
 	    - OpenAI   : gpt-5.4-nano
