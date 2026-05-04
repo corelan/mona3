@@ -603,10 +603,10 @@ If you use `-dryrun`, `tellme` will build the full request and save it to a file
 Example usage:
 
 ```python
-!mona tellme -ai openai -q 1
-!mona tellme -ai anthropic -q 2
-!mona tellme -ai openai -q 1 -timeout 120
-!mona tellme -ai openai -q 1 -dryrun
+!mona tellme -e openai -q 1
+!mona tellme -e anthropic -q 2
+!mona tellme -e openai -q 1 -timeout 120
+!mona tellme -e openai -q 1 -dryrun
 ```
 
 
