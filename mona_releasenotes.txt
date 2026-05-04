@@ -1,3 +1,13 @@
+[mona 3.0.3006]
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/c8097a1">c8097a1</link> fix output formatting bug in findmsp
+  - <link cmd="https://github.com/corelan/mona3/commit/9df60ee">9df60ee</link> compatibility with python 3.14.4
+  - <link cmd="https://github.com/corelan/mona3/commit/4b3ade3">4b3ade3</link> typo
+  - <link cmd="https://github.com/corelan/mona3/commit/64cb058">64cb058</link> print "all done"
+
+[windbglib 3.0.3004]
+- No file-specific commits found.
+
 [mona 3.0.3005]
 apl3b:
   - <link cmd="https://github.com/corelan/mona3/commit/7b89939">7b89939</link> improve tree view
