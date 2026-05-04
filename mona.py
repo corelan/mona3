@@ -186,6 +186,8 @@ g_no_header = False
 g_keystone_loaded = False
 g_openai_loaded = False
 g_anthropic_loaded = False
+g_openai_import_error = ""
+g_anthropic_import_error = ""
 g_windbg_flavor = ""
 g_windbg_pretty_name = ""
 g_os_version = None
@@ -198,6 +200,84 @@ g_tellme_pattern_cache = None
 # these 2 are going to play an important role  
 mnproc = None
 mndbg = None
+
+def _ai_dbgp(msg, errormode=False):
+	try:
+		if mndbg is not None:
+			mndbg.dbgp(msg, errormode=errormode)
+			return
+	except Exception:
+		pass
+	try:
+		dbglib.dbgp(msg, errormode=errormode)
+	except Exception:
+		pass
+
+
+def _probe_ai_sdk(module_name, class_name, sdk_global_name, class_global_name, loaded_flag_name, error_flag_name, reason=""):
+	sdk_obj = globals().get(sdk_global_name, None)
+	loaded_flag = bool(globals().get(loaded_flag_name, False))
+	error_text = globals().get(error_flag_name, "")
+	_ai_dbgp("ai probe [%s] reason=%s loaded=%s module=%s class=%s error=%s" % (
+		module_name,
+		reason or "unspecified",
+		str(loaded_flag),
+		getattr(sdk_obj, "__file__", "<none>") if sdk_obj is not None else "<none>",
+		str(globals().get(class_global_name, None)),
+		error_text.splitlines()[-1] if error_text else "<none>"
+	))
+	if sdk_obj is not None and loaded_flag and globals().get(class_global_name, None) is not None:
+		return
+	try:
+		sdk_obj = __import__(module_name, fromlist=[class_name])
+		sdk_class = getattr(sdk_obj, class_name)
+		globals()[sdk_global_name] = sdk_obj
+		globals()[class_global_name] = sdk_class
+		globals()[loaded_flag_name] = True
+		globals()[error_flag_name] = ""
+		_ai_dbgp("ai probe [%s] import succeeded: module=%s version=%s class=%s" % (
+			module_name,
+			getattr(sdk_obj, "__file__", "<unknown>"),
+			getattr(sdk_obj, "__version__", "loaded"),
+			str(sdk_class)
+		))
+	except Exception:
+		globals()[sdk_global_name] = None
+		globals()[class_global_name] = None
+		globals()[loaded_flag_name] = False
+		globals()[error_flag_name] = traceback.format_exc()
+		_ai_dbgp("ai probe [%s] import failed:\n%s" % (module_name, globals()[error_flag_name]), errormode=False)
+
+
+def probeAIImports(reason=""):
+	_ai_dbgp("ai probe start: reason=%s executable=%s cwd=%s python=%s" % (
+		reason or "unspecified",
+		sys.executable,
+		os.getcwd(),
+		getPythonVersion()
+	))
+	try:
+		_ai_dbgp("ai probe sys.path entries (%d): %s" % (len(sys.path), " | ".join([str(p) for p in sys.path])))
+	except Exception:
+		pass
+	_probe_ai_sdk("openai", "OpenAI", "openai_sdk", "OpenAI", "g_openai_loaded", "g_openai_import_error", reason=reason)
+	_probe_ai_sdk("anthropic", "Anthropic", "anthropic_sdk", "Anthropic", "g_anthropic_loaded", "g_anthropic_import_error", reason=reason)
+	_ai_dbgp("ai probe done: openai=%s anthropic=%s" % (str(g_openai_loaded), str(g_anthropic_loaded)))
+
+
+def _mask_config_debug_line(line_text):
+	try:
+		line = ensure_text(line_text).rstrip("\r\n")
+	except Exception:
+		line = str(line_text).rstrip("\r\n")
+	line_stripped = line.strip()
+	if "=" not in line_stripped:
+		return line
+	param, value = line_stripped.split("=", 1)
+	param = param.strip().lower()
+	if param.endswith(".key") or "api_key" in param or "apikey" in param:
+		return "%s=<masked>" % param
+	return line
 
 
 
@@ -224,8 +304,10 @@ try:
 	import openai as openai_sdk
 	from openai import OpenAI
 	g_openai_loaded = True
+	g_openai_import_error = ""
 except Exception:
 	g_openai_loaded = False
+	g_openai_import_error = traceback.format_exc()
 
 anthropic_sdk = None
 Anthropic = None
@@ -233,8 +315,10 @@ try:
 	import anthropic as anthropic_sdk
 	from anthropic import Anthropic
 	g_anthropic_loaded = True
+	g_anthropic_import_error = ""
 except Exception:
 	g_anthropic_loaded = False
+	g_anthropic_import_error = traceback.format_exc()
 
 
 ###
@@ -896,12 +980,19 @@ def _safe_int(v):
 		return 0
 
 
-def getAvailableAIEngines():
+def getAvailableAIEngines(reason="", refresh=False):
+	if refresh:
+		probeAIImports(reason=reason or "getAvailableAIEngines")
 	engines = []
 	if g_openai_loaded:
 		engines.append("openai")
 	if g_anthropic_loaded:
 		engines.append("anthropic")
+	_ai_dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
+		reason or "unspecified",
+		str(refresh),
+		", ".join(engines) if len(engines) > 0 else "<none>"
+	))
 	return engines
 
 
@@ -941,6 +1032,19 @@ def _tellme_read_memory(address, size, label):
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: unable to read %s at %s: %s" % (label, PTR_PRINT % address, str(e)), errormode=False)
+	return result
+
+
+def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40):
+	result = OrderedDict()
+	start = max(int(address) - int(bytes_before), 0)
+	cmd = "dps %s L0x%x" % (PTR_PRINT % start, line_count)
+	result["command"] = cmd
+	try:
+		result["output"] = ensure_text(dbg.nativeCommand(cmd)).strip()
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: pointer dump failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
 	return result
 
 
@@ -987,12 +1091,40 @@ def _tellme_get_module_summary(address):
 	return summary
 
 
-def _tellme_get_disasm_summary(address, depth=8):
-	result = {
-		"address": PTR_PRINT % address,
-		"current": "",
-		"nearby": []
-	}
+def _tellme_get_symbol_name(address):
+	try:
+		funcinfo = dbglib.Function(dbg, address)
+		symbol_name = _tellme_format_text(ensure_text(funcinfo.addressToSymbol()), max_len=1024)
+		if symbol_name != "":
+			return symbol_name
+	except Exception as e:
+		mndbg.dbgp("tellme: symbol lookup failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+	try:
+		ln_output = ensure_text(dbg.nativeCommand("ln %s" % (PTR_PRINT % address))).strip()
+		for line in ln_output.splitlines():
+			line = line.strip()
+			if "!" in line:
+				return _tellme_format_text(line, max_len=1024)
+	except Exception as e:
+		mndbg.dbgp("tellme: ln lookup failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+	return ""
+
+
+def _tellme_get_nearest_symbol_output(address):
+	try:
+		return _tellme_format_text(ensure_text(dbg.nativeCommand("ln %s" % (PTR_PRINT % address))).strip(), max_len=4096)
+	except Exception as e:
+		mndbg.dbgp("tellme: nearest symbol output failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+		return ""
+
+
+def _tellme_get_instruction_window(address, depth_before=10, depth_after=10):
+	result = OrderedDict()
+	result["address"] = PTR_PRINT % address
+	result["current"] = ""
+	result["before"] = []
+	result["after"] = []
+
 	try:
 		op = dbg.disasm(address)
 		result["current"] = _tellme_format_text(getDisasmInstruction(op))
@@ -1001,21 +1133,68 @@ def _tellme_get_disasm_summary(address, depth=8):
 		mndbg.dbgp("tellme: failed to disassemble current instruction at %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 
 	try:
+		output = ensure_text(dbg.nativeCommand("ub 0x%x L%d" % (address, depth_before))).strip()
+		for line in output.splitlines():
+			line = line.rstrip()
+			if line != "":
+				result["before"].append(line)
+	except Exception as e:
+		result["before_error"] = str(e)
+		mndbg.dbgp("tellme: backward disasm failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+
+	try:
 		curr = address
-		for _ in range(depth):
-			op = dbg.disasm(curr)
-			instr = _tellme_format_text(getDisasmInstruction(op))
-			result["nearby"].append({
-				"address": PTR_PRINT % curr,
-				"instruction": instr
-			})
+		for _ in range(depth_after):
 			next_addr = dbg.disasmForwardAddressOnly(curr, 1)
 			if next_addr == curr:
 				break
+			op = dbg.disasm(next_addr)
+			result["after"].append({
+				"address": PTR_PRINT % next_addr,
+				"instruction": _tellme_format_text(getDisasmInstruction(op))
+			})
 			curr = next_addr
 	except Exception as e:
-		result["nearby_error"] = str(e)
-		mndbg.dbgp("tellme: failed while collecting nearby disassembly at %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+		result["after_error"] = str(e)
+		mndbg.dbgp("tellme: forward disasm failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
+
+	return result
+
+
+def _tellme_extract_return_pointer_context(raw_line):
+	match = re.search(r"\bfrom\s+([0-9a-fA-F]+)\b", raw_line)
+	if not match:
+		return None
+	try:
+		return_address = int(match.group(1), 16)
+	except Exception:
+		return None
+	context = OrderedDict()
+	context["address"] = PTR_PRINT % return_address
+	symbol_name = _tellme_get_symbol_name(return_address)
+	if symbol_name != "":
+		context["symbol"] = symbol_name
+	nearest_symbol_output = _tellme_get_nearest_symbol_output(return_address)
+	if nearest_symbol_output != "":
+		context["nearest_symbol_output"] = nearest_symbol_output
+	instruction_window = _tellme_get_instruction_window(return_address, depth_before=10, depth_after=10)
+	context["backward_disasm"] = instruction_window.get("before", [])
+	context["instruction_window"] = instruction_window
+	return context
+
+
+def _tellme_get_disasm_summary(address, depth_before=10, depth_after=10):
+	result = {
+		"address": PTR_PRINT % address,
+		"current": "",
+		"before": [],
+		"after": []
+	}
+	window = _tellme_get_instruction_window(address, depth_before=depth_before, depth_after=depth_after)
+	for key, value in window.items():
+		if key == "address":
+			continue
+		result[key] = value
 	return result
 
 
@@ -1135,16 +1314,16 @@ def _tellme_collect_instruction_heap_context(regs, pc):
 	if len(referenced_registers) == 0:
 		return info
 
+	layout_regions = []
 	try:
 		if mnproc is None:
 			info["layout_error"] = "No active process context"
-			return info
-		layout_regions = [r for r in mnproc.getAllSorted(include_chunks=True) if r[2] in ["Chunk", "VADBlock"]]
-		info["layout_region_count"] = len(layout_regions)
+		else:
+			layout_regions = [r for r in mnproc.getAllSorted(include_chunks=True) if r[2] in ["Chunk", "VADBlock"]]
+			info["layout_region_count"] = len(layout_regions)
 	except Exception as e:
 		info["layout_error"] = str(e)
 		mndbg.dbgp("tellme: failed to enumerate chunk/vad layout: %s" % str(e), errormode=False)
-		return info
 
 	lower_regs = {}
 	for reg_name, reg_value in regs.items():
@@ -1158,6 +1337,8 @@ def _tellme_collect_instruction_heap_context(regs, pc):
 		entry["register"] = reg_name
 		entry["value"] = PTR_PRINT % reg_value
 		entry["instruction"] = instruction_text
+		entry["pointer_dump"] = _tellme_get_pointer_dump(reg_value, bytes_before=0x28, line_count=0x40)
+		entry["nearby_memory"] = _tellme_read_memory(max(reg_value - 0x28, 0), 0x80, "%s_nearby_memory" % reg_name)
 		layout_region = _tellme_find_layout_region(reg_value, layout_regions)
 		if layout_region is None:
 			entry["match"] = "none"
@@ -1207,6 +1388,124 @@ def _tellme_collect_instruction_heap_context(regs, pc):
 	return info
 
 
+def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
+	info = OrderedDict()
+	info["instruction"] = ""
+	info["referenced_registers"] = []
+	info["file"] = ""
+	info["matched_registers"] = []
+	info["matched_entries"] = []
+
+	if not isinstance(pc, int) or pc <= 0:
+		return info
+
+	try:
+		op = dbg.disasm(pc)
+		instruction_text = _tellme_format_text(getDisasmInstruction(op))
+		info["instruction"] = instruction_text
+	except Exception as e:
+		info["instruction_error"] = str(e)
+		mndbg.dbgp("tellme: unable to disassemble current instruction for heapdynamics context: %s" % str(e), errormode=False)
+		return info
+
+	referenced_registers = _tellme_extract_instruction_registers(instruction_text, regs)
+	info["referenced_registers"] = referenced_registers
+	if len(referenced_registers) == 0:
+		return info
+
+	if heapdynamics_file:
+		file_path = heapdynamics_file
+	else:
+		file_path = r"c:\alloc.txt"
+
+	info["file"] = file_path
+	if not os.path.isfile(file_path):
+		info["file_missing"] = True
+		return info
+
+	lower_regs = {}
+	for reg_name, reg_value in regs.items():
+		lower_regs[str(reg_name).lower()] = reg_value
+
+	search_terms = []
+	seen_terms = set()
+	for reg_name in referenced_registers:
+		reg_value = lower_regs.get(reg_name)
+		if not isinstance(reg_value, int) or reg_value <= 0:
+			continue
+		search_value = ("%x" % reg_value).lower()
+		if search_value in seen_terms:
+			continue
+		seen_terms.add(search_value)
+		search_terms.append((reg_name, search_value))
+
+	if len(search_terms) == 0:
+		return info
+
+	try:
+		with open(file_path, "rb") as fh:
+			file_contents = fh.read().decode("latin-1")
+	except Exception as e:
+		info["read_error"] = str(e)
+		mndbg.dbgp("tellme: unable to read heapdynamics file %s: %s" % (file_path, str(e)), errormode=False)
+		return info
+
+	file_contents_lower = file_contents.lower()
+	file_lines = file_contents.splitlines()
+	matched_registers = []
+	for reg_name, search_value in search_terms:
+		if search_value in file_contents_lower:
+			matched_registers.append(OrderedDict([
+				("register", reg_name),
+				("value", search_value)
+			]))
+
+	if len(matched_registers) == 0:
+		return info
+
+	info["matched_registers"] = matched_registers
+	info["contents"] = file_contents
+	for line_index, raw_line in enumerate(file_lines):
+		line_lower = raw_line.lower()
+		entry_matches = []
+		for reg_name, search_value in search_terms:
+			if search_value in line_lower:
+				entry_matches.append(OrderedDict([
+					("register", reg_name),
+					("value", search_value)
+				]))
+		if len(entry_matches) == 0:
+			continue
+		entry = OrderedDict()
+		entry["line_number"] = line_index + 1
+		entry["line"] = raw_line
+		entry["matched_registers"] = entry_matches
+		return_pointer = _tellme_extract_return_pointer_context(raw_line)
+		if return_pointer is not None:
+			entry["return_pointer"] = return_pointer
+		info["matched_entries"].append(entry)
+
+	return info
+
+
+def _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files=None):
+	contexts = []
+	if heapdynamics_files is None:
+		heapdynamics_files = []
+	if len(heapdynamics_files) == 0:
+		heapdynamics_files = [r"c:\alloc.txt"]
+
+	for file_path in heapdynamics_files:
+		info = _tellme_collect_heapdynamics_context(regs, pc, file_path)
+		if len(info.get("referenced_registers", [])) == 0:
+			continue
+		if len(info.get("matched_registers", [])) == 0:
+			continue
+		contexts.append(info)
+
+	return contexts
+
+
 def getTellMePattern():
 	global g_tellme_pattern_cache
 	if g_tellme_pattern_cache is None:
@@ -1215,7 +1514,7 @@ def getTellMePattern():
 	return g_tellme_pattern_cache
 
 
-def collectTellMeContext(question_type=""):
+def collectTellMeContext(question_type="", heapdynamics_files=None):
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
 	context = {
 		"debugger": __DEBUGGERAPP__,
@@ -1257,6 +1556,13 @@ def collectTellMeContext(question_type=""):
 			except Exception as e:
 				context["instruction_heap_references_error"] = str(e)
 				mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
+		try:
+			heapdynamics = _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files)
+			if len(heapdynamics) > 0:
+				context["heapdynamics"] = heapdynamics
+		except Exception as e:
+			context["heapdynamics_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
 
 	if isinstance(sp, int) and sp > 0:
 		context["stack_pointer"] = PTR_PRINT % sp
@@ -1280,6 +1586,8 @@ If a cyclic pattern appears anywhere in registers, stack, or nearby memory, iden
 Use the supplied full cyclic pattern reference to determine offsets directly when possible.
 Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, or heap metadata corruption.
 Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
+Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
+Saved return pointers collected from alloc/free log entries indicate where the corresponding allocation or free operation was made from. Use heapdynamics matched entries, their saved return pointers, symbol names, backward disassembly, full instruction windows, and the other supplied heap/register/memory context together to investigate the issue more deeply.
 If control appears partial or uncertain, say so explicitly.
 Keep the answer practical and precise."""
 	elif question_type == "2":
@@ -5311,7 +5619,7 @@ class MnConfig:
 
 				for thisLine in content:
 					thisLine = thisLine.decode("latin-1").strip()
-					mndbg.dbgp("    Line: %s" % thisLine)
+					mndbg.dbgp("    Line: %s" % _mask_config_debug_line(thisLine))
 
 					if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 						thisparam, thisvalue = thisLine.split("=", 1)
@@ -5364,7 +5672,7 @@ class MnConfig:
 					for thisLine in content:
 						thisLine = thisLine.decode("latin-1").strip()
 
-						mndbg.dbgp("    Line: %s" % thisLine)
+						mndbg.dbgp("    Line: %s" % _mask_config_debug_line(thisLine))
 
 						if thisLine and not thisLine.startswith("#") and "=" in thisLine:
 							thisparam, thisvalue = thisLine.split("=", 1)
@@ -21884,10 +22192,22 @@ def procTellMe(args):
 		dbg.log("The 'tellme' command is only available under WinDBG", highlight=1)
 		return
 
-	available_engines = getAvailableAIEngines()
+	available_engines = getAvailableAIEngines(reason="procTellMe", refresh=True)
 	mndbg.dbgp("tellme: available AI engines: %s" % ", ".join(available_engines))
 	if len(available_engines) == 0:
 		dbg.log("No supported AI engine is available. Install the 'openai' or 'anthropic' Python library first.", highlight=1)
+		dbg.log("    Python executable: %s" % sys.executable, highlight=1)
+		if sys.version_info[0] == 3 and sys.version_info[1] < 9:
+			if "may only be initialized once per interpreter process" in g_openai_import_error:
+				dbg.log("    Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
+					sys.version_info[0], sys.version_info[1]
+				), highlight=1)
+				dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.", highlight=1)
+				dbg.log("             On Windows 7 / Python 3.8, restarting WinDBG is the practical workaround.", highlight=1)
+		if g_openai_import_error != "":
+			dbg.log("    OpenAI import error: %s" % g_openai_import_error.splitlines()[-1], highlight=1)
+		if g_anthropic_import_error != "":
+			dbg.log("    Anthropic import error: %s" % g_anthropic_import_error.splitlines()[-1], highlight=1)
 		return
 
 	engine = args.get("ai", "").strip().lower()
@@ -22002,8 +22322,28 @@ def procTellMe(args):
 		), highlight=1)
 		return
 
+	heapdynamics_files = []
+	if "l" in args and type(args["l"]).__name__.lower() != "bool":
+		for raw_file in str(args["l"]).replace('"', "").replace("'", "").split(","):
+			raw_file = raw_file.strip()
+			if raw_file == "":
+				continue
+			heapdynamics_file = getAbsolutePath(raw_file)
+			if not os.path.isfile(heapdynamics_file):
+				dbg.log("Unable to find/read heapdynamics file %s" % heapdynamics_file, highlight=1)
+				return
+			heapdynamics_files.append(heapdynamics_file)
+		if len(heapdynamics_files) == 0:
+			dbg.log("Please specify at least one valid heapdynamics file with -l", highlight=1)
+			return
+		mndbg.dbgp("tellme: using heapdynamics files %s" % ", ".join(heapdynamics_files))
+	if len(heapdynamics_files) > 0:
+		dbg.log("[+] Will read heapdynamics context from: %s" % ", ".join(heapdynamics_files))
+	else:
+		dbg.log("[+] Will read heapdynamics context from: c:\\alloc.txt")
+
 	try:
-		context = collectTellMeContext(question_type)
+		context = collectTellMeContext(question_type, heapdynamics_files=heapdynamics_files)
 	except Exception as e:
 		dbg.log("Failed to collect debugger context: %s" % str(e), highlight=1)
 		mndbg.dbgp("tellme: context collection failed:\n%s" % traceback.format_exc(), errormode=False)
@@ -30138,6 +30478,10 @@ Common models:
 	                   9 = load a request template from -f <file>
 	    -a <address> : Optional code address/register/module!symbol/expression to analyse.
 	                   Primarily useful with -q 2 when EIP/RIP is already corrupted
+	    -l <files>   : Optional comma-separated heapdynamics files, for example -l "file1,file2"
+	                   If omitted, tellme will look for c:\\alloc.txt
+	                   If a file contains at least one referenced register value, the full file
+	                   contents are added to the request as heapdynamics context in the order given
 	    -f <file>    : Required for -q 9. Template file whose placeholders become named request variables
 	    -dryrun      : Build and display the full prompt/context, but do not call the API
 	    -test        : Override the configured model with a lower-cost test model
@@ -30229,14 +30573,14 @@ Common models:
 	commands["stringpos"]       = MnCommand("stringpos","Find position of memory at address in string it is part of", strposUsage, procStrPos,"strpos",[32,64])
 	commands["fillchunk"]	    = MnCommand("fillchunk","Fill a heap chunk referenced by an address expression",fillchunkUsage,procFillChunk,"fchunk",[32,64])
 	if mndbg.isWinDBG():
+		probeAIImports(reason="populateCommands")
 		commands["dumpobj"]		= MnCommand("dumpobj","Dump the contents of an object",dumpobjUsage,procDumpObj,"do",[32,64])
 		commands["dumplog"]     = MnCommand("dumplog","Dump objects present in alloc/free log file",dumplogUsage,procDumpLog,"dl",[32,64])
 		commands["changeacl"]   = MnCommand("changeacl","Change the ACL of a given page",changeaclUsage,procChangeACL,"ca",[32,64])
 		commands["allocmem"]	= MnCommand("allocmem","Allocate some memory in the process",allocmemUsage,procAllocMem,"alloc",[32,64])
 		commands["tobp"]		= MnCommand("tobp","Generate WinDBG syntax to create a logging breakpoint at given location",tobpUsage,procToBp,"2bp",[32,64])
-		commands["sym"]				= MnCommand("sym","Manage symbols: list status or clean cache", symUsage, procSym,"",[32,64])
-		if len(getAvailableAIEngines()) > 0:
-			commands["tellme"]		= MnCommand("tellme","Ask an AI engine to analyze the current WinDBG context",tellmeUsage,procTellMe,"tm",[32,64])
+		commands["sym"]	        = MnCommand("sym","Manage symbols: list status or clean cache", symUsage, procSym,"",[32,64])
+		commands["tellme"]		= MnCommand("tellme","Ask an AI engine to analyze the current WinDBG context",tellmeUsage,procTellMe,"tm",[32,64])
 	return
 
 #
@@ -30443,176 +30787,177 @@ def main(args):
 		if (__DEBUGGERAPP__ == "WinDBG"):
 			dbglib.set_debug_mode(False)
 
-		try:
-			starttime = datetime.datetime.now()
+	try:
+		starttime = datetime.datetime.now()
 
-			thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
-			thisversion = thisversion.replace("'","")
-			dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (mndbg.get_current_datetime(),thisversion,thisrevision, arch))
-			dbg.log("[ -- START -- ] %s (%sbit)" % (g_windbg_pretty_name, arch))
-			dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
-			if mndbg.isWinDBG():
-				pykdver = dbg.getPyKDVersionNr()
-				keystonever = ""
-				openaiver = "<b>not loaded</b>"
-				anthropicver = "<b>not loaded</b>"
-				if g_keystone_loaded:
-					keystonever = keystone.__version__
-				else:
-					keystonever = "<b>not loaded</b>"
-				if g_openai_loaded and openai_sdk is not None:
-					openaiver = getattr(openai_sdk, "__version__", "loaded")
-				if g_anthropic_loaded and anthropic_sdk is not None:
-					anthropicver = getattr(anthropic_sdk, "__version__", "loaded")
-				libversions = "PyKD: %s | Keystone-engine: %s | OpenAI: %s | Anthropic: %s" % (
-					pykdver, keystonever, openaiver, anthropicver
-				)
-				dbg.log("[ -- START -- ] %s" % libversions)
-			dbg.log("")
-
-			g_ptr_counter = 0
-
-			# fill up the commands dict
-			populateCommands(args)
-
-			mndbg.dbgp("Initialized %d commands" % len(commands))
-			
-			# get the options
-			command = ""
-			argcopy = copy.copy(args)
-			justargs = ""
-			if len(argcopy) > 1:
-				justargs = " ".join(a for a in argcopy[1:])
-
-			aline = " ".join(a for a in argcopy)
-
-			aliasname = ""
-			if mndbg.isWinDBG():
-				aliasname = getAliasName()
-				dbg.log("[+] Command used: <b>%s %s</b>" % (aliasname, justargs))		
-				if aline != "":
-					dbg.log("    >>>> %s" % (aline))
+		thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
+		thisversion = thisversion.replace("'","")
+		dbg.logLines("\n[ -- START -- ] Mona command started on %s (v%s, rev %s) %sbit " % (mndbg.get_current_datetime(),thisversion,thisrevision, arch))
+		dbg.log("[ -- START -- ] %s (%sbit)" % (g_windbg_pretty_name, arch))
+		dbg.log("[ -- START -- ] Python: %s)" % getPythonVersion())
+		if mndbg.isWinDBG():
+			pykdver = dbg.getPyKDVersionNr()
+			keystonever = ""
+			openaiver = "<b>not loaded</b>"
+			anthropicver = "<b>not loaded</b>"
+			if g_keystone_loaded:
+				keystonever = keystone.__version__
 			else:
-				scriptname = "mona"
-				aline = ("%s " % getAliasName()) + aline
-				dbg.log("[+] Command used: %s" % aline)
+				keystonever = "<b>not loaded</b>"
+			if g_openai_loaded and openai_sdk is not None:
+				openaiver = getattr(openai_sdk, "__version__", "loaded")
+			if g_anthropic_loaded and anthropic_sdk is not None:
+				anthropicver = getattr(anthropic_sdk, "__version__", "loaded")
+			libversions = "PyKD: %s | Keystone-engine: %s | OpenAI: %s | Anthropic: %s" % (
+				pykdver, keystonever, openaiver, anthropicver
+			)
+			dbg.log("[ -- START -- ] %s" % libversions)
+		dbg.log("")
 
-			if DEBUG_MODE:
-				dbg.log("[+] Debug mode on")
+		g_ptr_counter = 0
+		probeAIImports(reason="main.startup")
 
-			# in case we're not using Immunity
-			if "-showargs" in args:
-				dbg.log("-" * 50)
-				dbg.log("args: %s" % args)
+		# fill up the commands dict
+		populateCommands(args)
 
-			command, monaArgs = _parse_mona_args_with_argparse(args)
+		mndbg.dbgp("Initialized %d commands" % len(commands))
+		
+		# get the options
+		command = ""
+		argcopy = copy.copy(args)
+		justargs = ""
+		if len(argcopy) > 1:
+			justargs = " ".join(a for a in argcopy[1:])
 
-			if "-showargs" in args:
-				dbg.log("command: %s" % command)
-				dbg.log("monaArgs: %s" % monaArgs)
-				dbg.log("-" * 50)
+		aline = " ".join(a for a in argcopy)
 
-			mndbg.dbgp("Command: %s" % command)
-			mndbg.dbgp("Architecture: %s" % arch)
-			mndbg.dbgp("monaArgs: %s" % monaArgs)
+		aliasname = ""
+		if mndbg.isWinDBG():
+			aliasname = getAliasName()
+			dbg.log("[+] Command used: <b>%s %s</b>" % (aliasname, justargs))		
+			if aline != "":
+				dbg.log("    >>>> %s" % (aline))
+		else:
+			scriptname = "mona"
+			aline = ("%s " % getAliasName()) + aline
+			dbg.log("[+] Command used: %s" % aline)
 
-			# ----- execute the chosen command ----- #
-			mndbg.dbgp("You're trying to run command '%s'" % command)
-			mndbg.dbgp("Args: %s" % monaArgs)
+		if DEBUG_MODE:
+			dbg.log("[+] Debug mode on")
 
-			# special case - if you are invoking a real command
-			# but specified -h
-			# then I need to run 'help' on that command
-			if "h" in monaArgs:
-				if monaArgs["h"] == True:
-					# move the actual command to "?"
-					monaArgs["?"] = command
-					command = "help"
+		# in case we're not using Immunity
+		if "-showargs" in args:
+			dbg.log("-" * 50)
+			dbg.log("args: %s" % args)
 
-			dbg.log("")
+		command, monaArgs = _parse_mona_args_with_argparse(args)
 
-			if command == "banner":
-				dbg.logLines(getBanner(),highlight=1)
-				dbg.log()
-				return
+		if "-showargs" in args:
+			dbg.log("command: %s" % command)
+			dbg.log("monaArgs: %s" % monaArgs)
+			dbg.log("-" * 50)
 
-			# make a list of all supported commands and aliases
-			acceptedcommands = {}
-			acceptedaliases = {}
-			for monacommand in commands:
-				maincmd = commands[monacommand].name
-				aliascmd = commands[monacommand].alias
-				acceptedcommands[maincmd] = commands[monacommand]
-				acceptedaliases[aliascmd] = commands[monacommand]
+		mndbg.dbgp("Command: %s" % command)
+		mndbg.dbgp("Architecture: %s" % arch)
+		mndbg.dbgp("monaArgs: %s" % monaArgs)
 
-			invokingCommand = None
+		# ----- execute the chosen command ----- #
+		mndbg.dbgp("You're trying to run command '%s'" % command)
+		mndbg.dbgp("Args: %s" % monaArgs)
 
-			scriptname = get_script_name()
-			launchcmd = "!" + scriptname		
-			if mndbg.isWinDBG():
-				launchcmd = aliasname
-
-			if command == "" or command == "-h":
+		# special case - if you are invoking a real command
+		# but specified -h
+		# then I need to run 'help' on that command
+		if "h" in monaArgs:
+			if monaArgs["h"] == True:
+				# move the actual command to "?"
+				monaArgs["?"] = command
 				command = "help"
-			
 
-			# is user trying to run a valid command or alias?
-			if command in acceptedcommands or command in acceptedaliases:
-				# good. is it accepted on this architecture?
-				arch_compatible = False
-				if command in acceptedcommands:
-					if arch in acceptedcommands[command].supportedarchs:
-						arch_compatible = True
-						invokingCommand = acceptedcommands[command]
-				if command in acceptedaliases:
-					if arch in acceptedaliases[command].supportedarchs:
-						arch_compatible = True
-						invokingCommand = acceptedaliases[command]
+		dbg.log("")
 
-				if not arch_compatible:
-					dbg.log("*** Sorry, command '%s' is not supported in %sbit ***" % (command, str(arch)), highlight = 1)
-				else:
-					# 'help' is a special case
-					if invokingCommand.name == "help":
-						if "?" in monaArgs:
-							help_for_command = monaArgs["?"]
-							helpForCommand = None
-							mndbg.dbgp("You're asking for help on using the '%s' command" % help_for_command)
-							if help_for_command in acceptedcommands:
-								helpForCommand = acceptedcommands[help_for_command]
-							elif help_for_command in acceptedaliases:
-								helpForCommand = acceptedaliases[help_for_command]
-							invokingCommand.parseProc(monaArgs, helpForCommand )	
-						else:
-							invokingCommand.parseProc(monaArgs)	
+		if command == "banner":
+			dbg.logLines(getBanner(),highlight=1)
+			dbg.log()
+			return
+
+		# make a list of all supported commands and aliases
+		acceptedcommands = {}
+		acceptedaliases = {}
+		for monacommand in commands:
+			maincmd = commands[monacommand].name
+			aliascmd = commands[monacommand].alias
+			acceptedcommands[maincmd] = commands[monacommand]
+			acceptedaliases[aliascmd] = commands[monacommand]
+
+		invokingCommand = None
+
+		scriptname = get_script_name()
+		launchcmd = "!" + scriptname		
+		if mndbg.isWinDBG():
+			launchcmd = aliasname
+
+		if command == "" or command == "-h":
+			command = "help"
+		
+
+		# is user trying to run a valid command or alias?
+		if command in acceptedcommands or command in acceptedaliases:
+			# good. is it accepted on this architecture?
+			arch_compatible = False
+			if command in acceptedcommands:
+				if arch in acceptedcommands[command].supportedarchs:
+					arch_compatible = True
+					invokingCommand = acceptedcommands[command]
+			if command in acceptedaliases:
+				if arch in acceptedaliases[command].supportedarchs:
+					arch_compatible = True
+					invokingCommand = acceptedaliases[command]
+
+			if not arch_compatible:
+				dbg.log("*** Sorry, command '%s' is not supported in %sbit ***" % (command, str(arch)), highlight = 1)
+			else:
+				# 'help' is a special case
+				if invokingCommand.name == "help":
+					if "?" in monaArgs:
+						help_for_command = monaArgs["?"]
+						helpForCommand = None
+						mndbg.dbgp("You're asking for help on using the '%s' command" % help_for_command)
+						if help_for_command in acceptedcommands:
+							helpForCommand = acceptedcommands[help_for_command]
+						elif help_for_command in acceptedaliases:
+							helpForCommand = acceptedaliases[help_for_command]
+						invokingCommand.parseProc(monaArgs, helpForCommand )	
 					else:
-						invokingCommand.parseProc(monaArgs)
-			else:
-				dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
-				dbg.log("")
-				dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (getAliasName(), str(arch)), highlight=True)
-
-			
-			# ----- report ----- #
-			endtime = datetime.datetime.now()
-			delta = endtime - starttime
+						invokingCommand.parseProc(monaArgs)	
+				else:
+					invokingCommand.parseProc(monaArgs)
+		else:
+			dbg.log("Sorry, command '%s' does not exist or is not supported" % command, highlight = 1)
 			dbg.log("")
-			if mndbg.isWinDBG():
-				dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-			else:
-				dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-			if yesno():
-				dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
-			dbg.setStatusBar("Done")
-			if DEBUG_MODE and mndbg.isWinDBG():
-				dbg.nativeCommand(".logclose")
-				dbg.log("")
-				dbg.getNativeCommandStatistics(minval=2)
-		except:
-			dbg.log("*" * 80,highlight=True)
-			dbg.logLines(traceback.format_exc(),highlight=True)
-			dbg.log("*" * 80,highlight=True)
-			dbg.error(traceback.format_exc())
+			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (getAliasName(), str(arch)), highlight=True)
+
+		
+		# ----- report ----- #
+		endtime = datetime.datetime.now()
+		delta = endtime - starttime
+		dbg.log("")
+		if mndbg.isWinDBG():
+			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+		else:
+			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+		if yesno():
+			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
+		dbg.setStatusBar("Done")
+		if DEBUG_MODE and mndbg.isWinDBG():
+			dbg.nativeCommand(".logclose")
+			dbg.log("")
+			dbg.getNativeCommandStatistics(minval=2)
+	except:
+		dbg.log("*" * 80,highlight=True)
+		dbg.logLines(traceback.format_exc(),highlight=True)
+		dbg.log("*" * 80,highlight=True)
+		dbg.error(traceback.format_exc())
 	return ""
 
 
