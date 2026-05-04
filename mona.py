@@ -1326,9 +1326,9 @@ def getTellMeModelAndKey(engine, mona_config):
 
 	if model == "":
 		if engine == "openai":
-			model = "gpt-5.5"
+			model = "gpt-5.4"
 		elif engine == "anthropic":
-			model = "claude-opus-4-1-20250805"
+			model = "claude-opus-4-20250514"
 
 	return api_key, model
 
@@ -5297,6 +5297,7 @@ class MnConfig:
 		mndbg.dbgp(get_current_function_name())
 
 		_config_file_cache = {}
+		display_cache = {}
 		headers = ["Parameter", "Value"]
 		types   = ["string", "string"]
 
@@ -5317,10 +5318,14 @@ class MnConfig:
 						thisparam = thisparam.strip().lower()
 						thisvalue = thisvalue.strip().replace("\n", "").replace("\r", "")
 						_config_file_cache[thisparam] = thisvalue
+						display_value = thisvalue
+						if ".key" in thisparam:
+							display_value = "*************"
+						display_cache[thisparam] = display_value
 
-						mndbg.dbgp("Added parameter %s with value %s to _config_file_cache %s" % (thisparam, thisvalue, _config_file_cache))
+						mndbg.dbgp("Added parameter %s with value %s to display cache" % (thisparam, display_value))
 
-				print_dict_table(_config_file_cache, headers, types, padding="      ", itemsequence=[])
+				print_dict_table(display_cache, headers, types, padding="      ", itemsequence=[])
 
 			except Exception as e:
 				mndbg.dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
@@ -21970,17 +21975,17 @@ def procTellMe(args):
 		dbg.log("")
 		dbg.log("    OpenAI:")
 		dbg.log("      %s config -set openai.key <your OpenAI API key>" % getAliasName())
-		dbg.log("      %s config -set openai.model gpt-5.5" % getAliasName())
+		dbg.log("      %s config -set openai.model gpt-5.4" % getAliasName())
 		dbg.log("      or (globally):")
 		dbg.log("      set OPENAI_API_KEY=<your OpenAI API key>")
-		dbg.log("      set OPENAI_MODEL=gpt-5.5")
+		dbg.log("      set OPENAI_MODEL=gpt-5.4")
 		dbg.log("")
 		dbg.log("    Anthropic:")
 		dbg.log("      %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
-		dbg.log("      %s config -set anthropic.model claude-opus-4-1-20250805" % getAliasName())
+		dbg.log("      %s config -set anthropic.model claude-opus-4-20250514" % getAliasName())
 		dbg.log("      or (globally):")
 		dbg.log("      set ANTHROPIC_API_KEY=<your Anthropic API key>")
-		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-1-20250805")
+		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-20250514")
 		dbg.log("")
 		dbg.log("    mona.ini values take precedence over environment variables")
 		dbg.log("    The -model argument overrides both for a single request")
@@ -30102,9 +30107,9 @@ Configuration:
 
     1. Store settings in mona.ini:
     %s config -set openai.key <your OpenAI API key>
-    %s config -set openai.model gpt-5.5
+    %s config -set openai.model gpt-5.4
     %s config -set anthropic.key <your Anthropic API key>
-    %s config -set anthropic.model claude-opus-4-1-20250805
+    %s config -set anthropic.model claude-opus-4-20250514
 
     2. Or use environment variables instead:
     - OPENAI_API_KEY
@@ -30117,8 +30122,12 @@ Precedence:
     For a single request, -model overrides both config and environment values
 
 Default models:
-    - OpenAI   : gpt-5.5
-    - Anthropic: claude-opus-4-1-20250805
+    - OpenAI   : gpt-5.4
+    - Anthropic: claude-opus-4-20250514
+
+Common models:
+    - OpenAI   : gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano
+    - Anthropic: claude-opus-4-1-20250805, claude-opus-4-20250514, claude-sonnet-4-20250514, claude-3-5-haiku-20241022
 
 	Arguments:
 	    -ai <engine> : AI engine to use. If omitted, mona uses the first available engine
