@@ -29257,7 +29257,6 @@ def procStrPos(args):
 		dbg.log(" ** Please provide a valid address with -a **", highlight=1)
 
 
-
 def procFlags(args):
 	MnProc.ensure()
 	_peb = mnproc.getPEB()
