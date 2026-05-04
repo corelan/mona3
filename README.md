@@ -140,7 +140,7 @@ If not, support for 64-bit assembly will be very limited (to the items in the as
 
 ### 1.4. Can you help me run mona under Python 3.14.4?
 
-Yes, of course:
+Yes, of course. The `CorelanPyKDInstall.ps1` script mentioned earlier will install Python 3.14.4 and all required dependencies automatically. Ff you prefer to do things by hand, this is the step by step:
 
 *1.4.1. Install Python 3.14.4 (both 32bit and 64bit)*
 
