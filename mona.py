@@ -1326,9 +1326,9 @@ def getTellMeModelAndKey(engine, mona_config):
 
 	if model == "":
 		if engine == "openai":
-			model = "gpt-5.2"
+			model = "gpt-5.5"
 		elif engine == "anthropic":
-			model = "claude-opus-4-6"
+			model = "claude-opus-4-1-20250805"
 
 	return api_key, model
 
@@ -21947,6 +21947,13 @@ def procTellMe(args):
 	api_key, model = getTellMeModelAndKey(engine, mona_config)
 	mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (engine, model))
 
+	if "model" in args and type(args["model"]).__name__.lower() != "bool":
+		explicit_model = str(args["model"]).strip()
+		if explicit_model != "":
+			model = explicit_model
+			dbg.log("[+] Overriding model to '%s'" % model)
+			mndbg.dbgp("tellme: using explicit -model override '%s'" % model)
+
 	if testmode:
 		test_model = getTellMeTestModel(engine)
 		if test_model != "":
@@ -21963,19 +21970,20 @@ def procTellMe(args):
 		dbg.log("")
 		dbg.log("    OpenAI:")
 		dbg.log("      %s config -set openai.key <your OpenAI API key>" % getAliasName())
-		dbg.log("      %s config -set openai.model gpt-5.2" % getAliasName())
+		dbg.log("      %s config -set openai.model gpt-5.5" % getAliasName())
 		dbg.log("      or (globally):")
 		dbg.log("      set OPENAI_API_KEY=<your OpenAI API key>")
-		dbg.log("      set OPENAI_MODEL=gpt-5.2")
+		dbg.log("      set OPENAI_MODEL=gpt-5.5")
 		dbg.log("")
 		dbg.log("    Anthropic:")
 		dbg.log("      %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
-		dbg.log("      %s config -set anthropic.model claude-opus-4-6" % getAliasName())
+		dbg.log("      %s config -set anthropic.model claude-opus-4-1-20250805" % getAliasName())
 		dbg.log("      or (globally):")
 		dbg.log("      set ANTHROPIC_API_KEY=<your Anthropic API key>")
-		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-6")
+		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-1-20250805")
 		dbg.log("")
 		dbg.log("    mona.ini values take precedence over environment variables")
+		dbg.log("    The -model argument overrides both for a single request")
 		dbg.log("")
 		dbg.log("    Then run:")
 		dbg.log("      %s tellme -ai %s -q %s" % (getAliasName(), engine, question_type))
@@ -30085,10 +30093,6 @@ Optional arguments:
 
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
-This command is only available:
-    - under WinDBG
-    - when at least one supported AI Python SDK is installed
-
 Supported engines:
     - openai
     - anthropic
@@ -30098,9 +30102,9 @@ Configuration:
 
     1. Store settings in mona.ini:
     %s config -set openai.key <your OpenAI API key>
-    %s config -set openai.model gpt-5.2
+    %s config -set openai.model gpt-5.5
     %s config -set anthropic.key <your Anthropic API key>
-    %s config -set anthropic.model claude-opus-4-6
+    %s config -set anthropic.model claude-opus-4-1-20250805
 
     2. Or use environment variables instead:
     - OPENAI_API_KEY
@@ -30110,9 +30114,15 @@ Configuration:
 
 Precedence:
     If both are present, mona.ini values take precedence over environment variables
+    For a single request, -model overrides both config and environment values
+
+Default models:
+    - OpenAI   : gpt-5.5
+    - Anthropic: claude-opus-4-1-20250805
 
 	Arguments:
 	    -ai <engine> : AI engine to use. If omitted, mona uses the first available engine
+	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the crash context
 	                   2 = analyse the current function
@@ -30128,6 +30138,7 @@ Precedence:
 	    %s tellme -ai anthropic -q 2
 	    %s tellme -ai openai -q 2 -a kernel32!CreateFileW
 	    %s tellme -ai openai -q 2 -a eip
+	    %s tellme -ai openai -model gpt-5.4-mini -q 1
 	    %s tellme -ai openai -q 9 -f request.txt
 	    %s tellme -ai openai -q 1 -dryrun
 	    %s tellme -ai openai -q 1 -test
@@ -30141,7 +30152,7 @@ Precedence:
 	    [modules]  = all loaded modules with mitigation properties
 	    [pattern]  = cyclic pattern of 20280 bytes
 
-	For -q 9, placeholders are not pasted inline anymore.
+	For -q 9, placeholders are not pasted inline.
 	They are converted into named variables such as {{regs}} and {{stack}},
 	and the final request sent to the AI contains:
 	    - the template text with those variable references
@@ -30150,7 +30161,7 @@ Precedence:
 	Test model overrides:
 	    - OpenAI   : gpt-5.4-nano
 	    - Anthropic: claude-3-haiku-20240307
-		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
+		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
 
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
