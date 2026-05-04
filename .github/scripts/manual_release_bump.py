@@ -193,7 +193,7 @@ def main():
     if len(args.file) != len(args.name):
         raise RuntimeError("Each --file needs a matching --name")
 
-    sections = []
+    release_entries = []
     latest_revisions = {}
 
     for filename, name in zip(args.file, args.name):
@@ -202,11 +202,20 @@ def main():
         commits = get_commits_for_file(args.since, filename)
 
         latest_revisions[name] = new_revision
-
-        section = f"[{name} {version}.{new_revision}]\n{commits}"
-        sections.append(section)
+        release_entries.append((name, version, new_revision, commits))
 
         print(f"{filename}: __REV__ {old_revision} -> {new_revision}")
+
+    commit_message = build_commit_message(
+        latest_revisions,
+        prefix=args.commit_message_prefix,
+        suffix=args.commit_message_suffix,
+    )
+
+    sections = []
+    for name, version, new_revision, commits in release_entries:
+        section = f"[{name} {version}.{new_revision}]\n- {commit_message}\n{commits}"
+        sections.append(section)
 
     prepend_release_notes(args.release_notes, sections)
 
@@ -216,11 +225,6 @@ def main():
         max_revision_distance=10,
     )
 
-    commit_message = build_commit_message(
-        latest_revisions,
-        prefix=args.commit_message_prefix,
-        suffix=args.commit_message_suffix,
-    )
     print(f"Commit message: {commit_message}")
 
     if args.github_output:
