@@ -23292,29 +23292,29 @@ def procUpdate(args):
 		mndbg.dbgp("Collected %d release note section(s) for %s from %s to %s" % (len(out), normalized_name, start_header, end_header))
 		return out, start_header, end_header
 
-	def _get_release_notes_with_retry(releasenotes_file, releasenotes_backup, filename, from_version, from_revision, to_version, to_revision):
+	def _get_release_notes_with_retry(releasenotes_file, releasenotes_main, releasenotes_backup, filename, from_version, from_revision, to_version, to_revision):
 		sections, start_header, end_header = _get_release_notes_since_version(
 			releasenotes_file, filename, from_version, from_revision, to_version, to_revision
 		)
 		if len(sections) > 0:
 			return sections, start_header, end_header
 
-		mndbg.dbgp("No release notes found between %s and %s, retrying from backup URL" % (start_header, end_header))
+		mndbg.dbgp("No release notes found between %s and %s, re-downloading release notes" % (start_header, end_header))
 
 		ok_notes, notes_url = _download_with_fallback(
-			releasenotes_backup,
+			releasenotes_main,
 			releasenotes_backup,
 			releasenotes_file,
 			"mona_releasenotes.txt"
 		)
 
 		if ok_notes:
-			mndbg.dbgp("Re-downloaded release notes from backup URL %s" % notes_url)
+			mndbg.dbgp("Re-downloaded release notes from %s" % notes_url)
 			sections, start_header, end_header = _get_release_notes_since_version(
 				releasenotes_file, filename, from_version, from_revision, to_version, to_revision
 			)
 		else:
-			mndbg.dbgp("Unable to re-download release notes from backup URL")
+			mndbg.dbgp("Unable to re-download release notes from main or backup URL")
 
 		return sections, start_header, end_header
 
@@ -23378,7 +23378,7 @@ def procUpdate(args):
 		mndbg.dbgp("Debugger app is not WinDBG, so only mona.py will be processed")
 
 	releasenotes_path = os.path.abspath(os.path.join(mona_dir, "mona_releasenotes.txt"))
-	releasenotes_main = "https://github.com/corelan/mona3/raw/master/mona_releasenotes.txt"
+	releasenotes_main = "https://github.com/corelan/mona3/raw/refs/heads/main/mona_releasenotes.txt"
 	releasenotes_backup = "https://www.corelan.be/mona3/mona_releasenotes.txt"
 
 	mndbg.dbgp("Release notes will be stored at %s" % releasenotes_path)
@@ -23508,6 +23508,7 @@ def procUpdate(args):
 			for fname, from_ver, from_rev, to_ver, to_rev in release_notes_targets:
 				sections, start_header, end_header = _get_release_notes_with_retry(
 					releasenotes_path,
+					releasenotes_main,
 					releasenotes_backup,
 					fname,
 					from_ver,
