@@ -1,3 +1,18 @@
+[mona 3.0.3011]
+- Update revision (mona: 3011) AI integration improvements and bugfixes
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/435a44c">435a44c</link> update help text
+  - <link cmd="https://github.com/corelan/mona3/commit/94694bd">94694bd</link> fallback
+  - <link cmd="https://github.com/corelan/mona3/commit/9e50e75">9e50e75</link> allow -a to specify a heap chunk to investigate
+  - <link cmd="https://github.com/corelan/mona3/commit/daca77a">daca77a</link> updates to AI integration
+  - <link cmd="https://github.com/corelan/mona3/commit/3730f94">3730f94</link> update tellme functionality
+  - <link cmd="https://github.com/corelan/mona3/commit/8015d38">8015d38</link> timeout handling
+  - <link cmd="https://github.com/corelan/mona3/commit/f6f30c2">f6f30c2</link> improve crash context
+  - <link cmd="https://github.com/corelan/mona3/commit/21b22d7">21b22d7</link> Merge branch 'main' of https://github.com/corelan/mona3
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/d9085bc">d9085bc</link> Update revision (mona: 3010) split AI request & response
+  - <link cmd="https://github.com/corelan/mona3/commit/5cc5ffd">5cc5ffd</link> Update revision (mona: 3009)
+
 [mona 3.0.3010]
 - Update revision (mona: 3010) split AI request & response
 corelanc0d3r:
@@ -163,14 +178,3 @@ apl3b:
 - 801cc2c Merge pull request #48 from corelan/peb-teb-refactor
 - 53c1b52 implement helper to get numeric arguments
 - 91c10a5 Refactor PEB and TEB usage to be relying more on Mn structs
-
-[mona 3.0.3000]
-
-___  ________ _   _   ___          _____ 
-|  \/  |  _  | \ | | / _ \        |____ |
-| .  . | | | |  \| |/ /_\ \ __   __   / /
-| |\/| | | | | . ` ||  _  | \ \ / /   \ \
-| |  | \ \_/ / |\  || | | |  \ V /.___/ /
-\_|  |_/\___/\_| \_/\_| |_/   \_/ \____/ 
-      
-    Welcome to mona3!
