@@ -1648,6 +1648,7 @@ Also consider whether this may be a heap-related issue. If the crash looks heap-
 Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
 Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
 Saved return pointers collected from alloc/free log entries indicate where the corresponding allocation or free operation was made from. Use heapdynamics matched entries, their saved return pointers, symbol names, backward disassembly, full instruction windows, and the other supplied heap/register/memory context together to investigate the issue more deeply.
+Explain what the likely exploitation steps would be from this state, and how likely the vulnerability appears to be exploitable in practice based on the available evidence.
 If control appears partial or uncertain, say so explicitly.
 Keep the answer practical and precise."""
 	elif question_type == "2":
@@ -1697,6 +1698,44 @@ def getTellMeModelAndKey(engine, mona_config):
 			model = "claude-opus-4-20250514"
 
 	return api_key, model
+
+
+def getTellMeTimeout(engine, mona_config, args=None):
+	timeout_name = "%s.timeout" % engine
+	timeout = 45.0
+	timeout_source = "default"
+	timeout_raw = mona_config.get(timeout_name).strip()
+	if timeout_raw != "":
+		parsed_timeout, parsed_ok = getFloatArg(timeout_raw)
+		if parsed_ok and parsed_timeout > 0:
+			timeout = parsed_timeout
+			timeout_source = "config"
+			mndbg.dbgp("tellme: using configured timeout for %s via %s=%s" % (engine, timeout_name, timeout_raw))
+
+	env_timeout_name = ""
+	if engine == "openai":
+		env_timeout_name = "OPENAI_TIMEOUT"
+	elif engine == "anthropic":
+		env_timeout_name = "ANTHROPIC_TIMEOUT"
+
+	if timeout_raw == "" and env_timeout_name != "":
+		env_timeout = os.environ.get(env_timeout_name, "").strip()
+		if env_timeout != "":
+			parsed_timeout, parsed_ok = getFloatArg(env_timeout)
+			if parsed_ok and parsed_timeout > 0:
+				timeout = parsed_timeout
+				timeout_source = "env"
+				mndbg.dbgp("tellme: using environment fallback for %s.timeout via %s" % (engine, env_timeout_name))
+
+	if args is not None and "timeout" in args and type(args["timeout"]).__name__.lower() != "bool":
+		override_timeout, override_ok = getFloatArg(args["timeout"])
+		if not override_ok or override_timeout <= 0:
+			raise ValueError("Invalid -timeout value '%s'. Please specify a positive number of seconds." % args["timeout"])
+		timeout = override_timeout
+		timeout_source = "arg"
+		mndbg.dbgp("tellme: using explicit -timeout override '%s'" % str(args["timeout"]))
+
+	return timeout, timeout_source
 
 
 def getTellMeTestModel(engine):
@@ -2084,9 +2123,9 @@ def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="",
 	)
 
 
-def callTellMeOpenAI(api_key, model, prompt):
-	mndbg.dbgp("tellme: calling OpenAI model '%s'" % model)
-	client = OpenAI(api_key=api_key, timeout=45.0, max_retries=0)
+def callTellMeOpenAI(api_key, model, prompt, timeout_seconds=45.0):
+	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
+	client = OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)
 	response = client.responses.create(
 		model=model,
 		input=prompt
@@ -2116,9 +2155,9 @@ def _anthropic_extract_text(message):
 	return "\n".join([p for p in parts if p]).strip()
 
 
-def callTellMeAnthropic(api_key, model, prompt):
-	mndbg.dbgp("tellme: calling Anthropic model '%s'" % model)
-	client = Anthropic(api_key=api_key, timeout=45.0)
+def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=45.0):
+	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs" % (model, timeout_seconds))
+	client = Anthropic(api_key=api_key, timeout=timeout_seconds)
 	message = client.messages.create(
 		model=model,
 		max_tokens=1024,
@@ -2726,6 +2765,32 @@ def getIntArg(argvalue):
 		return int(numtxt), True
 	except Exception:
 		return 0, False
+
+
+def getFloatArg(argvalue):
+	"""
+	Tries to extract a float from a specified argument.
+	Returns the parsed value and a boolean that indicates success.
+	"""
+	try:
+		integer_types = (int, long)
+	except NameError:
+		integer_types = (int,)
+
+	if isinstance(argvalue, bool) or argvalue is None:
+		return 0.0, False
+
+	if isinstance(argvalue, (float,) + integer_types):
+		return float(argvalue), True
+
+	numtxt = str(argvalue).strip()
+	if numtxt == "":
+		return 0.0, False
+
+	try:
+		return float(numtxt), True
+	except Exception:
+		return 0.0, False
 
 
 def getHeapAllocSize(requested_size, granularity = 8):
@@ -22315,6 +22380,12 @@ def procTellMe(args):
 	mona_config = MnConfig()
 	api_key, model = getTellMeModelAndKey(engine, mona_config)
 	mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (engine, model))
+	try:
+		timeout_seconds, timeout_source = getTellMeTimeout(engine, mona_config, args=args)
+	except ValueError as e:
+		dbg.log(str(e), highlight=1)
+		return
+	mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (engine, timeout_seconds, timeout_source))
 
 	if "model" in args and type(args["model"]).__name__.lower() != "bool":
 		explicit_model = str(args["model"]).strip()
@@ -22340,19 +22411,23 @@ def procTellMe(args):
 		dbg.log("    OpenAI:")
 		dbg.log("      %s config -set openai.key <your OpenAI API key>" % getAliasName())
 		dbg.log("      %s config -set openai.model gpt-5.4" % getAliasName())
+		dbg.log("      %s config -set openai.timeout 90" % getAliasName())
 		dbg.log("      or (globally):")
 		dbg.log("      set OPENAI_API_KEY=<your OpenAI API key>")
 		dbg.log("      set OPENAI_MODEL=gpt-5.4")
+		dbg.log("      set OPENAI_TIMEOUT=90")
 		dbg.log("")
 		dbg.log("    Anthropic:")
 		dbg.log("      %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
 		dbg.log("      %s config -set anthropic.model claude-opus-4-20250514" % getAliasName())
+		dbg.log("      %s config -set anthropic.timeout 90" % getAliasName())
 		dbg.log("      or (globally):")
 		dbg.log("      set ANTHROPIC_API_KEY=<your Anthropic API key>")
 		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-20250514")
+		dbg.log("      set ANTHROPIC_TIMEOUT=90")
 		dbg.log("")
 		dbg.log("    mona.ini values take precedence over environment variables")
-		dbg.log("    The -model argument overrides both for a single request")
+		dbg.log("    The -model and -timeout arguments override both for a single request")
 		dbg.log("")
 		dbg.log("    Then run:")
 		dbg.log("      %s tellme -ai %s -q %s" % (getAliasName(), engine, question_type))
@@ -22454,6 +22529,7 @@ def procTellMe(args):
 		return
 
 	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
+	dbg.log("    Timeout   : %.1f seconds" % timeout_seconds)
 	request_logfile_path = writeTellMeRequestLog(
 		engine,
 		model,
@@ -22468,12 +22544,16 @@ def procTellMe(args):
 	answer = ""
 	request_id = ""
 	for attempt in xrange(1, max_attempts + 1):
-		dbg.log("    Attempt %d" % attempt)
+		attempt_timeout = timeout_seconds
+		if timeout_source == "default":
+			attempt_timeout = timeout_seconds + ((attempt - 1) * 10.0)
+		dbg.log("")
+		dbg.log("    Sending request to %s (attempt %d, timeout %.1fs)" % (engine, attempt, attempt_timeout), highlight=1)
 		try:
 			if engine == "openai":
-				answer, request_id = callTellMeOpenAI(api_key, model, prompt)
+				answer, request_id = callTellMeOpenAI(api_key, model, prompt, timeout_seconds=attempt_timeout)
 			else:
-				answer, request_id = callTellMeAnthropic(api_key, model, prompt)
+				answer, request_id = callTellMeAnthropic(api_key, model, prompt, timeout_seconds=attempt_timeout)
 			break
 		except Exception as e:
 			mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
@@ -22484,8 +22564,15 @@ def procTellMe(args):
 			logTellMeProviderError(engine, e)
 			if not _tellme_is_timeout_error(engine, e) or attempt >= max_attempts:
 				return
-			dbg.log("    Retrying in 10 seconds... (attempt %d/%d)" % (attempt + 1, max_attempts), highlight=1)
-			time.sleep(10)
+			next_timeout = timeout_seconds
+			retry_sleep_seconds = 10
+			if timeout_source == "default":
+				next_timeout = timeout_seconds + (attempt * 10.0)
+				retry_sleep_seconds = attempt * 10
+				dbg.log("    Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (retry_sleep_seconds, attempt + 1, max_attempts, next_timeout), highlight=1)
+			else:
+				dbg.log("    Retrying in %d seconds... (attempt %d/%d)" % (retry_sleep_seconds, attempt + 1, max_attempts), highlight=1)
+			time.sleep(retry_sleep_seconds)
 
 	if request_id:
 		dbg.log("    Request id: %s" % request_id)
@@ -30525,22 +30612,29 @@ Configuration:
     1. Store settings in mona.ini:
     %s config -set openai.key <your OpenAI API key>
     %s config -set openai.model gpt-5.4
+    %s config -set openai.timeout 90
     %s config -set anthropic.key <your Anthropic API key>
     %s config -set anthropic.model claude-opus-4-20250514
+    %s config -set anthropic.timeout 90
 
     2. Or use environment variables instead:
     - OPENAI_API_KEY
     - OPENAI_MODEL
+    - OPENAI_TIMEOUT
     - ANTHROPIC_API_KEY
     - ANTHROPIC_MODEL
+    - ANTHROPIC_TIMEOUT
 
 Precedence:
     If both are present, mona.ini values take precedence over environment variables
-    For a single request, -model overrides both config and environment values
+    For a single request, -model and -timeout override both config and environment values
 
 Default models:
     - OpenAI   : gpt-5.4
     - Anthropic: claude-opus-4-20250514
+
+Default timeout:
+    - 45 seconds per request
 
 Common models:
     - OpenAI   : gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano
@@ -30549,6 +30643,7 @@ Common models:
 	Arguments:
 	    -ai <engine> : AI engine to use. If omitted, mona uses the first available engine
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
+	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the crash context
 	                   2 = analyse the current function
@@ -30569,6 +30664,7 @@ Common models:
 	    %s tellme -ai openai -q 2 -a kernel32!CreateFileW
 	    %s tellme -ai openai -q 2 -a eip
 	    %s tellme -ai openai -model gpt-5.4-mini -q 1
+	    %s tellme -ai openai -q 1 -timeout 120
 	    %s tellme -ai openai -q 9 -f request.txt
 	    %s tellme -ai openai -q 1 -dryrun
 	    %s tellme -ai openai -q 1 -test
@@ -30589,7 +30685,7 @@ Common models:
 	Test model overrides:
 	    - OpenAI   : gpt-5.4-nano
 	    - Anthropic: claude-3-haiku-20240307
-		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
+		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
 
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])

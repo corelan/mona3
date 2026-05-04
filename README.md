@@ -577,8 +577,10 @@ Examples using `mona` config:
 ```python
 !mona config -set openai.key <your OpenAI API key>
 !mona config -set openai.model gpt-5.4
+!mona config -set openai.timeout 90
 !mona config -set anthropic.key <your Anthropic API key>
 !mona config -set anthropic.model claude-opus-4-20250514
+!mona config -set anthropic.timeout 90
 ```
 
 Examples using environment variables:
@@ -586,17 +588,20 @@ Examples using environment variables:
 ```batch
 set OPENAI_API_KEY=<your OpenAI API key>
 set OPENAI_MODEL=gpt-5.4
+set OPENAI_TIMEOUT=90
 set ANTHROPIC_API_KEY=<your Anthropic API key>
 set ANTHROPIC_MODEL=claude-opus-4-20250514
+set ANTHROPIC_TIMEOUT=90
 ```
 
-If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model for a single request with the `-model` argument.
+If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model or timeout for a single request with `-model` and `-timeout`.
 
 Example usage:
 
 ```python
 !mona tellme -ai openai -q 1
 !mona tellme -ai anthropic -q 2
+!mona tellme -ai openai -q 1 -timeout 120
 ```
 
 
