@@ -1048,6 +1048,29 @@ def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40):
 	return result
 
 
+def _tellme_get_heap_chunk_metadata(address):
+	result = OrderedDict()
+	result["address"] = PTR_PRINT % address
+	global g_heap_cmd_prefix
+	if g_heap_cmd_prefix is None:
+		try:
+			_probe = dbg.nativeCommand("!ext.heap")
+			if _probe and "Unable to find" not in _probe and "No export" not in _probe:
+				g_heap_cmd_prefix = "!ext."
+			else:
+				g_heap_cmd_prefix = "!"
+		except Exception:
+			g_heap_cmd_prefix = "!"
+	cmd = "%sheap -p -a %s" % (g_heap_cmd_prefix, PTR_PRINT % address)
+	result["command"] = cmd
+	try:
+		result["output"] = ensure_text(dbg.nativeCommand(cmd)).strip()
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: heap metadata lookup failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
+	return result
+
+
 def _tellme_get_page_summary(address):
 	summary = {"address": PTR_PRINT % address}
 	try:
@@ -1480,6 +1503,21 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 		entry["line_number"] = line_index + 1
 		entry["line"] = raw_line
 		entry["matched_registers"] = entry_matches
+		entry["heap_chunk_metadata"] = []
+		seen_heap_addresses = set()
+		for matched_register in entry_matches:
+			reg_name = matched_register.get("register", "")
+			reg_value = lower_regs.get(reg_name)
+			if not isinstance(reg_value, int) or reg_value <= 0:
+				continue
+			if reg_value in seen_heap_addresses:
+				continue
+			seen_heap_addresses.add(reg_value)
+			entry["heap_chunk_metadata"].append(OrderedDict([
+				("register", reg_name),
+				("value", PTR_PRINT % reg_value),
+				("heap", _tellme_get_heap_chunk_metadata(reg_value))
+			]))
 		return_pointer = _tellme_extract_return_pointer_context(raw_line)
 		if return_pointer is not None:
 			entry["return_pointer"] = return_pointer
