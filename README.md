@@ -600,9 +600,11 @@ If both are present, values from `mona.ini` take precedence over environment var
 
 If you use `-dryrun`, `tellme` will build the full request and save it to a file without calling the API. You can then open that file and paste the request into a browser-based AI session such as ChatGPT, Grok, or a similar tool.
 
-When the faulting instruction references heap-backed addresses, `tellme` also collects adjacent heap context for those references. This includes previous/current/next chunk metadata where available, plus `dps` dumps for the chunk entries. Large chunk dumps are capped to `0x200 / PTR_SIZE` lines.
+When the faulting instruction references heap-backed addresses, `tellme` also collects adjacent heap context for those references. This includes previous/current/next chunk metadata where available, `dps` dumps for the chunk entries, and both `!heap -p -a` and `!heap -x` (or `!ext.heap -p -a` and `!ext.heap -x` in WinDBGX) where tellme performs heap command lookups. Large chunk dumps are capped to `0x200 / PTR_SIZE` lines.
 
 If you use `-a` together with `-q 1`, `tellme` treats that address as an extra heap target to investigate. With `-q 2`, `-a` remains the code address/function location to analyze.
+
+If that `-q 1 -a` heap target lives in a corrupted heap and normal chunk enumeration cannot resolve it, `tellme` still collects fallback evidence using `!heap -p -a` (or `!ext.heap -p -a` in WinDBGX) plus a memory window spanning 100 bytes before and 100 bytes after the address.
 
 Example usage:
 

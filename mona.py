@@ -1079,7 +1079,40 @@ def _tellme_get_heap_chunk_metadata(address):
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: heap metadata lookup failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
+	result["heap_x"] = _tellme_get_heap_x_metadata(address)
 	return result
+
+
+def _tellme_get_heap_x_metadata(address):
+	result = OrderedDict()
+	result["address"] = PTR_PRINT % address
+	global g_heap_cmd_prefix
+	if g_heap_cmd_prefix is None:
+		try:
+			_probe = dbg.nativeCommand("!ext.heap")
+			if _probe and "Unable to find" not in _probe and "No export" not in _probe:
+				g_heap_cmd_prefix = "!ext."
+			else:
+				g_heap_cmd_prefix = "!"
+		except Exception:
+			g_heap_cmd_prefix = "!"
+	cmd = "%sheap -x %s" % (g_heap_cmd_prefix, PTR_PRINT % address)
+	result["command"] = cmd
+	try:
+		result["output"] = ensure_text(dbg.nativeCommand(cmd)).strip()
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: heap -x lookup failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
+	return result
+
+
+def _tellme_collect_manual_heap_target_fallback(address):
+	info = OrderedDict()
+	info["address"] = PTR_PRINT % address
+	info["heap_metadata"] = _tellme_get_heap_chunk_metadata(address)
+	start = max(int(address) - 100, 0)
+	info["memory_window"] = _tellme_read_memory(start, 200, "manual_heap_target_window")
+	return info
 
 
 def _tellme_get_chunk_dps_dump(chunk_address, chunk_size, label="chunk"):
@@ -1507,8 +1540,6 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 
 	referenced_registers = _tellme_extract_instruction_registers(instruction_text, regs)
 	info["referenced_registers"] = referenced_registers
-	if len(referenced_registers) == 0:
-		return info
 
 	layout_regions = []
 	try:
@@ -1542,12 +1573,16 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 			continue
 		reference_items.append((ref_name, ref_value, ref_source))
 
+	if len(reference_items) == 0:
+		return info
+
 	seen_references = set()
 	for ref_name, reg_value, ref_source in reference_items:
 		dedup_key = (ref_name.lower(), reg_value, ref_source.lower())
 		if dedup_key in seen_references:
 			continue
 		seen_references.add(dedup_key)
+		is_manual_heap_target = (ref_source == "q1_-a")
 		entry = OrderedDict()
 		entry["register"] = ref_name
 		entry["source"] = ref_source
@@ -1558,6 +1593,8 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 		layout_region = _tellme_find_layout_region(reg_value, layout_regions)
 		if layout_region is None:
 			entry["match"] = "none"
+			if is_manual_heap_target:
+				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
 			info["references"].append(entry)
 			continue
 
@@ -1590,6 +1627,8 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 					entry["chunk_contents"] = _tellme_read_memory(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % ref_name)
 				entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
 				entry["referenced_memory"] = _tellme_read_memory(reg_value, min(0x40, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % ref_name)
+				if is_manual_heap_target:
+					entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
 			elif isinstance(foundinchunk, dict):
 				commit_size = int(foundinchunk.get("commit_size", 0))
 				reserve_size = int(foundinchunk.get("reserve_size", 0))
@@ -1598,9 +1637,15 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 				entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
 				read_size = min(0x100, max((layout_region["end"] - reg_value), 0x10))
 				entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % ref_name)
+				if is_manual_heap_target:
+					entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+			elif is_manual_heap_target:
+				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
 		except Exception as e:
 			entry["heap_lookup_error"] = str(e)
 			mndbg.dbgp("tellme: heap lookup for reference '%s' failed: %s" % (ref_name, str(e)), errormode=False)
+			if is_manual_heap_target:
+				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
 		info["references"].append(entry)
 
 	return info
@@ -31056,6 +31101,7 @@ Common models:
 	    [instruction_heap_references] = heap/chunk/pointer context for registers referenced by the current instruction
 	    [adjacent_chunks]             = previous/current/next chunk metadata and chunk dps dumps for heap-backed references
 	    [heap_analysis_target]        = optional extra heap-focused target address from -a when using -q 1
+	    [manual_heap_fallback]        = q1 -a fallback data: heap command output plus a 100-byte-before/after memory window
 	    [heapdynamics]                = full heapdynamics file contents plus matched-register metadata and saved return-pointer context
 	    [heapdynamics_mini]           = only the matched heapdynamics lines and nearby context for addresses referenced by the current instruction
 	    [additional_context_files]    = user-supplied supporting files from -l that do not contain alloc()/free() lines
@@ -31083,6 +31129,8 @@ Common models:
 	         and heap chunk/VAD metadata when those registers point into known heap-managed regions.
 	         If -a is supplied with -q 1, that address is also treated as an extra heap target and included
 	         in the heap-reference investigation even if it is not directly referenced by the faulting instruction.
+	         If heap walking or getAllSorted() cannot resolve that q1 -a address, tellme still collects fallback data:
+	         !heap -p -a, !heap -x (or !ext.heap -p -a / !ext.heap -x under WinDBGX), plus a memory dump spanning 100 bytes before and 100 bytes after the address.
 	         When a referenced address resolves into a heap chunk, tellme also adds adjacent_chunks data for the
 	         previous/current/next chunk where available, including metadata and dps dumps of the chunk entries.
 	         For large chunks, the dps dump is capped at 0x200 bytes (0x200/PTR_SIZE lines).
@@ -31090,7 +31138,7 @@ Common models:
 	         Focused matches for addresses referenced by the current instruction are added under [heapdynamics_mini].
 	         Any -l files that are not heapdynamics logs are added under [additional_context_files], and -p adds a dedicated [poc_file] entry.
 	         Matching heapdynamics entries include saved return pointers from alloc/free lines,
-	         nearest symbol information, backward and forward disassembly, and !heap -p -a / !ext.heap -p -a output for matching addresses.
+	         nearest symbol information, backward and forward disassembly, and both !heap -p -a and !heap -x (or !ext.heap -p -a and !ext.heap -x) output for matching addresses.
 	    -q 2 requires a valid current instruction at the selected target address. If the current PC is corrupted, use -a with a known-good code address or function location.
 	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
 
