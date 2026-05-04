@@ -1082,6 +1082,165 @@ def _tellme_get_heap_chunk_metadata(address):
 	return result
 
 
+def _tellme_get_chunk_dps_dump(chunk_address, chunk_size, label="chunk"):
+	result = OrderedDict()
+	result["label"] = label
+	result["address"] = PTR_PRINT % chunk_address
+	result["chunk_size"] = "0x%x" % chunk_size
+	effective_chunk_size = min(int(chunk_size), 0x200)
+	word_expr = "0x%x/%s" % (effective_chunk_size, PTR_SIZE)
+	result["effective_dump_size"] = "0x%x" % effective_chunk_size
+	cmd = "dps %s L %s" % (PTR_PRINT % chunk_address, word_expr)
+	result["command"] = cmd
+	try:
+		result["output"] = _tellme_format_text(ensure_text(dbg.nativeCommand(cmd)).strip(), max_len=16384)
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: chunk dump failed for %s using '%s': %s" % (PTR_PRINT % chunk_address, cmd, str(e)), errormode=False)
+	return result
+
+
+def _tellme_describe_chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+	for va, vi in va_blks.items():
+		if va <= chunk.chunkptr < va + vi["commit_size"]:
+			return "VABlock @ %s" % (PTR_PRINT % va)
+	if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts):
+		try:
+			return "LFH Subsegment (LFH @ %s)" % (PTR_PRINT % mheap.getLFHAddress())
+		except Exception:
+			return "LFH Subsegment"
+	return "Segment @ %s" % (PTR_PRINT % chunk.segmentbase)
+
+
+def _tellme_serialize_adjacent_chunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+	if chunk is None:
+		return OrderedDict([
+			("label", label),
+			("present", False)
+		])
+	chunk_size = chunk.size * HEAPGRANULARITY
+	info = OrderedDict()
+	info["label"] = label
+	info["present"] = True
+	info["chunk_ptr"] = PTR_PRINT % chunk.chunkptr
+	info["user_ptr"] = PTR_PRINT % chunk.userptr
+	info["user_size"] = "0x%x" % chunk.usersize
+	info["chunk_size"] = "0x%x" % chunk_size
+	info["state"] = getHeapFlag(chunk.flag)
+	info["heap"] = PTR_PRINT % mheap.heapbase
+	info["context"] = _tellme_describe_chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+	try:
+		info["first_8_bytes_at_user_ptr"] = bin2hex(dbg.readMemory(chunk.userptr, 8))
+	except Exception as e:
+		info["first_8_bytes_error"] = str(e)
+	info["chunk_dump"] = _tellme_get_chunk_dps_dump(chunk.chunkptr, chunk_size, label=label)
+	return info
+
+
+def _tellme_collect_adjacent_chunk_context(refvalue):
+	info = OrderedDict()
+	info["reference"] = PTR_PRINT % refvalue
+
+	MnProc.ensure()
+	if mnproc is None:
+		info["error"] = "No active process context"
+		return info
+
+	found_result = None
+	for mheap in mnproc.getPEB().getNTHeaps():
+		if found_result is not None:
+			break
+		try:
+			for seg in mheap.getSegments():
+				seg_lo = min(seg.BaseAddress, seg.FirstEntry)
+				if not (seg_lo <= refvalue < seg.LastValidEntry):
+					continue
+				sorted_chunks = sorted(seg.getChunks().values(), key=lambda c: c.chunkptr)
+				for idx, chunk in enumerate(sorted_chunks):
+					if chunk.chunkptr <= refvalue < chunk.chunkptr + (chunk.size * HEAPGRANULARITY):
+						found_result = ("seg", mheap, sorted_chunks, idx)
+						break
+				if found_result is not None:
+					break
+		except Exception:
+			pass
+		if found_result is not None:
+			break
+		try:
+			for vaaddr, vainfo in mheap.getVirtualAllocdBlocks().items():
+				if vaaddr <= refvalue < vaaddr + vainfo["commit_size"]:
+					found_result = ("va", mheap, vaaddr, vainfo)
+					break
+		except Exception:
+			pass
+
+	if found_result is None:
+		info["error"] = "Could not find a heap chunk containing %s" % (PTR_PRINT % refvalue)
+		return info
+
+	kind = found_result[0]
+	mheap = found_result[1]
+	info["heap"] = PTR_PRINT % mheap.heapbase
+	info["kind"] = kind
+
+	va_blks = {}
+	try:
+		va_blks = mheap.getVirtualAllocdBlocks()
+	except Exception:
+		pass
+	lfh_ranges = []
+	lfh_starts = []
+	try:
+		lfh_ranges = mheap.getLFHRanges()
+		lfh_starts = [r[0] for r in lfh_ranges]
+	except Exception:
+		pass
+
+	if kind == "seg":
+		_, _, sorted_chunks, idx = found_result
+		prev_chunk = sorted_chunks[idx - 1] if idx > 0 else None
+		curr_chunk = sorted_chunks[idx]
+		next_chunk = sorted_chunks[idx + 1] if idx < len(sorted_chunks) - 1 else None
+		info["chunks"] = [
+			_tellme_serialize_adjacent_chunk("previous", prev_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
+			_tellme_serialize_adjacent_chunk("current", curr_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
+			_tellme_serialize_adjacent_chunk("next", next_chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+		]
+	else:
+		_, _, vaaddr, vainfo = found_result
+		busy_off = archValue(0x018, 0x030)
+		hdr_size = archValue(0x8, 0x10)
+		chunk_ptr = vaaddr + busy_off
+		user_ptr = chunk_ptr + hdr_size
+		user_size = vainfo["commit_size"] - busy_off - hdr_size
+		chunk_size = vainfo["commit_size"] - busy_off
+		info["note"] = "VA blocks are standalone; no adjacent previous/next chunk in segment context"
+		current = OrderedDict()
+		current["label"] = "current"
+		current["present"] = True
+		current["chunk_ptr"] = PTR_PRINT % chunk_ptr
+		current["user_ptr"] = PTR_PRINT % user_ptr
+		current["user_size"] = "0x%x" % user_size
+		current["chunk_size"] = "0x%x" % chunk_size
+		current["state"] = "Busy/VirtAllocd"
+		current["heap"] = PTR_PRINT % mheap.heapbase
+		current["context"] = "VABlock @ %s (CommitSize: 0x%x, ReserveSize: 0x%x)" % (
+			PTR_PRINT % vaaddr, vainfo["commit_size"], vainfo["reserve_size"]
+		)
+		try:
+			current["first_8_bytes_at_user_ptr"] = bin2hex(dbg.readMemory(user_ptr, 8))
+		except Exception as e:
+			current["first_8_bytes_error"] = str(e)
+		current["chunk_dump"] = _tellme_get_chunk_dps_dump(chunk_ptr, chunk_size, label="current")
+		info["chunks"] = [
+			OrderedDict([("label", "previous"), ("present", False)]),
+			current,
+			OrderedDict([("label", "next"), ("present", False)])
+		]
+
+	return info
+
+
 def _tellme_get_page_summary(address):
 	summary = {"address": PTR_PRINT % address}
 	try:
@@ -1327,12 +1486,14 @@ def _tellme_find_layout_region(address, layout_regions):
 	return None
 
 
-def _tellme_collect_instruction_heap_context(regs, pc):
+def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 	info = {
 		"instruction": "",
 		"referenced_registers": [],
 		"references": []
 	}
+	if extra_references is None:
+		extra_references = []
 	if not isinstance(pc, int) or pc <= 0:
 		return info
 	try:
@@ -1364,16 +1525,36 @@ def _tellme_collect_instruction_heap_context(regs, pc):
 	for reg_name, reg_value in regs.items():
 		lower_regs[str(reg_name).lower()] = reg_value
 
+	reference_items = []
 	for reg_name in referenced_registers:
 		reg_value = lower_regs.get(reg_name)
 		if not isinstance(reg_value, int) or reg_value <= 0:
 			continue
+		reference_items.append((reg_name, reg_value, "instruction_register"))
+
+	for extra_ref in extra_references:
+		if not isinstance(extra_ref, dict):
+			continue
+		ref_name = str(extra_ref.get("name", "extra_reference"))
+		ref_value = extra_ref.get("value", 0)
+		ref_source = str(extra_ref.get("source", "extra_reference"))
+		if not isinstance(ref_value, int) or ref_value <= 0:
+			continue
+		reference_items.append((ref_name, ref_value, ref_source))
+
+	seen_references = set()
+	for ref_name, reg_value, ref_source in reference_items:
+		dedup_key = (ref_name.lower(), reg_value, ref_source.lower())
+		if dedup_key in seen_references:
+			continue
+		seen_references.add(dedup_key)
 		entry = OrderedDict()
-		entry["register"] = reg_name
+		entry["register"] = ref_name
+		entry["source"] = ref_source
 		entry["value"] = PTR_PRINT % reg_value
 		entry["instruction"] = instruction_text
 		entry["pointer_dump"] = _tellme_get_pointer_dump(reg_value, bytes_before=0x28, line_count=0x40)
-		entry["nearby_memory"] = _tellme_read_memory(max(reg_value - 0x28, 0), 0x80, "%s_nearby_memory" % reg_name)
+		entry["nearby_memory"] = _tellme_read_memory(max(reg_value - 0x28, 0), 0x80, "%s_nearby_memory" % ref_name)
 		layout_region = _tellme_find_layout_region(reg_value, layout_regions)
 		if layout_region is None:
 			entry["match"] = "none"
@@ -1406,18 +1587,20 @@ def _tellme_collect_instruction_heap_context(regs, pc):
 					entry["user_offset"] = "0x%x" % (reg_value - foundinchunk.userptr)
 				chunk_dump_size = min(max(foundinchunk.usersize, 0), 0x100)
 				if chunk_dump_size > 0:
-					entry["chunk_contents"] = _tellme_read_memory(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % reg_name)
-				entry["referenced_memory"] = _tellme_read_memory(reg_value, min(0x40, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % reg_name)
+					entry["chunk_contents"] = _tellme_read_memory(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % ref_name)
+				entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
+				entry["referenced_memory"] = _tellme_read_memory(reg_value, min(0x40, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % ref_name)
 			elif isinstance(foundinchunk, dict):
 				commit_size = int(foundinchunk.get("commit_size", 0))
 				reserve_size = int(foundinchunk.get("reserve_size", 0))
 				entry["commit_size"] = "0x%x" % commit_size
 				entry["reserve_size"] = "0x%x" % reserve_size
+				entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
 				read_size = min(0x100, max((layout_region["end"] - reg_value), 0x10))
-				entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % reg_name)
+				entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % ref_name)
 		except Exception as e:
 			entry["heap_lookup_error"] = str(e)
-			mndbg.dbgp("tellme: heap lookup for register '%s' failed: %s" % (reg_name, str(e)), errormode=False)
+			mndbg.dbgp("tellme: heap lookup for reference '%s' failed: %s" % (ref_name, str(e)), errormode=False)
 		info["references"].append(entry)
 
 	return info
@@ -1614,7 +1797,7 @@ def getTellMePattern():
 	return g_tellme_pattern_cache
 
 
-def collectTellMeContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file=""):
+def collectTellMeContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0):
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
 	context = {
 		"debugger": __DEBUGGERAPP__,
@@ -1652,7 +1835,18 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		context["pc_memory"] = _tellme_read_memory(pc, 0x40, "pc_memory")
 		if question_type == "1":
 			try:
-				context["instruction_heap_references"] = _tellme_collect_instruction_heap_context(regs, pc)
+				extra_references = []
+				if isinstance(heap_target_address, int) and heap_target_address > 0:
+					extra_references.append({
+						"name": "manual_target",
+						"value": heap_target_address,
+						"source": "q1_-a"
+					})
+					context["heap_analysis_target"] = {
+						"address": PTR_PRINT % heap_target_address,
+						"source": "-a"
+					}
+				context["instruction_heap_references"] = _tellme_collect_instruction_heap_context(regs, pc, extra_references=extra_references)
 			except Exception as e:
 				context["instruction_heap_references_error"] = str(e)
 				mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
@@ -22448,6 +22642,7 @@ def procTellMe(args):
 	mndbg.dbgp("tellme: dryrun=%s, testmode=%s" % (str(dryrun), str(testmode)))
 	target_address = 0
 	target_address_source = PROGRAM_COUNTER.upper()
+	heap_target_address = 0
 
 	if mnproc is None:
 		mndbg.dbgp("tellme: initializing shared process context")
@@ -22464,8 +22659,13 @@ def procTellMe(args):
 		if not addyok:
 			dbg.log("Please specify a valid address/register/module/module!function/symbol expression with -a", highlight=1)
 			return
-		target_address_source = "-a"
-		mndbg.dbgp("tellme: using target address override %s from -a" % (PTR_PRINT % target_address))
+		if question_type == "1":
+			heap_target_address = target_address
+			target_address_source = "-a"
+			mndbg.dbgp("tellme: using heap analysis target %s from -a for q1" % (PTR_PRINT % heap_target_address))
+		else:
+			target_address_source = "-a"
+			mndbg.dbgp("tellme: using target address override %s from -a" % (PTR_PRINT % target_address))
 
 	template_file = ""
 	if question_type == "9":
@@ -22595,7 +22795,8 @@ def procTellMe(args):
 			question_type,
 			heapdynamics_files=heapdynamics_files,
 			additional_context_files=additional_context_files,
-			poc_file=poc_file
+			poc_file=poc_file,
+			heap_target_address=heap_target_address
 		)
 	except Exception as e:
 		dbg.log("Failed to collect debugger context: %s" % str(e), highlight=1)
@@ -30808,8 +31009,10 @@ Common models:
 	                   1 = analyse the crash context
 	                   2 = analyse the current function
 	                   9 = load a request template from -f <file>
-	    -a <address> : Optional code address/register/module!symbol/expression to analyse.
-	                   Primarily useful with -q 2 when EIP/RIP is already corrupted
+	    -a <address> : Optional address/register/module!symbol/expression to analyse.
+	                   With -q 1, this address is treated as an extra heap target to investigate.
+	                   With -q 2, this is the code address/function location to analyse,
+	                   primarily useful when EIP/RIP is already corrupted
 	    -l <files>   : Optional comma-separated context files, for example -l "file1,file2"
 	                   Any file containing alloc()/free() lines is treated as a heapdynamics log
 	                   Other files are added as supporting context under [additional_context_files]
@@ -30851,6 +31054,8 @@ Common models:
 	    [stack_memory]                = raw bytes near the current stack pointer
 	    [call_stack]                  = WinDBG call stack output
 	    [instruction_heap_references] = heap/chunk/pointer context for registers referenced by the current instruction
+	    [adjacent_chunks]             = previous/current/next chunk metadata and chunk dps dumps for heap-backed references
+	    [heap_analysis_target]        = optional extra heap-focused target address from -a when using -q 1
 	    [heapdynamics]                = full heapdynamics file contents plus matched-register metadata and saved return-pointer context
 	    [heapdynamics_mini]           = only the matched heapdynamics lines and nearby context for addresses referenced by the current instruction
 	    [additional_context_files]    = user-supplied supporting files from -l that do not contain alloc()/free() lines
@@ -30871,6 +31076,23 @@ Common models:
 	    in ChatGPT, Grok, or another AI tool.
 	    With -dryrun, tellme saves the request file and prints only the saved file path instead of dumping the
 	    full request to the debugger console.
+
+	Question notes:
+	    -q 1 collects crash context, cyclic-pattern hints, and extra context for registers referenced by the current instruction.
+	         This includes instruction windows around the current PC, pointer dumps and nearby memory for referenced registers,
+	         and heap chunk/VAD metadata when those registers point into known heap-managed regions.
+	         If -a is supplied with -q 1, that address is also treated as an extra heap target and included
+	         in the heap-reference investigation even if it is not directly referenced by the faulting instruction.
+	         When a referenced address resolves into a heap chunk, tellme also adds adjacent_chunks data for the
+	         previous/current/next chunk where available, including metadata and dps dumps of the chunk entries.
+	         For large chunks, the dps dump is capped at 0x200 bytes (0x200/PTR_SIZE lines).
+	         If heapdynamics files are supplied via -l, or c:\\alloc.txt exists, the entire heapdynamics file contents are added under [heapdynamics].
+	         Focused matches for addresses referenced by the current instruction are added under [heapdynamics_mini].
+	         Any -l files that are not heapdynamics logs are added under [additional_context_files], and -p adds a dedicated [poc_file] entry.
+	         Matching heapdynamics entries include saved return pointers from alloc/free lines,
+	         nearest symbol information, backward and forward disassembly, and !heap -p -a / !ext.heap -p -a output for matching addresses.
+	    -q 2 requires a valid current instruction at the selected target address. If the current PC is corrupted, use -a with a known-good code address or function location.
+	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
 
 	Test model overrides:
 	    - OpenAI   : gpt-5.4-nano
