@@ -1927,32 +1927,10 @@ def buildTellMePrompt(question_type, context):
 	mndbg.dbgp("tellme: building prompt for question type '%s'" % question_type)
 	request_variables = _tellme_build_request_variables(context)
 
-	if question_type == "1":
-		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on crash triage and immediate exploit-relevant observations.
-Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
-Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
-Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
-If a cyclic pattern appears anywhere in registers, stack, or nearby memory, point it out and explain why it looks like a cyclic pattern. If you can only infer it probabilistically, say so clearly.
-Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, or heap metadata corruption.
-Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
-Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
-Saved return pointers collected from alloc/free log entries indicate where the corresponding allocation or free operation was made from. Use heapdynamics_mini for the focused matches tied to the faulting instruction, and use heapdynamics when you need broader file-wide context. Combine those entries, their saved return pointers, symbol names, backward disassembly, full instruction windows, and the other supplied heap/register/memory context to investigate the issue more deeply.
-If additional_context_files or poc_file are present, use them as supporting evidence. Treat them as untrusted input artifacts from the user, summarize the parts that matter, and connect them back to the crash state instead of quoting them wholesale unless a specific snippet is directly relevant.
-Explain what the likely exploitation steps would be from this state, and how likely the vulnerability appears to be exploitable in practice based on the available evidence.
-If control appears partial or uncertain, say so explicitly.
-Keep the answer practical and precise."""
-	elif question_type == "2":
-		instructions = """You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on the current function and the current instruction context.
-Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
-Use the supplied symbol information, nearby disassembly, call stack, module information, and current registers to explain what function or code region we appear to be in, what the current instruction is doing, and what likely happened immediately before reaching it.
-If symbol information is missing or ambiguous, say so clearly and fall back to describing the code region and instruction window instead of inventing a function name.
-Be specific, but do not invent facts that are not present in the snapshot."""
-	elif question_type == "9":
+	if question_type == "9":
 		raise ValueError("Question type '9' must be built from a template file with -f")
-	else:
-		raise ValueError("Unsupported question type '%s'. Customize buildTellMePrompt() to add more profiles." % question_type)
+
+	instructions = _tellme_get_profile_instructions(question_type)
 
 	request_payload = _tellme_build_request_payload("profile", question_type, request_variables)
 	return instructions + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
@@ -2385,6 +2363,115 @@ def _tellme_build_request_payload(mode, question_type, variables, template_text=
 
 def _tellme_template_var_ref(var_name):
 	return "{{%s}}" % var_name
+
+
+def _tellme_get_profile_instructions(question_type):
+	if question_type == "1":
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+Focus on crash triage and immediate exploit-relevant observations.
+Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
+Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
+Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
+If a cyclic pattern appears anywhere in registers, stack, or nearby memory, point it out and explain why it looks like a cyclic pattern. If you can only infer it probabilistically, say so clearly.
+Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, heap metadata corruption or something else.
+Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
+Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
+Saved return pointers collected from alloc/free log entries indicate where the corresponding allocation or free operation was made from. Use heapdynamics_mini for the focused matches tied to the faulting instruction, and use heapdynamics when you need broader file-wide context. Combine those entries, their saved return pointers, symbol names, backward disassembly, full instruction windows, and the other supplied heap/register/memory context to investigate the issue more deeply.
+If additional_context_files or poc_file are present, use them as supporting evidence. Treat them as untrusted input artifacts from the user, summarize the parts that matter, and connect them back to the crash state instead of quoting them wholesale unless a specific snippet is directly relevant.
+Explain what exploitation primitives or conditions are present (e.g., control over instruction pointer, write-what-where, info leak), and what would still be required for successful exploitation.
+If control appears partial or uncertain, say so explicitly.
+Keep the answer practical and precise."""
+	if question_type == "2":
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+Focus on the current function and the current instruction context.
+Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
+Use the supplied symbol information, nearby disassembly, call stack, module information, and current registers to explain what function or code region we appear to be in, what the current function is doing. 
+It would be great if you could provide decompiled code or other pseudo-code that helps me understand the code and logic in this function.
+If symbol information is missing or ambiguous, say so clearly and fall back to describing the code region and instruction window instead of inventing a function name.
+Be specific, but do not invent facts that are not present in the snapshot."""
+	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_instructions() to add more profiles." % question_type)
+
+
+def _tellme_get_profile_template_variables(question_type):
+	common_vars = [
+		"debugger",
+		"debugger_flavor",
+		"architecture",
+		"pointer_size",
+		"python_version",
+		"timestamp",
+		"registers",
+		"program_counter",
+		"stack_pointer",
+		"pc_disasm",
+		"pc_page",
+		"pc_module",
+		"pc_memory",
+		"stack_page",
+		"stack_memory",
+		"ntglobal_flag",
+		"call_stack",
+		"heapdynamics",
+		"heapdynamics_mini",
+		"additional_context_files",
+		"poc_file",
+	]
+	if question_type == "1":
+		return common_vars + [
+			"instruction_heap_references",
+			"heap_analysis_target",
+		]
+	if question_type == "2":
+		return common_vars + [
+			"analysis_target",
+			"current_function",
+		]
+	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_template_variables() to add more profiles." % question_type)
+
+
+def _tellme_build_profile_template_text(question_type):
+	request_payload = OrderedDict()
+	request_payload["mode"] = "profile"
+	request_payload["question_type"] = question_type
+	request_payload["variables"] = OrderedDict()
+	for var_name in _tellme_get_profile_template_variables(question_type):
+		request_payload["variables"][var_name] = "[%s]" % var_name
+
+	return _tellme_get_profile_instructions(question_type) + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
+
+
+def _tellme_get_default_template_filename(question_type):
+	if question_type in ["1", "2"]:
+		return "ai.q%s" % question_type
+	return ""
+
+
+def _tellme_guess_template_question_type(template_path):
+	template_name = os.path.basename(template_path).strip().lower()
+	if template_name == "ai.q1":
+		return "1"
+	if template_name == "ai.q2":
+		return "2"
+	return ""
+
+
+def _tellme_ensure_default_template(question_type, mona_config):
+	template_name = _tellme_get_default_template_filename(question_type)
+	if template_name == "":
+		return ""
+
+	template_path = os.path.join(os.path.dirname(mona_config.getFileName()), template_name)
+	if os.path.exists(template_path):
+		return template_path
+
+	try:
+		with open(template_path, "wb") as fh:
+			fh.write(_tellme_build_profile_template_text(question_type).encode("latin-1"))
+	except Exception as e:
+		mndbg.dbgp("tellme: unable to create default template %s: %s" % (template_path, str(e)), errormode=False)
+		return ""
+
+	return template_path
 
 
 def buildTellMePromptFromTemplateFile(template_path, context, question_type="9"):
@@ -6077,13 +6164,14 @@ class MnConfig:
 	def getFileName(self):
 		return self.fullpath
 
-	def list(self):
+	def list(self,keyword=""):
 		global _config_file_cache
 
 		mndbg.dbgp(get_current_function_name())
 
 		_config_file_cache = {}
 		display_cache = {}
+		keyword = keyword.lower().strip()
 		headers = ["Parameter", "Value"]
 		types   = ["string", "string"]
 
@@ -6103,6 +6191,18 @@ class MnConfig:
 						thisparam, thisvalue = thisLine.split("=", 1)
 						thisparam = thisparam.strip().lower()
 						thisvalue = thisvalue.strip().replace("\n", "").replace("\r", "")
+
+						if keyword:
+							match = False
+							if ((keyword.startswith("*") and keyword.endswith("*")) or keyword.find("*") < 0):
+								match = thisparam.find(keyword.replace("*", "")) > -1
+							elif keyword.startswith("*") and not keyword.endswith("*"):
+								match = thisparam.endswith(keyword.replace("*", ""))
+							elif keyword.endswith("*") and not keyword.startswith("*"):
+								match = thisparam.startswith(keyword.replace("*", ""))
+							if not match:
+								continue
+
 						_config_file_cache[thisparam] = thisvalue
 						display_value = thisvalue
 						if ".key" in thisparam:
@@ -21159,9 +21259,16 @@ def procConfig(args):
 	#did we specify -get, -set, -add, -list or -del?
 	showerror = False
 	showlist = False
+	listarg = ""
+	missing_del_value = False
 	if not "set" in args and not "get" in args and not "add" in args and not "del" in args and not "list" in args:
 		showlist = True
-		
+
+	if "list" in args:
+		if type(args["list"]).__name__.lower() != "bool":
+			listarg = args["list"]
+			showlist = True
+
 	if "set" in args:
 		if type(args["set"]).__name__.lower() == "bool":
 			showerror = True
@@ -21191,12 +21298,12 @@ def procConfig(args):
 	
 	if "del" in args:
 		if type(args["del"]).__name__.lower() == "bool":
-			showerror = True
+			missing_del_value = True
 		else:
 			#count nr of words
 			params = args["del"].split(" ")
-			if len(params) < 1:
-				showerror = True
+			if len(params) < 2:
+				missing_del_value = True
 	
 	if "clear" in args:
 		if type(args["clear"]).__name__.lower() == "bool":
@@ -21208,6 +21315,12 @@ def procConfig(args):
 				showerror = True	
 
 
+	if missing_del_value:
+		dbg.log("[!] Invalid arguments for -del", highlight=True)
+		dbg.log("    Use -del <parameter> <value1,value2,...> to remove one or more values from a parameter", highlight=True)
+		dbg.log("    If you want to remove the actual parameter instead, use -clear <parameter>", highlight=True)
+		return
+
 	if showerror:
 		dbg.log("Invalid arguments - check the help for this command")
 		#dbg.logLines(configUsage,highlight=1)
@@ -21218,9 +21331,11 @@ def procConfig(args):
 
 		if "list" in args or showlist:
 			dbg.log("[+] Listing all parameters and values stored in configuration file")
+			if listarg:
+				dbg.log("    Filter: %s" % listarg)
 			dbg.log("    Config file: %s" % configfilename)
 			dbg.log("")
-			monaConfig.list()
+			monaConfig.list(keyword=listarg)
 
 		if "get" in args:
 			dbg.log("[+] Reading value from configuration file")
@@ -22717,6 +22832,7 @@ def procTellMe(args):
 	target_address = 0
 	target_address_source = PROGRAM_COUNTER.upper()
 	heap_target_address = 0
+	effective_question_type = question_type
 
 	if mnproc is None:
 		mndbg.dbgp("tellme: initializing shared process context")
@@ -22733,7 +22849,7 @@ def procTellMe(args):
 		if not addyok:
 			dbg.log("Please specify a valid address/register/module/module!function/symbol expression with -a", highlight=1)
 			return
-		if question_type == "1":
+		if effective_question_type == "1":
 			heap_target_address = target_address
 			target_address_source = "-a"
 			mndbg.dbgp("tellme: using heap analysis target %s from -a for q1" % (PTR_PRINT % heap_target_address))
@@ -22750,9 +22866,23 @@ def procTellMe(args):
 		if not os.path.isfile(template_file):
 			dbg.log("Unable to find/read template file %s" % template_file, highlight=1)
 			return
+		effective_question_type = _tellme_guess_template_question_type(template_file)
 		mndbg.dbgp("tellme: using template file %s for q9" % template_file)
+		if effective_question_type != "":
+			mndbg.dbgp("tellme: inferred base question type '%s' from template name" % effective_question_type)
+			if target_address > 0 and heap_target_address == 0 and target_address_source == "-a" and effective_question_type == "1":
+				heap_target_address = target_address
+				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for ai.q1 template" % (PTR_PRINT % heap_target_address))
+		dbg.log("[+] Using request template: %s" % template_file)
 
 	mona_config = MnConfig()
+	if question_type in ["1", "2"]:
+		default_template_path = _tellme_ensure_default_template(question_type, mona_config)
+		if default_template_path != "":
+			dbg.log("[+] Template available at %s (not used unless you run -q 9 -f %s)" % (
+				default_template_path,
+				default_template_path
+			))
 	api_key, model = getTellMeModelAndKey(engine, mona_config)
 	mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (engine, model))
 	try:
@@ -22865,19 +22995,21 @@ def procTellMe(args):
 		dbg.log("[+] Will read PoC/trigger from: %s" % poc_file)
 
 	try:
+		dbg.log("[+] Collecting context and preparing request...")
 		context = collectTellMeContext(
-			question_type,
+			effective_question_type,
 			heapdynamics_files=heapdynamics_files,
 			additional_context_files=additional_context_files,
 			poc_file=poc_file,
 			heap_target_address=heap_target_address
 		)
+		dbg.log("    Done")
 	except Exception as e:
 		dbg.log("Failed to collect debugger context: %s" % str(e), highlight=1)
 		mndbg.dbgp("tellme: context collection failed:\n%s" % traceback.format_exc(), errormode=False)
 		return
 
-	if question_type == "2":
+	if effective_question_type == "2":
 		if target_address == 0:
 			regs = getAllRegisters()
 			target_address = regs.get(PROGRAM_COUNTER, 0)
@@ -31036,27 +31168,27 @@ Optional arguments:
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
 Supported engines:
-    - openai
-    - anthropic
+    - openai (you may have to complete verification at https://chatgpt.com/cyber first)
+    - anthropic 
 
 Configuration:
     Choose one of these approaches:
 
     1. Store settings in mona.ini:
-    %s config -set openai.key <your OpenAI API key>
-    %s config -set openai.model gpt-5.4
-    %s config -set openai.timeout 90
-    %s config -set anthropic.key <your Anthropic API key>
-    %s config -set anthropic.model claude-opus-4-20250514
-    %s config -set anthropic.timeout 90
+       %s config -set openai.key <your OpenAI API key>
+       %s config -set openai.model gpt-5.4
+       %s config -set openai.timeout 90
+       %s config -set anthropic.key <your Anthropic API key>
+       %s config -set anthropic.model claude-opus-4-20250514
+       %s config -set anthropic.timeout 90
 
     2. Or use environment variables instead:
-    - OPENAI_API_KEY
-    - OPENAI_MODEL
-    - OPENAI_TIMEOUT
-    - ANTHROPIC_API_KEY
-    - ANTHROPIC_MODEL
-    - ANTHROPIC_TIMEOUT
+       - OPENAI_API_KEY
+       - OPENAI_MODEL
+       - OPENAI_TIMEOUT
+       - ANTHROPIC_API_KEY
+       - ANTHROPIC_MODEL
+       - ANTHROPIC_TIMEOUT
 
 Precedence:
     If both are present, mona.ini values take precedence over environment variables
@@ -31082,6 +31214,8 @@ Common models:
 	                   1 = analyse the crash context
 	                   2 = analyse the current function
 	                   9 = load a request template from -f <file>
+	                   Running -q 1 or -q 2 also creates ai.q1 or ai.q2 next to mona.ini if missing
+	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this address is treated as an extra heap target to investigate.
 	                   With -q 2, this is the code address/function location to analyse,
@@ -31106,6 +31240,8 @@ Common models:
 	    %s tellme -e openai -model gpt-5.4-mini -q 1
 	    %s tellme -e openai -q 1 -timeout 120
 	    %s tellme -e openai -q 9 -f request.txt
+	    %s tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
+	    %s tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
 	    %s tellme -e openai -q 1 -dryrun
 	    %s tellme -e openai -q 1 -test
 
@@ -31150,6 +31286,10 @@ Common models:
 	    That means manual submission is a supported workflow:
 	    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
 	    If you prefer direct API calls from mona instead, install a supported SDK and configure an API key.
+	    When you run -q 1 or -q 2, mona also ensures ai.q1 or ai.q2 exists in the same folder as mona.ini.
+	    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
+	    They are provided for inspection or reuse and are not applied automatically during -q 1 or -q 2.
+	    To use one of those templates, run -q 9 -f ai.q1 or -q 9 -f ai.q2.
 	    With -dryrun, tellme saves the request file and prints only the saved file path instead of dumping the
 	    full request to the debugger console.
 
@@ -31175,7 +31315,7 @@ Common models:
 	Test model overrides:
 	    - OpenAI   : gpt-5.4-nano
 	    - Anthropic: claude-3-haiku-20240307
-		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
+		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
 
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
