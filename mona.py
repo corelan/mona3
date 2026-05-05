@@ -1847,6 +1847,8 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 	context = {
 		"debugger": __DEBUGGERAPP__,
 		"debugger_flavor": g_windbg_pretty_name,
+		"processname": "",
+		"modules": "",
 		"architecture": arch,
 		"pointer_size": PTR_SIZE,
 		"python_version": getPythonVersion(),
@@ -1855,6 +1857,20 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		"program_counter": "",
 		"stack_pointer": "",
 	}
+
+	try:
+		process_name = dbg.getDebuggedName()
+		if process_name:
+			context["processname"] = _tellme_format_text(process_name, max_len=1024)
+	except Exception as e:
+		context["processname_error"] = str(e)
+		mndbg.dbgp("tellme: failed to collect process name: %s" % str(e), errormode=False)
+
+	try:
+		context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
+	except Exception as e:
+		context["modules_error"] = str(e)
+		mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
 
 	try:
 		regs = getAllRegisters()
@@ -2317,6 +2333,8 @@ def _tellme_build_request_variables(context):
 	preferred_keys = [
 		"debugger",
 		"debugger_flavor",
+		"processname",
+		"modules",
 		"architecture",
 		"pointer_size",
 		"python_version",
@@ -2396,6 +2414,8 @@ def _tellme_get_profile_template_variables(question_type):
 	common_vars = [
 		"debugger",
 		"debugger_flavor",
+		"processname",
+		"modules",
 		"architecture",
 		"pointer_size",
 		"python_version",
@@ -28692,12 +28712,13 @@ def procDumpObj(args):
 						state = getHeapFlag(chunkobj.flag)
 						dbg.log("    Address found in chunk 0x%08x, heap 0x%08x, UserSize 0x%02x, %s" % (chunkaddy, heapaddy, size, state))
 						addy = chunkobj.userptr
-						if size > 0xfff:
-							dbg.log("    I'll only dump 0xfff bytes from the object, for performance reasons")
-							size = 0xfff
-	if size > 0xfff and osize > 0:
-		errorsfound = True
-		dbg.log("*** Please keep the size below 0xfff (argument -s) ***",highlight=1)
+						if size > 0x1000:
+							dbg.log("    I'll only dump 0x1000 bytes from the object, for performance reasons")
+							size = 0x1000
+	if size > 0x1000 and osize > 0:
+	#	errorsfound = True
+		dbg.log("*** Large size, Ill limit the size to the first 0xf0x1000ff (argument -s) ***",highlight=1)
+		size = 0x1000
 	if size == 0:
 		size = 0x28
 	if levels > 0 and nestedsize == 0:
@@ -31248,6 +31269,8 @@ Common models:
 	Debugger context variables:
 	    [debugger]                    = debugger backend name
 	    [debugger_flavor]             = human-readable debugger flavor
+	    [processname]                 = debugged process image name
+	    [modules]                     = loaded modules with mitigation/properties summary (rebase, aslr, safeseh, cfg, nx, osdll, version, path)
 	    [architecture]                = target architecture
 	    [pointer_size]                = pointer width in bytes
 	    [python_version]              = Python version hosting mona
