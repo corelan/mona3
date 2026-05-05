@@ -23912,6 +23912,26 @@ def procUpdate(args):
 		except Exception as e:
 			mndbg.dbgp("Unable to remove temporary file %s : %s" % (filename, str(e)), errormode=False)
 
+	def _files_differ(file1, file2):
+		try:
+			size1 = os.path.getsize(file1)
+			size2 = os.path.getsize(file2)
+			if size1 != size2:
+				mndbg.dbgp("File compare: size differs for %s (%d) vs %s (%d)" % (file1, size1, file2, size2))
+				return True
+			with open(file1, "rb") as fh1:
+				data1 = fh1.read()
+			with open(file2, "rb") as fh2:
+				data2 = fh2.read()
+			differs = (data1 != data2)
+			mndbg.dbgp("File compare: byte-for-byte comparison for %s vs %s => differs=%s" % (
+				file1, file2, str(differs)
+			))
+			return differs
+		except Exception as e:
+			mndbg.dbgp("File compare failed for %s vs %s : %s" % (file1, file2, str(e)), errormode=False)
+			return False
+
 	def _check_connectivity():
 		hostnames = [
 			("github.com", 443),
@@ -24262,7 +24282,17 @@ def procUpdate(args):
 					dbg.log("        %s" % str(e))
 					mndbg.dbgp("Copy failed for %s : %s" % (name, str(e)), errormode=False)
 		else:
-			dbg.log("    [+] You are already running the latest version of %s" % name)
+			files_differ = _files_differ(current_file, download_file)
+			if files_differ:
+				dbg.log("    [!] Downloaded %s has the same version/revision, but the file contents are different" % name, highlight=1)
+				if mndbg.isWinDBG():
+					cmdname = clickWinDBGCmd(windbg_cmd = "%s up -force" % getAliasName())
+					dbg.log("        Run %s to overwrite your local copy anyway" % cmdname, highlight=1)
+				else:
+					dbg.log("        Run '%s up -force' to overwrite your local copy anyway" % getAliasName(), highlight=1)					
+				mndbg.dbgp("Same version/revision but file contents differ for %s" % name)
+			else:
+				dbg.log("    [+] You are already running the latest version of %s" % name)
 			if simulate_only:
 				mndbg.dbgp("Simulation mode: using current version release notes for %s because no newer version was found" % name)
 				release_notes_targets.append((name, current_version, current_revision, current_version, current_revision))
@@ -24821,6 +24851,7 @@ def procFindMSP(args):
 	mspresults = goFindMSP(distance,args)
 	return
 	
+
 def procSuggest(args):
 	modulecriteria={}
 	criteria={}
