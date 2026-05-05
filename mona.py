@@ -1004,6 +1004,8 @@ def _tellme_format_text(value, max_len=512):
 			text = str(value)
 		except Exception:
 			text = "<unprintable>"
+	text = re.sub(r"<link cmd=\"[^\"]*\">", "", text)
+	text = text.replace("</link>", "")
 	if len(text) > max_len:
 		return text[:max_len] + "... <truncated>"
 	return text
@@ -1035,8 +1037,13 @@ def _tellme_read_memory(address, size, label):
 	return result
 
 
-def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40):
+def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40, register_name=""):
 	result = OrderedDict()
+	reg_name_l = str(register_name).lower().strip()
+	if reg_name_l == PROGRAM_COUNTER:
+		result["skipped"] = True
+		result["reason"] = "Program counter disassembly is already included elsewhere in the tellme context"
+		return result
 	start = max(int(address) - int(bytes_before), 0)
 	cmd = "dps %s L0x%x" % (PTR_PRINT % start, line_count)
 	result["command"] = cmd
@@ -1048,11 +1055,16 @@ def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40):
 	return result
 
 
-def _tellme_get_call_stack(command="kb"):
+def _tellme_get_call_stack(command="kb", max_lines=50):
 	result = OrderedDict()
 	result["command"] = command
 	try:
-		result["output"] = _tellme_format_text(ensure_text(dbg.nativeCommand(command)).strip(), max_len=8192)
+		output = ensure_text(dbg.nativeCommand(command)).strip()
+		if isinstance(max_lines, int) and max_lines > 0:
+			lines = output.splitlines()
+			if len(lines) > max_lines:
+				output = "\n".join(lines[:max_lines])
+		result["output"] = _tellme_format_text(output, max_len=8192)
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: call stack lookup failed using '%s': %s" % (command, str(e)), errormode=False)
@@ -1166,6 +1178,9 @@ def _tellme_serialize_adjacent_chunk(label, chunk, mheap, va_blks, lfh_ranges, l
 		info["first_8_bytes_at_user_ptr"] = bin2hex(dbg.readMemory(chunk.userptr, 8))
 	except Exception as e:
 		info["first_8_bytes_error"] = str(e)
+	content_size = min(max(chunk.usersize, 0), 0x50)
+	if content_size > 0:
+		info["contents"] = _tellme_read_memory(chunk.userptr, content_size, "%s_adjacent_chunk_contents" % label)
 	info["chunk_dump"] = _tellme_get_chunk_dps_dump(chunk.chunkptr, chunk_size, label=label)
 	return info
 
@@ -1264,6 +1279,9 @@ def _tellme_collect_adjacent_chunk_context(refvalue):
 			current["first_8_bytes_at_user_ptr"] = bin2hex(dbg.readMemory(user_ptr, 8))
 		except Exception as e:
 			current["first_8_bytes_error"] = str(e)
+		content_size = min(max(user_size, 0), 0x50)
+		if content_size > 0:
+			current["contents"] = _tellme_read_memory(user_ptr, content_size, "current_adjacent_chunk_contents")
 		current["chunk_dump"] = _tellme_get_chunk_dps_dump(chunk_ptr, chunk_size, label="current")
 		info["chunks"] = [
 			OrderedDict([("label", "previous"), ("present", False)]),
@@ -1506,55 +1524,597 @@ def _tellme_extract_instruction_registers(instruction_text, regs):
 
 
 def _tellme_find_layout_region(address, layout_regions):
+	try:
+		mndbg.dbgp("tellme: searching layout regions for %s across %d candidate regions" % (
+			PTR_PRINT % address,
+			len(layout_regions) if layout_regions is not None else 0
+		))
+	except Exception:
+		pass
+	if not layout_regions:
+		try:
+			mndbg.dbgp("tellme: layout region list is empty while searching for %s" % (PTR_PRINT % address))
+		except Exception:
+			pass
+		return None
+	chunk_count = 0
+	vad_count = 0
+	segment_count = 0
+	heap_count = 0
+	prev_region = None
+	next_region = None
+	containing_candidates = 0
+	best_match = None
+	category_rank = {"Chunk": 0, "VADBlock": 1, "Segment": 2, "Heap": 3}
 	for start, end, category, description in layout_regions:
-		if category not in ["Chunk", "VADBlock"]:
+		if category not in ["Heap", "Segment", "Chunk", "VADBlock"]:
 			continue
+		if category == "Chunk":
+			chunk_count += 1
+		elif category == "VADBlock":
+			vad_count += 1
+		elif category == "Segment":
+			segment_count += 1
+		elif category == "Heap":
+			heap_count += 1
+		if end <= address:
+			prev_region = (start, end, category, description)
+		elif next_region is None and start > address:
+			next_region = (start, end, category, description)
 		if start <= address < end:
-			return {
+			containing_candidates += 1
+			candidate = {
 				"category": category,
 				"start": start,
 				"end": end,
 				"description": _tellme_format_text(description, max_len=1024)
 			}
+			if best_match is None or category_rank.get(category, 99) < category_rank.get(best_match["category"], 99):
+				best_match = candidate
+	try:
+		mndbg.dbgp("tellme: layout region search summary for %s : heaps=%d segments=%d chunks=%d vadblocks=%d containing_candidates=%d" % (
+			PTR_PRINT % address,
+			heap_count,
+			segment_count,
+			chunk_count,
+			vad_count,
+			containing_candidates
+		))
+		if best_match is not None:
+			mndbg.dbgp("tellme: selected layout region match for %s : %s [%s - %s] desc=%s" % (
+				PTR_PRINT % address,
+				best_match["category"],
+				PTR_PRINT % best_match["start"],
+				PTR_PRINT % best_match["end"],
+				_tellme_format_text(best_match["description"], max_len=160)
+			))
+		if prev_region is not None:
+			mndbg.dbgp("tellme: nearest preceding layout region for %s : %s [%s - %s] delta=0x%x desc=%s" % (
+				PTR_PRINT % address,
+				prev_region[2],
+				PTR_PRINT % prev_region[0],
+				PTR_PRINT % prev_region[1],
+				max(address - prev_region[1], 0),
+				_tellme_format_text(prev_region[3], max_len=160)
+			))
+		else:
+			mndbg.dbgp("tellme: no preceding layout region found for %s" % (PTR_PRINT % address))
+		if next_region is not None:
+			mndbg.dbgp("tellme: nearest following layout region for %s : %s [%s - %s] delta=0x%x desc=%s" % (
+				PTR_PRINT % address,
+				next_region[2],
+				PTR_PRINT % next_region[0],
+				PTR_PRINT % next_region[1],
+				max(next_region[0] - address, 0),
+				_tellme_format_text(next_region[3], max_len=160)
+			))
+		else:
+			mndbg.dbgp("tellme: no following layout region found for %s" % (PTR_PRINT % address))
+	except Exception:
+		pass
+	if best_match is not None:
+		return best_match
+	try:
+		mndbg.dbgp("tellme: no layout region match for %s" % (PTR_PRINT % address))
+	except Exception:
+		pass
 	return None
+
+
+def _tellme_collect_layout_region_neighbors(address, layout_regions):
+	result = OrderedDict()
+	result["reference"] = PTR_PRINT % address
+	if layout_regions is None or len(layout_regions) == 0:
+		mndbg.dbgp("tellme: no layout regions available while collecting neighbors for %s" % (PTR_PRINT % address))
+		result["error"] = "No heap/segment/chunk/VAD layout regions are available"
+		return result
+	match_index = -1
+	for idx, (start, end, category, description) in enumerate(layout_regions):
+		if category not in ["Heap", "Segment", "Chunk", "VADBlock"]:
+			continue
+		if start <= address < end:
+			match_index = idx
+			break
+	if match_index == -1:
+		mndbg.dbgp("tellme: could not find neighbor anchor region for %s" % (PTR_PRINT % address))
+		result["error"] = "No heap/segment/chunk/VAD layout region contains %s" % (PTR_PRINT % address)
+		return result
+	mndbg.dbgp("tellme: collecting layout neighbors for %s at region index %d" % (PTR_PRINT % address, match_index))
+	neighbors = []
+	for idx in [match_index - 1, match_index, match_index + 1]:
+		if idx < 0 or idx >= len(layout_regions):
+			continue
+		start, end, category, description = layout_regions[idx]
+		if category not in ["Heap", "Segment", "Chunk", "VADBlock"]:
+			continue
+		label = "current"
+		if idx < match_index:
+			label = "previous"
+		elif idx > match_index:
+			label = "next"
+		entry = OrderedDict()
+		entry["label"] = label
+		entry["category"] = category
+		entry["start"] = PTR_PRINT % start
+		entry["end"] = PTR_PRINT % end
+		entry["size"] = "0x%x" % max(end - start, 0)
+		entry["description"] = _tellme_format_text(description, max_len=1024)
+		read_size = min(max(end - start, 0), 0x50)
+		if read_size > 0:
+			entry["contents"] = _tellme_read_memory(start, read_size, "%s_layout_region_contents" % label)
+		neighbors.append(entry)
+	result["regions"] = neighbors
+	mndbg.dbgp("tellme: collected %d layout neighbor regions for %s" % (len(neighbors), PTR_PRINT % address))
+	return result
+
+
+def _tellme_parse_heap_hl_chunk_line(line):
+	match = re.match(r"^(\s*)([0-9A-Fa-f`]+):\s+([0-9A-Fa-f]+)\s+-\s+(.+?)\s*$", line)
+	if not match:
+		return None
+	try:
+		start = int(match.group(2).replace("`", ""), 16)
+		size = int(match.group(3), 16)
+	except Exception:
+		return None
+	state_text = _tellme_format_text(match.group(4), max_len=512)
+	return {
+		"line": line,
+		"indent": len(match.group(1).replace("\t", "    ")),
+		"start": start,
+		"end": start + size,
+		"size": size,
+		"state": state_text,
+	}
+
+
+def _tellme_parse_heap_hl_output(output, target_address):
+	result = OrderedDict()
+	result["matched"] = False
+	lines = output.splitlines()
+	chunks = []
+	current_lfh_region = None
+	lfh_header_re = re.compile(r"^(\s*)LFH data region at\s+([0-9A-Fa-f`]+)\s+\((.*?)\):\s*$", re.IGNORECASE)
+	for idx, line in enumerate(lines):
+		lfh_match = lfh_header_re.match(line)
+		if lfh_match:
+			try:
+				region_address = int(lfh_match.group(2).replace("`", ""), 16)
+			except Exception:
+				region_address = 0
+			current_lfh_region = {
+				"line": line,
+				"indent": len(lfh_match.group(1).replace("\t", "    ")),
+				"address": region_address,
+				"header": _tellme_format_text(line, max_len=512),
+				"details": _tellme_format_text(lfh_match.group(3), max_len=512),
+			}
+			continue
+		chunk = _tellme_parse_heap_hl_chunk_line(line)
+		if chunk is None:
+			continue
+		if current_lfh_region is not None and chunk["indent"] > current_lfh_region["indent"]:
+			chunk["lfh_region"] = current_lfh_region.copy()
+		chunk["line_index"] = idx
+		chunks.append(chunk)
+	match_index = -1
+	for idx, chunk in enumerate(chunks):
+		if chunk["start"] <= target_address < chunk["end"]:
+			match_index = idx
+			break
+	result["chunk_count"] = len(chunks)
+	if match_index < 0:
+		return result
+	match_chunk = chunks[match_index]
+	result["matched"] = True
+	result["match_type"] = "exact_start" if target_address == match_chunk["start"] else "contained"
+	result["matched_chunk"] = OrderedDict([
+		("start", PTR_PRINT % match_chunk["start"]),
+		("end", PTR_PRINT % match_chunk["end"]),
+		("size", "0x%x" % match_chunk["size"]),
+		("offset", "0x%x" % (target_address - match_chunk["start"])),
+		("state", match_chunk["state"]),
+		("line", _tellme_format_text(match_chunk["line"], max_len=512)),
+	])
+	if match_index > 0:
+		prev_chunk = chunks[match_index - 1]
+		result["previous_chunk"] = OrderedDict([
+			("start", PTR_PRINT % prev_chunk["start"]),
+			("end", PTR_PRINT % prev_chunk["end"]),
+			("size", "0x%x" % prev_chunk["size"]),
+			("state", prev_chunk["state"]),
+			("line", _tellme_format_text(prev_chunk["line"], max_len=512)),
+		])
+	if match_index + 1 < len(chunks):
+		next_chunk = chunks[match_index + 1]
+		result["next_chunk"] = OrderedDict([
+			("start", PTR_PRINT % next_chunk["start"]),
+			("end", PTR_PRINT % next_chunk["end"]),
+			("size", "0x%x" % next_chunk["size"]),
+			("state", next_chunk["state"]),
+			("line", _tellme_format_text(next_chunk["line"], max_len=512)),
+		])
+	lfh_region = match_chunk.get("lfh_region")
+	if lfh_region is not None:
+		result["lfh_region"] = OrderedDict([
+			("address", PTR_PRINT % lfh_region["address"] if lfh_region["address"] else ""),
+			("header", lfh_region["header"]),
+			("details", lfh_region["details"]),
+		])
+	context_lines = []
+	if lfh_region is not None:
+		context_lines.append(lfh_region["header"])
+	if "previous_chunk" in result:
+		context_lines.append(result["previous_chunk"]["line"])
+	context_lines.append(result["matched_chunk"]["line"])
+	if "next_chunk" in result:
+		context_lines.append(result["next_chunk"]["line"])
+	result["context"] = _tellme_format_text("\n".join(context_lines), max_len=4096)
+	return result
+
+
+def _tellme_get_heap_hl_context(heap_address, target_address):
+	result = OrderedDict()
+	result["heap"] = PTR_PRINT % heap_address
+	result["address"] = PTR_PRINT % target_address
+	global g_heap_cmd_prefix
+	if g_heap_cmd_prefix is None:
+		try:
+			_probe = dbg.nativeCommand("!ext.heap")
+			if _probe and "Unable to find" not in _probe and "No export" not in _probe:
+				g_heap_cmd_prefix = "!ext."
+			else:
+				g_heap_cmd_prefix = "!"
+		except Exception:
+			g_heap_cmd_prefix = "!"
+	cmd = "%sheap -hl %s" % (g_heap_cmd_prefix, PTR_PRINT % heap_address)
+	result["command"] = cmd
+	try:
+		output = ensure_text(dbg.nativeCommand(cmd))
+		lines = output.splitlines()
+		result["line_count"] = len(lines)
+		parsed = _tellme_parse_heap_hl_output(output, target_address)
+		result.update(parsed)
+		if result.get("matched", False):
+			mndbg.dbgp("tellme: !heap -hl found %s inside heap %s as %s chunk %s-%s" % (
+				PTR_PRINT % target_address,
+				PTR_PRINT % heap_address,
+				result.get("match_type", "contained"),
+				result.get("matched_chunk", {}).get("start", ""),
+				result.get("matched_chunk", {}).get("end", "")
+			))
+		else:
+			result["matched"] = False
+			mndbg.dbgp("tellme: !heap -hl did not find %s inside heap %s" % (
+				PTR_PRINT % target_address, PTR_PRINT % heap_address
+			))
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: !heap -hl lookup failed for heap %s / address %s: %s" % (
+			PTR_PRINT % heap_address, PTR_PRINT % target_address, str(e)
+		), errormode=False)
+	return result
+
+
+def _tellme_get_segment_heap_fallback(address, layout_region, layout_regions):
+	result = OrderedDict()
+	if layout_region is None or layout_region.get("category", "") != "Segment":
+		result["error"] = "Address is not inside a layout segment"
+		return result
+	result["address"] = PTR_PRINT % address
+	result["segment_start"] = PTR_PRINT % layout_region["start"]
+	result["segment_end"] = PTR_PRINT % layout_region["end"]
+	result["segment_description"] = _tellme_format_text(layout_region.get("description", ""), max_len=1024)
+	heap_region = None
+	segment_desc = layout_region.get("description", "")
+	heap_label = ""
+	label_match = re.search(r"Heap:\s*([^\|\)]+)", segment_desc)
+	if label_match:
+		heap_label = _tellme_format_text(label_match.group(1).strip(), max_len=256)
+	for start, end, category, description in layout_regions:
+		if category != "Heap":
+			continue
+		desc_text = _tellme_format_text(description, max_len=1024)
+		if heap_label != "" and (desc_text.startswith(heap_label + " ") or desc_text.startswith(heap_label + " (") or desc_text == heap_label):
+			heap_region = {
+				"start": start,
+				"end": end,
+				"description": desc_text
+			}
+			break
+	if heap_region is None:
+		result["error"] = "Unable to resolve owning heap for segment"
+		return result
+	result["heap_start"] = PTR_PRINT % heap_region["start"]
+	result["heap_end"] = PTR_PRINT % heap_region["end"]
+	result["heap_description"] = heap_region["description"]
+	result["heap_hl"] = _tellme_get_heap_hl_context(heap_region["start"], address)
+	return result
+
+
+def _tellme_apply_heap_hl_chunk_match(entry, heap_hl_result, reg_value, ref_name):
+	matched_chunk = heap_hl_result.get("matched_chunk", {})
+	try:
+		chunk_start = int(matched_chunk.get("start", "0"), 16)
+		chunk_end = int(matched_chunk.get("end", "0"), 16)
+		chunk_size = int(matched_chunk.get("size", "0"), 16)
+	except Exception:
+		return
+	entry["match"] = "Chunk"
+	entry["user_ptr"] = PTR_PRINT % chunk_start
+	entry["chunk_start"] = PTR_PRINT % chunk_start
+	entry["chunk_end"] = PTR_PRINT % chunk_end
+	entry["chunk_size"] = "0x%x" % chunk_size
+	entry["chunk_offset"] = matched_chunk.get("offset", "0x0")
+	entry["state"] = matched_chunk.get("state", "")
+	entry["region_start"] = PTR_PRINT % chunk_start
+	entry["region_end"] = PTR_PRINT % chunk_end
+	entry["region_size"] = "0x%x" % max(chunk_end - chunk_start, 0)
+	entry["region_offset"] = "0x%x" % (reg_value - chunk_start)
+	entry["region_description"] = "Heap chunk resolved via !heap -hl"
+	read_size = min(0x50, max(chunk_end - reg_value, 0x10))
+	entry["referenced_memory"] = _tellme_read_memory(reg_value, read_size, "%s_referenced_memory" % ref_name)
+
+
+def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruction_text, layout_regions):
+	is_manual_heap_target = (ref_source == "q1_-a")
+	entry = OrderedDict()
+	entry["register"] = ref_name
+	entry["source"] = ref_source
+	entry["value"] = PTR_PRINT % reg_value
+	entry["pointer_dump"] = _tellme_get_pointer_dump(reg_value, bytes_before=0x28, line_count=0x40, register_name=ref_name)
+	entry["nearby_memory"] = _tellme_read_memory(max(reg_value - 0x28, 0), 0x80, "%s_nearby_memory" % ref_name)
+	mndbg.dbgp("tellme: evaluating register '%s' source='%s' value=%s for heap/vad context" % (
+		ref_name, ref_source, PTR_PRINT % reg_value
+	))
+	layout_region = _tellme_find_layout_region(reg_value, layout_regions)
+	entry["match"] = "none"
+	if layout_region is None:
+		mndbg.dbgp("tellme: register '%s' (%s) did not match any precomputed Heap/Segment/Chunk/VADBlock region" % (
+			ref_name, PTR_PRINT % reg_value
+		))
+	else:
+		mndbg.dbgp("tellme: register '%s' (%s) precomputed region -> %s [%s - %s]" % (
+			ref_name,
+			PTR_PRINT % reg_value,
+			layout_region["category"],
+			PTR_PRINT % layout_region["start"],
+			PTR_PRINT % layout_region["end"]
+		))
+		if layout_region["category"] in ["Chunk", "VADBlock"]:
+			entry["match"] = layout_region["category"]
+		else:
+			entry["heap_memory_region_hint"] = OrderedDict([
+				("category", layout_region["category"]),
+				("start", PTR_PRINT % layout_region["start"]),
+				("end", PTR_PRINT % layout_region["end"]),
+				("size", "0x%x" % max(layout_region["end"] - layout_region["start"], 0)),
+				("description", layout_region["description"]),
+			])
+
+	try:
+		ptrx = MnPointer(reg_value)
+		foundinheap, foundinsegment, foundinva, foundinchunk = ptrx.getHeapInfo()
+		mndbg.dbgp("tellme: getHeapInfo('%s'=%s) -> heap=%s segment=%s va=%s chunk_type=%s" % (
+			ref_name,
+			PTR_PRINT % reg_value,
+			PTR_PRINT % foundinheap if foundinheap else "<none>",
+			PTR_PRINT % foundinsegment if foundinsegment else "<none>",
+			PTR_PRINT % foundinva if foundinva else "<none>",
+			type(foundinchunk).__name__ if foundinchunk is not None else "<none>"
+		))
+		if foundinheap:
+			entry["heap"] = PTR_PRINT % foundinheap
+		if foundinsegment:
+			entry["segment"] = PTR_PRINT % foundinsegment
+		if foundinva:
+			entry["vad_base"] = PTR_PRINT % foundinva
+		if layout_region is not None and layout_region.get("category", "") == "Segment":
+			foundinva = None
+		if hasattr(foundinchunk, "chunkptr"):
+			mndbg.dbgp("tellme: register '%s' resolved to chunk: chunkptr=%s userptr=%s size=0x%x usersize=0x%x flag=%s" % (
+				ref_name,
+				PTR_PRINT % foundinchunk.chunkptr,
+				PTR_PRINT % foundinchunk.userptr,
+				foundinchunk.size * HEAPGRANULARITY,
+				foundinchunk.usersize,
+				getHeapFlag(foundinchunk.flag)
+			))
+			entry["match"] = "Chunk"
+			entry["chunk_ptr"] = PTR_PRINT % foundinchunk.chunkptr
+			entry["user_ptr"] = PTR_PRINT % foundinchunk.userptr
+			entry["user_size"] = "0x%x" % foundinchunk.usersize
+			entry["chunk_size"] = "0x%x" % (foundinchunk.size * HEAPGRANULARITY)
+			entry["state"] = getHeapFlag(foundinchunk.flag)
+			entry["chunk_offset"] = "0x%x" % (reg_value - foundinchunk.chunkptr)
+			if reg_value >= foundinchunk.userptr:
+				entry["user_offset"] = "0x%x" % (reg_value - foundinchunk.userptr)
+			chunk_dump_size = min(max(foundinchunk.usersize, 0), 0x50)
+			if chunk_dump_size > 0:
+				entry["chunk_contents"] = _tellme_read_memory(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % ref_name)
+			entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
+			entry["referenced_memory"] = _tellme_read_memory(reg_value, min(0x50, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % ref_name)
+			if layout_region is None:
+				layout_region = {
+					"category": "Chunk",
+					"start": foundinchunk.chunkptr,
+					"end": foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY),
+					"description": "Heap chunk resolved via MnPointer.getHeapInfo()"
+				}
+			if is_manual_heap_target:
+				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+		elif isinstance(foundinchunk, dict):
+			mndbg.dbgp("tellme: register '%s' resolved to VAD block: base=%s commit=0x%x reserve=0x%x" % (
+				ref_name,
+				PTR_PRINT % foundinva if foundinva else PTR_PRINT % reg_value,
+				int(foundinchunk.get("commit_size", 0)),
+				int(foundinchunk.get("reserve_size", 0))
+			))
+			entry["match"] = "VADBlock"
+			commit_size = int(foundinchunk.get("commit_size", 0))
+			reserve_size = int(foundinchunk.get("reserve_size", 0))
+			entry["commit_size"] = "0x%x" % commit_size
+			entry["reserve_size"] = "0x%x" % reserve_size
+			entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
+			if layout_region is None:
+				vad_start = foundinva if isinstance(foundinva, int) and foundinva > 0 else reg_value
+				layout_region = {
+					"category": "VADBlock",
+					"start": vad_start,
+					"end": vad_start + commit_size,
+					"description": "VAD block resolved via MnPointer.getHeapInfo()"
+				}
+			read_size = min(0x50, max((layout_region["end"] - reg_value), 0x10))
+			entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % ref_name)
+			if is_manual_heap_target:
+				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+		elif is_manual_heap_target:
+			mndbg.dbgp("tellme: register '%s' did not resolve to chunk/VAD; keeping manual fallback" % ref_name)
+			entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+		else:
+			mndbg.dbgp("tellme: register '%s' did not resolve to chunk/VAD via getHeapInfo()" % ref_name)
+	except Exception as e:
+		entry["heap_lookup_error"] = str(e)
+		mndbg.dbgp("tellme: heap lookup for reference '%s' failed: %s" % (ref_name, str(e)), errormode=False)
+		if is_manual_heap_target:
+			entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+	if layout_region is not None and layout_region["category"] == "Segment":
+		entry["segment_fallback"] = _tellme_get_segment_heap_fallback(reg_value, layout_region, layout_regions)
+		heap_hl_match = entry["segment_fallback"].get("heap_hl", {})
+		if heap_hl_match.get("matched", False):
+			entry["heap_hl_match"] = heap_hl_match
+			_tellme_apply_heap_hl_chunk_match(entry, heap_hl_match, reg_value, ref_name)
+			if "lfh_region" in heap_hl_match:
+				entry["lfh_region"] = heap_hl_match["lfh_region"]
+			mndbg.dbgp("tellme: register '%s' chunk was resolved via !heap -hl fallback instead of using segment containment" % ref_name)
+		else:
+			mndbg.dbgp("tellme: register '%s' is inside heap memory via segment containment, but !heap -hl did not resolve a containing chunk" % ref_name)
+	if layout_region is not None and layout_region["category"] in ["Chunk", "VADBlock"] and entry.get("match", "none") in ["Chunk", "VADBlock"]:
+		if "region_description" not in entry and not hasattr(foundinchunk if 'foundinchunk' in locals() else None, "chunkptr"):
+			mndbg.dbgp("tellme: using precomputed %s region match for register '%s' even though direct heap lookup did not return chunk metadata" % (
+				layout_region["category"], ref_name
+			))
+		entry["match"] = layout_region["category"]
+		entry["region_start"] = PTR_PRINT % layout_region["start"]
+		entry["region_end"] = PTR_PRINT % layout_region["end"]
+		entry["region_size"] = "0x%x" % max(layout_region["end"] - layout_region["start"], 0)
+		entry["region_offset"] = "0x%x" % (reg_value - layout_region["start"])
+		entry["region_description"] = layout_region["description"]
+		entry["layout_regions"] = _tellme_collect_layout_region_neighbors(reg_value, layout_regions)
+		if entry["match"] == "VADBlock" and "region_contents" not in entry:
+			read_size = min(0x50, max(layout_region["end"] - reg_value, 0x10))
+			entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % ref_name)
+		elif entry["match"] == "Chunk" and "referenced_memory" not in entry:
+			read_size = min(0x50, max(layout_region["end"] - reg_value, 0x10))
+			entry["referenced_memory"] = _tellme_read_memory(reg_value, read_size, "%s_referenced_memory" % ref_name)
+		mndbg.dbgp("tellme: finalized register '%s' as %s with region [%s - %s]" % (
+			ref_name,
+			entry["match"],
+			entry["region_start"],
+			entry["region_end"]
+		))
+	if entry.get("match", "none") == "none" and is_manual_heap_target:
+		entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+	if entry.get("match", "none") == "none":
+		mndbg.dbgp("tellme: dropping register '%s' from q1 heap reference output because final match is none" % ref_name)
+	else:
+		mndbg.dbgp("tellme: register '%s' will be included in q1 heap reference output as %s" % (
+			ref_name, entry.get("match", "none")
+		))
+	return entry
 
 
 def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 	info = {
 		"instruction": "",
+		"all_registers_checked": [],
 		"referenced_registers": [],
+		"matching_registers": [],
+		"heap_memory_hints": [],
 		"references": []
 	}
 	if extra_references is None:
 		extra_references = []
+	dbg.log("[+] Collecting heap/segment/VAD context for all registers")
+	instruction_text = ""
 	if not isinstance(pc, int) or pc <= 0:
-		return info
+		info["instruction_error"] = "Program counter is not a valid address"
+		mndbg.dbgp("tellme: heap/register context will continue without instruction disassembly because PC is invalid")
 	try:
-		op = dbg.disasm(pc)
-		instruction_text = _tellme_format_text(getDisasmInstruction(op))
-		info["instruction"] = instruction_text
+		if isinstance(pc, int) and pc > 0:
+			op = dbg.disasm(pc)
+			instruction_text = _tellme_format_text(getDisasmInstruction(op))
+			info["instruction"] = instruction_text
 	except Exception as e:
 		info["instruction_error"] = str(e)
 		mndbg.dbgp("tellme: unable to disassemble current instruction for heap context: %s" % str(e), errormode=False)
-		return info
+		mndbg.dbgp("tellme: heap/register context will continue with full-register analysis despite disassembly failure")
 
 	referenced_registers = _tellme_extract_instruction_registers(instruction_text, regs)
 	info["referenced_registers"] = referenced_registers
 
 	layout_regions = []
+	dbg.log("    [1/3] Enumerating heap, segment, chunk and VAD layout regions")
 	try:
 		if mnproc is None:
 			info["layout_error"] = "No active process context"
+			dbg.log("        No active process context was available for layout enumeration", highlight=1)
 		else:
-			layout_regions = [r for r in mnproc.getAllSorted(include_chunks=True) if r[2] in ["Chunk", "VADBlock"]]
+			all_regions = mnproc.getAllSorted(include_chunks=True)
+			#dbg.log("        getAllSorted returned %d total regions" % len(all_regions))
+			mndbg.dbgp("        getAllSorted returned %d total regions" % len(all_regions))
+			layout_regions = [r for r in all_regions if r[2] in ["Heap", "Segment", "Chunk", "VADBlock"]]
 			info["layout_region_count"] = len(layout_regions)
+			dbg.log("          Shared layout view yielded %d Heap/Segment/Chunk/VADBlock regions" % len(layout_regions))
+			mndbg.dbgp("tellme: collected %d Heap/Segment/Chunk/VADBlock layout regions for register analysis" % len(layout_regions))
+		for idx, region in enumerate(layout_regions[:10]):
+			try:
+				mndbg.dbgp("tellme: layout region[%d] %s [%s - %s] %s" % (
+					idx,
+					region[2],
+					PTR_PRINT % region[0],
+					PTR_PRINT % region[1],
+					_tellme_format_text(region[3], max_len=140)
+				))
+			except Exception:
+				pass
+		if len(layout_regions) > 10:
+			mndbg.dbgp("tellme: layout region dump truncated at 10 entries out of %d" % len(layout_regions))
 	except Exception as e:
 		info["layout_error"] = str(e)
+		#dbg.log("        getAllSorted/layout enumeration failed: %s" % str(e), highlight=1)
 		mndbg.dbgp("tellme: failed to enumerate chunk/vad layout: %s" % str(e), errormode=False)
 
 	lower_regs = {}
 	for reg_name, reg_value in regs.items():
 		lower_regs[str(reg_name).lower()] = reg_value
+	for reg_name in sorted(lower_regs.keys()):
+		reg_value = lower_regs.get(reg_name)
+		if isinstance(reg_value, int) and reg_value > 0:
+			info["all_registers_checked"].append(OrderedDict([
+				("register", reg_name),
+				("value", PTR_PRINT % reg_value)
+			]))
 
 	reference_items = []
 	for reg_name in referenced_registers:
@@ -1562,6 +2122,11 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 		if not isinstance(reg_value, int) or reg_value <= 0:
 			continue
 		reference_items.append((reg_name, reg_value, "instruction_register"))
+	for reg_name in sorted(lower_regs.keys()):
+		reg_value = lower_regs.get(reg_name)
+		if not isinstance(reg_value, int) or reg_value <= 0:
+			continue
+		reference_items.append((reg_name, reg_value, "register"))
 
 	for extra_ref in extra_references:
 		if not isinstance(extra_ref, dict):
@@ -1574,79 +2139,46 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 		reference_items.append((ref_name, ref_value, ref_source))
 
 	if len(reference_items) == 0:
+		dbg.log("    [2/3] No register or manual reference candidates were available")
 		return info
 
+	dbg.log("    [2/3] Scanning %d register/reference candidates for heap/chunk/VAD context" % len(reference_items))
 	seen_references = set()
+	exact_match_count = 0
+	heap_hint_count = 0
 	for ref_name, reg_value, ref_source in reference_items:
-		dedup_key = (ref_name.lower(), reg_value, ref_source.lower())
+		dedup_key = (ref_name.lower(), reg_value)
 		if dedup_key in seen_references:
+			mndbg.dbgp("tellme: skipping duplicate heap reference candidate '%s'=%s" % (
+				ref_name, PTR_PRINT % reg_value
+			))
 			continue
 		seen_references.add(dedup_key)
-		is_manual_heap_target = (ref_source == "q1_-a")
-		entry = OrderedDict()
-		entry["register"] = ref_name
-		entry["source"] = ref_source
-		entry["value"] = PTR_PRINT % reg_value
-		entry["instruction"] = instruction_text
-		entry["pointer_dump"] = _tellme_get_pointer_dump(reg_value, bytes_before=0x28, line_count=0x40)
-		entry["nearby_memory"] = _tellme_read_memory(max(reg_value - 0x28, 0), 0x80, "%s_nearby_memory" % ref_name)
-		layout_region = _tellme_find_layout_region(reg_value, layout_regions)
-		if layout_region is None:
-			entry["match"] = "none"
-			if is_manual_heap_target:
-				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
-			info["references"].append(entry)
-			continue
-
-		entry["match"] = layout_region["category"]
-		entry["region_start"] = PTR_PRINT % layout_region["start"]
-		entry["region_end"] = PTR_PRINT % layout_region["end"]
-		entry["region_offset"] = "0x%x" % (reg_value - layout_region["start"])
-		entry["region_description"] = layout_region["description"]
-
-		try:
-			ptrx = MnPointer(reg_value)
-			foundinheap, foundinsegment, foundinva, foundinchunk = ptrx.getHeapInfo()
-			if foundinheap:
-				entry["heap"] = PTR_PRINT % foundinheap
-			if foundinsegment:
-				entry["segment"] = PTR_PRINT % foundinsegment
-			if foundinva:
-				entry["vad_base"] = PTR_PRINT % foundinva
-			if hasattr(foundinchunk, "chunkptr"):
-				entry["chunk_ptr"] = PTR_PRINT % foundinchunk.chunkptr
-				entry["user_ptr"] = PTR_PRINT % foundinchunk.userptr
-				entry["user_size"] = "0x%x" % foundinchunk.usersize
-				entry["chunk_size"] = "0x%x" % (foundinchunk.size * HEAPGRANULARITY)
-				entry["state"] = getHeapFlag(foundinchunk.flag)
-				entry["chunk_offset"] = "0x%x" % (reg_value - foundinchunk.chunkptr)
-				if reg_value >= foundinchunk.userptr:
-					entry["user_offset"] = "0x%x" % (reg_value - foundinchunk.userptr)
-				chunk_dump_size = min(max(foundinchunk.usersize, 0), 0x100)
-				if chunk_dump_size > 0:
-					entry["chunk_contents"] = _tellme_read_memory(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % ref_name)
-				entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
-				entry["referenced_memory"] = _tellme_read_memory(reg_value, min(0x40, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % ref_name)
-				if is_manual_heap_target:
-					entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
-			elif isinstance(foundinchunk, dict):
-				commit_size = int(foundinchunk.get("commit_size", 0))
-				reserve_size = int(foundinchunk.get("reserve_size", 0))
-				entry["commit_size"] = "0x%x" % commit_size
-				entry["reserve_size"] = "0x%x" % reserve_size
-				entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
-				read_size = min(0x100, max((layout_region["end"] - reg_value), 0x10))
-				entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % ref_name)
-				if is_manual_heap_target:
-					entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
-			elif is_manual_heap_target:
-				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
-		except Exception as e:
-			entry["heap_lookup_error"] = str(e)
-			mndbg.dbgp("tellme: heap lookup for reference '%s' failed: %s" % (ref_name, str(e)), errormode=False)
-			if is_manual_heap_target:
-				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+		entry = _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruction_text, layout_regions)
 		info["references"].append(entry)
+		if entry.get("match", "none") in ["Chunk", "VADBlock"] and ref_name not in info["matching_registers"]:
+			info["matching_registers"].append(ref_name)
+			exact_match_count += 1
+			mndbg.dbgp("tellme: added matching register '%s' to heap/register context" % ref_name)
+		elif (
+			"heap_memory_region_hint" in entry or
+			"segment_fallback" in entry or
+			("heap" in entry and ("segment" in entry or entry.get("match", "none") == "none"))
+		):
+			if ref_name not in info["heap_memory_hints"]:
+				info["heap_memory_hints"].append(ref_name)
+				heap_hint_count += 1
+	if heap_hint_count > 0:
+		dbg.log("    [3/3] Register heap/VAD scan complete: %d exact Chunk/VAD matches and %d heap-memory hints across %d checked entries" % (
+			exact_match_count,
+			heap_hint_count,
+			len(info["references"])
+		))
+	else:
+		dbg.log("    [3/3] Register heap/VAD scan complete: %d exact Chunk/VAD matches across %d checked entries" % (
+			exact_match_count,
+			len(info["references"])
+		))
 
 	return info
 
@@ -1867,12 +2399,6 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		mndbg.dbgp("tellme: failed to collect process name: %s" % str(e), errormode=False)
 
 	try:
-		context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
-	except Exception as e:
-		context["modules_error"] = str(e)
-		mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
-
-	try:
 		regs = getAllRegisters()
 		context["registers"] = OrderedDict()
 		for reg_name in sorted(regs.keys()):
@@ -1888,29 +2414,41 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 
 	pc = regs.get(PROGRAM_COUNTER, 0)
 	sp = regs.get(STACK_POINTER, 0)
+	if question_type == "1":
+		try:
+			extra_references = []
+			if isinstance(heap_target_address, int) and heap_target_address > 0:
+				extra_references.append({
+					"name": "manual_target",
+					"value": heap_target_address,
+					"source": "q1_-a"
+				})
+				context["heap_analysis_target"] = {
+					"address": PTR_PRINT % heap_target_address,
+					"source": "-a"
+				}
+			context["instruction_heap_references"] = _tellme_collect_instruction_heap_context(regs, pc, extra_references=extra_references)
+		except Exception as e:
+			context["instruction_heap_references_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
+		try:
+			context["findmsp"] = _tellme_get_findmsp_summary()
+		except Exception as e:
+			context["findmsp_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect findmsp context: %s" % str(e), errormode=False)
+
+	try:
+		context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
+	except Exception as e:
+		context["modules_error"] = str(e)
+		mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
+
 	if isinstance(pc, int) and pc > 0:
 		context["program_counter"] = PTR_PRINT % pc
 		context["pc_disasm"] = _tellme_get_disasm_summary(pc)
 		context["pc_page"] = _tellme_get_page_summary(pc)
 		context["pc_module"] = _tellme_get_module_summary(pc)
 		context["pc_memory"] = _tellme_read_memory(pc, 0x40, "pc_memory")
-		if question_type == "1":
-			try:
-				extra_references = []
-				if isinstance(heap_target_address, int) and heap_target_address > 0:
-					extra_references.append({
-						"name": "manual_target",
-						"value": heap_target_address,
-						"source": "q1_-a"
-					})
-					context["heap_analysis_target"] = {
-						"address": PTR_PRINT % heap_target_address,
-						"source": "-a"
-					}
-				context["instruction_heap_references"] = _tellme_collect_instruction_heap_context(regs, pc, extra_references=extra_references)
-			except Exception as e:
-				context["instruction_heap_references_error"] = str(e)
-				mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
 		try:
 			heapdynamics = _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files)
 			if len(heapdynamics) > 0:
@@ -1926,6 +2464,8 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		context["stack_memory"] = _tellme_read_memory(sp, 0x100, "stack_memory")
 
 	context["ntglobal_flag"] = _tellme_get_ntglobalflag_summary()
+	if arch == 32:
+		context["seh_chain"] = _tellme_get_seh_chain_summary()
 	context["call_stack"] = _tellme_get_call_stack("kb")
 	if additional_context_files is None:
 		additional_context_files = []
@@ -2281,7 +2821,7 @@ def _tellme_render_modules_text():
 		items = sorted(mnproc.getPEB().getModules().items(), key=lambda x: x[1].moduleBase)
 		for _, mod in items:
 			lines.append(
-				"%s | base=%s | end=%s | size=0x%x | rebase=%s | aslr=%s | safeseh=%s | cfg=%s | nx=%s | osdll=%s | version=%s | path=%s" % (
+				"%s | base=%s | end=%s | size=0x%x | rebase=%s | aslr=%s | safeseh=%s | cfg=%s | osdll=%s | version=%s | path=%s" % (
 					mod.moduleFilename or mod.moduleKey,
 					PTR_PRINT % mod.moduleBase,
 					PTR_PRINT % mod.moduleTop,
@@ -2290,7 +2830,6 @@ def _tellme_render_modules_text():
 					str(mod.isAslr),
 					str(mod.isSafeSEH),
 					str(mod.isCFG),
-					str(mod.isNX),
 					str(mod.isOS),
 					str(mod.moduleVersion),
 					str(mod.modulePath)
@@ -2328,6 +2867,155 @@ def _tellme_get_ntglobalflag_summary():
 	return info
 
 
+def _tellme_get_seh_chain_summary():
+	info = OrderedDict()
+	if arch != 32:
+		info["error"] = "Structured Exception Handling chain collection is only applicable on 32-bit targets"
+		return info
+	try:
+		sehchain = dbg.getSehChain()
+		info["count"] = len(sehchain)
+		if len(sehchain) > 0:
+			info["start"] = PTR_PRINT % sehchain[0][0]
+		info["records"] = []
+		info["overwritten"] = []
+		for sehrecord in sehchain:
+			try:
+				recaddress = sehrecord[0]
+				sehandler = sehrecord[1]
+				entry = OrderedDict()
+				entry["record"] = PTR_PRINT % recaddress
+				nsehvalue = 0
+				try:
+					nsehvalue = struct.unpack('<L', dbg.readMemory(recaddress, 4))[0]
+				except Exception:
+					pass
+				entry["next_seh"] = "0x%08x" % nsehvalue
+				entry["handler"] = PTR_PRINT % sehandler if isinstance(sehandler, int) and sehandler > 0 else "0x00000000"
+				try:
+					ptr = MnPointer(sehandler)
+					entry["function"] = _tellme_format_text(ptr.getPtrFunction(), max_len=512)
+				except Exception as e:
+					entry["function_error"] = str(e)
+					entry["function"] = ""
+				info_text = ""
+				try:
+					overwritedata = checkSEHOverwrite(recaddress, nsehvalue, sehandler)
+					if len(overwritedata) > 0:
+						smashoffset = int(overwritedata[1])
+						if overwritedata[0] == "unicode":
+							smashoffset += 2
+						info_text = "Smashed, offset %d%s" % (
+							smashoffset,
+							" [unicode]" if overwritedata[0] == "unicode" else ""
+						)
+						info["overwritten"].append(OrderedDict([
+							("record", PTR_PRINT % recaddress),
+							("type", _tellme_format_text(overwritedata[0], max_len=64)),
+							("offset", int(overwritedata[1]))
+						]))
+				except Exception as e:
+					entry["overwrite_check_error"] = str(e)
+				if nsehvalue == 0xffffffff and info_text == "":
+					info_text = "End of SEH chain"
+				entry["info"] = _tellme_format_text(info_text, max_len=512)
+				info["records"].append(entry)
+			except Exception as e:
+				info["records"].append(OrderedDict([
+					("record_error", str(e))
+				]))
+		if len(info["overwritten"]) == 0:
+			del info["overwritten"]
+	except Exception as e:
+		info["error"] = str(e)
+	return info
+
+
+def _tellme_get_findmsp_summary(args=None):
+	info = OrderedDict()
+	osilent = None
+	try:
+		global g_silent
+		osilent = g_silent
+		g_silent = True
+		mspresults = goFindMSP(100, args or {})
+		info["distance"] = 100
+		for key in ["registers", "registers_to", "seh", "memory", "stack", "stackcontains"]:
+			raw = mspresults.get(key, {})
+			if not raw:
+				continue
+			if key in ["registers", "registers_to"]:
+				section = OrderedDict()
+				for name in sorted(raw.keys()):
+					value = raw[name]
+					entry = OrderedDict()
+					if len(value) > 0:
+						entry["address"] = PTR_PRINT % value[0]
+					if len(value) > 1:
+						entry["offset"] = int(value[1])
+					if len(value) > 2:
+						if key == "registers":
+							entry["pattern_type"] = _tellme_format_text(value[2], max_len=64)
+						else:
+							entry["length"] = int(value[2])
+					if len(value) > 3:
+						entry["pattern_type"] = _tellme_format_text(value[3], max_len=64)
+					section[name] = entry
+				info[key] = section
+			elif key == "seh":
+				section = []
+				for sehaddr in sorted(raw.keys()):
+					value = raw[sehaddr]
+					entry = OrderedDict()
+					entry["seh_handler"] = PTR_PRINT % sehaddr
+					if len(value) > 0:
+						entry["handler"] = PTR_PRINT % value[0]
+					if len(value) > 1:
+						entry["offset"] = int(value[1])
+					if len(value) > 2:
+						entry["pattern_type"] = _tellme_format_text(value[2], max_len=64)
+					if len(value) > 3:
+						entry["trailing_pattern_length"] = int(value[3])
+					section.append(entry)
+				info[key] = section
+			elif key == "memory":
+				section = []
+				for address in sorted(raw.keys()):
+					value = raw[address]
+					entry = OrderedDict()
+					entry["address"] = PTR_PRINT % address
+					if len(value) > 0:
+						entry["length"] = int(value[0])
+					if len(value) > 1:
+						entry["pattern_type"] = _tellme_format_text(value[1], max_len=64)
+					section.append(entry)
+				info[key] = section
+			else:
+				section = []
+				for address in sorted(raw.keys()):
+					value = raw[address]
+					entry = OrderedDict()
+					entry["address"] = PTR_PRINT % address
+					if len(value) > 0:
+						entry["stack_offset"] = int(value[0])
+					if len(value) > 1:
+						entry["stack_direction"] = _tellme_format_text(value[1], max_len=8)
+					if len(value) > 2:
+						entry["pattern_offset"] = int(value[2])
+					if len(value) > 3:
+						entry["length"] = int(value[3])
+					if len(value) > 4:
+						entry["pattern_type"] = _tellme_format_text(value[4], max_len=64)
+					section.append(entry)
+				info[key] = section
+	except Exception as e:
+		info["error"] = str(e)
+	finally:
+		if not osilent is None:
+			g_silent = osilent
+	return info
+
+
 def _tellme_build_request_variables(context):
 	variables = OrderedDict()
 	preferred_keys = [
@@ -2349,6 +3037,8 @@ def _tellme_build_request_variables(context):
 		"stack_page",
 		"stack_memory",
 		"ntglobal_flag",
+		"seh_chain",
+		"findmsp",
 		"call_stack",
 		"instruction_heap_references",
 		"heapdynamics",
@@ -2390,7 +3080,9 @@ Focus on crash triage and immediate exploit-relevant observations.
 Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
 Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
 Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
+If a seh_chain entry is present, also inspect the Structured Exception Handling chain, explain whether it looks intact or corrupted, and connect that to the crash analysis.
 If a cyclic pattern appears anywhere in registers, stack, or nearby memory, point it out and explain why it looks like a cyclic pattern. If you can only infer it probabilistically, say so clearly.
+Use findmsp if present to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, and stack pointers into the cyclic pattern.
 Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, heap metadata corruption or something else.
 Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
 Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
@@ -2430,6 +3122,8 @@ def _tellme_get_profile_template_variables(question_type):
 		"stack_page",
 		"stack_memory",
 		"ntglobal_flag",
+		"seh_chain",
+		"findmsp",
 		"call_stack",
 		"heapdynamics",
 		"heapdynamics_mini",
@@ -2492,6 +3186,41 @@ def _tellme_ensure_default_template(question_type, mona_config):
 		return ""
 
 	return template_path
+
+
+def _tellme_extract_prebuilt_prompt(template_path):
+	mndbg.dbgp("tellme: checking whether %s already contains a built request prompt" % template_path)
+	try:
+		with open(template_path, "rb") as fh:
+			template_text = fh.read().decode("latin-1")
+	except Exception as e:
+		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
+
+	lines = template_text.splitlines()
+	prompt_begin = -1
+	prompt_end = -1
+	for idx, line in enumerate(lines):
+		if line.strip() == "PROMPT BEGIN":
+			prompt_begin = idx
+		elif line.strip() == "PROMPT END":
+			prompt_end = idx
+			break
+
+	if prompt_begin > -1 and prompt_end > prompt_begin:
+		start_idx = prompt_begin + 1
+		if start_idx < prompt_end and set(lines[start_idx].strip()) == set("-"):
+			start_idx += 1
+		prompt = "\n".join(lines[start_idx:prompt_end]).strip()
+		if prompt != "":
+			mndbg.dbgp("tellme: extracted prebuilt prompt block from %s" % template_path)
+			return prompt
+
+	trimmed = template_text.strip()
+	if "Debugger request JSON:" in trimmed or "Template request JSON:" in trimmed:
+		mndbg.dbgp("tellme: treating %s as an already-built raw request prompt" % template_path)
+		return trimmed
+
+	return ""
 
 
 def buildTellMePromptFromTemplateFile(template_path, context, question_type="9"):
@@ -5190,16 +5919,52 @@ class MnPEB:
 		if self._heaps is None:
 			self._heaps = {}
 		ptrsize = archValue(4, 8)
+		mndbg.dbgp("MnPEB._walk_heaps: NumberOfHeaps=%d ProcessHeaps=%s ptrsize=%d walk_level=%s" % (
+			self.NumberOfHeaps,
+			PTR_PRINT % self.ProcessHeaps if self.ProcessHeaps else "<none>",
+			ptrsize,
+			str(walk_level)
+		))
 		for idx in range(self.NumberOfHeaps):
+			heaplist_entry = self.ProcessHeaps + idx * ptrsize
 			try:
-				heapaddr = readPtrSizeBytes(self.ProcessHeaps + idx * ptrsize)
-			except Exception:
+				heapaddr = readPtrSizeBytes(heaplist_entry)
+				mndbg.dbgp("MnPEB._walk_heaps: heap[%d] listentry=%s -> %s" % (
+					idx,
+					PTR_PRINT % heaplist_entry,
+					PTR_PRINT % heapaddr if heapaddr else "<none>"
+				))
+			except Exception as e:
+				mndbg.dbgp("MnPEB._walk_heaps: failed to read heap[%d] at %s: %s" % (
+					idx,
+					PTR_PRINT % heaplist_entry,
+					str(e)
+				), errormode=False)
 				continue
-			if not heapaddr or heapaddr in self._heaps:
+			if not heapaddr:
+				mndbg.dbgp("MnPEB._walk_heaps: skipping heap[%d] because heap address is null" % idx, errormode=False)
 				continue
-			heap = MnHeap(heapaddr, walk_level)
-			heap._apply_walk_level()
-			self._heaps[heapaddr] = heap
+			if heapaddr in self._heaps:
+				mndbg.dbgp("MnPEB._walk_heaps: skipping heap[%d] duplicate %s" % (
+					idx,
+					PTR_PRINT % heapaddr
+				), errormode=False)
+				continue
+			try:
+				heap = MnHeap._instantiate_for_cache(heapaddr, walk_level)
+				heap._apply_walk_level()
+				self._heaps[heapaddr] = heap
+				mndbg.dbgp("MnPEB._walk_heaps: added heap[%d] %s type=%s" % (
+					idx,
+					PTR_PRINT % heapaddr,
+					str(heap.getHeapType())
+				))
+			except Exception as e:
+				mndbg.dbgp("MnPEB._walk_heaps: failed to instantiate heap[%d] %s: %s" % (
+					idx,
+					PTR_PRINT % heapaddr,
+					str(e)
+				), errormode=False)
 
 	def getHeapObject(self, heapbase, walk_level=WalkLevel.HEAP):
 		"""Return the cached MnHeap for *heapbase*.
@@ -5210,14 +5975,20 @@ class MnPEB:
 		if self._heaps is None:
 			self._walk_heaps(walk_level)
 		if heapbase not in self._heaps:
-			heap = MnHeap(heapbase, walk_level)
+			heap = MnHeap._instantiate_for_cache(heapbase, walk_level)
 			heap._apply_walk_level()
 			self._heaps[heapbase] = heap
 		return self._heaps[heapbase]
 
 	def getHeaps(self):
 		"""Return a list of MnHeap objects for all process heaps, in PEB order."""
-		if self._heaps is None:
+		expected_heaps = int(getattr(self, "NumberOfHeaps", 0) or 0)
+		cached_heaps = 0 if self._heaps is None else len(self._heaps)
+		if self._heaps is None or (expected_heaps > 0 and cached_heaps < expected_heaps):
+			mndbg.dbgp("MnPEB.getHeaps: refreshing heap cache (cached=%d expected=%d)" % (
+				cached_heaps,
+				expected_heaps
+			))
 			self._walk_heaps()
 		return list(self._heaps.values())
 
@@ -8565,6 +9336,43 @@ class MnHeap(object):
 		self.heap_version = HeapVersion.UNKNOWN
 		return None
 
+	@staticmethod
+	def _instantiate_for_cache(address, walk_level=WalkLevel.HEAP):
+		"""Instantiate a concrete heap object without relying on subclass __init__.
+
+		The shared PEB heap cache only needs the correct concrete class plus the
+		base MnHeap state. On some WinDBG targets the normal subclass constructor
+		path intermittently trips native type-info bindings for non-default heaps.
+		"""
+		htype = MnHeap._detectHeapType(address)
+		if htype == "NT":
+			heap_cls = MnNTHeap._detectHeapClass(address)
+		elif htype == "Segment":
+			heap_cls = MnSegmentHeap
+		else:
+			heap_cls = MnHeap
+		heap = object.__new__(heap_cls)
+		MnHeap.__init__(heap, address, walk_level)
+		if heap_cls is MnNTXPHeap:
+			heap.heap_type = HeapType.NT
+			heap.heap_version = HeapVersion.XP
+		elif heap_cls is MnNTVistaHeap:
+			heap.heap_type = HeapType.NT
+			heap.heap_version = HeapVersion.VISTA
+		elif heap_cls is MnNT8Heap:
+			heap.heap_type = HeapType.NT
+			heap.heap_version = HeapVersion.WIN8
+		elif heap_cls is MnNT10Heap:
+			heap.heap_type = HeapType.NT
+			heap.heap_version = HeapVersion.WIN10
+		elif heap_cls is MnNT11Heap:
+			heap.heap_type = HeapType.NT
+			heap.heap_version = HeapVersion.WIN11
+		elif heap_cls is MnSegmentHeap:
+			heap.heap_type = HeapType.SEGMENT
+			heap.heap_version = HeapVersion.UNKNOWN
+		return heap
+
 	def _apply_walk_level(self):
 		"""Eagerly populate heap structures according to self.walk_level bitmask."""
 		if self.walk_level & WalkLevel.SEGMENT:
@@ -11353,6 +12161,17 @@ class MnProc:
 	def getAllHeapsSorted(self):
 		"""Return (MnHeap, index) pairs for all heaps sorted by base address."""
 		heaps = self.getPEB().getHeaps()
+		try:
+			mndbg.dbgp("getAllHeapsSorted: getPEB().getHeaps() returned %d heap objects" % len(heaps))
+			for heap in heaps[:10]:
+				try:
+					mndbg.dbgp("getAllHeapsSorted: heap candidate %s type=%s" % (
+						PTR_PRINT % heap.heapbase, str(heap.getHeapType())
+					))
+				except Exception:
+					pass
+		except Exception:
+			pass
 		return sorted(enumerate(heaps), key=lambda x: x[1].heapbase)
 
 	def getNTHeapAddresses(self):
@@ -11398,7 +12217,11 @@ class MnProc:
 	def _peb_entry(self, peb_size):
 		"""Return (start, end, "PEB", desc) from self.peb (MnPEB)."""
 		peb     = self.peb
-		threads = self.getThreads()
+		threads = {}
+		try:
+			threads = self.getThreads()
+		except Exception as e:
+			mndbg.dbgp("_peb_entry: unable to enumerate threads for PID lookup: %s" % str(e), errormode=False)
 		pid     = str(next(iter(threads.values())).ProcessId) if threads else ""
 		return (peb.address, peb.address + peb_size, "PEB",
 				"%s (PID: %s)" % (clickPEB("PEB"), pid))
@@ -11464,108 +12287,170 @@ class MnProc:
 		Each item: (start, end, category, description)
 		Categories: "PEB", "TEB", "Stack", "Module", "Heap", "Segment", "VADBlock", "Chunk"
 		"""
+		mndbg.dbgp(get_current_function_name())
 		_alias   = getAliasName()
 		_windbg  = mndbg.isWinDBG()
 		regions  = []
 		peb_size, teb_size = self._struct_sizes()
 		if self.peb is not None:
-			regions.append(self._peb_entry(peb_size))
-		current_teb_addr = self.getCurrentTEB().addr if self.getCurrentTEB() else 0
-		stackaddy        = dbg.getRegs().get(STACK_POINTER, 0)
-		threads          = self.getThreads()
-		stacks           = self.getStacks()
+			try:
+				regions.append(self._peb_entry(peb_size))
+			except Exception as e:
+				mndbg.dbgp("getAllSorted: unable to build PEB entry: %s" % str(e), errormode=False)
+		current_teb_addr = 0
+		try:
+			current_teb = self.getCurrentTEB()
+			current_teb_addr = current_teb.addr if current_teb else 0
+		except Exception as e:
+			mndbg.dbgp("getAllSorted: unable to determine current TEB: %s" % str(e), errormode=False)
+		stackaddy = 0
+		try:
+			stackaddy = dbg.getRegs().get(STACK_POINTER, 0)
+		except Exception as e:
+			mndbg.dbgp("getAllSorted: unable to query stack pointer register: %s" % str(e), errormode=False)
+		threads = {}
+		try:
+			threads = self.getThreads()
+		except Exception as e:
+			mndbg.dbgp("getAllSorted: thread enumeration failed: %s" % str(e), errormode=False)
+		stacks = {}
+		try:
+			stacks = self.getStacks()
+		except Exception as e:
+			mndbg.dbgp("getAllSorted: stack enumeration failed: %s" % str(e), errormode=False)
 		if threads:
 			for tid, mteb in threads.items():
-				regions.append(self._teb_entry(tid, mteb, teb_size, current_teb_addr))
+				try:
+					regions.append(self._teb_entry(tid, mteb, teb_size, current_teb_addr))
+				except Exception as e:
+					mndbg.dbgp("getAllSorted: skipping TEB entry for thread %s: %s" % (str(tid), str(e)), errormode=False)
 				sinfo = stacks.get(tid)
 				if sinfo:
-					regions.append(self._stack_entry(tid, mteb, sinfo, stackaddy))
+					try:
+						regions.append(self._stack_entry(tid, mteb, sinfo, stackaddy))
+					except Exception as e:
+						mndbg.dbgp("getAllSorted: skipping stack entry for thread %s: %s" % (str(tid), str(e)), errormode=False)
 		elif self.teb is not None:
 			regions.append((self.teb.addr, self.teb.addr + teb_size, "TEB", "TEB"))
-		for mod in self.getPEB().getModules().values():
-			regions.append(self._module_entry(mod))
-		for idx, mheap in self.getAllHeapsSorted():
-			heapaddr = mheap.heapbase
-			htype    = mheap.getHeapType()
-			heapname  = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
-			heap_title = ("[Default] " if heapaddr == self.peb.ProcessHeap else "") + heapname
-			corrupted = False
+		try:
+			peb = self.getPEB()
 			try:
-				corrupted = mheap.isCorrupted()
-			except Exception:
-				corrupted = True
-			heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted else 0)
-			if corrupted:
-				regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heap_title))
-				continue
-			if htype != "NT":
-				regions.append((heapaddr, heap_end, "Heap", "%s (%s)" % (heap_title, htype)))
-				continue
-			hidx = int(idx) if str(idx).isdigit() else 0
-			fe_label = ""
-			try:
-				fe_type  = mheap.getFrontEndHeapType()
-				fe_label = " | FrontEnd: %s" % self._FE_NAMES.get(fe_type, "0x%x" % fe_type)
+				mndbg.dbgp("getAllSorted: PEB heap metadata NumberOfHeaps=%s ProcessHeaps=%s ProcessHeap=%s" % (
+					str(getattr(peb, "NumberOfHeaps", "<unknown>")),
+					PTR_PRINT % getattr(peb, "ProcessHeaps", 0) if getattr(peb, "ProcessHeaps", 0) else "<none>",
+					PTR_PRINT % getattr(peb, "ProcessHeap", 0) if getattr(peb, "ProcessHeap", 0) else "<none>"
+				))
 			except Exception:
 				pass
-			mndbg.dbgp("Enumerating segments for heap %s" % (PTR_PRINT % heapaddr))
-			segments     = mheap.getSegments()
-			mndbg.dbgp("  Got %d segments" % len(segments))
-			mndbg.dbgp("Enumerating vadblocks for heap %s" % (PTR_PRINT % heapaddr))
-			va_blocks    = mheap.getVABlocks()
-			mndbg.dbgp("  Got %d vadblocks" % len(va_blocks))
-			mndbg.dbgp("Enumerating LFH Ranges for heap %s" % (PTR_PRINT % heapaddr))
-			lfh_ranges   = mheap.getLFHRanges() if include_chunks else []
-			mndbg.dbgp("  Got %d LFH Ranges" % len(lfh_ranges))
-			lfh_starts   = [r[0] for r in lfh_ranges]
-			listhead     = heapaddr + mheap._offset("SegmentList")
-			listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
-			seg_walk     = mheap._seg_walk()
-			_seg_name    = {sa: "Seg%02d-%02d" % (i, hidx) for i, (sa, _, _, _) in enumerate(seg_walk)}
-			segs_by_addr = {seg.address: seg for seg in segments}
-			regions.append((heapaddr, heap_end, "Heap",
-				"%s (%s%s | Segments: %d | VA Blocks: %d)" % (
-					heap_title, htype, fe_label, len(segments), len(va_blocks))))
-			for i, (segaddr, flink_addr, blink_addr, seg_corrupted) in enumerate(seg_walk):
-				seg_obj  = segs_by_addr.get(segaddr)
-				segname  = clickSegmentWinDBG(segaddr, "nt", "Seg%02d-%02d" % (i, hidx))
-				flink    = listhead_str if flink_addr == listhead else "0x%s (%s)" % (toHex(flink_addr), _seg_name.get(flink_addr, "?"))
-				blink    = listhead_str if blink_addr == listhead else "0x%s (%s)" % (toHex(blink_addr), _seg_name.get(blink_addr, "?"))
-				seg_base = seg_obj.BaseAddress    if seg_obj else segaddr
-				seg_end  = seg_obj.LastValidEntry if seg_obj else segaddr
-				mndbg.dbgp("Enumerating Chunks in segment %s" % (PTR_PRINT % seg_base))
-				chunks   = seg_obj.getChunks() if (seg_obj and include_chunks) else {}
-				mndbg.dbgp("  Got %d chunks" % len(chunks))			
-				chunk_info = ""
-				if chunks:
-					total   = len(chunks)
-					busy    = sum(1 for c in chunks.values() if "busy" in getHeapFlag(c.flag).lower())
-					free_sizes = [c.size * HEAPGRANULARITY for c in chunks.values()
-								  if "free" in getHeapFlag(c.flag).lower()]
-					maxfree = max(free_sizes) if free_sizes else 0
-					chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
-						total, busy, total - busy, maxfree)
-				corrupt_tag = " ** CORRUPTED **" if seg_corrupted else ""
-				regions.append((seg_base, seg_end, "Segment",
-					"%s%s (Heap: %s | FLink: %s | BLink: %s%s)" % (
-						segname, corrupt_tag, heapname, flink, blink, chunk_info)))
-				if include_chunks:
-					for ci, chunk in enumerate(sorted(chunks.values(), key=lambda c: c.chunkptr)):
-						lfh_tag = " | LFH" if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts) else ""
-						regions.append((chunk.chunkptr, chunk.chunkptr + chunk.size * HEAPGRANULARITY, "Chunk",
-							"%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
-								"Chnk%04d-%03d-%02d" % (ci, i, hidx),
-								self._fmt_userptr(chunk.userptr, chunk.usersize, _alias, _windbg), chunk.usersize,
-								getHeapFlag(chunk.flag), heapname, segname, chunk.flag, lfh_tag)))
-			vaaddrs = sorted(va_blocks.keys())
-			for i, vaaddr in enumerate(vaaddrs):
-				va    = va_blocks[vaaddr]
-				vaend = vaaddr + va["commit_size"]
-				flink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
-				blink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
-				regions.append((vaaddr, vaend, "VADBlock",
-					"VAd%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
-						hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])))
+			modules = list(peb.getModules().values()) if peb is not None else []
+			mndbg.dbgp("getAllSorted: enumerating %d modules" % len(modules))
+			for mod in modules:
+				try:
+					regions.append(self._module_entry(mod))
+				except Exception as e:
+					modname = "<unknown>"
+					try:
+						modname = mod.moduleFilename or mod.internalname or mod.moduleKey
+					except Exception:
+						pass
+					mndbg.dbgp("getAllSorted: skipping module '%s': %s" % (str(modname), str(e)), errormode=False)
+		except Exception as e:
+			mndbg.dbgp("getAllSorted: module enumeration failed: %s" % str(e), errormode=False)
+		try:
+			all_heaps_sorted = self.getAllHeapsSorted()
+			mndbg.dbgp("getAllSorted: getAllHeapsSorted returned %d heaps" % len(all_heaps_sorted))
+		except Exception as e:
+			all_heaps_sorted = []
+			mndbg.dbgp("getAllSorted: getAllHeapsSorted failed: %s" % str(e), errormode=False)
+		for idx, mheap in all_heaps_sorted:
+			try:
+				heapaddr = mheap.heapbase
+				htype    = mheap.getHeapType()
+				heapname = clickHeapWinDBG(heapaddr, "nt", "Heap %d" % idx)
+				heap_title = ("[Default] " if self.peb is not None and heapaddr == self.peb.ProcessHeap else "") + heapname
+				corrupted = False
+				try:
+					corrupted = mheap.isCorrupted()
+				except Exception:
+					corrupted = True
+				heap_end = heapaddr + (mheap.getHeaderSize() if not corrupted else 0)
+				if corrupted:
+					regions.append((heapaddr, heap_end, "Heap", "%s (** CORRUPTED **)" % heap_title))
+					continue
+				if htype != "NT":
+					regions.append((heapaddr, heap_end, "Heap", "%s (%s)" % (heap_title, htype)))
+					continue
+				hidx = int(idx) if str(idx).isdigit() else 0
+				fe_label = ""
+				try:
+					fe_type  = mheap.getFrontEndHeapType()
+					fe_label = " | FrontEnd: %s" % self._FE_NAMES.get(fe_type, "0x%x" % fe_type)
+				except Exception:
+					pass
+				mndbg.dbgp("getAllSorted: enumerating segments for heap %s" % (PTR_PRINT % heapaddr))
+				segments   = mheap.getSegments()
+				mndbg.dbgp("getAllSorted: heap %s has %d segments" % (PTR_PRINT % heapaddr, len(segments)))
+				mndbg.dbgp("getAllSorted: enumerating vadblocks for heap %s" % (PTR_PRINT % heapaddr))
+				va_blocks  = mheap.getVABlocks()
+				mndbg.dbgp("getAllSorted: heap %s has %d vadblocks" % (PTR_PRINT % heapaddr, len(va_blocks)))
+				mndbg.dbgp("getAllSorted: enumerating LFH ranges for heap %s" % (PTR_PRINT % heapaddr))
+				lfh_ranges = mheap.getLFHRanges() if include_chunks else []
+				mndbg.dbgp("getAllSorted: heap %s has %d LFH ranges" % (PTR_PRINT % heapaddr, len(lfh_ranges)))
+				lfh_starts   = [r[0] for r in lfh_ranges]
+				listhead     = heapaddr + mheap._offset("SegmentList")
+				listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
+				seg_walk     = mheap._seg_walk()
+				_seg_name    = {sa: "Seg%02d-%02d" % (i, hidx) for i, (sa, _, _, _) in enumerate(seg_walk)}
+				segs_by_addr = {seg.address: seg for seg in segments}
+				regions.append((heapaddr, heap_end, "Heap",
+					"%s (%s%s | Segments: %d | VA Blocks: %d)" % (
+						heap_title, htype, fe_label, len(segments), len(va_blocks))))
+				for i, (segaddr, flink_addr, blink_addr, seg_corrupted) in enumerate(seg_walk):
+					seg_obj  = segs_by_addr.get(segaddr)
+					segname  = clickSegmentWinDBG(segaddr, "nt", "Seg%02d-%02d" % (i, hidx))
+					flink    = listhead_str if flink_addr == listhead else "0x%s (%s)" % (toHex(flink_addr), _seg_name.get(flink_addr, "?"))
+					blink    = listhead_str if blink_addr == listhead else "0x%s (%s)" % (toHex(blink_addr), _seg_name.get(blink_addr, "?"))
+					seg_base = seg_obj.BaseAddress if seg_obj else segaddr
+					seg_end  = seg_obj.LastValidEntry if seg_obj else segaddr
+					chunks   = seg_obj.getChunks() if (seg_obj and include_chunks) else {}
+					mndbg.dbgp("getAllSorted: segment %s yielded %d chunks" % (PTR_PRINT % seg_base, len(chunks)))
+					chunk_info = ""
+					if chunks:
+						total   = len(chunks)
+						busy    = sum(1 for c in chunks.values() if "busy" in getHeapFlag(c.flag).lower())
+						free_sizes = [c.size * HEAPGRANULARITY for c in chunks.values()
+									  if "free" in getHeapFlag(c.flag).lower()]
+						maxfree = max(free_sizes) if free_sizes else 0
+						chunk_info = " | Chunks: %d (Busy: %d, Free: %d, Free Max Size: 0x%x)" % (
+							total, busy, total - busy, maxfree)
+					corrupt_tag = " ** CORRUPTED **" if seg_corrupted else ""
+					regions.append((seg_base, seg_end, "Segment",
+						"%s%s (Heap: %s | FLink: %s | BLink: %s%s)" % (
+							segname, corrupt_tag, heapname, flink, blink, chunk_info)))
+					if include_chunks:
+						for ci, chunk in enumerate(sorted(chunks.values(), key=lambda c: c.chunkptr)):
+							lfh_tag = " | LFH" if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts) else ""
+							regions.append((chunk.chunkptr, chunk.chunkptr + chunk.size * HEAPGRANULARITY, "Chunk",
+								"%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
+									"Chnk%04d-%03d-%02d" % (ci, i, hidx),
+									self._fmt_userptr(chunk.userptr, chunk.usersize, _alias, _windbg), chunk.usersize,
+									getHeapFlag(chunk.flag), heapname, segname, chunk.flag, lfh_tag)))
+				vaaddrs = sorted(va_blocks.keys())
+				for i, vaaddr in enumerate(vaaddrs):
+					va    = va_blocks[vaaddr]
+					vaend = vaaddr + va["commit_size"]
+					flink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i + 1]), hidx, i + 1) if i < len(vaaddrs) - 1 else "None"
+					blink = "0x%s (VAd%02d-%02d)" % (toHex(vaaddrs[i - 1]), hidx, i - 1) if i > 0 else "None"
+					regions.append((vaaddr, vaend, "VADBlock",
+						"VAd%02d-%02d (Heap: %s | FLink: %s | BLink: %s | commit 0x%x, reserve 0x%x)" % (
+							hidx, i, heapname, flink, blink, va["commit_size"], va["reserve_size"])))
+			except Exception as e:
+				heapdesc = "<unknown>"
+				try:
+					heapdesc = PTR_PRINT % mheap.heapbase
+				except Exception:
+					pass
+				mndbg.dbgp("getAllSorted: skipping heap '%s': %s" % (heapdesc, str(e)), errormode=False)
 		regions.sort(key=lambda x: x[0])
 		return regions
 
@@ -11583,17 +12468,43 @@ class MnProc:
 		regions  = []
 		peb_size, teb_size = self._struct_sizes()
 		if self.peb is not None:
-			regions.append(self._peb_entry(peb_size) + ([],))
-		current_teb_addr = self.getCurrentTEB().addr if self.getCurrentTEB() else 0
-		stackaddy        = dbg.getRegs().get(STACK_POINTER, 0)
-		threads          = self.getThreads()
-		stacks           = self.getStacks()
+			try:
+				regions.append(self._peb_entry(peb_size) + ([],))
+			except Exception as e:
+				mndbg.dbgp("getSortedByElement: unable to build PEB entry: %s" % str(e), errormode=False)
+		current_teb_addr = 0
+		try:
+			current_teb = self.getCurrentTEB()
+			current_teb_addr = current_teb.addr if current_teb else 0
+		except Exception as e:
+			mndbg.dbgp("getSortedByElement: unable to determine current TEB: %s" % str(e), errormode=False)
+		stackaddy = 0
+		try:
+			stackaddy = dbg.getRegs().get(STACK_POINTER, 0)
+		except Exception as e:
+			mndbg.dbgp("getSortedByElement: unable to query stack pointer register: %s" % str(e), errormode=False)
+		threads = {}
+		try:
+			threads = self.getThreads()
+		except Exception as e:
+			mndbg.dbgp("getSortedByElement: thread enumeration failed: %s" % str(e), errormode=False)
+		stacks = {}
+		try:
+			stacks = self.getStacks()
+		except Exception as e:
+			mndbg.dbgp("getSortedByElement: stack enumeration failed: %s" % str(e), errormode=False)
 		for tid, mteb in threads.items():
 			teb_children = []
 			sinfo = stacks.get(tid)
 			if sinfo:
-				teb_children.append(self._stack_entry(tid, mteb, sinfo, stackaddy) + ([],))
-			regions.append(self._teb_entry(tid, mteb, teb_size, current_teb_addr) + (teb_children,))
+				try:
+					teb_children.append(self._stack_entry(tid, mteb, sinfo, stackaddy) + ([],))
+				except Exception as e:
+					mndbg.dbgp("getSortedByElement: skipping stack entry for thread %s: %s" % (str(tid), str(e)), errormode=False)
+			try:
+				regions.append(self._teb_entry(tid, mteb, teb_size, current_teb_addr) + (teb_children,))
+			except Exception as e:
+				mndbg.dbgp("getSortedByElement: skipping TEB entry for thread %s: %s" % (str(tid), str(e)), errormode=False)
 		for mod in self.getPEB().getModules().values():
 			regions.append(self._module_entry(mod) + ([],))
 		for idx, mheap in self.getAllHeapsSorted():
@@ -12172,9 +13083,17 @@ class MnPointer:
 
 			# segments: skip any whose range does not contain self.address
 			for seg in mheap.getSegments():
-				if not (seg.BaseAddress <= self.address < seg.end):
+				seg_start = min(getattr(seg, "BaseAddress", 0), getattr(seg, "FirstEntry", getattr(seg, "BaseAddress", 0)))
+				seg_end = getattr(seg, "LastValidEntry", getattr(seg, "end", 0))
+				mndbg.dbgp("showHeapBlockInfo: checking heap %s segment %s-%s for %s" % (
+					PTR_PRINT % heapbase,
+					PTR_PRINT % seg_start,
+					PTR_PRINT % seg_end,
+					PTR_PRINT % self.address
+				))
+				if not (seg_start <= self.address < seg_end):
 					continue
-				mndbg.dbgp("Checking segment %s, looking for %s" % (PTR_PRINT % seg.address, PTR_PRINT % self.address))
+				mndbg.dbgp("Checking segment %s, looking for %s" % (PTR_PRINT % getattr(seg, "address", seg_start), PTR_PRINT % self.address))
 				for chunkptr, thischunk in seg.getChunks().items():
 					thissize = thischunk.size * HEAPGRANULARITY
 					if self.address >= chunkptr and self.address < (chunkptr + thissize):
@@ -12189,14 +13108,14 @@ class MnPointer:
 							found_encoding_key = mheap.getEncodingKey()
 							found_chunk_base = chunkptr
 						foundinchunk = thischunk
-						foundinsegment = seg.address
+						foundinsegment = getattr(seg, "address", seg_start)
 						foundinheap = heapbase
 						break
 				if foundinchunk is not None:
 					break
 
-			# VA blocks
-			if foundinchunk is None:
+			# VA blocks are only relevant if the address was not already found in a segment.
+			if foundinchunk is None and foundinsegment is None:
 				mndbg.dbgp("Checking VADBlocks, looking for %s" % (PTR_PRINT % self.address))
 				for vaptr, vainfo in mheap.getVABlocks().items():
 					if self.address >= vaptr and self.address <= vaptr + vainfo["commit_size"]:
@@ -12211,6 +13130,11 @@ class MnPointer:
 						foundinva = vaptr
 						foundinheap = heapbase
 						break
+			elif foundinsegment is not None:
+				mndbg.dbgp("Skipping VADBlock lookup for %s because the address is already inside segment %s" % (
+					PTR_PRINT % self.address,
+					PTR_PRINT % foundinsegment
+				))
 
 			# perhaps chunk is in FEA
 			# if it is, it won't be a VA chunk
@@ -20259,8 +21183,9 @@ def goFindMSP(distance=0, args=None):
 		dbg.updateLog()
 		searchPattern = []
 		interruptMona()
-		dbg.log("")
-		dbg.log("    Searching for %s pattern:" % pattype)
+		if not g_silent:
+			dbg.log("")
+			dbg.log("    Searching for %s pattern:" % pattype)
 
 		# create search pattern (TEXT, not bytes)
 		if pattype == "normal":
@@ -20291,13 +21216,17 @@ def goFindMSP(distance=0, args=None):
 					ptrinfo = ""
 					if thisptr.isOnStack():
 						ptrinfo = "[<b>Stack</b>]"
-					elif thisptr.isInHeap():
-						ptrinfo = "[<b>Heap</b>]"
+					else:
+						try:
+							if thisptr.isInHeap():
+								ptrinfo = "[<b>Heap</b>]"
+						except Exception as e:
+							mndbg.dbgp("goFindMSP: heap classification failed for %s: %s" % (PTR_PRINT % ptr, str(e)))
 					thissize = getPatternLength(ptr, pattype, args)
 					if thissize > 0:
 						if not g_silent:
-							dbg.log("    Cyclic pattern (%s) found at 0x%s (length %d bytes) %s" % (pattype, toHex(ptr), thissize, ptrinfo))
-						tofile += "    Cyclic pattern (%s) found at 0x%s (length %d bytes) %s \n" % (pattype, toHex(ptr), thissize, ptrinfo)
+							dbg.log("    Start of cyclic pattern (%s) found at 0x%s (length %d bytes) %s" % (pattype, toHex(ptr), thissize, ptrinfo))
+						tofile += "    Start of cyclic pattern (%s) found at 0x%s (length %d bytes) %s \n" % (pattype, toHex(ptr), thissize, ptrinfo)
 						if ptr not in memory:
 							memory[ptr] = [thissize, pattype]
 
@@ -20609,12 +21538,12 @@ def goFindMSP(distance=0, args=None):
 	# 4. walking stack
 	if STACK_POINTER in regs:
 		curresp = regs[STACK_POINTER]
+		if distance == 0:
+			extratxt = "(entire stack)"
+		else:
+			extratxt = "(+- " + str(distance) + " bytes)"
 
 		if not g_silent:
-			if distance == 0:
-				extratxt = "(entire stack)"
-			else:
-				extratxt = "(+- " + str(distance) + " bytes)"
 			dbg.log("")
 			dbg.log("[+] Examining stack %s - looking for cyclic pattern" % extratxt)
 		tofile += "\n[+] Examining stack %s - looking for cyclic pattern\n" % extratxt
@@ -20695,16 +21624,15 @@ def goFindMSP(distance=0, args=None):
 									stepsize = thissize
 									if (thissize % PTR_SIZE) != 0:
 										stepsize = ((thissize // PTR_SIZE) * PTR_SIZE) + PTR_SIZE
+									espoff = 0
+									espsign = "+"
+									if ((stackcounter + thissize) >= curresp):
+										espoff = (stackcounter + thissize) - curresp
+									else:
+										espoff = curresp - (stackcounter + thissize)
+										espsign = "-"
 
 									if not g_silent:
-										espoff = 0
-										espsign = "+"
-										if ((stackcounter + thissize) >= curresp):
-											espoff = (stackcounter + thissize) - curresp
-										else:
-											espoff = curresp - (stackcounter + thissize)
-											espsign = "-"
-
 										dbg.log("    0x%s : Contains %s cyclic pattern at %s%s0x%s (%s%s) : offset %d, length %d (-> 0x%s : %s%s0x%s)" % (
 												(PTR_PRINT % stackcounter), pattype, STACK_POINTER, sign, rmLeading(toHex(offsetvalue), "0"),
 												sign, offsetvalue, offset, thissize,
@@ -20726,11 +21654,11 @@ def goFindMSP(distance=0, args=None):
 
 		# stack has pointer into cyclic pattern ?
 		interruptMona()
+		if distance == 0:
+			extratxt = "(entire stack)"
+		else:
+			extratxt = "(+- " + str(distance) + " bytes)"
 		if not g_silent:
-			if distance == 0:
-				extratxt = "(entire stack)"
-			else:
-				extratxt = "(+- " + str(distance) + " bytes)"
 			dbg.log("")
 			dbg.log("[+] Examining stack %s - looking for pointers to cyclic pattern" % extratxt)
 		tofile += "\n[+] Examining stack %s - looking for pointers to cyclic pattern\n" % extratxt
@@ -22883,6 +23811,7 @@ def procTellMe(args):
 			mndbg.dbgp("tellme: using target address override %s from -a" % (PTR_PRINT % target_address))
 
 	template_file = ""
+	prebuilt_prompt = ""
 	if question_type == "9":
 		if "f" not in args or type(args["f"]).__name__.lower() == "bool":
 			dbg.log("Question profile '-q 9' requires -f <file>", highlight=1)
@@ -22891,14 +23820,23 @@ def procTellMe(args):
 		if not os.path.isfile(template_file):
 			dbg.log("Unable to find/read template file %s" % template_file, highlight=1)
 			return
+		try:
+			prebuilt_prompt = _tellme_extract_prebuilt_prompt(template_file)
+		except Exception as e:
+			dbg.log("Unable to parse request/template file %s: %s" % (template_file, str(e)), highlight=1)
+			return
 		effective_question_type = _tellme_guess_template_question_type(template_file)
 		mndbg.dbgp("tellme: using template file %s for q9" % template_file)
+		if prebuilt_prompt != "":
+			mndbg.dbgp("tellme: q9 will reuse the prebuilt request prompt from %s" % template_file)
+			dbg.log("[+] Using prebuilt request from: %s" % template_file)
 		if effective_question_type != "":
 			mndbg.dbgp("tellme: inferred base question type '%s' from template name" % effective_question_type)
 			if target_address > 0 and heap_target_address == 0 and target_address_source == "-a" and effective_question_type == "1":
 				heap_target_address = target_address
 				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for ai.q1 template" % (PTR_PRINT % heap_target_address))
-		dbg.log("[+] Using request template: %s" % template_file)
+		elif prebuilt_prompt == "":
+			dbg.log("[+] Using request template: %s" % template_file)
 
 	mona_config = MnConfig()
 	if question_type in ["1", "2"]:
@@ -23001,9 +23939,9 @@ def procTellMe(args):
 		if len(additional_context_files) > 0:
 			mndbg.dbgp("tellme: using additional context files %s" % ", ".join(additional_context_files))
 	if len(heapdynamics_files) > 0:
-		dbg.log("[+] Will read heapdynamics context from: %s" % ", ".join(heapdynamics_files))
+		dbg.log("[+] Will check if %s contains useful information" % ", ".join(heapdynamics_files))
 	else:
-		dbg.log("[+] Will read heapdynamics context from: c:\\alloc.txt")
+		dbg.log("[+] Will check if c:\\alloc.txt contains useful information")
 	if len(additional_context_files) > 0:
 		dbg.log("[+] Will read additional context from: %s" % ", ".join(additional_context_files))
 
@@ -23019,7 +23957,7 @@ def procTellMe(args):
 		mndbg.dbgp("tellme: using poc file %s" % poc_file)
 		dbg.log("[+] Will read PoC/trigger from: %s" % poc_file)
 
-	if effective_question_type == "2":
+	if effective_question_type == "2" and prebuilt_prompt == "":
 		if target_address == 0:
 			regs = getAllRegisters()
 			target_address = regs.get(PROGRAM_COUNTER, 0)
@@ -23032,46 +23970,47 @@ def procTellMe(args):
 			dbg.log("    Try '-q 1' instead, or provide a valid code address with -a to analyse.", highlight=1)
 			return
 
-	if mnproc is None:
-		mndbg.dbgp("tellme: initializing shared process context")
-		MnProc.ensure()
-	if mnproc is None:
-		dbg.log("Unable to initialize process context for tellme", highlight=1)
-		return
-
 	try:
-		dbg.log("[+] Collecting context and preparing request...")
-		context = collectTellMeContext(
-			effective_question_type,
-			heapdynamics_files=heapdynamics_files,
-			additional_context_files=additional_context_files,
-			poc_file=poc_file,
-			heap_target_address=heap_target_address
-		)
-		dbg.log("    Done")
-	except Exception as e:
-		dbg.log("Failed to collect debugger context: %s" % str(e), highlight=1)
-		mndbg.dbgp("tellme: context collection failed:\n%s" % traceback.format_exc(), errormode=False)
-		return
-
-	if effective_question_type == "2":
-		context["analysis_target"] = {
-			"address": PTR_PRINT % target_address if isinstance(target_address, int) and target_address > 0 else "",
-			"source": target_address_source
-		}
-		try:
-			context["current_function"] = collectTellMeCurrentFunctionContext(target_address)
-		except Exception as e:
-			context["current_function_error"] = str(e)
-			mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
-
-	try:
-		if question_type == "9":
-			prompt = buildTellMePromptFromTemplateFile(template_file, context, question_type=question_type)
+		if question_type == "9" and prebuilt_prompt != "":
+			prompt = prebuilt_prompt
 		else:
+			if mnproc is None:
+				mndbg.dbgp("tellme: initializing shared process context")
+				MnProc.ensure()
+			if mnproc is None:
+				dbg.log("Unable to initialize process context for tellme", highlight=1)
+				return
+
+			dbg.log("[+] Collecting context and preparing request...")
+			context = collectTellMeContext(
+				effective_question_type,
+				heapdynamics_files=heapdynamics_files,
+				additional_context_files=additional_context_files,
+				poc_file=poc_file,
+				heap_target_address=heap_target_address
+			)
+			dbg.log("    Done")
+
+			if effective_question_type == "2":
+				context["analysis_target"] = {
+					"address": PTR_PRINT % target_address if isinstance(target_address, int) and target_address > 0 else "",
+					"source": target_address_source
+				}
+				try:
+					context["current_function"] = collectTellMeCurrentFunctionContext(target_address)
+				except Exception as e:
+					context["current_function_error"] = str(e)
+					mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
+
+		if question_type == "9" and prebuilt_prompt == "":
+			prompt = buildTellMePromptFromTemplateFile(template_file, context, question_type=question_type)
+		elif question_type != "9":
 			prompt = buildTellMePrompt(question_type, context)
 	except Exception as e:
-		dbg.log("Failed to build the prompt for question type '%s': %s" % (question_type, str(e)), highlight=1)
+		if prebuilt_prompt != "":
+			dbg.log("Failed to prepare the prebuilt request from '%s': %s" % (template_file, str(e)), highlight=1)
+		else:
+			dbg.log("Failed to build the prompt for question type '%s': %s" % (question_type, str(e)), highlight=1)
 		mndbg.dbgp("tellme: prompt generation failed:\n%s" % traceback.format_exc(), errormode=False)
 		return
 
@@ -31406,7 +32345,10 @@ Common models:
 	                   Heapdynamics contents are added under [heapdynamics], and focused matches
 	                   for addresses referenced by the current instruction are added under [heapdynamics_mini]
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
-	    -f <file>    : Required for -q 9. Template file whose [variable] placeholders resolve against the debugger context variables below
+	    -f <file>    : Required for -q 9.
+	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
+	                   If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:),
+	                   mona reuses that request body directly instead of rebuilding debugger context
 	    -dryrun      : Build the request file, but do not call the API or print the full request on screen
 	    -test        : Override the configured model with a lower-cost test model
 
@@ -31428,7 +32370,7 @@ Common models:
 	    [debugger]                    = debugger backend name
 	    [debugger_flavor]             = human-readable debugger flavor
 	    [processname]                 = debugged process image name
-	    [modules]                     = loaded modules with mitigation/properties summary (rebase, aslr, safeseh, cfg, nx, osdll, version, path)
+	    [modules]                     = loaded modules with mitigation/properties summary (rebase, aslr, safeseh, cfg, osdll, version, path)
 	    [architecture]                = target architecture
 	    [pointer_size]                = pointer width in bytes
 	    [python_version]              = Python version hosting mona
@@ -31442,11 +32384,11 @@ Common models:
 	    [pc_memory]                   = raw bytes near the current instruction pointer
 	    [stack_page]                  = memory page summary for the current stack pointer
 	    [stack_memory]                = raw bytes near the current stack pointer
+	    [seh_chain]                   = 32-bit Structured Exception Handling chain summary
+	    [findmsp]                     = silent cyclic-pattern analysis results from findmsp
 	    [call_stack]                  = WinDBG call stack output
-	    [instruction_heap_references] = heap/chunk/pointer context for registers referenced by the current instruction
-	    [adjacent_chunks]             = previous/current/next chunk metadata and chunk dps dumps for heap-backed references
+	    [instruction_heap_references] = heap/chunk/pointer context for all positive register values, with extra focus on current-instruction references
 	    [heap_analysis_target]        = optional extra heap-focused target address from -a when using -q 1
-	    [manual_heap_fallback]        = q1 -a fallback data: heap command output plus a 100-byte-before/after memory window
 	    [heapdynamics]                = full heapdynamics file contents plus matched-register metadata and saved return-pointer context
 	    [heapdynamics_mini]           = only the matched heapdynamics lines and nearby context for addresses referenced by the current instruction
 	    [additional_context_files]    = user-supplied supporting files from -l that do not contain alloc()/free() lines
@@ -31471,20 +32413,21 @@ Common models:
 	    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
 	    They are provided for inspection or reuse and are not applied automatically during -q 1 or -q 2.
 	    To use one of those templates, run -q 9 -f ai.q1 or -q 9 -f ai.q2.
+	    If the -q 9 file already contains a saved request prompt, mona submits that prompt body directly.
 	    With -dryrun, tellme saves the request file and prints only the saved file path instead of dumping the
 	    full request to the debugger console.
 
 	Question notes:
-	    -q 1 collects crash context, cyclic-pattern hints, and extra context for registers referenced by the current instruction.
-	         This includes instruction windows around the current PC, pointer dumps and nearby memory for referenced registers,
-	         and heap chunk/VAD metadata when those registers point into known heap-managed regions.
+	    -q 1 collects crash context, cyclic-pattern hints, and extra heap/pointer context for the current registers.
+	         This includes instruction windows around the current PC, pointer dumps and nearby memory for registers,
+	         plus heap chunk/VAD metadata when those register values point into known heap-managed regions.
+	         The JSON also includes [findmsp], and on 32-bit targets it includes [seh_chain].
 	         If -a is supplied with -q 1, that address is also treated as an extra heap target and included
 	         in the heap-reference investigation even if it is not directly referenced by the faulting instruction.
 	         If heap walking or getAllSorted() cannot resolve that q1 -a address, tellme still collects fallback data:
 	         !heap -p -a, !heap -x (or !ext.heap -p -a / !ext.heap -x under WinDBGX), plus a memory dump spanning 100 bytes before and 100 bytes after the address.
-	         When a referenced address resolves into a heap chunk, tellme also adds adjacent_chunks data for the
-	         previous/current/next chunk where available, including metadata and dps dumps of the chunk entries.
-	         For large chunks, the dps dump is capped at 0x200 bytes (0x200/PTR_SIZE lines).
+	         When a register value only lands in heap segment memory, tellme uses that as a trigger to inspect !heap -hl
+	         and recover neighboring chunk context, including LFH region details when available.
 	         If heapdynamics files are supplied via -l, or c:\\alloc.txt exists, the entire heapdynamics file contents are added under [heapdynamics].
 	         Focused matches for addresses referenced by the current instruction are added under [heapdynamics_mini].
 	         Any -l files that are not heapdynamics logs are added under [additional_context_files], and -p adds a dedicated [poc_file] entry.
