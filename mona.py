@@ -27637,11 +27637,20 @@ def procPageACL(args):
 	findaddy = 0
 	aclfilter = ""
 	aclfilter_val = None
+	page_count = 1
 	modifier_only_acl_vals = [0x100, 0x200, 0x400]
 	if "a" in args:
 		findaddy,addyok = getAddyArg(args["a"])
 		if not addyok:
 			dbg.log("%s is an invalid address" % args["a"], highlight=1)
+			return
+	if "n" in args:
+		if type(args["n"]).__name__.lower() == "bool":
+			dbg.log("Please specify a valid number of pages with -n", highlight=1)
+			return
+		page_count, countok = getIntArg(args["n"])
+		if not countok or page_count < 0:
+			dbg.log("Please specify a valid non-negative number of pages with -n", highlight=1)
 			return
 	if "acl" in args:
 		if type(args["acl"]).__name__.lower() != "bool":
@@ -27657,6 +27666,7 @@ def procPageACL(args):
 				return
 	if findaddy > 0:
 		dbg.log("Displaying page information around address %s" % (PTR_PRINT % findaddy))
+		dbg.log("Showing up to %d page(s) before and after the containing page" % page_count)
 	# Force a fresh memory map snapshot for each pageacl invocation.
 	# This avoids stale output after allocmem/changeacl commands.
 	try:
@@ -27680,14 +27690,9 @@ def procPageACL(args):
 			pagesize = page.getSize()
 			pageend = pagestart + pagesize
 			if findaddy >= pagestart and findaddy < pageend:
-				# add previous page (if any)
-				if idx - 1 >= 0:
-					toshow.append(orderedpages[idx - 1])
-				# add current page
-				toshow.append(thispage)
-				# add next page (if any)
-				if idx + 1 < len(orderedpages):
-					toshow.append(orderedpages[idx + 1])
+				startidx = max(0, idx - page_count)
+				endidx = min(len(orderedpages) - 1, idx + page_count)
+				toshow.extend(orderedpages[startidx:endidx + 1])
 				break
 	if len(toshow) > 0:
 		toshow.sort()
@@ -30978,7 +30983,10 @@ Optional arguments:
 
 Optional arguments: 
     -a <address> : only show page information around this address.
-                   (Page before, current page and page after will be displayed)"""
+                   (By default, 1 page before, the containing page, and 1 page after will be displayed)
+    -n <number>  : only used together with -a. Show up to <number> pages before and
+                   <number> pages after the page that contains the address
+    -acl <type>  : only show pages that match the specified memory protection constant"""
 	
 	bpsehUsage = """Sets a breakpoint on all current SEH Handler function pointers"""
 
