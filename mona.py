@@ -31346,7 +31346,7 @@ Optional arguments:
 
 Supported engines:
     - openai (you may have to complete verification at https://chatgpt.com/cyber first)
-    - anthropic 
+    - anthropic (you may have to complete verification - check https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude)
 
 Configuration:
     Choose one of these approaches:
