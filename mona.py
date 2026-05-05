@@ -23803,6 +23803,21 @@ def procUpdate(args):
 	"""
 
 	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("Update diagnostics: sys.executable=%s" % sys.executable)
+	mndbg.dbgp("Update diagnostics: sys.version=%s" % sys.version.replace("\n", " "))
+	mndbg.dbgp("Update diagnostics: PY3=%s" % str(PY3))
+	mndbg.dbgp("Update diagnostics: urllib_urlretrieve=%s" % str(urllib_urlretrieve))
+	try:
+		import ssl
+		mndbg.dbgp("Update diagnostics: ssl module file=%s" % getattr(ssl, "__file__", "<builtin>"))
+		mndbg.dbgp("Update diagnostics: ssl.OPENSSL_VERSION=%s" % getattr(ssl, "OPENSSL_VERSION", "<unavailable>"))
+		mndbg.dbgp("Update diagnostics: ssl.HAS_SNI=%s" % str(getattr(ssl, "HAS_SNI", "<unavailable>")))
+		mndbg.dbgp("Update diagnostics: ssl protocol constants: TLS=%s TLS_CLIENT=%s" % (
+			str(hasattr(ssl, "PROTOCOL_TLS")),
+			str(hasattr(ssl, "PROTOCOL_TLS_CLIENT"))
+		))
+	except Exception:
+		mndbg.dbgp("Update diagnostics: ssl import failed:\n%s" % traceback.format_exc(), errormode=False)
 
 	def _normalize_version(v):
 		if v is None:
