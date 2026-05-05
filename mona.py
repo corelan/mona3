@@ -27638,7 +27638,49 @@ def procPageACL(args):
 	aclfilter = ""
 	aclfilter_val = None
 	page_count = 1
+	windbg_usage_rows = []
 	modifier_only_acl_vals = [0x100, 0x200, 0x400]
+
+	def _parse_windbg_address_usage_rows():
+		rows = []
+		if not mndbg.isWinDBG():
+			return rows
+		try:
+			address_output = dbg.nativeCommand("!address")
+			if address_output is None:
+				address_output = ""
+			row_regex = re.compile(
+				r'^\s*\+?\s*'
+				r'([0-9A-Fa-f`]+)\s+'
+				r'([0-9A-Fa-f`]+)\s+'
+				r'([0-9A-Fa-f`]+)\s+'
+				r'(\S*)\s+'
+				r'(\S*)\s+'
+				r'(\S*)\s+'
+				r'(.+?)\s*$'
+			)
+			for rawline in address_output.splitlines():
+				line = rawline.rstrip()
+				m = row_regex.match(line)
+				if not m:
+					continue
+				start = int(m.group(1).replace("`", ""), 16)
+				end = int(m.group(2).replace("`", ""), 16)
+				usage = m.group(7).strip()
+				rows.append((start, end, usage))
+			mndbg.dbgp("pageacl: parsed %d !address usage rows" % len(rows))
+		except Exception as e:
+			mndbg.dbgp("pageacl: unable to parse !address output: %s" % str(e), errormode=False)
+		return rows
+
+	def _get_windbg_usage_for_page(page_start, page_end):
+		for row_start, row_end, usage in windbg_usage_rows:
+			if page_start >= row_start and page_start < row_end:
+				return usage
+			if row_start >= page_start and row_start < page_end:
+				return usage
+		return ""
+
 	if "a" in args:
 		findaddy,addyok = getAddyArg(args["a"])
 		if not addyok:
@@ -27675,6 +27717,8 @@ def procPageACL(args):
 		pass
 	_memory_page_acl_cache = {}
 	allpages = dbg.getMemoryPages()
+	if mndbg.isWinDBG():
+		windbg_usage_rows = _parse_windbg_address_usage_rows()
 	dbg.log("Total of %d pages : "% len(allpages))
 	filename="pageacl.txt"
 	orderedpages = []
@@ -27737,6 +27781,8 @@ def procPageACL(args):
 			pageend = pagestart + pagesize
 			pageusage = ""
 			if mndbg.isWinDBG():
+				pageusage = _get_windbg_usage_for_page(pagestart, pageend)
+			if pageusage == "":
 				pageusage = page.getUsage().strip()
 			mod = ""
 			sectionname = ""
@@ -27806,8 +27852,8 @@ def procPageACL(args):
 			tolog = fmt % (pstart, pend, psize, acl, pusage.strip())
 
 			objfile.write(tolog,aclfile)
-			if findaddy > 0 and findaddy >= pagestart and findaddy < pageend:
-				dbg.log("%s" % tolog, highlight=True)
+			if findaddy > 0 and findaddy >= pagestart and findaddy < pageend and mndbg.isWinDBG():
+				dbg.log("<b>%s</b>" % tolog)
 			else:
 				dbg.log(tolog)
 	g_silent = False
