@@ -1,3 +1,19 @@
+[mona 3.0.3013]
+- Update revision (mona: 3013) some AI and mona config improvements
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/e527a39">e527a39</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/0bd178f">0bd178f</link> update tellme usage, create templates, report missing arg when using mona config -del
+  - <link cmd="https://github.com/corelan/mona3/commit/8ed3178">8ed3178</link> Update mona.py
+  - <link cmd="https://github.com/corelan/mona3/commit/3279f5a">3279f5a</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/6ca378b">6ca378b</link> add globalflags to context
+  - <link cmd="https://github.com/corelan/mona3/commit/435a44c">435a44c</link> update help text
+  - <link cmd="https://github.com/corelan/mona3/commit/94694bd">94694bd</link> fallback
+  - <link cmd="https://github.com/corelan/mona3/commit/9e50e75">9e50e75</link> allow -a to specify a heap chunk to investigate
+  - <link cmd="https://github.com/corelan/mona3/commit/daca77a">daca77a</link> updates to AI integration
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/733baa4">733baa4</link> Update revision (mona: 3012)
+  - <link cmd="https://github.com/corelan/mona3/commit/e22a7e1">e22a7e1</link> Update revision (mona: 3011) AI integration improvements and bugfixes
+
 [mona 3.0.3012]
 - Update revision (mona: 3012)
 corelanc0d3r:
@@ -162,20 +178,6 @@ apl3b:
 
 [windbglib 3.0.3002]
 - No file-specific commits found.
-
-[mona 3.0.3002]
-Peter Van Eeckhoutte:
-  - 319b8b9 update MnLog file headers
-  - 496f8bb improve string position detection in findmsp, even without cyclic pattern
-  - 7749cbd add stringpos / strpos
-
-apl3b:
-  - 9d64424 Shorten pl descriptions
-  - d3c6bef Revert and change descriptions, not element type
-  - 7931fc1 Shorten the elements names
-  - 917a54a Make VA Blocks printed in pl too
-  - 54d37ff Remove VACache
-  - e191e54 Big refactor around MnProc and child elements
 
 [windbglib 3.0.3001]
 - No file-specific commits found.
