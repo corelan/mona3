@@ -27806,8 +27806,8 @@ def procPageACL(args):
 			tolog = fmt % (pstart, pend, psize, acl, pusage.strip())
 
 			objfile.write(tolog,aclfile)
-			if findaddy > 0 and findaddy >= pagestart and findaddy < pageend and mndbg.isWinDBG():
-				dbg.log("<b>%s</b>" % tolog)
+			if findaddy > 0 and findaddy >= pagestart and findaddy < pageend:
+				dbg.log("%s" % tolog, highlight=True)
 			else:
 				dbg.log(tolog)
 	g_silent = False
