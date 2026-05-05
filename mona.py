@@ -12584,16 +12584,28 @@ class MnPointer:
 				heapinfo = ptrx.getHeapInfo()
 				heapaddy = heapinfo[0]
 				chunkobj = heapinfo[3]
-				flag = chunkobj.flag
-				flag_txt = getHeapFlag(flag)
-				mndbg.dbgp("flags: %s" % getHeapFlag(flag))
+				flag_txt = ""
+				if chunkobj is not None and hasattr(chunkobj, "flag"):
+					flag = chunkobj.flag
+					flag_txt = getHeapFlag(flag)
+					mndbg.dbgp("flags: %s" % flag_txt)
 
 				if not heapaddy == None:
-					if heapaddy > 0:
+					if heapaddy > 0 and chunkobj is not None and hasattr(chunkobj, "chunkptr") and hasattr(chunkobj, "usersize"):
 						chunkaddy = chunkobj.chunkptr
 						size = chunkobj.usersize
 						state = flag_txt
 						chunkinfo = " UserSize 0x%x (%s) " % (size, state)
+					elif heapaddy > 0:
+						mndbg.dbgp("getLocInfo: heap pointer %s at location %s reported heapbase=%s but chunk metadata is unavailable (heapinfo=%s, object range=%s-%s)" % (
+							PTR_PRINT % addy,
+							PTR_PRINT % loc,
+							PTR_PRINT % heapaddy,
+							str(heapinfo),
+							PTR_PRINT % startaddy,
+							PTR_PRINT % endaddy
+						), errormode=False)
+						chunkinfo = " Heap address 0x%x (chunk metadata unavailable) " % heapaddy
 
 				memloctxt = clickChunkPtr(addy, displaytext = "Heap")
 				extra = "(%s)%s " % (memloctxt, chunkinfo)
