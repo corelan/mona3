@@ -23808,6 +23808,10 @@ def procUpdate(args):
 	mndbg.dbgp("Update diagnostics: PY3=%s" % str(PY3))
 	mndbg.dbgp("Update diagnostics: urllib_urlretrieve=%s" % str(urllib_urlretrieve))
 	try:
+		mndbg.dbgp("Update diagnostics: urllib module file=%s" % getattr(urllib, "__file__", "<builtin>"))
+	except Exception:
+		mndbg.dbgp("Update diagnostics: unable to inspect urllib module:\n%s" % traceback.format_exc(), errormode=False)
+	try:
 		import ssl
 		mndbg.dbgp("Update diagnostics: ssl module file=%s" % getattr(ssl, "__file__", "<builtin>"))
 		mndbg.dbgp("Update diagnostics: ssl.OPENSSL_VERSION=%s" % getattr(ssl, "OPENSSL_VERSION", "<unavailable>"))
@@ -23818,6 +23822,42 @@ def procUpdate(args):
 		))
 	except Exception:
 		mndbg.dbgp("Update diagnostics: ssl import failed:\n%s" % traceback.format_exc(), errormode=False)
+	try:
+		if PY3:
+			import urllib.request as urllib_request
+		else:
+			import urllib2 as urllib_request
+		mndbg.dbgp("Update diagnostics: urllib request module file=%s" % getattr(urllib_request, "__file__", "<builtin>"))
+		mndbg.dbgp("Update diagnostics: urllib request HTTPSHandler present=%s" % str(hasattr(urllib_request, "HTTPSHandler")))
+		mndbg.dbgp("Update diagnostics: urllib request urlretrieve=%s" % str(getattr(urllib_request, "urlretrieve", None)))
+		try:
+			opener = urllib_request.build_opener()
+			handler_names = []
+			for handler in getattr(opener, "handlers", []):
+				try:
+					handler_names.append(handler.__class__.__name__)
+				except Exception:
+					handler_names.append(str(handler))
+			mndbg.dbgp("Update diagnostics: urllib opener handlers=%s" % ", ".join(handler_names))
+		except Exception:
+			mndbg.dbgp("Update diagnostics: unable to build urllib opener:\n%s" % traceback.format_exc(), errormode=False)
+		try:
+			remote_host_probe = "https://github.com"
+			mndbg.dbgp("Update diagnostics: Probing %s" % remote_host_probe)
+			req = urllib_request.Request(remote_host_probe)
+			resp = urllib_request.urlopen(req, timeout=10)
+			try:
+				probe_bytes = resp.read(32)
+			finally:
+				try:
+					resp.close()
+				except Exception:
+					pass
+			mndbg.dbgp("Update diagnostics: direct HTTPS probe succeeded, first bytes=%s" % repr(probe_bytes))
+		except Exception:
+			mndbg.dbgp("Update diagnostics: direct HTTPS probe failed:\n%s" % traceback.format_exc(), errormode=False)
+	except Exception:
+		mndbg.dbgp("Update diagnostics: urllib request import failed:\n%s" % traceback.format_exc(), errormode=False)
 
 	def _normalize_version(v):
 		if v is None:
