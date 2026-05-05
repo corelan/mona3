@@ -1,3 +1,18 @@
+[mona 3.0.3012]
+- Update revision (mona: 3012)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/8ed3178">8ed3178</link> Update mona.py
+  - <link cmd="https://github.com/corelan/mona3/commit/3279f5a">3279f5a</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/6ca378b">6ca378b</link> add globalflags to context
+  - <link cmd="https://github.com/corelan/mona3/commit/435a44c">435a44c</link> update help text
+  - <link cmd="https://github.com/corelan/mona3/commit/94694bd">94694bd</link> fallback
+  - <link cmd="https://github.com/corelan/mona3/commit/9e50e75">9e50e75</link> allow -a to specify a heap chunk to investigate
+  - <link cmd="https://github.com/corelan/mona3/commit/daca77a">daca77a</link> updates to AI integration
+  - <link cmd="https://github.com/corelan/mona3/commit/3730f94">3730f94</link> update tellme functionality
+  - <link cmd="https://github.com/corelan/mona3/commit/8015d38">8015d38</link> timeout handling
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/e22a7e1">e22a7e1</link> Update revision (mona: 3011) AI integration improvements and bugfixes
+
 [mona 3.0.3011]
 - Update revision (mona: 3011) AI integration improvements and bugfixes
 corelanc0d3r:
@@ -164,17 +179,3 @@ apl3b:
 
 [windbglib 3.0.3001]
 - No file-specific commits found.
-
-[mona 3.0.3001]
-- 833347d change way versions and revisions are collected
-- 817d38c convert registers to lowercase
-- 8401411 python2/3 compatibility issues
-- 240e126 implement byte expanding in cpbArgsToBytes
-- 5f6db1a indent for better readability
-- 5e69328 migrate code over to getIntArg
-- 374bd5b Merge pull request #49 from corelan/remove-pickle
-- afcea6e simplify, add use of getIntArg()
-- 0171b7a Remove pickle, yay
-- 801cc2c Merge pull request #48 from corelan/peb-teb-refactor
-- 53c1b52 implement helper to get numeric arguments
-- 91c10a5 Refactor PEB and TEB usage to be relying more on Mn structs
