@@ -28712,13 +28712,13 @@ def procDumpObj(args):
 						state = getHeapFlag(chunkobj.flag)
 						dbg.log("    Address found in chunk 0x%08x, heap 0x%08x, UserSize 0x%02x, %s" % (chunkaddy, heapaddy, size, state))
 						addy = chunkobj.userptr
-						if size > 0x1000:
-							dbg.log("    I'll only dump 0x1000 bytes from the object, for performance reasons")
-							size = 0x1000
-	if size > 0x1000 and osize > 0:
+						if size > 0x200:
+							dbg.log("    I'll only dump 0x200 bytes from the object, for performance reasons")
+							size = 0x200
+	if size > 0x200 and osize > 0:
 	#	errorsfound = True
-		dbg.log("*** Large size, Ill limit the size to the first 0xf0x1000ff (argument -s) ***",highlight=1)
-		size = 0x1000
+		dbg.log("*** Large size, Ill limit the size to the first 0x200 (argument -s) ***",highlight=1)
+		size = 0x200
 	if size == 0:
 		size = 0x28
 	if levels > 0 and nestedsize == 0:
