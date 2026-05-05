@@ -22866,13 +22866,6 @@ def procTellMe(args):
 	heap_target_address = 0
 	effective_question_type = question_type
 
-	if mnproc is None:
-		mndbg.dbgp("tellme: initializing shared process context")
-		MnProc.ensure()
-	if mnproc is None:
-		dbg.log("Unable to initialize process context for tellme", highlight=1)
-		return
-
 	if "a" in args:
 		if type(args["a"]).__name__.lower() == "bool":
 			dbg.log("Please specify a valid address/register/module/module!function/symbol expression with -a", highlight=1)
@@ -23026,6 +23019,26 @@ def procTellMe(args):
 		mndbg.dbgp("tellme: using poc file %s" % poc_file)
 		dbg.log("[+] Will read PoC/trigger from: %s" % poc_file)
 
+	if effective_question_type == "2":
+		if target_address == 0:
+			regs = getAllRegisters()
+			target_address = regs.get(PROGRAM_COUNTER, 0)
+		has_instr, instr_reason = tellMeHasCurrentInstruction(target_address)
+		mndbg.dbgp("tellme: q2 current-instruction check: %s (%s)" % (str(has_instr), instr_reason))
+		if not has_instr:
+			dbg.log("Cannot use '-q 2' because there is no valid current instruction at %s" % target_address_source, highlight=1)
+			dbg.log("    Reason: %s" % instr_reason, highlight=1)
+			dbg.log("    This usually means there is no reliable current function to analyse.", highlight=1)
+			dbg.log("    Try '-q 1' instead, or provide a valid code address with -a to analyse.", highlight=1)
+			return
+
+	if mnproc is None:
+		mndbg.dbgp("tellme: initializing shared process context")
+		MnProc.ensure()
+	if mnproc is None:
+		dbg.log("Unable to initialize process context for tellme", highlight=1)
+		return
+
 	try:
 		dbg.log("[+] Collecting context and preparing request...")
 		context = collectTellMeContext(
@@ -23042,21 +23055,10 @@ def procTellMe(args):
 		return
 
 	if effective_question_type == "2":
-		if target_address == 0:
-			regs = getAllRegisters()
-			target_address = regs.get(PROGRAM_COUNTER, 0)
 		context["analysis_target"] = {
 			"address": PTR_PRINT % target_address if isinstance(target_address, int) and target_address > 0 else "",
 			"source": target_address_source
 		}
-		has_instr, instr_reason = tellMeHasCurrentInstruction(target_address)
-		mndbg.dbgp("tellme: q2 current-instruction check: %s (%s)" % (str(has_instr), instr_reason))
-		if not has_instr:
-			dbg.log("Cannot use '-q 2' because there is no valid current instruction at %s" % target_address_source, highlight=1)
-			dbg.log("    Reason: %s" % instr_reason, highlight=1)
-			dbg.log("    This usually means there is no reliable current function to analyse.", highlight=1)
-			dbg.log("    Try '-q 1' instead, or provide a valid code address with -a to analyse.", highlight=1)
-			return
 		try:
 			context["current_function"] = collectTellMeCurrentFunctionContext(target_address)
 		except Exception as e:
