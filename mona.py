@@ -27734,6 +27734,7 @@ def procPageACL(args):
 			page = allpages[thispage]
 			pagestart = page.getBaseAddress()
 			pagesize = page.getSize()
+			pageend = pagestart + pagesize
 			pageusage = ""
 			if mndbg.isWinDBG():
 				pageusage = page.getUsage().strip()
@@ -27805,7 +27806,10 @@ def procPageACL(args):
 			tolog = fmt % (pstart, pend, psize, acl, pusage.strip())
 
 			objfile.write(tolog,aclfile)
-			dbg.log(tolog)
+			if findaddy > 0 and findaddy >= pagestart and findaddy < pageend and mndbg.isWinDBG():
+				dbg.log("<b>%s</b>" % tolog)
+			else:
+				dbg.log(tolog)
 	g_silent = False
 	return
 
