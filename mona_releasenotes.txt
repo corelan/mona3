@@ -1,3 +1,17 @@
+[mona 3.0.3014]
+- Update revision (mona: 3014) improvements and bugfixes, mostly in AI integration
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/6bc4323">6bc4323</link> further refine context for AI
+  - <link cmd="https://github.com/corelan/mona3/commit/2c0072d">2c0072d</link> delay calling MnProc.ensure() until after arguments are validated
+  - <link cmd="https://github.com/corelan/mona3/commit/f699083">f699083</link> instruction on getting cyber approval for anthropic
+  - <link cmd="https://github.com/corelan/mona3/commit/cfad610">cfad610</link> add some extra checks for mona dumpobj
+  - <link cmd="https://github.com/corelan/mona3/commit/79b8af0">79b8af0</link> detect file differences within same version/revision and offer to run mona up -force
+  - <link cmd="https://github.com/corelan/mona3/commit/1dd7d84">1dd7d84</link> add diagnostics logging for mona up
+  - <link cmd="https://github.com/corelan/mona3/commit/d46fc37">d46fc37</link> enrich pageacl output
+  - <link cmd="https://github.com/corelan/mona3/commit/fedd091">fedd091</link> do it for immunity as well
+  - <link cmd="https://github.com/corelan/mona3/commit/907a3fa">907a3fa</link> make line that contains pageacl address stand out (bold) in windbg
+  - <link cmd="https://github.com/corelan/mona3/commit/23f16a3">23f16a3</link> Update mona.py
+
 [mona 3.0.3013]
 - Update revision (mona: 3013) some AI and mona config improvements
 corelanc0d3r:
@@ -151,30 +165,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/77b022c">77b022c</link> remove unused click function, changed output format for heap -a
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/d228751">d228751</link> Update revision (mona: 3003, windbglib: 3002)
-
-[mona 3.0.3003]
-Peter Van Eeckhoutte:
-  - 0021954 don't print clickable links to log files
-  - 59e5c52 introduce stripTags for proper display in Immunity and logfiles
-  - 77b022c remove unused click function, changed output format for heap -a
-  - af31219 remove unused function
-  - 8b52534 fix indentation and insert check if routine needs to be interrupted
-apl3b:
-  - 138f8b8 Fix granularity usage
-  - 3302a6e Update commands and layout
-  - 459e89a Add links
-  - da87a0a Fix chunk size calculation
-  - 239944c Heap command refactor
-  - b128fbf Update heap comand
-  - c18ee10 With decoded content
-  - 5e82f5e Add spacing
-  - 1b122fa Final printing changes
-  - d9de708 More messaging changes
-  - 2e2e168 Changes in messaging
-  - a04d543 Additional dump and xor command
-  - d9f5597 Print Heap chunk header info
-  - 788c43c Update fillpattern detection for 64 bit
-  - 4fbe342 Fix merge of header decoding
 
 [windbglib 3.0.3002]
 - No file-specific commits found.
