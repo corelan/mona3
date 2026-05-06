@@ -3453,8 +3453,6 @@ def _tellme_ensure_default_template(question_type, mona_config):
 		template_path = getAbsolutePath(template_name)
 	else:
 		template_path = os.path.join(os.path.dirname(mona_config.getFileName()), template_name)
-	if os.path.exists(template_path):
-		return template_path
 
 	try:
 		if workingfolder != "":
@@ -3463,7 +3461,7 @@ def _tellme_ensure_default_template(question_type, mona_config):
 		with open(template_path, "wb") as fh:
 			fh.write(_tellme_build_profile_template_text(question_type).encode("latin-1"))
 	except Exception as e:
-		mndbg.dbgp("tellme: unable to create default template %s: %s" % (template_path, str(e)), errormode=False)
+		mndbg.dbgp("tellme: unable to write default template %s: %s" % (template_path, str(e)), errormode=False)
 		return ""
 
 	return template_path
@@ -32831,8 +32829,8 @@ Common models:
 	                   1 = analyse the crash context
 	                   2 = analyse the current function
 	                   9 = load a request template from -f <file>
-	                   Running -q 1 or -q 2 also creates ai.q1 or ai.q2 in the working folder if set,
-	                   otherwise next to mona.ini if missing
+	                   Running -q 1 or -q 2 also rewrites ai.q1 or ai.q2 in the working folder if set,
+	                   otherwise next to mona.ini
 	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this address is treated as an extra heap target to investigate.
@@ -32909,7 +32907,7 @@ Common models:
 	    That means manual submission is a supported workflow:
 	    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
 	    If you prefer direct API calls from mona instead, install a supported SDK and configure an API key.
-	    When you run -q 1 or -q 2, mona also ensures ai.q1 or ai.q2 exists in the working folder if set,
+	    When you run -q 1 or -q 2, mona also rewrites ai.q1 or ai.q2 in the working folder if set,
 	    otherwise in the same folder as mona.ini.
 	    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
 	    They are provided for inspection or reuse and are not applied automatically during -q 1 or -q 2.
