@@ -2446,7 +2446,6 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		"modules": "",
 		"architecture": arch,
 		"pointer_size": PTR_SIZE,
-		"python_version": getPythonVersion(),
 		"timestamp": mndbg.get_current_datetime(),
 		"registers": {},
 	}
@@ -3139,7 +3138,6 @@ def _tellme_build_request_variables(context):
 		"modules",
 		"architecture",
 		"pointer_size",
-		"python_version",
 		"timestamp",
 		"registers",
 		"program_counter",
@@ -3230,7 +3228,6 @@ def _tellme_get_profile_template_variables(question_type):
 		"modules",
 		"architecture",
 		"pointer_size",
-		"python_version",
 		"timestamp",
 		"registers",
 		"program_counter",
@@ -3257,7 +3254,6 @@ def _tellme_get_profile_template_variables(question_type):
 		"modules",
 		"architecture",
 		"pointer_size",
-		"python_version",
 		"timestamp",
 		"registers",
 		"additional_context_files",
@@ -32741,7 +32737,6 @@ Common models:
 	    [modules]                     = loaded modules with mitigation/properties summary (rebase, aslr, safeseh, cfg, osdll, version, path)
 	    [architecture]                = target architecture
 	    [pointer_size]                = pointer width in bytes
-	    [python_version]              = Python version hosting mona
 	    [timestamp]                   = local timestamp when the request was built
 	    [registers]                   = current register set and values
 	    [program_counter]             = current instruction pointer
