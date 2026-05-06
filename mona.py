@@ -32853,7 +32853,6 @@ Common models:
 	Examples:
 	    %s tellme -q 1
 	    %s config -set mona.ai.engine anthropic
-	    set MONA_AI_ENGINE=openai
 	    %s tellme -e anthropic -q 2
 	    %s tellme -e openai -q 2 -a kernel32!CreateFileW
 	    %s tellme -e openai -q 2 -a eip
