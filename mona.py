@@ -1012,6 +1012,137 @@ def _tellme_read_memory(address, size, label):
 	return result
 
 
+def _tellme_read_first_bytes(address, size=0x10, label="first_bytes"):
+	info = _tellme_read_memory(address, size, label)
+	return OrderedDict([
+		("address", info.get("address", "")),
+		("size", info.get("size", size)),
+		("hex", info.get("hex", "")),
+		("ascii", info.get("ascii", "")),
+		("error", info.get("error", "")),
+	])
+
+
+def _tellme_collect_heap_details():
+	mndbg.dbgp("tellme: collecting heap_details")
+	dbg.log("[+] Enumerating heap details")
+	result = OrderedDict()
+	result["heaps"] = []
+
+	try:
+		all_heaps_sorted = mnproc.getAllHeapsSorted()
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: unable to enumerate heaps for heap_details: %s" % str(e), errormode=False)
+		return result
+
+	for idx, mHeap in all_heaps_sorted:
+		heapbase = getattr(mHeap, "heapbase", 0)
+		if not heapbase:
+			continue
+
+		heap_entry = OrderedDict()
+		heap_entry["heap"] = PTR_PRINT % heapbase
+		heap_entry["index"] = idx
+		try:
+			heap_entry["type"] = mHeap.getHeapType()
+		except Exception:
+			heap_entry["type"] = getattr(mHeap, "heap_type", "")
+
+		try:
+			heap_entry["front_end_heap_type"] = getattr(mHeap, "getFrontEndHeapType", lambda: "")()
+		except Exception:
+			heap_entry["front_end_heap_type"] = ""
+
+		segments = getSegmentsForHeap(heapbase)
+		sortedsegments = []
+		for seg in segments:
+			sortedsegments.append(seg)
+		if not g_win7_mode:
+			sortedsegments.sort()
+
+		seg_by_fe = {}
+		try:
+			cached_heap = mnproc.getPEB().getHeapObject(heapbase)
+			seg_by_fe = {s.FirstEntry: s for s in cached_heap.getSegments()}
+		except Exception:
+			pass
+
+		heap_entry["segments"] = []
+		for seg in sortedsegments:
+			segstart = segments[seg][0]
+			segend = segments[seg][1]
+			FirstEntry = segments[seg][2]
+			LastValidEntry = segments[seg][3]
+
+			seg_entry = OrderedDict()
+			seg_entry["start"] = PTR_PRINT % segstart
+			seg_entry["end"] = PTR_PRINT % segend
+			seg_entry["first_entry"] = PTR_PRINT % FirstEntry
+			seg_entry["last_valid_entry"] = PTR_PRINT % LastValidEntry
+			seg_entry["size"] = "0x%x" % (segend - segstart)
+			seg_entry["chunks"] = []
+
+			seg_obj = seg_by_fe.get(FirstEntry)
+			if seg_obj is not None:
+				datablocks = seg_obj.getChunks()
+			else:
+				datablocks = walkSegment(FirstEntry, LastValidEntry, heapbase)
+
+			sortedblocks = []
+			for block in datablocks:
+				sortedblocks.append(block)
+			sortedblocks.sort()
+
+			for block in sortedblocks:
+				thischunk = datablocks[block]
+				unused = thischunk.unused
+				headersize = thischunk.headersize
+				flagtxt = getHeapFlag(thischunk.flag)
+				if "virtallocd" in flagtxt.lower():
+					flagtxt += " (LFH)"
+					flagtxt = flagtxt.replace("Virtallocd", "Internal")
+				userptr = thischunk.userptr
+				psize = thischunk.prevsize * HEAPGRANULARITY
+				blocksize = thischunk.size * HEAPGRANULARITY
+				usersize = thischunk.usersize
+
+				chunk_entry = OrderedDict()
+				chunk_entry["chunk_ptr"] = PTR_PRINT % block
+				chunk_entry["prev_size"] = "0x%x" % psize
+				chunk_entry["size"] = "0x%x" % blocksize
+				chunk_entry["unused"] = "0x%x" % unused
+				chunk_entry["user_ptr"] = PTR_PRINT % userptr
+				chunk_entry["user_size"] = "0x%x" % usersize
+				chunk_entry["state"] = flagtxt
+				chunk_entry["first_16_bytes"] = _tellme_read_first_bytes(userptr, 0x10, "heap_details_chunk")
+				seg_entry["chunks"].append(chunk_entry)
+
+			heap_entry["segments"].append(seg_entry)
+
+		vachunks = mHeap.getVirtualAllocdBlocks()
+		heap_entry["vadblocks"] = []
+		sorted_va_blocks = []
+		for block in vachunks:
+			sorted_va_blocks.append(block)
+		sorted_va_blocks.sort()
+
+		for block in sorted_va_blocks:
+			vainfo = vachunks[block]
+			vad_entry = OrderedDict()
+			vad_entry["block"] = PTR_PRINT % block
+			vad_entry["size"] = "0x%x" % vainfo["commit_size"]
+			vad_entry["commit_size"] = "0x%x" % vainfo["commit_size"]
+			vad_entry["reserve_size"] = "0x%x" % vainfo["reserve_size"]
+			vad_entry["state"] = "VirtualAllocd"
+			vad_entry["first_16_bytes"] = _tellme_read_first_bytes(block, 0x10, "heap_details_vadblock")
+			heap_entry["vadblocks"].append(vad_entry)
+
+		result["heaps"].append(heap_entry)
+
+	return result
+
+
 def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40, register_name=""):
 	result = OrderedDict()
 	reg_name_l = str(register_name).lower().strip()
@@ -2498,6 +2629,11 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 			context["findmsp_error_type"] = e.__class__.__name__
 			context["findmsp_error_traceback"] = traceback.format_exc()
 			mndbg.dbgp("tellme: failed to collect findmsp context:\n%s" % context["findmsp_error_traceback"], errormode=False)
+		try:
+			context["heap_details"] = _tellme_collect_heap_details()
+		except Exception as e:
+			context["heap_details_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect heap_details: %s" % str(e), errormode=False)
 
 	try:
 		context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
@@ -3153,6 +3289,7 @@ def _tellme_build_request_variables(context):
 		"findmsp",
 		"call_stack",
 		"instruction_heap_references",
+		"heap_details",
 		"heapdynamics",
 		"heapdynamics_mini",
 		"additional_context_files",
@@ -3242,6 +3379,7 @@ def _tellme_get_profile_template_variables(question_type):
 		"seh_chain",
 		"findmsp",
 		"call_stack",
+		"heap_details",
 		"heapdynamics",
 		"heapdynamics_mini",
 		"additional_context_files",
@@ -32751,6 +32889,7 @@ Common models:
 	    [findmsp]                     = silent cyclic-pattern analysis results from findmsp
 	    [call_stack]                  = WinDBG call stack output
 	    [instruction_heap_references] = heap/chunk/pointer context for all positive register values, with extra focus on current-instruction references
+	    [heap_details]                = all heaps, segments, VAD blocks, and segment chunks, using the same size/state logic as proclayout plus the first 16 bytes for each VAD block and chunk
 	    [heap_analysis_target]        = optional extra heap-focused target address from -a when using -q 1
 	    [heapdynamics]                = full heapdynamics file contents plus matched-register metadata and saved return-pointer context
 	    [heapdynamics_mini]           = only the matched heapdynamics lines and nearby context for addresses referenced by the current instruction
