@@ -553,11 +553,12 @@ At the moment, `mona` supports these AI engines:
 * `openai`
 * `anthropic`
 
-To use AI integration, install the corresponding Python library for every Python version you plan to use with `mona`.
+To use OpenAI integration, install the OpenAI Python library for every Python version you plan to use with `mona`.
+Anthropic requests use direct HTTP in the current implementation, so no Anthropic Python SDK is required.
 
 For example, if you run `mona` with both Python 3.9 and Python 3.14, then you should install the provider library into both Python environments.
 
-Example installs:
+Example OpenAI installs:
 
 ```batch
 py -3.9-32 -m pip install openai
@@ -566,22 +567,13 @@ py -3.14-32 -m pip install openai
 py -3.14 -m pip install openai
 ```
 
-```batch
-py -3.9-32 -m pip install anthropic
-py -3.9 -m pip install anthropic
-py -3.14-32 -m pip install anthropic
-py -3.14 -m pip install anthropic
-```
-
-Once the library is installed, configure the provider either with environment variables or via the `mona` config. You can also set a default engine, default model, timeout, and output token budget.
+Once the provider is configured, you can set a default engine, default model, timeout, and output token budget via environment variables or `mona` config.
 
 Engine selection works like this when you omit `-e`:
 
 1. `mona.ai.engine`
 2. `MONA_AI_ENGINE`
 3. if neither is set, `tellme` announces that fact and switches to dry-run mode by default
-
-On first use, if exactly one supported SDK is available, `mona` stores that provider in `mona.ai.engine`.
 
 As an extra safety measure, if you do not specify `-e` and there is no default engine configured in either `mona.ai.engine` or `MONA_AI_ENGINE`, `tellme` will announce that at the start of the run and switch to `-dryrun` behavior by default so you do not accidentally consume API tokens.
 
@@ -694,7 +686,9 @@ Template usage:
 !mona tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
 ```
 
-If `ai.q1` or `ai.q2` do not exist yet, running `-q 1` or `-q 2` will create them next to `mona.ini`.
+If `ai.q1` or `ai.q2` do not exist yet, running `-q 1` or `-q 2` will create them in the configured `workingfolder`, or next to `mona.ini` when no working folder is set.
+
+With `-q 9`, mona collects live debugger context at runtime and replaces recognized placeholders such as `[registers]` and `[pc_disasm]` inline before submitting the prompt. Unrecognized placeholders are reported and left unchanged.
 
 
 ---

@@ -190,10 +190,6 @@ g_ptr_to_get = -1
 g_silent = False
 g_no_header = False
 g_keystone_loaded = False
-g_openai_loaded = False
-g_anthropic_loaded = False
-g_openai_import_error = ""
-g_anthropic_import_error = ""
 g_windbg_flavor = ""
 g_windbg_pretty_name = ""
 g_os_version = None
@@ -220,57 +216,6 @@ def _ai_dbgp(msg, errormode=False):
 		pass
 
 
-def _probe_ai_sdk(module_name, class_name, sdk_global_name, class_global_name, loaded_flag_name, error_flag_name, reason=""):
-	sdk_obj = globals().get(sdk_global_name, None)
-	loaded_flag = bool(globals().get(loaded_flag_name, False))
-	error_text = globals().get(error_flag_name, "")
-	_ai_dbgp("ai probe [%s] reason=%s loaded=%s module=%s class=%s error=%s" % (
-		module_name,
-		reason or "unspecified",
-		str(loaded_flag),
-		getattr(sdk_obj, "__file__", "<none>") if sdk_obj is not None else "<none>",
-		str(globals().get(class_global_name, None)),
-		error_text.splitlines()[-1] if error_text else "<none>"
-	))
-	if sdk_obj is not None and loaded_flag and globals().get(class_global_name, None) is not None:
-		return
-	try:
-		sdk_obj = __import__(module_name, fromlist=[class_name])
-		sdk_class = getattr(sdk_obj, class_name)
-		globals()[sdk_global_name] = sdk_obj
-		globals()[class_global_name] = sdk_class
-		globals()[loaded_flag_name] = True
-		globals()[error_flag_name] = ""
-		_ai_dbgp("ai probe [%s] import succeeded: module=%s version=%s class=%s" % (
-			module_name,
-			getattr(sdk_obj, "__file__", "<unknown>"),
-			getattr(sdk_obj, "__version__", "loaded"),
-			str(sdk_class)
-		))
-	except Exception:
-		globals()[sdk_global_name] = None
-		globals()[class_global_name] = None
-		globals()[loaded_flag_name] = False
-		globals()[error_flag_name] = traceback.format_exc()
-		_ai_dbgp("ai probe [%s] import failed:\n%s" % (module_name, globals()[error_flag_name]), errormode=False)
-
-
-def probeAIImports(reason=""):
-	_ai_dbgp("ai probe start: reason=%s executable=%s cwd=%s python=%s" % (
-		reason or "unspecified",
-		sys.executable,
-		os.getcwd(),
-		getPythonVersion()
-	))
-	try:
-		_ai_dbgp("ai probe sys.path entries (%d): %s" % (len(sys.path), " | ".join([str(p) for p in sys.path])))
-	except Exception:
-		pass
-	_probe_ai_sdk("openai", "OpenAI", "openai_sdk", "OpenAI", "g_openai_loaded", "g_openai_import_error", reason=reason)
-	_probe_ai_sdk("anthropic", "Anthropic", "anthropic_sdk", "Anthropic", "g_anthropic_loaded", "g_anthropic_import_error", reason=reason)
-	_ai_dbgp("ai probe done: openai=%s anthropic=%s" % (str(g_openai_loaded), str(g_anthropic_loaded)))
-
-
 def _mask_config_debug_line(line_text):
 	try:
 		line = ensure_text(line_text).rstrip("\r\n")
@@ -292,39 +237,6 @@ try:
 	g_keystone_loaded = True
 except:
 	g_keystone_loaded = False
-
-
-# py -3.9-32 -m pip install openai
-# py -3.9 -m pip install openai
-# py -3.14-32 -m pip install openai
-# py -3.14 -m pip install openai
-
-# py -3.9-32 -m pip install anthropic
-# py -3.9 -m pip install anthropic
-# py -3.14-32 -m pip install anthropic
-# py -3.14 -m pip install anthropic
-
-openai_sdk = None
-OpenAI = None
-try:
-	import openai as openai_sdk
-	from openai import OpenAI
-	g_openai_loaded = True
-	g_openai_import_error = ""
-except Exception:
-	g_openai_loaded = False
-	g_openai_import_error = traceback.format_exc()
-
-anthropic_sdk = None
-Anthropic = None
-try:
-	import anthropic as anthropic_sdk
-	from anthropic import Anthropic
-	g_anthropic_loaded = True
-	g_anthropic_import_error = ""
-except Exception:
-	g_anthropic_loaded = False
-	g_anthropic_import_error = traceback.format_exc()
 
 
 ###
@@ -987,17 +899,11 @@ def _safe_int(v):
 
 
 def getAvailableAIEngines(reason="", refresh=False):
-	if refresh:
-		probeAIImports(reason=reason or "getAvailableAIEngines")
-	engines = []
-	if g_openai_loaded:
-		engines.append("openai")
-	if g_anthropic_loaded:
-		engines.append("anthropic")
+	engines = ["openai", "anthropic"]
 	_ai_dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
-		", ".join(engines) if len(engines) > 0 else "<none>"
+		", ".join(engines)
 	))
 	return engines
 
@@ -1036,7 +942,7 @@ def ensureTellMeDefaultEngineConfig(mona_config, available_engines):
 	return ""
 
 
-def resolveTellMeEngine(engine_arg, mona_config, available_engines, manual_only_mode):
+def resolveTellMeEngine(engine_arg, mona_config, available_engines):
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
 		return "", engine_source, "Please specify an engine value with -e <openai|anthropic>", False
@@ -1058,8 +964,6 @@ def resolveTellMeEngine(engine_arg, mona_config, available_engines, manual_only_
 			mndbg.dbgp("tellme: using default engine '%s' from %s" % (engine, env_name))
 
 	if engine == "":
-		if manual_only_mode:
-			return "manual", "fallback", "", True
 		if len(available_engines) > 0:
 			return available_engines[0], "fallback", "", True
 		return "manual", "fallback", "", True
@@ -2542,6 +2446,7 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		"modules": "",
 		"architecture": arch,
 		"pointer_size": PTR_SIZE,
+		"python_version": getPythonVersion(),
 		"timestamp": mndbg.get_current_datetime(),
 		"registers": {},
 	}
@@ -2685,6 +2590,15 @@ def getTellMeModelAndKey(engine, mona_config):
 	return api_key, model
 
 
+def _tellme_import_openai():
+	mndbg.dbgp("tellme: loading OpenAI SDK on demand")
+	try:
+		from openai import OpenAI as openai_client_class
+		return openai_client_class, ""
+	except Exception:
+		return None, traceback.format_exc()
+
+
 def getTellMeTimeout(engine, mona_config, args=None):
 	timeout_name = "%s.timeout" % engine
 	timeout = 60.0
@@ -2763,7 +2677,7 @@ def getTellMeTestModel(engine):
 	if engine == "openai":
 		return "gpt-5.4-nano"
 	if engine == "anthropic":
-		return "claude-3-haiku-20240307"
+		return "claude-haiku-4-5"
 	return ""
 
 
@@ -2829,29 +2743,30 @@ def _tellme_log_openai_error(err):
 	message = _tellme_get_error_message(err)
 	error_type = nested.get("type", "") or err.__class__.__name__
 	error_code = nested.get("code", "") or payload.get("code", "")
+	err_cls = err.__class__.__name__
 
 	if error_type == "insufficient_quota" or error_code == "insufficient_quota":
 		dbg.log("[!] OpenAI request failed: quota exceeded", highlight=1)
 		dbg.log("    Your API account does not currently have enough quota or billing available.", highlight=1)
-	elif isinstance(err, openai_sdk.RateLimitError):
+	elif err_cls == "RateLimitError":
 		dbg.log("[!] OpenAI request failed: rate limit exceeded", highlight=1)
 		dbg.log("    Too many requests were sent in a short time. Retry later or use a smaller/cheaper test model.", highlight=1)
-	elif isinstance(err, openai_sdk.AuthenticationError):
+	elif err_cls == "AuthenticationError":
 		dbg.log("[!] OpenAI request failed: authentication error", highlight=1)
 		dbg.log("    Check the API key value and make sure the account/project can use the selected model.", highlight=1)
-	elif isinstance(err, openai_sdk.PermissionDeniedError):
+	elif err_cls == "PermissionDeniedError":
 		dbg.log("[!] OpenAI request failed: permission denied", highlight=1)
 		dbg.log("    The key is valid, but it does not have access to this operation or model.", highlight=1)
-	elif isinstance(err, openai_sdk.BadRequestError):
+	elif err_cls == "BadRequestError":
 		dbg.log("[!] OpenAI request failed: invalid request", highlight=1)
 		dbg.log("    The model name, prompt, or request parameters were rejected by the API.", highlight=1)
-	elif isinstance(err, openai_sdk.APIConnectionError):
+	elif err_cls == "APIConnectionError":
 		dbg.log("[!] OpenAI request failed: connection error", highlight=1)
 		dbg.log("    Check internet access, proxy/firewall settings, and whether the API endpoint is reachable.", highlight=1)
-	elif isinstance(err, openai_sdk.APITimeoutError):
+	elif err_cls == "APITimeoutError":
 		dbg.log("[!] OpenAI request failed: timeout", highlight=1)
 		dbg.log("    The request took too long. Retry or reduce the amount of context being sent.", highlight=1)
-	elif isinstance(err, openai_sdk.APIStatusError):
+	elif err_cls == "APIStatusError":
 		dbg.log("[!] OpenAI request failed: API status error", highlight=1)
 	else:
 		dbg.log("[!] OpenAI request failed", highlight=1)
@@ -2899,7 +2814,7 @@ def _tellme_log_anthropic_error(err):
 
 def logTellMeProviderError(engine, err):
 	mndbg.dbgp("tellme: formatting provider error for engine '%s'" % engine)
-	if engine == "openai" and openai_sdk is not None:
+	if engine == "openai":
 		try:
 			_tellme_log_openai_error(err)
 			return
@@ -2918,11 +2833,8 @@ def logTellMeProviderError(engine, err):
 
 
 def _tellme_is_timeout_error(engine, err):
-	try:
-		if engine == "openai" and openai_sdk is not None and isinstance(err, openai_sdk.APITimeoutError):
-			return True
-	except Exception:
-		pass
+	if engine == "openai" and err.__class__.__name__ == "APITimeoutError":
+		return True
 
 	err_cls = err.__class__.__name__
 	if "Timeout" in err_cls:
@@ -3247,12 +3159,15 @@ def _tellme_build_request_variables(context):
 		"heapdynamics_mini",
 		"additional_context_files",
 		"poc_file",
+		"heap_analysis_target",
 		"analysis_target",
 		"current_function",
 	]
 	for key in preferred_keys:
 		if key in context:
 			variables[key] = context[key]
+		else:
+			variables[key] = ""
 	for key in context:
 		if key not in variables:
 			variables[key] = context[key]
@@ -3269,10 +3184,6 @@ def _tellme_build_request_payload(mode, question_type, variables, template_text=
 		request_payload["template"] = template_text
 	request_payload["variables"] = variables
 	return request_payload
-
-
-def _tellme_template_var_ref(var_name):
-	return "{{%s}}" % var_name
 
 
 def _tellme_get_profile_instructions(question_type):
@@ -3391,16 +3302,30 @@ def _tellme_guess_template_question_type(template_path):
 	return ""
 
 
+def _tellme_contains_template_placeholders(text):
+	try:
+		return re.search(r"\[([A-Za-z0-9_]+)\]", text or "") is not None
+	except Exception:
+		return False
+
+
 def _tellme_ensure_default_template(question_type, mona_config):
 	template_name = _tellme_get_default_template_filename(question_type)
 	if template_name == "":
 		return ""
 
-	template_path = os.path.join(os.path.dirname(mona_config.getFileName()), template_name)
+	workingfolder = mona_config.get("workingfolder").rstrip("\\").strip()
+	if workingfolder != "":
+		template_path = getAbsolutePath(template_name)
+	else:
+		template_path = os.path.join(os.path.dirname(mona_config.getFileName()), template_name)
 	if os.path.exists(template_path):
 		return template_path
 
 	try:
+		if workingfolder != "":
+			logfile = MnLog(template_name)
+			template_path = logfile.reset(showheader=False, skipModuleTable=True)
 		with open(template_path, "wb") as fh:
 			fh.write(_tellme_build_profile_template_text(question_type).encode("latin-1"))
 	except Exception as e:
@@ -3434,13 +3359,19 @@ def _tellme_extract_prebuilt_prompt(template_path):
 			start_idx += 1
 		prompt = "\n".join(lines[start_idx:prompt_end]).strip()
 		if prompt != "":
-			mndbg.dbgp("tellme: extracted prebuilt prompt block from %s" % template_path)
-			return prompt
+			if _tellme_contains_template_placeholders(prompt):
+				mndbg.dbgp("tellme: PROMPT block in %s still contains template placeholders, so runtime expansion is required" % template_path)
+			else:
+				mndbg.dbgp("tellme: extracted prebuilt prompt block from %s" % template_path)
+				return prompt
 
 	trimmed = template_text.strip()
 	if "Debugger request JSON:" in trimmed or "Template request JSON:" in trimmed:
-		mndbg.dbgp("tellme: treating %s as an already-built raw request prompt" % template_path)
-		return trimmed
+		if _tellme_contains_template_placeholders(trimmed):
+			mndbg.dbgp("tellme: raw request text in %s still contains template placeholders, so runtime expansion is required" % template_path)
+		else:
+			mndbg.dbgp("tellme: treating %s as an already-built raw request prompt" % template_path)
+			return trimmed
 
 	return ""
 
@@ -3455,39 +3386,43 @@ def buildTellMePromptFromTemplateFile(template_path, context, question_type="9")
 
 	available_variables = _tellme_build_request_variables(context)
 	used_variables = OrderedDict()
+	unknown_placeholders = []
+	empty_placeholders = []
 	found_placeholders = re.findall(r"\[([A-Za-z0-9_]+)\]", template_text)
 	for placeholder_name in found_placeholders:
 		var_name = placeholder_name.lower()
 		if var_name not in available_variables:
-			raise ValueError(
-				"Unknown template placeholder '[%s]'. Available variables: %s" % (
-					placeholder_name,
-					", ".join(available_variables.keys())
-				)
-			)
+			if placeholder_name not in unknown_placeholders:
+				unknown_placeholders.append(placeholder_name)
+				mndbg.dbgp("tellme: unknown template placeholder [%s] in %s" % (placeholder_name, template_path), errormode=False)
+			continue
 		if var_name not in used_variables:
 			mndbg.dbgp("tellme: expanding template marker [%s]" % var_name)
 			used_variables[var_name] = available_variables[var_name]
+			if available_variables[var_name] == "":
+				empty_placeholders.append(placeholder_name)
+
+	if len(unknown_placeholders) > 0:
+		dbg.log("[!] Template contains unrecognized placeholders: %s" % ", ".join(["[%s]" % p for p in unknown_placeholders]), highlight=1)
+		dbg.log("    They were left unchanged in the generated prompt.", highlight=1)
+	if len(empty_placeholders) > 0:
+		dbg.log("[!] Template placeholders resolved to empty values: %s" % ", ".join(["[%s]" % p for p in empty_placeholders]), highlight=1)
 
 	for var_name in used_variables:
 		marker_re = re.compile(r"\[%s\]" % re.escape(var_name), re.IGNORECASE)
-		template_text = marker_re.sub(_tellme_template_var_ref(var_name), template_text)
+		replacement_value = used_variables[var_name]
+		if type(replacement_value) in [dict, list, tuple, OrderedDict]:
+			replacement_text = json.dumps(replacement_value, indent=2)
+		else:
+			if isinstance(replacement_value, text_type):
+				replacement_text = replacement_value
+			elif isinstance(replacement_value, bytes_type):
+				replacement_text = ensure_text(replacement_value)
+			else:
+				replacement_text = str(replacement_value)
+		template_text = marker_re.sub(lambda _m, text=replacement_text: text, template_text)
 
-	request_payload = _tellme_build_request_payload(
-		"template",
-		question_type,
-		used_variables,
-		template_text=template_text,
-		template_file=template_path
-	)
-
-	return (
-		"You are analyzing a debugger request template from mona.py running under WinDBG.\n"
-		"Use the 'template' field as the user's request body.\n"
-		"References such as {{registers}} or {{pc_disasm}} refer to entries under 'variables'.\n"
-		"Resolve those references using the provided variable values and answer the request without inventing missing data.\n\n"
-		"Template request JSON:\n%s" % json.dumps(request_payload, indent=2)
-	)
+	return template_text.strip()
 
 
 def writeTellMeRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
@@ -3561,9 +3496,9 @@ class TellMeProviderError(Exception):
 		self.type = error_type
 
 
-def callTellMeOpenAI(api_key, model, prompt, timeout_seconds=60.0):
+def callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0):
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
-	client = OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
 	response = client.responses.create(
 		model=model,
 		input=prompt
@@ -7502,7 +7437,6 @@ class MnConfig:
 			except:
 				dbg.log("Error writing config file : %s : %s" % (sys.exc_type, sys.exc_value), highlight=1)
 				return ""
-
 		return ""
 
 #---------------------------------------#
@@ -24076,7 +24010,6 @@ def procTellMe(args):
 
 	available_engines = getAvailableAIEngines(reason="procTellMe", refresh=True)
 	mndbg.dbgp("tellme: available AI engines: %s" % ", ".join(available_engines))
-	manual_only_mode = (len(available_engines) == 0)
 
 	mona_config = MnConfig()
 	ensureTellMeDefaultEngineConfig(mona_config, available_engines)
@@ -24089,8 +24022,7 @@ def procTellMe(args):
 	engine, engine_source, engine_error, engine_is_fallback = resolveTellMeEngine(
 		engine_arg_raw,
 		mona_config,
-		available_engines,
-		manual_only_mode
+		available_engines
 	)
 	if engine_error != "":
 		dbg.log(engine_error, highlight=1)
@@ -24114,15 +24046,7 @@ def procTellMe(args):
 		dbg.log("Invalid AI engine '%s'. Valid values: openai, anthropic" % engine, highlight=1)
 		return
 
-	if manual_only_mode and _tellme_is_supported_engine(engine) and engine_source in ["config", "environment"]:
-		dbg.log("[+] Default engine '%s' is configured via %s, but no supported AI SDK is available in this Python environment" % (
-			engine,
-			getTellMeDefaultEngineConfigName() if engine_source == "config" else getTellMeDefaultEngineEnvName()
-		))
-		dbg.log("[+] Falling back to manual request generation")
-		engine = "manual"
-
-	if (not manual_only_mode) and engine not in available_engines:
+	if engine not in available_engines:
 		dbg.log("The '%s' engine is not available in this Python environment. Available: %s" % (
 			engine, ", ".join(available_engines)
 		), highlight=1)
@@ -24144,7 +24068,7 @@ def procTellMe(args):
 	mndbg.dbgp("tellme: selected question type '%s'" % question_type)
 	dryrun = ("dryrun" in args)
 	testmode = ("test" in args)
-	if auto_dryrun_no_default and not dryrun and not manual_only_mode:
+	if auto_dryrun_no_default and not dryrun:
 		dryrun = True
 		dbg.log("[+] No default AI engine is configured and no -e value was specified.", highlight=1)
 		dbg.log("    Switching to dry-run mode by default to avoid consuming API tokens.", highlight=1)
@@ -24239,7 +24163,7 @@ def procTellMe(args):
 			dbg.log("[+] Test mode enabled, overriding model to '%s'" % model)
 			mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (model, engine))
 
-	if api_key == "" and not dryrun and not manual_only_mode:
+	if api_key == "" and not dryrun:
 		dbg.log("    Missing API key '%s.key'" % engine, highlight=1)
 		dbg.log("    To configure API access, do the following:")
 		dbg.log("    1. Create or retrieve an API key for your chosen provider")
@@ -24257,11 +24181,11 @@ def procTellMe(args):
 		dbg.log("")
 		dbg.log("    Anthropic:")
 		dbg.log("      %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
-		dbg.log("      %s config -set anthropic.model claude-opus-4-20250514" % getAliasName())
+		dbg.log("      %s config -set anthropic.model claude-opus-4-7" % getAliasName())
 		dbg.log("      %s config -set anthropic.timeout 90" % getAliasName())
 		dbg.log("      or (globally):")
 		dbg.log("      set ANTHROPIC_API_KEY=<your Anthropic API key>")
-		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-20250514")
+		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-7")
 		dbg.log("      set ANTHROPIC_TIMEOUT=90")
 		dbg.log("")
 		dbg.log("    mona.ini values take precedence over environment variables")
@@ -24273,7 +24197,7 @@ def procTellMe(args):
 		dbg.log("    Run '%s tellme -h' to see the full usage text" % getAliasName())
 		return
 
-	if model == "" and not dryrun and not manual_only_mode:
+	if model == "" and not dryrun:
 		dbg.log("Missing config value '%s.model'. Set it with '%s config -set %s.model <model>'" % (
 			engine, getAliasName(), engine
 		), highlight=1)
@@ -24383,36 +24307,6 @@ def procTellMe(args):
 
 	mndbg.dbgp("tellme: prompt length is %d bytes" % len(prompt))
 
-	if manual_only_mode:
-		request_logfile_path = writeTellMeRequestLog(
-			engine,
-			model,
-			question_type,
-			prompt,
-			template_file=template_file,
-			target_address=target_address,
-			target_address_source=target_address_source
-		)
-		dbg.log("[+] No supported AI SDK is available in this Python environment.", highlight=1)
-		dbg.log("    Request saved to %s" % request_logfile_path)
-		dbg.log("    Python executable: %s" % sys.executable, highlight=1)
-		if sys.version_info[0] == 3 and sys.version_info[1] < 9:
-			if "may only be initialized once per interpreter process" in g_openai_import_error:
-				dbg.log("    Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
-					sys.version_info[0], sys.version_info[1]
-				), highlight=1)
-				dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.", highlight=1)
-				dbg.log("             On Windows 7 / Python 3.8, restarting WinDBG is the practical workaround.", highlight=1)
-		if g_openai_import_error != "":
-			dbg.log("    OpenAI import error: %s" % g_openai_import_error.splitlines()[-1], highlight=1)
-		if g_anthropic_import_error != "":
-			dbg.log("    Anthropic import error: %s" % g_anthropic_import_error.splitlines()[-1], highlight=1)
-		dbg.log("")
-		dbg.log("    Options:")
-		dbg.log("    1. Install the OpenAI or Anthropic Python SDK and use tellme with an API key.")
-		dbg.log("    2. Submit the saved request manually in ChatGPT, Grok, or another AI tool.")
-		return
-
 	if dryrun:
 		dryrun_logfile = writeTellMeDryRunLog(
 			engine,
@@ -24433,6 +24327,36 @@ def procTellMe(args):
 			dbg.log("    Target : %s (%s)" % (PTR_PRINT % target_address, target_address_source))
 		dbg.log("    Saved  : %s" % dryrun_logfile)
 		return
+
+	openai_client_class = None
+	openai_import_error = ""
+	if engine == "openai":
+		openai_client_class, openai_import_error = _tellme_import_openai()
+		if openai_client_class is None:
+			request_logfile_path = writeTellMeRequestLog(
+				engine,
+				model,
+				question_type,
+				prompt,
+				template_file=template_file,
+				target_address=target_address,
+				target_address_source=target_address_source
+			)
+			dbg.log("[!] OpenAI SDK import failed. Request saved to %s" % request_logfile_path, highlight=1)
+			dbg.log("    Python executable: %s" % sys.executable, highlight=1)
+			if sys.version_info[0] == 3 and sys.version_info[1] < 9:
+				if "may only be initialized once per interpreter process" in openai_import_error:
+					dbg.log("    Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
+						sys.version_info[0], sys.version_info[1]
+					), highlight=1)
+					dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.", highlight=1)
+					dbg.log("             On Windows 7 / Python 3.8, restarting WinDBG is the practical workaround.", highlight=1)
+			dbg.log("    OpenAI import error: %s" % openai_import_error.splitlines()[-1], highlight=1)
+			dbg.log("")
+			dbg.log("    Options:")
+			dbg.log("    1. Install the OpenAI Python SDK and use tellme with an API key.")
+			dbg.log("    2. Submit the saved request manually in ChatGPT, Grok, or another AI tool.")
+			return
 
 	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
 	dbg.log("    Timeout   : %.1f seconds" % timeout_seconds)
@@ -24459,7 +24383,7 @@ def procTellMe(args):
 		dbg.log("    Sending request to %s (attempt %d, timeout %.1fs)" % (engine, attempt, attempt_timeout), highlight=1)
 		try:
 			if engine == "openai":
-				answer, request_id = callTellMeOpenAI(api_key, model, prompt, timeout_seconds=attempt_timeout)
+				answer, request_id = callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=attempt_timeout)
 			else:
 				answer, request_id = callTellMeAnthropic(
 					api_key,
@@ -32713,8 +32637,8 @@ Optional arguments:
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
 Supported engines:
-    - openai (you may have to complete verification at https://chatgpt.com/cyber first)
-    - anthropic (you may have to complete verification - check https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude)
+    - openai (you may have to complete verification at https://chatgpt.com/cyber first; requires the OpenAI Python SDK)
+    - anthropic (you may have to complete verification - check https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude; no Anthropic Python SDK required)
 
 Configuration:
     Choose one of these approaches:
@@ -32727,7 +32651,7 @@ Configuration:
        %s config -set openai.max_tokens 4096
        %s config -set mona.ai.engine anthropic
        %s config -set anthropic.key <your Anthropic API key>
-       %s config -set anthropic.model claude-opus-4-20250514
+       %s config -set anthropic.model claude-opus-4-7
        %s config -set anthropic.timeout 90
        %s config -set anthropic.max_tokens 4096
 
@@ -32750,8 +32674,6 @@ Precedence:
     max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
     If neither a default engine nor -e is specified, tellme announces this at the start of the run
     and switches to dry-run mode by default
-    On first use, if exactly one SDK is available mona stores that provider in mona.ai.engine
-
 Default models:
     - OpenAI   : gpt-5.4
     - Anthropic: claude-opus-4-7
@@ -32775,7 +32697,8 @@ Common models:
 	                   1 = analyse the crash context
 	                   2 = analyse the current function
 	                   9 = load a request template from -f <file>
-	                   Running -q 1 or -q 2 also creates ai.q1 or ai.q2 next to mona.ini if missing
+	                   Running -q 1 or -q 2 also creates ai.q1 or ai.q2 in the working folder if set,
+	                   otherwise next to mona.ini if missing
 	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this address is treated as an extra heap target to investigate.
@@ -32790,8 +32713,8 @@ Common models:
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
 	    -f <file>    : Required for -q 9.
 	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
-	                   If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:),
-	                   mona reuses that request body directly instead of rebuilding debugger context
+	                   If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:)
+	                   and no placeholders remain, mona reuses that request body directly instead of rebuilding debugger context
 	    -dryrun      : Build the request file, but do not call the API or print the full request on screen
 	    -test        : Override the configured model with a lower-cost test model
 
@@ -32841,12 +32764,10 @@ Common models:
 	    [analysis_target]             = resolved target address/source for -q 2
 	    [current_function]            = current function symbol/disassembly context for -q 2
 	    Error variables may also appear when collection fails, for example [registers_error], [instruction_heap_references_error], or [heapdynamics_error]
-	For -q 1, -q 2, and -q 9, the final request sent to the AI uses the same structured 'variables' object.
-	For -q 9, placeholders are not pasted inline.
-	They are converted into named references such as {{registers}} and {{pc_disasm}},
-	and the final request sent to the AI contains:
-	    - the template text with those variable references
-	    - a separate variables object with the expanded values
+	For -q 1 and -q 2, the final request sent to the AI uses the structured 'variables' object.
+	For -q 9, mona reads the template file and replaces placeholders such as [registers] and [pc_disasm]
+	with the actual debugger values before submitting the resulting prompt.
+	Unknown placeholders are reported and left unchanged instead of aborting prompt generation.
 
 	Request generation notes:
 	    tellme can always build and save the request file, even if no supported OpenAI or Anthropic SDK is installed
@@ -32854,11 +32775,12 @@ Common models:
 	    That means manual submission is a supported workflow:
 	    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
 	    If you prefer direct API calls from mona instead, install a supported SDK and configure an API key.
-	    When you run -q 1 or -q 2, mona also ensures ai.q1 or ai.q2 exists in the same folder as mona.ini.
+	    When you run -q 1 or -q 2, mona also ensures ai.q1 or ai.q2 exists in the working folder if set,
+	    otherwise in the same folder as mona.ini.
 	    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
 	    They are provided for inspection or reuse and are not applied automatically during -q 1 or -q 2.
 	    To use one of those templates, run -q 9 -f ai.q1 or -q 9 -f ai.q2.
-	    If the -q 9 file already contains a saved request prompt, mona submits that prompt body directly.
+	    If the -q 9 file already contains a saved request prompt and no placeholders remain, mona submits that prompt body directly.
 	    With -dryrun, tellme saves the request file and prints only the saved file path instead of dumping the
 	    full request to the debugger console.
 
@@ -32883,7 +32805,7 @@ Common models:
 
 	Test model overrides:
 	    - OpenAI   : gpt-5.4-nano
-	    - Anthropic: claude-3-haiku-20240307
+	    - Anthropic: claude-haiku-4-5
 		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
 
 
@@ -33167,19 +33089,11 @@ def main(args):
 		if mndbg.isWinDBG():
 			pykdver = dbg.getPyKDVersionNr()
 			keystonever = ""
-			openaiver = "<b>not loaded</b>"
-			anthropicver = "<b>not loaded</b>"
 			if g_keystone_loaded:
 				keystonever = keystone.__version__
 			else:
 				keystonever = "<b>not loaded</b>"
-			if g_openai_loaded and openai_sdk is not None:
-				openaiver = getattr(openai_sdk, "__version__", "loaded")
-			if g_anthropic_loaded and anthropic_sdk is not None:
-				anthropicver = getattr(anthropic_sdk, "__version__", "loaded")
-			libversions = "PyKD: %s | Keystone-engine: %s | OpenAI: %s | Anthropic: %s" % (
-				pykdver, keystonever, openaiver, anthropicver
-			)
+			libversions = "PyKD: %s | Keystone-engine: %s" % (pykdver, keystonever)
 			dbg.log("[ -- START -- ] %s" % libversions)
 		dbg.log("")
 

@@ -3936,8 +3936,54 @@ class Debugger:
 		dbgp(get_current_function_name())
 
 		allthreads = []
-		for thisthread in pykd.getProcessThreads():
-			allthreads.append(wthread(thisthread))
+		seen_tebs = set()
+
+		try:
+			for thisthread in pykd.getProcessThreads():
+				teb = 0
+				try:
+					candidate = int(thisthread)
+				except Exception:
+					candidate = 0
+				if candidate > 0 and pykd.isValid(candidate):
+					try:
+						# A real TEB should expose a valid PEB pointer at the known offset.
+						pykd.ptrPtr(candidate + TEB_PEB[_arch_idx])
+						teb = candidate
+					except Exception:
+						teb = 0
+				if teb != 0 and teb not in seen_tebs:
+					allthreads.append(_ThreadEntry(teb))
+					seen_tebs.add(teb)
+		except Exception as e:
+			dbgp("getProcessThreads() enumeration failed: %s" % str(e))
+
+		if len(allthreads) > 0:
+			return allthreads
+
+		try:
+			thread_output = pykd.dbgCommand("~")
+			for line in ensure_text(thread_output).splitlines():
+				match = re.search(r"\bTeb:\s*([0-9A-Fa-f`]+)", line)
+				if not match:
+					continue
+				try:
+					teb = addrToInt(match.group(1))
+				except Exception:
+					teb = 0
+				if teb != 0 and teb not in seen_tebs:
+					allthreads.append(_ThreadEntry(teb))
+					seen_tebs.add(teb)
+		except Exception as e:
+			dbgp("WinDBG thread list fallback failed: %s" % str(e))
+
+		if len(allthreads) == 0:
+			try:
+				teb = self.get_teb_addr()
+				if teb:
+					allthreads.append(_ThreadEntry(teb))
+			except Exception as e:
+				dbgp("Current-thread fallback failed: %s" % str(e))
 		return allthreads
 
 	"""
@@ -5336,7 +5382,7 @@ class opcode:
 
 
 
-class wthread:
+class _ThreadEntry:
 	def __init__(self,address):
 		self.address = address
 
@@ -5354,6 +5400,10 @@ class wthread:
 		# _TEB.ClientId(CLIENT_ID).UniqueThread(PVOID)
 		tid = pykd.ptrDWord(teb+offset)
 		return tid
+
+
+class wthread(_ThreadEntry):
+	pass
 
 class wheap:
 	def __init__(self,address):
