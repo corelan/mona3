@@ -1534,17 +1534,98 @@ def tellMeHasCurrentInstruction(address):
 		return False, str(e)
 
 
+def _tellme_try_parse_address_token(token):
+	try:
+		cleaned = ensure_text(token).strip().replace("`", "")
+	except Exception:
+		cleaned = str(token).strip().replace("`", "")
+	if cleaned == "":
+		return 0
+	cleaned = cleaned.rstrip(":,;")
+	cleaned = cleaned.replace("0x", "", 1)
+	if isAddress(cleaned):
+		return hexStrToInt(cleaned)
+	return 0
+
+
+def _tellme_resolve_function_start(address):
+	if not isinstance(address, int) or address <= 0:
+		return 0, "", "none", False
+
+	try:
+		fname, foffset = getFunctionName(address)
+		if fname != "" and (foffset == "" or str(foffset) == "0"):
+			try:
+				symboladdy = dbg.resolveSymbol(fname)
+				if symboladdy != "":
+					parsed = _tellme_try_parse_address_token(symboladdy)
+					if parsed > 0:
+						return parsed, fname, "symbol", True
+			except Exception:
+				pass
+	except Exception:
+		pass
+
+	try:
+		output = ensure_text(dbg.nativeCommand("ln %s" % (PTR_PRINT % address))).strip()
+		for line in output.splitlines():
+			if "|" not in line:
+				continue
+			for token in line.split():
+				parsed = _tellme_try_parse_address_token(token)
+				if parsed > 0:
+					return parsed, "", "ln", True
+	except Exception:
+		pass
+
+	try:
+		MnProc.ensure()
+		if mnproc is not None:
+			mod = mnproc.getModuleForAddress(address)
+			if mod is not None:
+				eatlist = mod.getEAT()
+				if eatlist:
+					export_starts = sorted(eatlist.keys())
+					prev_start = 0
+					prev_name = ""
+					next_start = 0
+					for idx, start in enumerate(export_starts):
+						if start <= address:
+							prev_start = start
+							prev_name = eatlist.get(start, "")
+							if idx + 1 < len(export_starts):
+								next_start = export_starts[idx + 1]
+						elif start > address:
+							next_start = start
+							break
+					if prev_start > 0:
+						if next_start == 0 or address < next_start:
+							return prev_start, prev_name, "eat", True
+	except Exception:
+		pass
+
+	return address, "", "fallback", False
+
+
 def collectTellMeCurrentFunctionContext(address):
 	context = {
-		"address": PTR_PRINT % address,
+		"requested_address": PTR_PRINT % address,
+		"function_start": "",
 		"symbol": "",
 		"symbol_offset": "",
 		"nearest_symbol_output": "",
-		"disasm_before": "",
-		"disasm_after": "",
-		"call_stack": ""
+		"uf_output": "",
+		"code_before": "",
+		"code_after": "",
+		"resolution_method": "",
 	}
 	mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
+	function_start, resolved_symbol, resolution_method, found_function = _tellme_resolve_function_start(address)
+	context["resolution_method"] = resolution_method
+	if isinstance(function_start, int) and function_start > 0:
+		context["function_start"] = PTR_PRINT % function_start
+	else:
+		function_start = address
 
 	try:
 		fname, foffset = getFunctionName(address)
@@ -1559,15 +1640,20 @@ def collectTellMeCurrentFunctionContext(address):
 		symname = ensure_text(funcinfo.addressToSymbol())
 		if symname != "":
 			context["address_to_symbol"] = symname
+		if context["symbol"] == "" and resolved_symbol != "":
+			context["symbol"] = resolved_symbol
 	except Exception as e:
 		context["address_to_symbol_error"] = str(e)
 		mndbg.dbgp("tellme: addressToSymbol failed: %s" % str(e), errormode=False)
 
-	for label, cmd in [
-		("nearest_symbol_output", "ln %s" % (PTR_PRINT % address)),
-		("disasm_before", "ub %s L10" % (PTR_PRINT % address)),
-		("disasm_after", "u %s L20" % (PTR_PRINT % address))
-	]:
+	commands = [("nearest_symbol_output", "ln %s" % (PTR_PRINT % address))]
+	if found_function:
+		commands.append(("uf_output", "uf %s" % (PTR_PRINT % function_start)))
+	else:
+		commands.append(("code_before", "ub %s L100" % (PTR_PRINT % address)))
+		commands.append(("code_after", "u %s L100" % (PTR_PRINT % address)))
+
+	for label, cmd in commands:
 		try:
 			output = dbg.nativeCommand(cmd)
 			context[label] = ensure_text(output).strip()
@@ -1575,7 +1661,8 @@ def collectTellMeCurrentFunctionContext(address):
 			context[label + "_error"] = str(e)
 			mndbg.dbgp("tellme: nativeCommand '%s' failed: %s" % (cmd, str(e)), errormode=False)
 
-	context["call_stack"] = _tellme_get_call_stack("kb")
+	if not found_function:
+		context["function_resolution_note"] = "Unable to confidently resolve a containing function start. Falling back to code around the requested address."
 
 	return context
 
@@ -2457,8 +2544,6 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		"pointer_size": PTR_SIZE,
 		"timestamp": mndbg.get_current_datetime(),
 		"registers": {},
-		"program_counter": "",
-		"stack_pointer": "",
 	}
 
 	try:
@@ -2516,7 +2601,7 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		context["modules_error"] = str(e)
 		mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
 
-	if isinstance(pc, int) and pc > 0:
+	if question_type == "1" and isinstance(pc, int) and pc > 0:
 		context["program_counter"] = PTR_PRINT % pc
 		context["pc_disasm"] = _tellme_get_disasm_summary(pc)
 		context["pc_page"] = _tellme_get_page_summary(pc)
@@ -2531,15 +2616,16 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 			context["heapdynamics_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
 
-	if isinstance(sp, int) and sp > 0:
+	if question_type == "1" and isinstance(sp, int) and sp > 0:
 		context["stack_pointer"] = PTR_PRINT % sp
 		context["stack_page"] = _tellme_get_page_summary(sp)
 		context["stack_memory"] = _tellme_read_memory(sp, 0x100, "stack_memory")
 
-	context["ntglobal_flag"] = _tellme_get_ntglobalflag_summary()
-	if arch == 32:
-		context["seh_chain"] = _tellme_get_seh_chain_summary()
-	context["call_stack"] = _tellme_get_call_stack("kb")
+	if question_type == "1":
+		context["ntglobal_flag"] = _tellme_get_ntglobalflag_summary()
+		if arch == 32:
+			context["seh_chain"] = _tellme_get_seh_chain_summary()
+		context["call_stack"] = _tellme_get_call_stack("kb")
 	if additional_context_files is None:
 		additional_context_files = []
 	if len(additional_context_files) > 0:
@@ -3211,13 +3297,16 @@ If control appears partial or uncertain, say so explicitly.
 Keep the answer practical and precise."""
 	if question_type == "2":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on the current function and the current instruction context.
+Focus on understanding what the target function does, not on crash triage.
 Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
 Optimize token usage. Be detailed and accurate, but do not repeat debugger output, restate the same conclusion in multiple ways, or quote large supplied blocks when a focused summary is enough.
-Prefer concise synthesis over transcription. Cite only the specific registers, instructions, call frames, symbols, or module facts that materially support your conclusion.
-Use the supplied symbol information, nearby disassembly, call stack, module information, and current registers to explain what function or code region we appear to be in, what the current function is doing. 
-It would be great if you could provide decompiled code or other pseudo-code that helps me understand the code and logic in this function.
-If symbol information is missing or ambiguous, say so clearly and fall back to describing the code region and instruction window instead of inventing a function name.
+Prefer concise synthesis over transcription. Cite only the specific symbols, instructions, register values, module facts, or pseudocode fragments that materially support your conclusion.
+Use the supplied function-start information and the output of uf to identify the function boundaries, explain what the function appears to do, and describe its logic in clear human language.
+If a containing function could not be resolved confidently, use the fallback code windows around the requested address instead and say clearly that the analysis is based on nearby code rather than a full function boundary.
+Provide decompiled code or high-quality pseudocode for the function when possible, based on the available uf output and any symbol information. If only fallback code windows are available, provide pseudocode for that code region and explain the uncertainty.
+If a target address was supplied, treat it as a point inside the function and reason from the start of the associated function rather than focusing on the single instruction at that address.
+Do not focus on the current instruction pointer, crash context, stack state, or call stack unless they are directly required to understand the function.
+If symbol information is missing or ambiguous, say so clearly and fall back to describing the function body from uf output instead of inventing a function name.
 Be specific, but do not invent facts that are not present in the snapshot."""
 	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_instructions() to add more profiles." % question_type)
 
@@ -3250,13 +3339,26 @@ def _tellme_get_profile_template_variables(question_type):
 		"additional_context_files",
 		"poc_file",
 	]
+	q2_common_vars = [
+		"debugger",
+		"debugger_flavor",
+		"processname",
+		"modules",
+		"architecture",
+		"pointer_size",
+		"python_version",
+		"timestamp",
+		"registers",
+		"additional_context_files",
+		"poc_file",
+	]
 	if question_type == "1":
 		return common_vars + [
 			"instruction_heap_references",
 			"heap_analysis_target",
 		]
 	if question_type == "2":
-		return common_vars + [
+		return q2_common_vars + [
 			"analysis_target",
 			"current_function",
 		]
@@ -7830,7 +7932,16 @@ class MnModule: # TODO: Add getters
 
 	def _resolve_base_and_path(self, modulename, mzbase=0, path=""):
 		if mzbase == 0:
-			_mod = mnproc.getPEB().getModuleByName(modulename)
+			_mod = None
+			try:
+				MnProc.ensure()
+				if mnproc is not None:
+					_mod = mnproc.getPEB().getModuleByName(modulename)
+			except Exception as e:
+				mndbg.dbgp("MnModule._resolve_base_and_path: PEB module lookup failed for '%s': %s" % (
+					modulename,
+					str(e)
+				), errormode=False)
 			mzbase = _mod.moduleBase if _mod else 0
 			if not path:
 				path = _mod.modulePath if _mod else ""
