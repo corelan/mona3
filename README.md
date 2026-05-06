@@ -570,37 +570,76 @@ py -3.14-32 -m pip install anthropic
 py -3.14 -m pip install anthropic
 ```
 
-Once the library is installed, configure the API key either with environment variables or via the `mona` config. You can also optionally set a default model.
+Once the library is installed, configure the provider either with environment variables or via the `mona` config. You can also set a default engine, default model, timeout, and output token budget.
 
-The default request timeout is `60` seconds. You only need to set an engine-specific timeout when you want a different default for that provider, or override a single request with `-timeout`.
+Engine selection works like this when you omit `-e`:
+
+1. `mona.ai.engine`
+2. `MONA_AI_ENGINE`
+3. the first available installed engine
+4. manual request generation if no supported SDK is installed
+
+On first use, if exactly one supported SDK is available, `mona` stores that provider in `mona.ai.engine`. If no supported SDK is available yet, it stores `openai` as the default provider.
+
+As an extra safety measure, if you do not specify `-e` and there is no default engine configured in either `mona.ai.engine` or `MONA_AI_ENGINE`, `tellme` will announce that at the start of the run and switch to `-dryrun` behavior by default so you do not accidentally consume API tokens.
+
+The default request timeout is `60` seconds. You only need to set an engine-specific timeout when you want a different default for that provider, or override a single request with `-timeout`. For Anthropic responses, you can also increase the output budget with `anthropic.max_tokens` or `ANTHROPIC_MAX_TOKENS` if replies get truncated.
 
 Examples using `mona` config:
 
 ```python
+!mona config -set mona.ai.engine openai
 !mona config -set openai.key <your OpenAI API key>
 !mona config -set openai.model gpt-5.4
 !mona config -set openai.timeout 60
+!mona config -set openai.max_tokens 4096
+!mona config -set mona.ai.engine anthropic
 !mona config -set anthropic.key <your Anthropic API key>
-!mona config -set anthropic.model claude-opus-4-20250514
+!mona config -set anthropic.model claude-opus-4-7
 !mona config -set anthropic.timeout 60
+!mona config -set anthropic.max_tokens 4096
 ```
 
 Examples using environment variables:
 
 ```batch
+set MONA_AI_ENGINE=openai
 set OPENAI_API_KEY=<your OpenAI API key>
 set OPENAI_MODEL=gpt-5.4
 set OPENAI_TIMEOUT=60
+set OPENAI_MAX_TOKENS=4096
 set ANTHROPIC_API_KEY=<your Anthropic API key>
-set ANTHROPIC_MODEL=claude-opus-4-20250514
+set ANTHROPIC_MODEL=claude-opus-4-7
 set ANTHROPIC_TIMEOUT=60
+set ANTHROPIC_MAX_TOKENS=4096
 ```
 
 If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model or timeout for a single request with `-model` and `-timeout`.
 
-`tellme` can still build and save a request even if you do not have the provider libraries installed and/or you have not configured any API keys. That manual-request flow is supported: generate the request file, then paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
+## Manual request flow
 
-If you use `-dryrun`, `tellme` will build the full request and save it to a file without calling the API. You can then open that file and paste the request into a browser-based AI session such as ChatGPT, Grok, or a similar tool.
+`tellme` can still build and save a request even if you do not have the provider libraries installed and/or you have not configured any API keys. That manual-request flow is fully supported.
+
+If you use `-dryrun`, `tellme` will build the full request and save it to a file without calling the API. You can then take that saved request and submit it manually to a browser-based AI session such as ChatGPT, Claude, Grok, or another free or paid engine of your choice.
+
+If you just want the analysis and do not care about direct API integration, `-dryrun` is often the simplest option:
+
+```python
+!mona tellme -q 1 -dryrun
+```
+
+That gives you a ready-to-submit request file while avoiding SDK installation, API keys, billing setup, or provider-specific runtime issues inside the debugger host.
+
+## Direct API usage and cyber-program verification
+
+If you want `mona` to call the providers directly through their APIs, you should strongly consider completing the providers' cyber-safety / cyber-access verification flows first.
+
+These are the same links referenced in the `mona.py` source:
+
+* OpenAI: https://chatgpt.com/cyber
+* Anthropic: https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude
+
+Depending on the provider account, model, and risk controls, verification may be required before you can reliably use exploit-development or crash-triage prompts through the API.
 
 When the faulting instruction references heap-backed addresses, `tellme` also collects adjacent heap context for those references. This includes previous/current/next chunk metadata where available, `dps` dumps for the chunk entries, and both `!heap -p -a` and `!heap -x` (or `!ext.heap -p -a` and `!ext.heap -x` in WinDBGX) where tellme performs heap command lookups. Large chunk dumps are capped to `0x200 / PTR_SIZE` lines.
 
@@ -611,6 +650,7 @@ If that `-q 1 -a` heap target lives in a corrupted heap and normal chunk enumera
 Example usage:
 
 ```python
+!mona tellme -q 1
 !mona tellme -e openai -q 1
 !mona tellme -e anthropic -q 2
 !mona tellme -e openai -q 1 -timeout 120

@@ -23971,9 +23971,14 @@ def procTellMe(args):
 
 	mona_config = MnConfig()
 	ensureTellMeDefaultEngineConfig(mona_config, available_engines)
+	engine_arg_raw = args.get("e", "")
+	config_default_engine = _normalize_tellme_engine(mona_config.get(getTellMeDefaultEngineConfigName()))
+	env_default_engine = _normalize_tellme_engine(os.environ.get(getTellMeDefaultEngineEnvName(), ""))
+	no_engine_arg_specified = (type(engine_arg_raw).__name__.lower() != "bool") and (_normalize_tellme_engine(engine_arg_raw) == "")
+	auto_dryrun_no_default = no_engine_arg_specified and config_default_engine == "" and env_default_engine == ""
 
 	engine, engine_source, engine_error, engine_is_fallback = resolveTellMeEngine(
-		args.get("e", ""),
+		engine_arg_raw,
 		mona_config,
 		available_engines,
 		manual_only_mode
@@ -24030,6 +24035,14 @@ def procTellMe(args):
 	mndbg.dbgp("tellme: selected question type '%s'" % question_type)
 	dryrun = ("dryrun" in args)
 	testmode = ("test" in args)
+	if auto_dryrun_no_default and not dryrun and not manual_only_mode:
+		dryrun = True
+		dbg.log("[+] No default AI engine is configured and no -e value was specified.", highlight=1)
+		dbg.log("    Switching to dry-run mode by default to avoid consuming API tokens.", highlight=1)
+		dbg.log("    Set %s, set %s, or use -e to send the request directly." % (
+			getTellMeDefaultEngineConfigName(),
+			getTellMeDefaultEngineEnvName()
+		), highlight=1)
 	mndbg.dbgp("tellme: dryrun=%s, testmode=%s" % (str(dryrun), str(testmode)))
 	target_address = 0
 	target_address_source = PROGRAM_COUNTER.upper()
@@ -32574,6 +32587,8 @@ Precedence:
     If both are present, mona.ini values take precedence over environment variables
     For a single request, -model and -timeout override both config and environment values
     max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
+    If neither a default engine nor -e is specified, tellme announces this at the start of the run
+    and switches to dry-run mode by default
     On first use, if exactly one SDK is available mona stores that provider in mona.ai.engine
     If no supported SDK is available yet, mona stores openai as the default provider
 
@@ -32590,8 +32605,9 @@ Common models:
 
 	Arguments:
 	    -e  <engine> : AI engine to use. If omitted, mona checks mona.ai.engine first,
-	                   then MONA_AI_ENGINE, then falls back to the first available engine,
-	                   or manual request generation when no supported SDK is installed
+	                   then MONA_AI_ENGINE.
+	                   If no default engine is configured and -e is omitted, tellme announces that fact
+	                   at the start of the run and does a dry run by default to avoid consuming API tokens
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
