@@ -1029,8 +1029,6 @@ def ensureTellMeDefaultEngineConfig(mona_config, available_engines):
 	default_engine = ""
 	if len(available_engines) == 1:
 		default_engine = available_engines[0]
-	elif len(available_engines) == 0:
-		default_engine = "openai"
 	if default_engine != "":
 		mndbg.dbgp("tellme: initializing %s to '%s'" % (config_name, default_engine))
 		mona_config.set(config_name, default_engine)
@@ -23995,7 +23993,7 @@ def procTellMe(args):
 		dbg.log("[+] No -e value specified, using default engine '%s' from %s" % (
 			engine, getTellMeDefaultEngineEnvName()
 		))
-	elif engine_is_fallback:
+	elif engine_is_fallback and not auto_dryrun_no_default:
 		if engine == "manual":
 			dbg.log("[+] No -e value specified, defaulting to manual request generation")
 		else:
@@ -32590,7 +32588,6 @@ Precedence:
     If neither a default engine nor -e is specified, tellme announces this at the start of the run
     and switches to dry-run mode by default
     On first use, if exactly one SDK is available mona stores that provider in mona.ai.engine
-    If no supported SDK is available yet, mona stores openai as the default provider
 
 Default models:
     - OpenAI   : gpt-5.4

@@ -26,6 +26,9 @@
   - [D. Helping Python find its libraries](#d-helping-python-find-its-libraries)
   - [E. Running Mona in Immunity](#e-running-mona-in-immunity)
 - 🧠 [AI integration](#ai-integration)
+  - [Manual request flow](#manual-request-flow)
+  - [Direct API usage and cyber-program verification](#direct-api-usage-and-cyber-program-verification)
+  - [Usage](#usage)
 - 📚 [More information](#more-information)
 - 🙏 [Thank you](#thank-you)
 - 🐛 [Found a bug?](#found-a-bug)
@@ -576,10 +579,9 @@ Engine selection works like this when you omit `-e`:
 
 1. `mona.ai.engine`
 2. `MONA_AI_ENGINE`
-3. the first available installed engine
-4. manual request generation if no supported SDK is installed
+3. if neither is set, `tellme` announces that fact and switches to dry-run mode by default
 
-On first use, if exactly one supported SDK is available, `mona` stores that provider in `mona.ai.engine`. If no supported SDK is available yet, it stores `openai` as the default provider.
+On first use, if exactly one supported SDK is available, `mona` stores that provider in `mona.ai.engine`.
 
 As an extra safety measure, if you do not specify `-e` and there is no default engine configured in either `mona.ai.engine` or `MONA_AI_ENGINE`, `tellme` will announce that at the start of the run and switch to `-dryrun` behavior by default so you do not accidentally consume API tokens.
 
@@ -641,21 +643,58 @@ These are the same links referenced in the `mona.py` source:
 
 Depending on the provider account, model, and risk controls, verification may be required before you can reliably use exploit-development or crash-triage prompts through the API.
 
-When the faulting instruction references heap-backed addresses, `tellme` also collects adjacent heap context for those references. This includes previous/current/next chunk metadata where available, `dps` dumps for the chunk entries, and both `!heap -p -a` and `!heap -x` (or `!ext.heap -p -a` and `!ext.heap -x` in WinDBGX) where tellme performs heap command lookups. Large chunk dumps are capped to `0x200 / PTR_SIZE` lines.
+## Usage
 
-If you use `-a` together with `-q 1`, `tellme` treats that address as an extra heap target to investigate. With `-q 2`, `-a` remains the code address/function location to analyze.
+The `tellme` command has three main usage patterns:
 
-If that `-q 1 -a` heap target lives in a corrupted heap and normal chunk enumeration cannot resolve it, `tellme` still collects fallback evidence using `!heap -p -a` (or `!ext.heap -p -a` in WinDBGX) plus a memory window spanning 100 bytes before and 100 bytes after the address.
+* `-q 1`: analyze the current crash context
+* `-q 2`: analyze the current function or code location
+* `-q 9 -f <file>`: use a saved request template
 
-Example usage:
+Basic examples:
 
 ```python
 !mona tellme -q 1
 !mona tellme -e openai -q 1
 !mona tellme -e anthropic -q 2
+!mona tellme -e openai -q 2 -a kernel32!CreateFileW
 !mona tellme -e openai -q 1 -timeout 120
 !mona tellme -e openai -q 1 -dryrun
 ```
+
+Useful options:
+
+* `-e <openai|anthropic>`: choose the provider explicitly for this request
+* `-q 1`: use for crash triage
+* `-q 2`: use for function/code analysis
+* `-a <address|register|module!symbol>`:
+  use an explicit target address
+* `-l <file1,file2>`:
+  add extra context files
+* `-p <file>`:
+  attach a PoC or trigger file
+* `-model <id>`:
+  override the configured model for one request
+* `-timeout <seconds>`:
+  override the configured timeout for one request
+* `-dryrun`:
+  build and save the request without calling the API
+
+How to choose a mode:
+
+* Use `!mona tellme -q 1` when you want help triaging the current crash.
+* Use `!mona tellme -q 2` when execution is at a useful code location and you want help understanding the current function.
+* Use `-a` with `-q 2` when the current instruction pointer is no longer trustworthy and you want to analyze a known-good symbol or address instead.
+* Use `-dryrun` when you want to manually submit the generated request to a browser-based AI session.
+
+Template usage:
+
+```python
+!mona tellme -e openai -q 9 -f ai.q1
+!mona tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
+```
+
+If `ai.q1` or `ai.q2` do not exist yet, running `-q 1` or `-q 2` will create them next to `mona.ini`.
 
 
 ---
