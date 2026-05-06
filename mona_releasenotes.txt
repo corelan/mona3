@@ -1,3 +1,22 @@
+[mona 3.0.3015]
+- Update revision (mona: 3015, windbglib: 3006) AI refinements
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/f7b81e4">f7b81e4</link> default to dryrun. update documentation
+  - <link cmd="https://github.com/corelan/mona3/commit/04c421d">04c421d</link> default to dryrun if no engine was specified
+  - <link cmd="https://github.com/corelan/mona3/commit/3545997">3545997</link> allow setting default ai engine through env var or mona config. streamline requests for anthropic
+  - <link cmd="https://github.com/corelan/mona3/commit/6bc4323">6bc4323</link> further refine context for AI
+  - <link cmd="https://github.com/corelan/mona3/commit/2c0072d">2c0072d</link> delay calling MnProc.ensure() until after arguments are validated
+  - <link cmd="https://github.com/corelan/mona3/commit/f699083">f699083</link> instruction on getting cyber approval for anthropic
+  - <link cmd="https://github.com/corelan/mona3/commit/cfad610">cfad610</link> add some extra checks for mona dumpobj
+  - <link cmd="https://github.com/corelan/mona3/commit/79b8af0">79b8af0</link> detect file differences within same version/revision and offer to run mona up -force
+  - <link cmd="https://github.com/corelan/mona3/commit/1dd7d84">1dd7d84</link> add diagnostics logging for mona up
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/14adae5">14adae5</link> Update revision (mona: 3014) improvements and bugfixes, mostly in AI integration
+
+[windbglib 3.0.3006]
+- Update revision (mona: 3015, windbglib: 3006) AI refinements
+- No file-specific commits found.
+
 [mona 3.0.3014]
 - Update revision (mona: 3014) improvements and bugfixes, mostly in AI integration
 corelanc0d3r:
@@ -140,31 +159,6 @@ corelanc0d3r:
 [windbglib 3.0.3003]
 corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/66ae788">66ae788</link> cache getPtrFunction and add nativecommand statistics for windbg
-
-[mona 3.0.3004]
-apl3b:
-  - <link cmd="https://github.com/corelan/mona3/commit/db57637">db57637</link> Fix Stack inheritance
-  - <link cmd="https://github.com/corelan/mona3/commit/5667caa">5667caa</link> Change t elements to match with prefix
-  - <link cmd="https://github.com/corelan/mona3/commit/5754d96">5754d96</link> Add element distinction
-  - <link cmd="https://github.com/corelan/mona3/commit/142017c">142017c</link> tree view
-  - <link cmd="https://github.com/corelan/mona3/commit/879cbbb">879cbbb</link> Fix documentation
-  - <link cmd="https://github.com/corelan/mona3/commit/6db44b5">6db44b5</link> Update default usage of pl and some of its arguments
-  - <link cmd="https://github.com/corelan/mona3/commit/fc846c6">fc846c6</link> Move mnproc initialization inside pl
-  - <link cmd="https://github.com/corelan/mona3/commit/00eb662">00eb662</link> Additional fixes
-  - <link cmd="https://github.com/corelan/mona3/commit/c18eca0">c18eca0</link> Fix chunk things for immunity
-  - <link cmd="https://github.com/corelan/mona3/commit/138f8b8">138f8b8</link> Fix granularity usage
-  - <link cmd="https://github.com/corelan/mona3/commit/3302a6e">3302a6e</link> Update commands and layout
-  - <link cmd="https://github.com/corelan/mona3/commit/459e89a">459e89a</link> Add links
-  - <link cmd="https://github.com/corelan/mona3/commit/da87a0a">da87a0a</link> Fix chunk size calculation
-  - <link cmd="https://github.com/corelan/mona3/commit/239944c">239944c</link> Heap command refactor
-  - <link cmd="https://github.com/corelan/mona3/commit/b128fbf">b128fbf</link> Update heap comand
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/dcf3c69">dcf3c69</link> release notes now have clickable links to commits
-  - <link cmd="https://github.com/corelan/mona3/commit/0021954">0021954</link> don't print clickable links to log files
-  - <link cmd="https://github.com/corelan/mona3/commit/59e5c52">59e5c52</link> introduce stripTags for proper display in Immunity and logfiles
-  - <link cmd="https://github.com/corelan/mona3/commit/77b022c">77b022c</link> remove unused click function, changed output format for heap -a
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/d228751">d228751</link> Update revision (mona: 3003, windbglib: 3002)
 
 [windbglib 3.0.3002]
 - No file-specific commits found.
