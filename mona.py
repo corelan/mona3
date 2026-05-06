@@ -59,6 +59,12 @@ try:
 except ImportError:
 	from urllib.request import urlretrieve as urllib_urlretrieve
 
+try:
+	from urllib.request import Request as urllib_Request, urlopen as urllib_urlopen
+	from urllib.error import HTTPError as urllib_HTTPError, URLError as urllib_URLError
+except ImportError:
+	from urllib2 import Request as urllib_Request, urlopen as urllib_urlopen, HTTPError as urllib_HTTPError, URLError as urllib_URLError
+
 
 if PY3:
 	text_type = str
@@ -994,6 +1000,73 @@ def getAvailableAIEngines(reason="", refresh=False):
 		", ".join(engines) if len(engines) > 0 else "<none>"
 	))
 	return engines
+
+
+def _normalize_tellme_engine(engine_value):
+	try:
+		return str(engine_value).strip().lower()
+	except Exception:
+		return ""
+
+
+def getTellMeDefaultEngineConfigName():
+	return "mona.ai.engine"
+
+
+def getTellMeDefaultEngineEnvName():
+	return "MONA_AI_ENGINE"
+
+
+def _tellme_is_supported_engine(engine_value):
+	return engine_value in ["openai", "anthropic"]
+
+
+def ensureTellMeDefaultEngineConfig(mona_config, available_engines):
+	config_name = getTellMeDefaultEngineConfigName()
+	current_engine = _normalize_tellme_engine(mona_config.get(config_name))
+	if current_engine != "":
+		return current_engine
+	default_engine = ""
+	if len(available_engines) == 1:
+		default_engine = available_engines[0]
+	elif len(available_engines) == 0:
+		default_engine = "openai"
+	if default_engine != "":
+		mndbg.dbgp("tellme: initializing %s to '%s'" % (config_name, default_engine))
+		mona_config.set(config_name, default_engine)
+		return default_engine
+	return ""
+
+
+def resolveTellMeEngine(engine_arg, mona_config, available_engines, manual_only_mode):
+	engine_source = "argument"
+	if type(engine_arg).__name__.lower() == "bool":
+		return "", engine_source, "Please specify an engine value with -e <openai|anthropic>", False
+	engine = _normalize_tellme_engine(engine_arg)
+	if engine != "":
+		return engine, engine_source, "", False
+
+	config_name = getTellMeDefaultEngineConfigName()
+	env_name = getTellMeDefaultEngineEnvName()
+
+	engine = _normalize_tellme_engine(mona_config.get(config_name))
+	if engine != "":
+		engine_source = "config"
+		mndbg.dbgp("tellme: using default engine '%s' from %s" % (engine, config_name))
+	else:
+		engine = _normalize_tellme_engine(os.environ.get(env_name, ""))
+		if engine != "":
+			engine_source = "environment"
+			mndbg.dbgp("tellme: using default engine '%s' from %s" % (engine, env_name))
+
+	if engine == "":
+		if manual_only_mode:
+			return "manual", "fallback", "", True
+		if len(available_engines) > 0:
+			return available_engines[0], "fallback", "", True
+		return "manual", "fallback", "", True
+
+	return engine, engine_source, "", False
 
 
 def _tellme_format_text(value, max_len=512):
@@ -2349,6 +2422,7 @@ def _tellme_file_looks_like_heapdynamics(file_path):
 
 
 def _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files=None):
+	dbg.log("[+] Checking if files(s) contain heap dynamics")
 	contexts = []
 	if heapdynamics_files is None:
 		heapdynamics_files = []
@@ -2362,7 +2436,7 @@ def _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files=None):
 		if len(info.get("matched_registers", [])) == 0:
 			continue
 		contexts.append(info)
-
+	dbg.log("    %d lines of context extracted" % len(contexts))
 	return contexts
 
 
@@ -2383,7 +2457,6 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 		"modules": "",
 		"architecture": arch,
 		"pointer_size": PTR_SIZE,
-		"python_version": getPythonVersion(),
 		"timestamp": mndbg.get_current_datetime(),
 		"registers": {},
 		"program_counter": "",
@@ -2435,7 +2508,9 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 			context["findmsp"] = _tellme_get_findmsp_summary()
 		except Exception as e:
 			context["findmsp_error"] = str(e)
-			mndbg.dbgp("tellme: failed to collect findmsp context: %s" % str(e), errormode=False)
+			context["findmsp_error_type"] = e.__class__.__name__
+			context["findmsp_error_traceback"] = traceback.format_exc()
+			mndbg.dbgp("tellme: failed to collect findmsp context:\n%s" % context["findmsp_error_traceback"], errormode=False)
 
 	try:
 		context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
@@ -2521,7 +2596,7 @@ def getTellMeModelAndKey(engine, mona_config):
 		if engine == "openai":
 			model = "gpt-5.4"
 		elif engine == "anthropic":
-			model = "claude-opus-4-20250514"
+			model = "claude-opus-4-7"
 
 	return api_key, model
 
@@ -2564,6 +2639,40 @@ def getTellMeTimeout(engine, mona_config, args=None):
 		mndbg.dbgp("tellme: using explicit -timeout override '%s'" % str(args["timeout"]))
 
 	return timeout, timeout_source
+
+
+def getTellMeMaxTokens(engine, mona_config):
+	max_tokens_name = "%s.max_tokens" % engine
+	max_tokens = 4096
+	max_tokens_source = "default"
+	max_tokens_raw = mona_config.get(max_tokens_name).strip()
+	if max_tokens_raw != "":
+		parsed_tokens, parsed_ok = getIntArg(max_tokens_raw)
+		if parsed_ok and parsed_tokens > 0:
+			max_tokens = parsed_tokens
+			max_tokens_source = "config"
+			mndbg.dbgp("tellme: using configured max token budget for %s via %s=%s" % (
+				engine, max_tokens_name, max_tokens_raw
+			))
+
+	env_max_tokens_name = ""
+	if engine == "openai":
+		env_max_tokens_name = "OPENAI_MAX_TOKENS"
+	elif engine == "anthropic":
+		env_max_tokens_name = "ANTHROPIC_MAX_TOKENS"
+
+	if max_tokens_raw == "" and env_max_tokens_name != "":
+		env_max_tokens = os.environ.get(env_max_tokens_name, "").strip()
+		if env_max_tokens != "":
+			parsed_tokens, parsed_ok = getIntArg(env_max_tokens)
+			if parsed_ok and parsed_tokens > 0:
+				max_tokens = parsed_tokens
+				max_tokens_source = "env"
+				mndbg.dbgp("tellme: using environment fallback for %s.max_tokens via %s" % (
+					engine, env_max_tokens_name
+				))
+
+	return max_tokens, max_tokens_source
 
 
 def getTellMeTestModel(engine):
@@ -2672,23 +2781,28 @@ def _tellme_log_anthropic_error(err):
 	payload = _tellme_extract_error_payload(err)
 	message = _tellme_get_error_message(err)
 	err_cls = err.__class__.__name__
+	try:
+		err_type = ensure_text(getattr(err, "type", ""))
+	except Exception:
+		err_type = ""
+	err_marker = (err_cls + " " + err_type + " " + message).lower()
 
-	if "RateLimit" in err_cls:
+	if "ratelimit" in err_marker or "rate limit" in err_marker:
 		dbg.log("[!] Anthropic request failed: rate limit exceeded", highlight=1)
 		dbg.log("    Too many requests were sent in a short time. Retry later or use the cheaper test model.", highlight=1)
-	elif "Authentication" in err_cls:
+	elif "authentication" in err_marker or "unauthorized" in err_marker:
 		dbg.log("[!] Anthropic request failed: authentication error", highlight=1)
 		dbg.log("    Check the API key value and make sure the account can use the selected model.", highlight=1)
-	elif "Permission" in err_cls:
+	elif "permission" in err_marker or "forbidden" in err_marker:
 		dbg.log("[!] Anthropic request failed: permission denied", highlight=1)
 		dbg.log("    The key is valid, but it does not have access to this operation or model.", highlight=1)
-	elif "Connection" in err_cls:
+	elif "connection" in err_marker or "unable to reach anthropic api" in err_marker or "urlerror" in err_marker:
 		dbg.log("[!] Anthropic request failed: connection error", highlight=1)
 		dbg.log("    Check internet access, proxy/firewall settings, and whether the API endpoint is reachable.", highlight=1)
-	elif "Timeout" in err_cls:
+	elif "timeout" in err_marker or "timed out" in err_marker:
 		dbg.log("[!] Anthropic request failed: timeout", highlight=1)
 		dbg.log("    The request took too long. Retry or reduce the amount of context being sent.", highlight=1)
-	elif "BadRequest" in err_cls or "Unprocessable" in err_cls or "RequestTooLarge" in err_cls:
+	elif "badrequest" in err_marker or "unprocessable" in err_marker or "requesttoolarge" in err_marker or "invalid_request" in err_marker:
 		dbg.log("[!] Anthropic request failed: invalid request", highlight=1)
 		dbg.log("    The model name, prompt, or request parameters were rejected by the API.", highlight=1)
 	else:
@@ -2934,6 +3048,7 @@ def _tellme_get_seh_chain_summary():
 def _tellme_get_findmsp_summary(args=None):
 	info = OrderedDict()
 	osilent = None
+	dbg.log("[+] Running findmsp")
 	try:
 		global g_silent
 		osilent = g_silent
@@ -3010,6 +3125,9 @@ def _tellme_get_findmsp_summary(args=None):
 				info[key] = section
 	except Exception as e:
 		info["error"] = str(e)
+		info["error_type"] = e.__class__.__name__
+		info["error_traceback"] = traceback.format_exc()
+		mndbg.dbgp("tellme: _tellme_get_findmsp_summary failed:\n%s" % info["error_traceback"], errormode=False)
 	finally:
 		if not osilent is None:
 			g_silent = osilent
@@ -3078,6 +3196,8 @@ def _tellme_get_profile_instructions(question_type):
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on crash triage and immediate exploit-relevant observations.
 Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
+Optimize token usage. Be detailed and accurate, but do not repeat debugger output, restate the same conclusion in multiple ways, or quote large supplied blocks when a focused summary is enough.
+Prefer concise synthesis over transcription. Cite only the specific registers, instructions, stack entries, chunks, offsets, or log lines that materially support your conclusion.
 Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
 Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
 If a seh_chain entry is present, also inspect the Structured Exception Handling chain, explain whether it looks intact or corrupted, and connect that to the crash analysis.
@@ -3095,6 +3215,8 @@ Keep the answer practical and precise."""
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on the current function and the current instruction context.
 Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
+Optimize token usage. Be detailed and accurate, but do not repeat debugger output, restate the same conclusion in multiple ways, or quote large supplied blocks when a focused summary is enough.
+Prefer concise synthesis over transcription. Cite only the specific registers, instructions, call frames, symbols, or module facts that materially support your conclusion.
 Use the supplied symbol information, nearby disassembly, call stack, module information, and current registers to explain what function or code region we appear to be in, what the current function is doing. 
 It would be great if you could provide decompiled code or other pseudo-code that helps me understand the code and logic in this function.
 If symbol information is missing or ambiguous, say so clearly and fall back to describing the code region and instruction window instead of inventing a function name.
@@ -3328,6 +3450,17 @@ def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="",
 	)
 
 
+class TellMeProviderError(Exception):
+	def __init__(self, message, request_id="", status_code=None, code="", param="", body=None, error_type=""):
+		Exception.__init__(self, message)
+		self.request_id = request_id
+		self.status_code = status_code
+		self.code = code
+		self.param = param
+		self.body = body
+		self.type = error_type
+
+
 def callTellMeOpenAI(api_key, model, prompt, timeout_seconds=60.0):
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = OpenAI(api_key=api_key, timeout=timeout_seconds, max_retries=0)
@@ -3349,31 +3482,118 @@ def callTellMeOpenAI(api_key, model, prompt, timeout_seconds=60.0):
 
 def _anthropic_extract_text(message):
 	parts = []
-	content = getattr(message, "content", [])
+	content = []
+	if isinstance(message, dict):
+		content = message.get("content", [])
+	else:
+		content = getattr(message, "content", [])
 	for item in content:
 		try:
-			item_type = getattr(item, "type", "")
-			if item_type == "text":
-				parts.append(getattr(item, "text", ""))
+			if isinstance(item, dict):
+				item_type = item.get("type", "")
+				if item_type == "text":
+					parts.append(ensure_text(item.get("text", "")))
+			else:
+				item_type = getattr(item, "type", "")
+				if item_type == "text":
+					parts.append(getattr(item, "text", ""))
 		except Exception:
 			pass
 	return "\n".join([p for p in parts if p]).strip()
 
 
-def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=60.0):
-	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs" % (model, timeout_seconds))
-	client = Anthropic(api_key=api_key, timeout=timeout_seconds)
-	message = client.messages.create(
-		model=model,
-		max_tokens=1024,
-		messages=[
+def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096):
+	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
+		model, timeout_seconds, max_tokens
+	))
+	request_body = {
+		"model": model,
+		"max_tokens": max_tokens,
+		"messages": [
 			{
 				"role": "user",
 				"content": prompt
 			}
 		]
+	}
+	request_data = json.dumps(request_body).encode("utf-8")
+	request = urllib_Request(
+		"https://api.anthropic.com/v1/messages",
+		data=request_data,
+		headers={
+			"content-type": "application/json",
+			"x-api-key": api_key,
+			"anthropic-version": "2023-06-01",
+			"user-agent": "mona-tellme/3.0"
+		}
 	)
-	response_id = getattr(message, "id", "")
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			message = json.loads(response_text) if response_text.strip() != "" else {}
+			response_id = ""
+			try:
+				response_id = response.headers.get("request-id", "") or response.headers.get("x-request-id", "")
+			except Exception:
+				response_id = ""
+			if response_id == "":
+				response_id = message.get("id", "") if isinstance(message, dict) else ""
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("request-id", "") or e.headers.get("x-request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+		if error_message == "":
+			error_message = "Anthropic HTTP error %s" % str(status_code)
+		raise TellMeProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise TellMeProviderError(
+			"Unable to reach Anthropic API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise TellMeProviderError(
+			"Anthropic request setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
 	if response_id:
 		mndbg.dbgp("tellme: Anthropic response id: %s" % response_id)
 	text = _anthropic_extract_text(message)
@@ -23749,22 +23969,44 @@ def procTellMe(args):
 	mndbg.dbgp("tellme: available AI engines: %s" % ", ".join(available_engines))
 	manual_only_mode = (len(available_engines) == 0)
 
-	engine_arg = args.get("e", "")
-	if type(engine_arg).__name__.lower() == "bool":
-		dbg.log("Please specify an engine value with -e <openai|anthropic>", highlight=1)
+	mona_config = MnConfig()
+	ensureTellMeDefaultEngineConfig(mona_config, available_engines)
+
+	engine, engine_source, engine_error, engine_is_fallback = resolveTellMeEngine(
+		args.get("e", ""),
+		mona_config,
+		available_engines,
+		manual_only_mode
+	)
+	if engine_error != "":
+		dbg.log(engine_error, highlight=1)
 		return
-	engine = str(engine_arg).strip().lower()
-	if engine == "":
-		if manual_only_mode:
-			engine = "manual"
+
+	if engine_source == "config":
+		dbg.log("[+] No -e value specified, using default engine '%s' from %s" % (
+			engine, getTellMeDefaultEngineConfigName()
+		))
+	elif engine_source == "environment":
+		dbg.log("[+] No -e value specified, using default engine '%s' from %s" % (
+			engine, getTellMeDefaultEngineEnvName()
+		))
+	elif engine_is_fallback:
+		if engine == "manual":
 			dbg.log("[+] No -e value specified, defaulting to manual request generation")
 		else:
-			engine = available_engines[0]
 			dbg.log("[+] No -e value specified, defaulting to '%s'" % engine)
 
-	if engine not in ["openai", "anthropic", "manual"]:
+	if (engine != "manual") and (not _tellme_is_supported_engine(engine)):
 		dbg.log("Invalid AI engine '%s'. Valid values: openai, anthropic" % engine, highlight=1)
 		return
+
+	if manual_only_mode and _tellme_is_supported_engine(engine) and engine_source in ["config", "environment"]:
+		dbg.log("[+] Default engine '%s' is configured via %s, but no supported AI SDK is available in this Python environment" % (
+			engine,
+			getTellMeDefaultEngineConfigName() if engine_source == "config" else getTellMeDefaultEngineEnvName()
+		))
+		dbg.log("[+] Falling back to manual request generation")
+		engine = "manual"
 
 	if (not manual_only_mode) and engine not in available_engines:
 		dbg.log("The '%s' engine is not available in this Python environment. Available: %s" % (
@@ -23838,7 +24080,6 @@ def procTellMe(args):
 		elif prebuilt_prompt == "":
 			dbg.log("[+] Using request template: %s" % template_file)
 
-	mona_config = MnConfig()
 	if question_type in ["1", "2"]:
 		default_template_path = _tellme_ensure_default_template(question_type, mona_config)
 		if default_template_path != "":
@@ -23854,6 +24095,10 @@ def procTellMe(args):
 		dbg.log(str(e), highlight=1)
 		return
 	mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (engine, timeout_seconds, timeout_source))
+	max_tokens, max_tokens_source = getTellMeMaxTokens(engine, mona_config)
+	mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
+		engine, max_tokens, max_tokens_source
+	))
 
 	if "model" in args:
 		if type(args["model"]).__name__.lower() == "bool":
@@ -24069,6 +24314,8 @@ def procTellMe(args):
 
 	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
 	dbg.log("    Timeout   : %.1f seconds" % timeout_seconds)
+	if engine == "anthropic":
+		dbg.log("    Max tokens: %d" % max_tokens)
 	request_logfile_path = writeTellMeRequestLog(
 		engine,
 		model,
@@ -24092,7 +24339,13 @@ def procTellMe(args):
 			if engine == "openai":
 				answer, request_id = callTellMeOpenAI(api_key, model, prompt, timeout_seconds=attempt_timeout)
 			else:
-				answer, request_id = callTellMeAnthropic(api_key, model, prompt, timeout_seconds=attempt_timeout)
+				answer, request_id = callTellMeAnthropic(
+					api_key,
+					model,
+					prompt,
+					timeout_seconds=attempt_timeout,
+					max_tokens=max_tokens
+				)
 			break
 		except Exception as e:
 			mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
@@ -32293,41 +32546,55 @@ Configuration:
     Choose one of these approaches:
 
     1. Store settings in mona.ini:
+       %s config -set mona.ai.engine openai
        %s config -set openai.key <your OpenAI API key>
        %s config -set openai.model gpt-5.4
        %s config -set openai.timeout 90
+       %s config -set openai.max_tokens 4096
+       %s config -set mona.ai.engine anthropic
        %s config -set anthropic.key <your Anthropic API key>
        %s config -set anthropic.model claude-opus-4-20250514
        %s config -set anthropic.timeout 90
+       %s config -set anthropic.max_tokens 4096
 
     2. Or use environment variables instead:
+       - MONA_AI_ENGINE
        - OPENAI_API_KEY
        - OPENAI_MODEL
        - OPENAI_TIMEOUT
+       - OPENAI_MAX_TOKENS
        - ANTHROPIC_API_KEY
        - ANTHROPIC_MODEL
        - ANTHROPIC_TIMEOUT
+       - ANTHROPIC_MAX_TOKENS
 
 Precedence:
+    If -e is specified, it overrides everything else
+    If -e is omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE
     If both are present, mona.ini values take precedence over environment variables
     For a single request, -model and -timeout override both config and environment values
+    max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
+    On first use, if exactly one SDK is available mona stores that provider in mona.ai.engine
+    If no supported SDK is available yet, mona stores openai as the default provider
 
 Default models:
     - OpenAI   : gpt-5.4
-    - Anthropic: claude-opus-4-20250514
+    - Anthropic: claude-opus-4-7
 
 Default timeout:
     - 60 seconds per request
 
 Common models:
     - OpenAI   : gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano
-    - Anthropic: claude-opus-4-1-20250805, claude-opus-4-20250514, claude-sonnet-4-20250514, claude-3-5-haiku-20241022
+    - Anthropic: claude-opus-4-7, claude-opus-4-6
 
 	Arguments:
-	    -e  <engine> : AI engine to use. If omitted, mona uses the first available engine,
+	    -e  <engine> : AI engine to use. If omitted, mona checks mona.ai.engine first,
+	                   then MONA_AI_ENGINE, then falls back to the first available engine,
 	                   or manual request generation when no supported SDK is installed
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
+	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the crash context
 	                   2 = analyse the current function
@@ -32353,7 +32620,9 @@ Common models:
 	    -test        : Override the configured model with a lower-cost test model
 
 	Examples:
-	    %s tellme -e openai -q 1
+	    %s tellme -q 1
+	    %s config -set mona.ai.engine anthropic
+	    set MONA_AI_ENGINE=openai
 	    %s tellme -e anthropic -q 2
 	    %s tellme -e openai -q 2 -a kernel32!CreateFileW
 	    %s tellme -e openai -q 2 -a eip
@@ -32439,13 +32708,13 @@ Common models:
 	Test model overrides:
 	    - OpenAI   : gpt-5.4-nano
 	    - Anthropic: claude-3-haiku-20240307
-		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
+		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
 
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
-	commands["cleanlog"]       = MnCommand("cleanlog","Remove old log files from your workingfolder",cleanLogUsage,procCleanLog,"clean",[32,64])   
+	commands["cleanlog"]        = MnCommand("cleanlog","Remove old log files from your workingfolder",cleanLogUsage,procCleanLog,"clean",[32,64])   
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
 	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC,"rf",[32,64])
 	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP chain and perhaps do some ROP magic with them",ropUsage,procROP,"",[32,64])
