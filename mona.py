@@ -25186,6 +25186,12 @@ def procUpdate(args):
 			mndbg.dbgp("Update diagnostics: direct HTTPS probe failed:\n%s" % traceback.format_exc(), errormode=False)
 	except Exception:
 		mndbg.dbgp("Update diagnostics: urllib request import failed:\n%s" % traceback.format_exc(), errormode=False)
+	try:
+		import requests as requests_module
+		mndbg.dbgp("Update diagnostics: requests module file=%s" % getattr(requests_module, "__file__", "<builtin>"))
+		mndbg.dbgp("Update diagnostics: requests version=%s" % getattr(requests_module, "__version__", "<unknown>"))
+	except Exception:
+		mndbg.dbgp("Update diagnostics: requests import failed:\n%s" % traceback.format_exc(), errormode=False)
 
 	def _normalize_version(v):
 		if v is None:
@@ -25306,33 +25312,79 @@ def procUpdate(args):
 			return False, "missing __VERSION__ and/or __REV__ information"
 		return True, ""
 
+	def _download_using_requests(url, destfile, label):
+		try:
+			import requests as requests_module
+		except Exception as e:
+			return False, "requests unavailable: %s" % str(e)
+
+		tempfile_name = destfile + ".part"
+		_safe_remove(tempfile_name)
+		try:
+			mndbg.dbgp("Downloading %s via requests from %s" % (label, url))
+			resp = requests_module.get(url, stream=True, timeout=20)
+			try:
+				resp.raise_for_status()
+				with open(tempfile_name, "wb") as fh:
+					for chunk in resp.iter_content(65536):
+						if chunk:
+							fh.write(chunk)
+			finally:
+				try:
+					resp.close()
+				except Exception:
+					pass
+			shutil.move(tempfile_name, destfile)
+			mndbg.dbgp("Saved %s to %s via requests" % (label, destfile))
+			return True, ""
+		except Exception as e:
+			_safe_remove(tempfile_name)
+			return False, str(e)
+
+	def _download_single_url(url, destfile, label):
+		try:
+			mndbg.dbgp("Downloading %s from %s via urllib.urlretrieve" % (label, url))
+			tmp = urllib_urlretrieve(url)
+			srcfile = tmp[0]
+			mndbg.dbgp("Temporary downloaded file for %s is %s" % (label, srcfile))
+			shutil.copyfile(srcfile, destfile)
+			mndbg.dbgp("Saved %s to %s via urllib.urlretrieve" % (label, destfile))
+			return True, "urllib.urlretrieve", ""
+		except Exception as e:
+			mndbg.dbgp("urllib.urlretrieve failed for %s from %s : %s" % (label, url, str(e)), errormode=False)
+			_safe_remove(destfile)
+			urllib_error = str(e)
+
+		ok_requests, requests_error = _download_using_requests(url, destfile, label)
+		if ok_requests:
+			return True, "requests", ""
+		mndbg.dbgp("requests fallback failed for %s from %s : %s" % (label, url, requests_error), errormode=False)
+		_safe_remove(destfile)
+		return False, "", "urllib.urlretrieve failed: %s | requests failed: %s" % (urllib_error, requests_error)
+
 	def _download_with_fallback(main_url, backup_url, destfile, label, validator=None):
 		last_error = ""
 		for urltype, url in [("main", main_url), ("backup", backup_url)]:
-			try:
-				mndbg.dbgp("[+] Downloading %s from %s URL" % (label, urltype))
-				mndbg.dbgp("Downloading %s from %s" % (label, url))
-				tmp = urllib_urlretrieve(url)
-				srcfile = tmp[0]
-				mndbg.dbgp("Temporary downloaded file for %s is %s" % (label, srcfile))
-				shutil.copyfile(srcfile, destfile)
-				mndbg.dbgp("Saved %s to %s" % (label, destfile))
-
-				if validator is not None:
-					is_valid, validation_msg = validator(destfile)
-					if is_valid:
-						mndbg.dbgp("%s downloaded from %s URL passed validation" % (label, urltype))
-						return True, url
-					last_error = validation_msg
-					mndbg.dbgp("%s downloaded from %s URL failed validation: %s" % (label, urltype, validation_msg))
-					_safe_remove(destfile)
-					continue
-
-				return True, url
-			except Exception as e:
-				last_error = str(e)
-				mndbg.dbgp("Download failed for %s from %s : %s" % (label, url, str(e)), errormode=False)
+			mndbg.dbgp("[+] Downloading %s from %s URL" % (label, urltype))
+			ok_download, method_used, error_msg = _download_single_url(url, destfile, label)
+			if not ok_download:
+				last_error = error_msg
+				mndbg.dbgp("Download failed for %s from %s : %s" % (label, url, error_msg), errormode=False)
 				_safe_remove(destfile)
+				continue
+
+			if validator is not None:
+				is_valid, validation_msg = validator(destfile)
+				if is_valid:
+					mndbg.dbgp("%s downloaded from %s URL passed validation via %s" % (label, urltype, method_used))
+					return True, url
+				last_error = validation_msg
+				mndbg.dbgp("%s downloaded from %s URL failed validation via %s: %s" % (label, urltype, method_used, validation_msg))
+				_safe_remove(destfile)
+				continue
+
+			mndbg.dbgp("%s downloaded from %s URL via %s" % (label, urltype, method_used))
+			return True, url
 
 		if last_error != "":
 			mndbg.dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
