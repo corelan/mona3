@@ -69,6 +69,8 @@ global ModuleCache
 global FuncCache
 global NativeCommandCache
 global disasmFwCache
+global disasmFwCacheRequests
+global disasmFwCacheHits
 
 global currentPID
 global currentTEBAddress
@@ -86,11 +88,17 @@ currentPID = 0
 currentTEBAddress = 0
 cpebaddress = 0
 
+MemoryPages = {}
+AsmCache = {}
 PageSections = {}
 ModuleCache = {}
 FuncCache = {}
 disAsmCache = {}
 disasmFwCache = {}
+disasmFwCacheRequests = 0
+disasmFwCacheHits = 0
+OpcodeCache = {}
+InstructionCache = {}
 NativeCommandCache = {}
 
 Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
@@ -568,11 +576,16 @@ def getNtHeaders(modulebase):
 
 def clearvars():
 	dbgp(get_current_function_name())
+
+	def _get_global(name, default):
+		return globals().get(name, default)
 		
 	global MemoryPages
 	global AsmCache
 	global disAsmCache
 	global disasmFwCache
+	global disasmFwCacheRequests
+	global disasmFwCacheHits
 	global OpcodeCache
 	global InstructionCache
 	global PageSections
@@ -582,10 +595,25 @@ def clearvars():
 	global currentTEBAddress
 	global cpebaddress
 
+	MemoryPages = _get_global("MemoryPages", {})
+	AsmCache = _get_global("AsmCache", {})
+	disAsmCache = _get_global("disAsmCache", {})
+	disasmFwCache = _get_global("disasmFwCache", {})
+	disasmFwCacheRequests = _get_global("disasmFwCacheRequests", 0)
+	disasmFwCacheHits = _get_global("disasmFwCacheHits", 0)
+	OpcodeCache = _get_global("OpcodeCache", {})
+	InstructionCache = _get_global("InstructionCache", {})
+	PageSections = _get_global("PageSections", {})
+	ModuleCache = _get_global("ModuleCache", {})
+	FuncCache = _get_global("FuncCache", {})
+
 	memory_pages_count = len(MemoryPages) if isinstance(MemoryPages, dict) else 0
 	asm_cache_count = len(AsmCache) if isinstance(AsmCache, dict) else 0
 	disasm_cache_count = len(disAsmCache) if isinstance(disAsmCache, dict) else 0
 	disasm_fw_cache_count = len(disasmFwCache) if isinstance(disasmFwCache, dict) else 0
+	disasm_fw_cache_requests = disasmFwCacheRequests if isinstance(disasmFwCacheRequests, int) else 0
+	disasm_fw_cache_hits = disasmFwCacheHits if isinstance(disasmFwCacheHits, int) else 0
+	disasm_fw_cache_pct = (float(disasm_fw_cache_hits) / float(disasm_fw_cache_requests) * 100.0) if disasm_fw_cache_requests else 0.0
 	opcode_cache_count = len(OpcodeCache) if isinstance(OpcodeCache, dict) else 0
 	instruction_cache_count = len(InstructionCache) if isinstance(InstructionCache, dict) else 0
 	page_sections_count = len(PageSections) if isinstance(PageSections, dict) else 0
@@ -596,6 +624,7 @@ def clearvars():
 	dbgp("clearvars: AsmCache keys before clear: %d" % asm_cache_count)
 	dbgp("clearvars: disAsmCache keys before clear: %d" % disasm_cache_count)
 	dbgp("clearvars: disasmFwCache keys before clear: %d" % disasm_fw_cache_count)
+	dbgp("clearvars: disasmForward cache hits: %d / %d (%.2f%%)" % (disasm_fw_cache_hits, disasm_fw_cache_requests, disasm_fw_cache_pct))
 	dbgp("clearvars: OpcodeCache keys before clear: %d" % opcode_cache_count)
 	dbgp("clearvars: InstructionCache keys before clear: %d" % instruction_cache_count)
 	dbgp("clearvars: PageSections keys before clear: %d" % page_sections_count)
@@ -606,6 +635,8 @@ def clearvars():
 	AsmCache = {}
 	disAsmCache = {}
 	disasmFwCache = {}
+	disasmFwCacheRequests = 0
+	disasmFwCacheHits = 0
 	OpcodeCache = {}
 	InstructionCache = {}
 	PageSections = {}
@@ -4221,7 +4252,11 @@ class Debugger:
 		cmd2run = "u 0x%08x L%d" % (address,depth+1)
 		try:
 			global disasmFwCache
+			global disasmFwCacheRequests
+			global disasmFwCacheHits
+			disasmFwCacheRequests += 1
 			if cmd2run in disasmFwCache:
+				disasmFwCacheHits += 1
 				disasmlist = disasmFwCache[cmd2run]
 			else:
 				disasmlist = pykd.dbgCommand(cmd2run)
@@ -4257,7 +4292,7 @@ class Debugger:
 	def disasmBackward(self,address,depth):
 		while True:
 			cmd2run = "ub 0x%08x L%d" % (address,depth)
-			dbgp("cmd2run: %s" % cmd2run)
+			#dbgp("cmd2run: %s" % cmd2run)
 			try:
 				disasmlist = pykd.dbgCommand(cmd2run)
 				disasmLinesTmp = disasmlist.split("\n")
