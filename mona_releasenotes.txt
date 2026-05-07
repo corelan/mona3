@@ -1,3 +1,18 @@
+[mona 3.0.3016]
+- Update revision (mona: 3016)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/545a2fb">545a2fb</link> switch to offline instead of dryrun
+  - <link cmd="https://github.com/corelan/mona3/commit/ac40910">ac40910</link> Update mona.py
+  - <link cmd="https://github.com/corelan/mona3/commit/1c4d568">1c4d568</link> overwrite ai.q1 and ai.q2 on every run
+  - <link cmd="https://github.com/corelan/mona3/commit/6f7154b">6f7154b</link> add heap details variables to ai
+  - <link cmd="https://github.com/corelan/mona3/commit/cb8d70a">cb8d70a</link> remove python_version from variables
+  - <link cmd="https://github.com/corelan/mona3/commit/fe38512">fe38512</link> lazy load ai libraries
+  - <link cmd="https://github.com/corelan/mona3/commit/fa15289">fa15289</link> providing fallback mechanisms for mona up
+  - <link cmd="https://github.com/corelan/mona3/commit/c07c4a2">c07c4a2</link> improve ai request type 2 (analyse function)
+  - <link cmd="https://github.com/corelan/mona3/commit/f7b81e4">f7b81e4</link> default to dryrun. update documentation
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/e1adeb0">e1adeb0</link> Update revision (mona: 3015, windbglib: 3006) AI refinements
+
 [mona 3.0.3015]
 - Update revision (mona: 3015, windbglib: 3006) AI refinements
 corelanc0d3r:
@@ -140,21 +155,6 @@ corelanc0d3r:
 
 [windbglib 3.0.3004]
 - No file-specific commits found.
-
-[mona 3.0.3005]
-apl3b:
-  - <link cmd="https://github.com/corelan/mona3/commit/7b89939">7b89939</link> improve tree view
-  - <link cmd="https://github.com/corelan/mona3/commit/2fbfca8">2fbfca8</link> remove chunk inheritance in flat view
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/f89dbde">f89dbde</link> bugfix for immunity
-  - <link cmd="https://github.com/corelan/mona3/commit/66ae788">66ae788</link> cache getPtrFunction and add nativecommand statistics for windbg
-  - <link cmd="https://github.com/corelan/mona3/commit/c2dc6a1">c2dc6a1</link> bugfix in procfillchunk
-  - <link cmd="https://github.com/corelan/mona3/commit/aab3b91">aab3b91</link> rename globals. Print UserSize and  state for linked heap chunks in dumpobj routine
-  - <link cmd="https://github.com/corelan/mona3/commit/d3c896a">d3c896a</link> implement naming conventions for globals
-  - <link cmd="https://github.com/corelan/mona3/commit/b41fcd8">b41fcd8</link> add MnDebugger class
-  - <link cmd="https://github.com/corelan/mona3/commit/4bf7714">4bf7714</link> update help for procLayout
-  - <link cmd="https://github.com/corelan/mona3/commit/88ad5c9">88ad5c9</link> set tree mode automatically if -a is used
-  - <link cmd="https://github.com/corelan/mona3/commit/d33603d">d33603d</link> update banners
 
 [windbglib 3.0.3003]
 corelanc0d3r:
