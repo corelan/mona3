@@ -2568,6 +2568,195 @@ def getTellMePattern():
 	return g_tellme_pattern_cache
 
 
+def _tellme_get_architecture_name():
+	if arch == 64:
+		return "x64"
+	return "x86"
+
+
+def _tellme_render_badchars(raw_badchars):
+	if raw_badchars in [None, b"", ""]:
+		return ""
+	if not isinstance(raw_badchars, bytes_type):
+		try:
+			raw_badchars = _to_bytes(raw_badchars)
+		except Exception:
+			raw_badchars = ensure_bytes(raw_badchars)
+	return "\\x" + "\\x".join(bin2hex(raw_badchars).split(" "))
+
+
+def _tellme_read_blob_hex(address, size, label="", chunk_size=0x1000):
+	try:
+		integer_types = (int, long)
+	except NameError:
+		integer_types = (int,)
+	info = OrderedDict()
+	info["address"] = PTR_PRINT % address
+	info["requested_size"] = "0x%x" % size
+	info["encoding"] = "hex"
+	info["complete"] = False
+	info["bytes_read"] = "0x0"
+	info["bytes_hex"] = ""
+	if not isinstance(address, integer_types) or address <= 0 or not isinstance(size, integer_types) or size <= 0:
+		return info
+
+	cursor = address
+	remaining = size
+	chunks = []
+	try:
+		while remaining > 0:
+			this_read = min(chunk_size, remaining)
+			raw = dbg.readMemory(cursor, this_read)
+			raw = _to_bytes(raw)
+			if len(raw) != this_read:
+				raise RuntimeError("short read while reading %s at %s" % (label or "blob", PTR_PRINT % cursor))
+			chunks.append(raw)
+			cursor += this_read
+			remaining -= this_read
+		blob = b"".join(chunks)
+		info["bytes_read"] = "0x%x" % len(blob)
+		info["bytes_hex"] = binascii.hexlify(blob).decode("ascii")
+		info["complete"] = (len(blob) == size)
+	except Exception as e:
+		blob = b"".join(chunks)
+		info["bytes_read"] = "0x%x" % len(blob)
+		info["bytes_hex"] = binascii.hexlify(blob).decode("ascii")
+		info["error"] = str(e)
+		mndbg.dbgp("tellme: unable to read %s at %s (size=0x%x): %s" % (
+			label or "blob",
+			PTR_PRINT % address,
+			size,
+			str(e)
+		), errormode=False)
+	return info
+
+
+def _tellme_get_module_executable_sections(module_obj):
+	sections = []
+	try:
+		try:
+			dbg.MemoryPages = {}
+		except:
+			pass
+		allpages = dbg.getMemoryPages()
+		orderedpages = sorted(allpages.keys())
+		for thispage in orderedpages:
+			page = allpages[thispage]
+			pagestart = page.getBaseAddress()
+			pagesize = page.getSize()
+			pageend = pagestart + pagesize
+			if pagestart < module_obj.moduleBase or pagestart > module_obj.moduleTop:
+				continue
+			acl_text = page.getAccess(human=True)
+			if "EXECUTE" not in acl_text.upper():
+				continue
+			sectionname = ""
+			try:
+				sectionname = page.getSection().strip()
+			except:
+				sectionname = ""
+			entry = OrderedDict()
+			entry["name"] = sectionname or ("page_%s" % (PTR_PRINT % pagestart))
+			entry["absolute_start"] = PTR_PRINT % pagestart
+			entry["end"] = PTR_PRINT % pageend
+			entry["virtual_size"] = "0x%x" % pagesize
+			entry["raw_size"] = "0x%x" % pagesize
+			entry["page_acl"] = acl_text
+			entry["contents"] = _tellme_read_blob_hex(pagestart, pagesize, label="%s:%s" % (module_obj.moduleKey, entry["name"]))
+			sections.append(entry)
+	except Exception as e:
+		mndbg.dbgp("tellme: unable to enumerate executable pages for %s: %s" % (
+			module_obj.moduleKey,
+			str(e)
+		), errormode=False)
+	return sections
+
+
+def _tellme_get_module_iat_entries(module_obj):
+	entries = []
+	try:
+		iat = module_obj.getIAT()
+	except Exception as e:
+		mndbg.dbgp("tellme: unable to enumerate IAT for %s: %s" % (module_obj.moduleKey, str(e)), errormode=False)
+		return entries
+
+	for iat_address in sorted(iat.keys()):
+		func_name = iat[iat_address]
+		if iat_address == 0 and func_name == "no_iat_found":
+			continue
+		entry = OrderedDict()
+		entry["address"] = PTR_PRINT % iat_address
+		entry["function"] = _tellme_format_text(func_name, max_len=1024)
+		try:
+			target = struct.unpack(PTR_FMT, dbg.readMemory(iat_address, PTR_SIZE))[0]
+			entry["target"] = PTR_PRINT % target
+		except Exception as e:
+			entry["target_error"] = str(e)
+		entries.append(entry)
+	return entries
+
+
+def _tellme_collect_rop_target_modules(args):
+	has_module_scope = False
+	for scope_key in ["m", "cm", "cmp"]:
+		if scope_key in args and type(args[scope_key]).__name__.lower() != "bool" and str(args[scope_key]).strip() != "":
+			has_module_scope = True
+			break
+
+	modulecriteria = {}
+	criteria = {}
+	modulecriteria, criteria = args2criteria(args, modulecriteria, criteria)
+	if not has_module_scope:
+		modulecriteria["aslr"] = False
+		modulecriteria["rebase"] = False
+	modulestosearch = getModulesToQuery(modulecriteria)
+	if len(modulestosearch) == 0:
+		if has_module_scope:
+			raise ValueError("Question profile '-q 3' did not match any modules with the supplied -m/-cm/-cmp filters")
+		raise ValueError("Question profile '-q 3' did not match any non-ASLR, non-rebased modules")
+
+	selection = OrderedDict()
+	selection["architecture"] = OrderedDict([
+		("bits", arch),
+		("name", _tellme_get_architecture_name()),
+		("pointer_size", PTR_SIZE),
+	])
+	selection["filters"] = OrderedDict([
+		("m", str(args.get("m", "")).strip() if "m" in args and type(args["m"]).__name__.lower() != "bool" else ""),
+		("cm", str(args.get("cm", "")).strip() if "cm" in args and type(args["cm"]).__name__.lower() != "bool" else ""),
+		("cmp", str(args.get("cmp", "")).strip() if "cmp" in args and type(args["cmp"]).__name__.lower() != "bool" else ""),
+	])
+	selection["criteria_text"] = criteriaToText(modulecriteria)
+	selection["selection_mode"] = "explicit" if has_module_scope else "default_non_aslr_non_rebase"
+	raw_badchars = criteria.get("badchars", b"")
+	selection["badchars"] = OrderedDict([
+		("specified", raw_badchars not in [None, b"", ""]),
+		("hex", _tellme_render_badchars(raw_badchars))
+	])
+	selection["modules"] = []
+
+	for modulename in modulestosearch:
+		tmod = MnModule(modulename)
+		module_entry = OrderedDict()
+		module_entry["name"] = tmod.moduleFilename or tmod.moduleKey
+		module_entry["key"] = tmod.moduleKey
+		module_entry["path"] = tmod.modulePath
+		module_entry["base"] = PTR_PRINT % tmod.moduleBase
+		module_entry["top"] = PTR_PRINT % tmod.moduleTop
+		module_entry["size"] = "0x%x" % tmod.moduleSize
+		module_entry["rebase"] = tmod.isRebase
+		module_entry["aslr"] = tmod.isAslr
+		module_entry["safeseh"] = tmod.isSafeSEH
+		module_entry["cfg"] = tmod.isCFG
+		module_entry["nx"] = tmod.isNX
+		module_entry["os"] = tmod.isOS
+		module_entry["iat"] = _tellme_get_module_iat_entries(tmod)
+		module_entry["executable_sections"] = _tellme_get_module_executable_sections(tmod)
+		selection["modules"].append(module_entry)
+
+	return selection
+
+
 def collectTellMeContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0):
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
 	context = {
@@ -2717,21 +2906,32 @@ def getTellMeModelAndKey(engine, mona_config):
 			mndbg.dbgp("tellme: using environment fallback for %s.model via %s" % (engine, env_model_name))
 
 	if model == "":
-		if engine == "openai":
-			model = "gpt-5.4"
-		elif engine == "anthropic":
-			model = "claude-opus-4-7"
+		model = getTellMeDefaultModel(engine)
 
 	return api_key, model
+
+
+def getTellMeDefaultModel(engine):
+	if engine == "openai":
+		return "gpt-5.4"
+	if engine == "anthropic":
+		return "claude-opus-4-7"
+	return ""
 
 
 def _tellme_import_openai():
 	mndbg.dbgp("tellme: loading OpenAI SDK on demand")
 	try:
+		dbg.log("[+] Loading OpenAI SDK...")
+		import openai as openai_module
 		from openai import OpenAI as openai_client_class
-		return openai_client_class, ""
+		openai_version = getattr(openai_module, "__version__", "").strip()
+		if openai_version == "":
+			openai_version = "unknown"
+		dbg.log("    OpenAI SDK version: %s" % openai_version)
+		return openai_client_class, openai_version, ""
 	except Exception:
-		return None, traceback.format_exc()
+		return None, "", traceback.format_exc()
 
 
 def getTellMeTimeout(engine, mona_config, args=None):
@@ -2879,29 +3079,31 @@ def _tellme_log_openai_error(err):
 	error_type = nested.get("type", "") or err.__class__.__name__
 	error_code = nested.get("code", "") or payload.get("code", "")
 	err_cls = err.__class__.__name__
+	status_code = payload.get("status_code", None)
+	err_marker = (ensure_text(error_type) + " " + ensure_text(error_code) + " " + ensure_text(message)).lower()
 
 	if error_type == "insufficient_quota" or error_code == "insufficient_quota":
 		dbg.log("[!] OpenAI request failed: quota exceeded", highlight=1)
 		dbg.log("    Your API account does not currently have enough quota or billing available.", highlight=1)
-	elif err_cls == "RateLimitError":
+	elif err_cls == "RateLimitError" or status_code == 429 or "rate limit" in err_marker:
 		dbg.log("[!] OpenAI request failed: rate limit exceeded", highlight=1)
 		dbg.log("    Too many requests were sent in a short time. Retry later or use a smaller/cheaper test model.", highlight=1)
-	elif err_cls == "AuthenticationError":
+	elif err_cls == "AuthenticationError" or status_code == 401 or "authentication" in err_marker or "unauthorized" in err_marker:
 		dbg.log("[!] OpenAI request failed: authentication error", highlight=1)
 		dbg.log("    Check the API key value and make sure the account/project can use the selected model.", highlight=1)
-	elif err_cls == "PermissionDeniedError":
+	elif err_cls == "PermissionDeniedError" or status_code == 403 or "permission" in err_marker or "forbidden" in err_marker:
 		dbg.log("[!] OpenAI request failed: permission denied", highlight=1)
 		dbg.log("    The key is valid, but it does not have access to this operation or model.", highlight=1)
-	elif err_cls == "BadRequestError":
+	elif err_cls == "BadRequestError" or status_code in [400, 404, 413, 422] or "invalid_request" in err_marker or "bad request" in err_marker:
 		dbg.log("[!] OpenAI request failed: invalid request", highlight=1)
 		dbg.log("    The model name, prompt, or request parameters were rejected by the API.", highlight=1)
-	elif err_cls == "APIConnectionError":
+	elif err_cls == "APIConnectionError" or "connection" in err_marker or "unable to reach openai api" in err_marker or "urlerror" in err_marker:
 		dbg.log("[!] OpenAI request failed: connection error", highlight=1)
 		dbg.log("    Check internet access, proxy/firewall settings, and whether the API endpoint is reachable.", highlight=1)
-	elif err_cls == "APITimeoutError":
+	elif err_cls == "APITimeoutError" or "timeout" in err_marker or "timed out" in err_marker:
 		dbg.log("[!] OpenAI request failed: timeout", highlight=1)
 		dbg.log("    The request took too long. Retry or reduce the amount of context being sent.", highlight=1)
-	elif err_cls == "APIStatusError":
+	elif err_cls == "APIStatusError" or (isinstance(status_code, int) and status_code >= 500):
 		dbg.log("[!] OpenAI request failed: API status error", highlight=1)
 	else:
 		dbg.log("[!] OpenAI request failed", highlight=1)
@@ -3297,6 +3499,7 @@ def _tellme_build_request_variables(context):
 		"heap_analysis_target",
 		"analysis_target",
 		"current_function",
+		"rop_target_modules",
 	]
 	for key in preferred_keys:
 		if key in context:
@@ -3354,6 +3557,95 @@ If a target address was supplied, treat it as a point inside the function and re
 Do not focus on the current instruction pointer, crash context, stack state, or call stack unless they are directly required to understand the function.
 If symbol information is missing or ambiguous, say so clearly and fall back to describing the function body from uf output instead of inventing a function name.
 Be specific, but do not invent facts that are not present in the snapshot."""
+	if question_type == "3":
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+
+Focus on analyzing the available control-flow manipulation primitives and gadget surface quality relevant to return-oriented programming (ROP), not on constructing a working exploit chain.
+
+The goal is defensive vulnerability research, exploitability assessment, and mitigation analysis.
+
+Use the entries under the 'variables' object as the debugger context. The primary input for this profile is 'rop_target_modules'.
+
+Use the supplied 'architecture' object to determine:
+
+* pointer size
+* register naming conventions
+* stack growth behavior
+* calling convention expectations
+* instruction encoding assumptions
+* alignment expectations
+
+Do not hardcode x86/x64 assumptions outside the supplied architecture metadata.
+
+Treat executable section data as analysis input for identifying potential control-flow and state-manipulation primitives.
+
+The executable section blobs contain raw bytes from loaded executable memory regions. You may disassemble candidate instruction sequences directly from those bytes when searching for potential gadgets.
+
+When identifying gadgets:
+
+* only consider sequences that terminate with RETN or RETN <number>
+* clearly distinguish high-confidence decodes from speculative decodes
+* explain why the sequence may be useful
+* explain major side effects and clobbered registers
+* explain stack adjustment behavior
+* avoid presenting gadgets as part of an ordered exploit chain
+
+Treat every IAT entry in rop_target_modules.modules[*].iat as authoritative for imported API locations and imported helper availability.
+
+Analyze the supplied modules for:
+
+* stack pivot availability
+* register control coverage
+* memory access primitives
+* arithmetic and logical gadget diversity
+* indirect call/jump behavior
+* imported API exposure through the IAT
+* availability of clean RET-terminated sequences
+* gadget density and gadget reliability
+* constraints introduced by badchars, alignment, architecture, or module selection
+
+If imported APIs such as VirtualProtect or VirtualAlloc are present:
+
+* explain at a conceptual level what architectural state would normally be required before such an API invocation
+* discuss which categories of primitives would typically help prepare that state
+* discuss calling convention implications based on the supplied architecture
+* do not construct a working invocation sequence or operational exploit chain
+
+You may provide isolated example gadgets decoded from the supplied executable byte sequences when:
+
+* the gadget is discussed individually
+* the gadget is not presented as part of a complete chain
+* the explanation remains analytical rather than procedural
+
+For each example gadget:
+
+* show the decoded instruction sequence
+* show the originating module and virtual address
+* explain the primitive category
+* explain notable side effects
+* explain whether the gadget appears clean, fragile, or low quality
+
+Do not provide:
+
+* executable exploit chains
+* ordered gadget sequences intended for execution
+* final pre-call register layouts
+* operational DEP bypass procedures
+* shellcode staging steps
+* complete end-to-end exploit strategies
+
+You may describe feasibility abstractly, such as:
+
+* whether stack-pointer control appears feasible
+* whether calling-convention preparation constraints appear manageable
+* whether writable memory targets appear reachable
+* whether gadget diversity appears sufficient for complex control-flow manipulation
+
+If a byte sequence may represent a useful gadget but decoding confidence is low, state the uncertainty explicitly.
+
+Keep the answer practical, concise, architecture-aware, and evidence-based. Focus on feasibility assessment, primitive classification, gadget quality, and architectural implications rather than operational exploit construction.
+
+"""
 	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_instructions() to add more profiles." % question_type)
 
 
@@ -3407,6 +3699,17 @@ def _tellme_get_profile_template_variables(question_type):
 			"analysis_target",
 			"current_function",
 		]
+	if question_type == "3":
+		return [
+			"debugger",
+			"debugger_flavor",
+			"processname",
+			"modules",
+			"architecture",
+			"pointer_size",
+			"timestamp",
+			"rop_target_modules",
+		]
 	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_template_variables() to add more profiles." % question_type)
 
 
@@ -3433,6 +3736,8 @@ def _tellme_guess_template_question_type(template_path):
 		return "1"
 	if template_name == "ai.q2":
 		return "2"
+	if template_name == "ai.q3":
+		return "3"
 	return ""
 
 
@@ -3645,6 +3950,119 @@ def callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_second
 		return str(response.output[0].content[0].text), request_id
 	except Exception:
 		raise RuntimeError("OpenAI returned an empty or unexpected response payload")
+
+
+def _tellme_extract_openai_text(response_data):
+	if not isinstance(response_data, dict):
+		return ""
+	output_text = ensure_text(response_data.get("output_text", "")).strip()
+	if output_text:
+		return output_text
+	parts = []
+	for item in response_data.get("output", []):
+		if not isinstance(item, dict):
+			continue
+		for content_item in item.get("content", []):
+			if not isinstance(content_item, dict):
+				continue
+			text_value = content_item.get("text", "")
+			if text_value:
+				parts.append(ensure_text(text_value))
+	return "\n".join([part for part in parts if part]).strip()
+
+
+def callTellMeOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0):
+	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
+	request_body = {
+		"model": model,
+		"input": prompt
+	}
+	request_data = json.dumps(request_body).encode("utf-8")
+	request = urllib_Request(
+		"https://api.openai.com/v1/responses",
+		data=request_data,
+		headers={
+			"content-type": "application/json",
+			"authorization": "Bearer %s" % api_key,
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			request_id = ""
+			try:
+				request_id = response.headers.get("request-id", "") or response.headers.get("x-request-id", "")
+			except Exception:
+				request_id = ""
+			if request_id == "":
+				request_id = response_data.get("id", "") if isinstance(response_data, dict) else ""
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("request-id", "") or e.headers.get("x-request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		error_param = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+			error_param = ensure_text(error_obj.get("param", ""))
+		if error_message == "":
+			error_message = "OpenAI HTTP error %s" % str(status_code)
+		raise TellMeProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			param=error_param,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise TellMeProviderError(
+			"Unable to reach OpenAI API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise TellMeProviderError(
+			"OpenAI request setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	if request_id:
+		mndbg.dbgp("tellme: OpenAI HTTPS fallback response id: %s" % request_id)
+	text = _tellme_extract_openai_text(response_data)
+	if text:
+		return text, request_id
+	raise RuntimeError("OpenAI returned an empty or unexpected response payload")
 
 
 def _anthropic_extract_text(message):
@@ -24212,6 +24630,7 @@ def procTellMe(args):
 	target_address = 0
 	target_address_source = PROGRAM_COUNTER.upper()
 	heap_target_address = 0
+	rop_target_modules = None
 	effective_question_type = question_type
 
 	if "a" in args:
@@ -24265,18 +24684,31 @@ def procTellMe(args):
 				default_template_path,
 				default_template_path
 			))
-	api_key, model = getTellMeModelAndKey(engine, mona_config)
-	mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (engine, model))
-	try:
-		timeout_seconds, timeout_source = getTellMeTimeout(engine, mona_config, args=args)
-	except ValueError as e:
-		dbg.log(str(e), highlight=1)
-		return
-	mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (engine, timeout_seconds, timeout_source))
-	max_tokens, max_tokens_source = getTellMeMaxTokens(engine, mona_config)
-	mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
-		engine, max_tokens, max_tokens_source
-	))
+	api_key = ""
+	model = getTellMeDefaultModel(engine)
+	timeout_seconds = 60.0
+	timeout_source = "default"
+	max_tokens = 4096
+	max_tokens_source = "default"
+
+	if not offline:
+		api_key, model = getTellMeModelAndKey(engine, mona_config)
+		mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (engine, model))
+		try:
+			timeout_seconds, timeout_source = getTellMeTimeout(engine, mona_config, args=args)
+		except ValueError as e:
+			dbg.log(str(e), highlight=1)
+			return
+		if effective_question_type == "3" and timeout_source == "default":
+			timeout_seconds += 30.0
+			mndbg.dbgp("tellme: extending default timeout for q3 to %.1fs" % timeout_seconds)
+		mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (engine, timeout_seconds, timeout_source))
+		max_tokens, max_tokens_source = getTellMeMaxTokens(engine, mona_config)
+		mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
+			engine, max_tokens, max_tokens_source
+		))
+	else:
+		mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
 
 	if "model" in args:
 		if type(args["model"]).__name__.lower() == "bool":
@@ -24380,6 +24812,20 @@ def procTellMe(args):
 		mndbg.dbgp("tellme: using poc file %s" % poc_file)
 		dbg.log("[+] Will read PoC/trigger from: %s" % poc_file)
 
+	if effective_question_type == "3":
+		try:
+			rop_target_modules = _tellme_collect_rop_target_modules(args)
+		except ValueError as e:
+			dbg.log(str(e), highlight=1)
+			return
+		except Exception as e:
+			dbg.log("Failed to collect module/IAT/section context for '-q 3': %s" % str(e), highlight=1)
+			mndbg.dbgp("tellme: q3 module collection failed:\n%s" % traceback.format_exc(), errormode=False)
+			return
+		if rop_target_modules.get("selection_mode", "") == "default_non_aslr_non_rebase":
+			dbg.log("[+] No module filter supplied. Defaulting to modules with ASLR=False and Rebase=False")
+		dbg.log("[+] ROP module scope contains %d module(s)" % len(rop_target_modules.get("modules", [])))
+
 	if effective_question_type == "2" and prebuilt_prompt == "":
 		if target_address == 0:
 			regs = getAllRegisters()
@@ -24412,6 +24858,8 @@ def procTellMe(args):
 				poc_file=poc_file,
 				heap_target_address=heap_target_address
 			)
+			if effective_question_type == "3" and rop_target_modules is not None:
+				context["rop_target_modules"] = rop_target_modules
 			dbg.log("    Done")
 
 			if effective_question_type == "2":
@@ -24461,34 +24909,23 @@ def procTellMe(args):
 		return
 
 	openai_client_class = None
+	openai_version = ""
 	openai_import_error = ""
+	openai_use_http_fallback = False
 	if engine == "openai":
-		openai_client_class, openai_import_error = _tellme_import_openai()
+		openai_client_class, openai_version, openai_import_error = _tellme_import_openai()
 		if openai_client_class is None:
-			request_logfile_path = writeTellMeRequestLog(
-				engine,
-				model,
-				question_type,
-				prompt,
-				template_file=template_file,
-				target_address=target_address,
-				target_address_source=target_address_source
-			)
-			dbg.log("[!] OpenAI SDK import failed. Request saved to %s" % request_logfile_path, highlight=1)
-			dbg.log("    Python executable: %s" % sys.executable, highlight=1)
+			openai_use_http_fallback = True
+			dbg.log("[!] OpenAI SDK import failed.", highlight=1)
+			dbg.log("    Python executable: %s" % sys.executable)
 			if sys.version_info[0] == 3 and sys.version_info[1] < 9:
 				if "may only be initialized once per interpreter process" in openai_import_error:
 					dbg.log("    Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
-						sys.version_info[0], sys.version_info[1]
-					), highlight=1)
-					dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.", highlight=1)
-					dbg.log("             On Windows 7 / Python 3.8, restarting WinDBG is the practical workaround.", highlight=1)
-			dbg.log("    OpenAI import error: %s" % openai_import_error.splitlines()[-1], highlight=1)
-			dbg.log("")
-			dbg.log("    Options:")
-			dbg.log("    1. Install the OpenAI Python SDK and use tellme with an API key.")
-			dbg.log("    2. Submit the saved request manually in ChatGPT, Grok, or another AI tool.")
-			return
+						sys.version_info[0], sys.version_info[1]))
+					dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.")
+					dbg.log("             The direct HTTPS fallback avoids that import path for this request.")
+			dbg.log("    OpenAI import error: %s" % openai_import_error.splitlines()[-1])
+			dbg.log("[+] OpenAI : Falling back to direct HTTPS request.", highlight=1)
 
 	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
 	dbg.log("    Timeout   : %.1f seconds" % timeout_seconds)
@@ -24515,7 +24952,10 @@ def procTellMe(args):
 		dbg.log("    Sending request to %s (attempt %d, timeout %.1fs)" % (engine, attempt, attempt_timeout), highlight=1)
 		try:
 			if engine == "openai":
-				answer, request_id = callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=attempt_timeout)
+				if openai_use_http_fallback:
+					answer, request_id = callTellMeOpenAIDirect(api_key, model, prompt, timeout_seconds=attempt_timeout)
+				else:
+					answer, request_id = callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=attempt_timeout)
 			else:
 				answer, request_id = callTellMeAnthropic(
 					api_key,
