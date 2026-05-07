@@ -573,9 +573,9 @@ Engine selection works like this when you omit `-e`:
 
 1. `mona.ai.engine`
 2. `MONA_AI_ENGINE`
-3. if neither is set, `tellme` announces that fact and switches to dry-run mode by default
+3. if neither is set, `tellme` announces that fact and switches to offline mode by default
 
-As an extra safety measure, if you do not specify `-e` and there is no default engine configured in either `mona.ai.engine` or `MONA_AI_ENGINE`, `tellme` will announce that at the start of the run and switch to `-dryrun` behavior by default so you do not accidentally consume API tokens.
+As an extra safety measure, if you do not specify `-e` and there is no default engine configured in either `mona.ai.engine` or `MONA_AI_ENGINE`, `tellme` will announce that at the start of the run and switch to `-offline` behavior by default so you do not accidentally consume API tokens.
 
 The default request timeout is `60` seconds. You only need to set an engine-specific timeout when you want a different default for that provider, or override a single request with `-timeout`. For Anthropic responses, you can also increase the output budget with `anthropic.max_tokens` or `ANTHROPIC_MAX_TOKENS` if replies get truncated.
 
@@ -614,12 +614,12 @@ If both are present, values from `mona.ini` take precedence over environment var
 
 `tellme` can still build and save a request even if you do not have the provider libraries installed and/or you have not configured any API keys. That manual-request flow is fully supported.
 
-If you use `-dryrun`, `tellme` will build the full request and save it to a file without calling the API. You can then take that saved request and submit it manually to a browser-based AI session such as ChatGPT, Claude, Grok, or another free or paid engine of your choice.
+If you use `-offline`, `tellme` will build the full request and save it to a file without calling the API. You can then take that saved request and submit it manually to a browser-based AI session such as ChatGPT, Claude, Grok, or another free or paid engine of your choice.
 
-If you just want the analysis and do not care about direct API integration, `-dryrun` is often the simplest option:
+If you just want the analysis and do not care about direct API integration, `-offline` is often the simplest option:
 
 ```python
-!mona tellme -q 1 -dryrun
+!mona tellme -q 1 -offline
 ```
 
 That gives you a ready-to-submit request file while avoiding SDK installation, API keys, billing setup, or provider-specific runtime issues inside the debugger host.
@@ -651,7 +651,7 @@ Basic examples:
 !mona tellme -e anthropic -q 2
 !mona tellme -e openai -q 2 -a kernel32!CreateFileW
 !mona tellme -e openai -q 1 -timeout 120
-!mona tellme -e openai -q 1 -dryrun
+!mona tellme -e openai -q 1 -offline
 ```
 
 Useful options:
@@ -669,7 +669,7 @@ Useful options:
   override the configured model for one request
 * `-timeout <seconds>`:
   override the configured timeout for one request
-* `-dryrun`:
+* `-offline`:
   build and save the request without calling the API
 
 How to choose a mode:
@@ -677,7 +677,7 @@ How to choose a mode:
 * Use `!mona tellme -q 1` when you want help triaging the current crash.
 * Use `!mona tellme -q 2` when execution is at a useful code location and you want help understanding the current function.
 * Use `-a` with `-q 2` when the current instruction pointer is no longer trustworthy and you want to analyze a known-good symbol or address instead.
-* Use `-dryrun` when you want to manually submit the generated request to a browser-based AI session.
+* Use `-offline` when you want to manually submit the generated request to a browser-based AI session.
 
 Template usage:
 

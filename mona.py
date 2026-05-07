@@ -3605,7 +3605,7 @@ def writeTellMeResponseLog(engine, model, question_type, request_id, ai_response
 
 
 def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="", target_address=0, target_address_source=""):
-	mndbg.dbgp("tellme: writing dry run prompt to tellme_request.txt")
+	mndbg.dbgp("tellme: writing offline prompt to tellme_request.txt")
 	return writeTellMeRequestLog(
 		engine,
 		model,
@@ -24149,7 +24149,7 @@ def procTellMe(args):
 	config_default_engine = _normalize_tellme_engine(mona_config.get(getTellMeDefaultEngineConfigName()))
 	env_default_engine = _normalize_tellme_engine(os.environ.get(getTellMeDefaultEngineEnvName(), ""))
 	no_engine_arg_specified = (type(engine_arg_raw).__name__.lower() != "bool") and (_normalize_tellme_engine(engine_arg_raw) == "")
-	auto_dryrun_no_default = no_engine_arg_specified and config_default_engine == "" and env_default_engine == ""
+	auto_offline_no_default = no_engine_arg_specified and config_default_engine == "" and env_default_engine == ""
 
 	engine, engine_source, engine_error, engine_is_fallback = resolveTellMeEngine(
 		engine_arg_raw,
@@ -24168,7 +24168,7 @@ def procTellMe(args):
 		dbg.log("[+] No -e value specified, using default engine '%s' from %s" % (
 			engine, getTellMeDefaultEngineEnvName()
 		))
-	elif engine_is_fallback and not auto_dryrun_no_default:
+	elif engine_is_fallback and not auto_offline_no_default:
 		if engine == "manual":
 			dbg.log("[+] No -e value specified, defaulting to manual request generation")
 		else:
@@ -24198,17 +24198,17 @@ def procTellMe(args):
 
 	question_type = str(args.get("q", "")).strip()
 	mndbg.dbgp("tellme: selected question type '%s'" % question_type)
-	dryrun = ("dryrun" in args)
+	offline = ("offline" in args) or ("dryrun" in args)
 	testmode = ("test" in args)
-	if auto_dryrun_no_default and not dryrun:
-		dryrun = True
+	if auto_offline_no_default and not offline:
+		offline = True
 		dbg.log("[+] No default AI engine is configured and no -e value was specified.", highlight=1)
-		dbg.log("    Switching to dry-run mode by default to avoid consuming API tokens.", highlight=1)
+		dbg.log("    Switching to offline mode by default to avoid consuming API tokens.", highlight=1)
 		dbg.log("    Set %s, set %s, or use -e to send the request directly." % (
 			getTellMeDefaultEngineConfigName(),
 			getTellMeDefaultEngineEnvName()
 		), highlight=1)
-	mndbg.dbgp("tellme: dryrun=%s, testmode=%s" % (str(dryrun), str(testmode)))
+	mndbg.dbgp("tellme: offline=%s, testmode=%s" % (str(offline), str(testmode)))
 	target_address = 0
 	target_address_source = PROGRAM_COUNTER.upper()
 	heap_target_address = 0
@@ -24295,7 +24295,7 @@ def procTellMe(args):
 			dbg.log("[+] Test mode enabled, overriding model to '%s'" % model)
 			mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (model, engine))
 
-	if api_key == "" and not dryrun:
+	if api_key == "" and not offline:
 		dbg.log("    Missing API key '%s.key'" % engine, highlight=1)
 		dbg.log("    To configure API access, do the following:")
 		dbg.log("    1. Create or retrieve an API key for your chosen provider")
@@ -24329,7 +24329,7 @@ def procTellMe(args):
 		dbg.log("    Run '%s tellme -h' to see the full usage text" % getAliasName())
 		return
 
-	if model == "" and not dryrun:
+	if model == "" and not offline:
 		dbg.log("Missing config value '%s.model'. Set it with '%s config -set %s.model <model>'" % (
 			engine, getAliasName(), engine
 		), highlight=1)
@@ -24439,8 +24439,8 @@ def procTellMe(args):
 
 	mndbg.dbgp("tellme: prompt length is %d bytes" % len(prompt))
 
-	if dryrun:
-		dryrun_logfile = writeTellMeDryRunLog(
+	if offline:
+		offline_logfile = writeTellMeDryRunLog(
 			engine,
 			model,
 			question_type,
@@ -24449,7 +24449,7 @@ def procTellMe(args):
 			target_address=target_address,
 			target_address_source=target_address_source
 		)
-		dbg.log("[+] Dry run requested. No API request will be made.")
+		dbg.log("[+] Offline mode requested. No API request will be made.")
 		dbg.log("    Engine : %s" % engine)
 		dbg.log("    Model  : %s" % model)
 		dbg.log("    Q Type : %s" % question_type)
@@ -24457,7 +24457,7 @@ def procTellMe(args):
 			dbg.log("    File   : %s" % template_file)
 		if target_address_source == "-a":
 			dbg.log("    Target : %s (%s)" % (PTR_PRINT % target_address, target_address_source))
-		dbg.log("    Saved  : %s" % dryrun_logfile)
+		dbg.log("    Saved  : %s" % offline_logfile)
 		return
 
 	openai_client_class = None
@@ -32805,7 +32805,7 @@ Precedence:
     For a single request, -model and -timeout override both config and environment values
     max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
     If neither a default engine nor -e is specified, tellme announces this at the start of the run
-    and switches to dry-run mode by default
+    and switches to offline mode by default
 Default models:
     - OpenAI   : gpt-5.4
     - Anthropic: claude-opus-4-7
@@ -32821,7 +32821,7 @@ Common models:
 	    -e  <engine> : AI engine to use. If omitted, mona checks mona.ai.engine first,
 	                   then MONA_AI_ENGINE.
 	                   If no default engine is configured and -e is omitted, tellme announces that fact
-	                   at the start of the run and does a dry run by default to avoid consuming API tokens
+	                   at the start of the run and works in offline mode by default to avoid consuming API tokens
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
@@ -32847,7 +32847,7 @@ Common models:
 	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
 	                   If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:)
 	                   and no placeholders remain, mona reuses that request body directly instead of rebuilding debugger context
-	    -dryrun      : Build the request file, but do not call the API or print the full request on screen
+	    -offline     : Build the request file, but do not call the API or print the full request on screen
 	    -test        : Override the configured model with a lower-cost test model
 
 	Examples:
@@ -32862,7 +32862,7 @@ Common models:
 	    %s tellme -e openai -q 9 -f request.txt
 	    %s tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
 	    %s tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
-	    %s tellme -e openai -q 1 -dryrun
+	    %s tellme -e openai -q 1 -offline
 	    %s tellme -e openai -q 1 -test
 
 	Debugger context variables:
@@ -32912,7 +32912,7 @@ Common models:
 	    They are provided for inspection or reuse and are not applied automatically during -q 1 or -q 2.
 	    To use one of those templates, run -q 9 -f ai.q1 or -q 9 -f ai.q2.
 	    If the -q 9 file already contains a saved request prompt and no placeholders remain, mona submits that prompt body directly.
-	    With -dryrun, tellme saves the request file and prints only the saved file path instead of dumping the
+	    With -offline, tellme saves the request file and prints only the saved file path instead of dumping the
 	    full request to the debugger console.
 
 	Question notes:
