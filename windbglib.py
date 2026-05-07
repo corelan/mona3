@@ -68,6 +68,7 @@ global PageSections
 global ModuleCache
 global FuncCache
 global NativeCommandCache
+global disasmFwCache
 
 global currentPID
 global currentTEBAddress
@@ -89,6 +90,7 @@ PageSections = {}
 ModuleCache = {}
 FuncCache = {}
 disAsmCache = {}
+disasmFwCache = {}
 NativeCommandCache = {}
 
 Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
@@ -569,21 +571,46 @@ def clearvars():
 		
 	global MemoryPages
 	global AsmCache
+	global disAsmCache
+	global disasmFwCache
 	global OpcodeCache
 	global InstructionCache
 	global PageSections
 	global ModuleCache
+	global FuncCache
 	global currentPID
 	global currentTEBAddress
 	global cpebaddress
-	MemoryPages = None
-	AsmCache = None
-	disAsmCache = None
-	OpcodeCache = None
-	InstructionCache = None
-	InstructionCache = None
-	PageSections = None
-	ModuleCache = None
+
+	memory_pages_count = len(MemoryPages) if isinstance(MemoryPages, dict) else 0
+	asm_cache_count = len(AsmCache) if isinstance(AsmCache, dict) else 0
+	disasm_cache_count = len(disAsmCache) if isinstance(disAsmCache, dict) else 0
+	disasm_fw_cache_count = len(disasmFwCache) if isinstance(disasmFwCache, dict) else 0
+	opcode_cache_count = len(OpcodeCache) if isinstance(OpcodeCache, dict) else 0
+	instruction_cache_count = len(InstructionCache) if isinstance(InstructionCache, dict) else 0
+	page_sections_count = len(PageSections) if isinstance(PageSections, dict) else 0
+	module_cache_count = len(ModuleCache) if isinstance(ModuleCache, dict) else 0
+	func_cache_count = len(FuncCache) if isinstance(FuncCache, dict) else 0
+
+	dbgp("clearvars: MemoryPages keys before clear: %d" % memory_pages_count)
+	dbgp("clearvars: AsmCache keys before clear: %d" % asm_cache_count)
+	dbgp("clearvars: disAsmCache keys before clear: %d" % disasm_cache_count)
+	dbgp("clearvars: disasmFwCache keys before clear: %d" % disasm_fw_cache_count)
+	dbgp("clearvars: OpcodeCache keys before clear: %d" % opcode_cache_count)
+	dbgp("clearvars: InstructionCache keys before clear: %d" % instruction_cache_count)
+	dbgp("clearvars: PageSections keys before clear: %d" % page_sections_count)
+	dbgp("clearvars: ModuleCache keys before clear: %d" % module_cache_count)
+	dbgp("clearvars: FuncCache keys before clear: %d" % func_cache_count)
+
+	MemoryPages = {}
+	AsmCache = {}
+	disAsmCache = {}
+	disasmFwCache = {}
+	OpcodeCache = {}
+	InstructionCache = {}
+	PageSections = {}
+	ModuleCache = {}
+	FuncCache = {}
 	currentPID = 0
 	currentTEBAddress = 0
 	cpebaddress = 0
@@ -4193,7 +4220,12 @@ class Debugger:
 		# go to correct location
 		cmd2run = "u 0x%08x L%d" % (address,depth+1)
 		try:
-			disasmlist = pykd.dbgCommand(cmd2run)
+			global disasmFwCache
+			if cmd2run in disasmFwCache:
+				disasmlist = disasmFwCache[cmd2run]
+			else:
+				disasmlist = pykd.dbgCommand(cmd2run)
+				disasmFwCache[cmd2run] = disasmlist
 			disasmLinesTmp = disasmlist.split("\n")
 			disasmLines = []
 			for line in disasmLinesTmp:

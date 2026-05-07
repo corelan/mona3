@@ -2631,8 +2631,8 @@ def _tellme_read_blob_hex(address, size, label="", chunk_size=0x1000):
 	return info
 
 
-def _tellme_get_module_executable_sections(module_obj):
-	sections = []
+def _tellme_get_module_return_windows(module_obj, max_windows=None, context_before=16):
+	windows = []
 	try:
 		try:
 			dbg.MemoryPages = {}
@@ -2640,7 +2640,11 @@ def _tellme_get_module_executable_sections(module_obj):
 			pass
 		allpages = dbg.getMemoryPages()
 		orderedpages = sorted(allpages.keys())
+		truncated = False
 		for thispage in orderedpages:
+			if max_windows is not None and len(windows) >= max_windows:
+				truncated = True
+				break
 			page = allpages[thispage]
 			pagestart = page.getBaseAddress()
 			pagesize = page.getSize()
@@ -2655,25 +2659,61 @@ def _tellme_get_module_executable_sections(module_obj):
 				sectionname = page.getSection().strip()
 			except:
 				sectionname = ""
-			entry = OrderedDict()
-			entry["name"] = sectionname or ("page_%s" % (PTR_PRINT % pagestart))
-			entry["absolute_start"] = PTR_PRINT % pagestart
-			entry["end"] = PTR_PRINT % pageend
-			entry["virtual_size"] = "0x%x" % pagesize
-			entry["raw_size"] = "0x%x" % pagesize
-			entry["page_acl"] = acl_text
-			entry["contents"] = _tellme_read_blob_hex(pagestart, pagesize, label="%s:%s" % (module_obj.moduleKey, entry["name"]))
-			sections.append(entry)
+			try:
+				raw_page = bytearray(dbg.readMemory(pagestart, pagesize))
+			except Exception as e:
+				mndbg.dbgp("tellme: unable to read executable page %s for %s: %s" % (
+					PTR_PRINT % pagestart,
+					module_obj.moduleKey,
+					str(e)
+				), errormode=False)
+				continue
+			for idx in xrange(0, len(raw_page)):
+				if max_windows is not None and len(windows) >= max_windows:
+					truncated = True
+					break
+				opcode = raw_page[idx]
+				seq_len = 0
+				return_type = ""
+				stack_adjust = None
+				if opcode == 0xC3:
+					seq_len = 1
+					return_type = "retn"
+				elif opcode == 0xC2 and (idx + 2) < len(raw_page):
+					stack_adjust = raw_page[idx + 1] | (raw_page[idx + 2] << 8)
+					if stack_adjust > 0x20:
+						continue
+					seq_len = 3
+					return_type = "retn_imm16"
+				if seq_len == 0:
+					continue
+				start_idx = max(0, idx - context_before)
+				sequence = raw_page[start_idx:idx + seq_len]
+				entry = OrderedDict()
+				entry["address"] = PTR_PRINT % (pagestart + start_idx)
+				entry["bytes"] = " ".join(["%02x" % b for b in sequence])
+				windows.append(entry)
+		if truncated:
+			windows.append(OrderedDict([
+				("truncated", True),
+				("reason", "return window list reached the module limit"),
+				("max_windows", max_windows)
+			]))
+		mndbg.dbgp("tellme: collected %d return-ending byte windows for %s" % (
+			len([w for w in windows if "address" in w]),
+			module_obj.moduleKey
+		))
 	except Exception as e:
-		mndbg.dbgp("tellme: unable to enumerate executable pages for %s: %s" % (
+		mndbg.dbgp("tellme: unable to enumerate return-ending windows for %s: %s" % (
 			module_obj.moduleKey,
 			str(e)
 		), errormode=False)
-	return sections
+	return windows
 
 
 def _tellme_get_module_iat_entries(module_obj):
 	entries = []
+	allowed_names = ["virtualalloc", "virtualprotect"]
 	try:
 		iat = module_obj.getIAT()
 	except Exception as e:
@@ -2684,9 +2724,13 @@ def _tellme_get_module_iat_entries(module_obj):
 		func_name = iat[iat_address]
 		if iat_address == 0 and func_name == "no_iat_found":
 			continue
+		func_name_text = _tellme_format_text(func_name, max_len=1024)
+		func_name_lower = func_name_text.lower()
+		if not any(name in func_name_lower for name in allowed_names):
+			continue
 		entry = OrderedDict()
 		entry["address"] = PTR_PRINT % iat_address
-		entry["function"] = _tellme_format_text(func_name, max_len=1024)
+		entry["function"] = func_name_text
 		try:
 			target = struct.unpack(PTR_FMT, dbg.readMemory(iat_address, PTR_SIZE))[0]
 			entry["target"] = PTR_PRINT % target
@@ -2751,7 +2795,7 @@ def _tellme_collect_rop_target_modules(args):
 		module_entry["nx"] = tmod.isNX
 		module_entry["os"] = tmod.isOS
 		module_entry["iat"] = _tellme_get_module_iat_entries(tmod)
-		module_entry["executable_sections"] = _tellme_get_module_executable_sections(tmod)
+		module_entry["return_windows"] = _tellme_get_module_return_windows(tmod)
 		selection["modules"].append(module_entry)
 
 	return selection
@@ -2824,11 +2868,12 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 			context["heap_details_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heap_details: %s" % str(e), errormode=False)
 
-	try:
-		context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
-	except Exception as e:
-		context["modules_error"] = str(e)
-		mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
+	if question_type != "3":
+		try:
+			context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
+		except Exception as e:
+			context["modules_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
 
 	if question_type == "1" and isinstance(pc, int) and pc > 0:
 		context["program_counter"] = PTR_PRINT % pc
@@ -3559,93 +3604,25 @@ If symbol information is missing or ambiguous, say so clearly and fall back to d
 Be specific, but do not invent facts that are not present in the snapshot."""
 	if question_type == "3":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+Focus on ROP primitive quality and feasibility.
+Use 'rop_target_modules' as the primary input and honor the supplied architecture and calling convention.
+Use 'return_windows' as compact gadget-ending candidates. Each entry ends in C3 or C2 <imm16> and provides:
+* address
+* bytes, including up to 16 bytes before the final RET bytes
+Disassemble backwards from the final RET bytes. Do not assume the supplied bytes are a complete gadget.
+Reject low-quality or implausible candidates. Be explicit about uncertainty.
+Analyze what gadgets are good fit for register control, memory access primitives, arithmetic / logical primitives and useful IAT exposure, especially VirtualAlloc and VirtualProtect
 
-Focus on analyzing the available control-flow manipulation primitives and gadget surface quality relevant to return-oriented programming (ROP), not on constructing a working exploit chain.
+Reason step-by-step about what state would be needed for the active architecture/calling convention, then pick gadgets that appear useful for each setup step, such as loading registers, placing values on the stack, pivoting, dereferencing pointers, or reaching imported APIs.
 
-The goal is defensive vulnerability research, exploitability assessment, and mitigation analysis.
+For useful example gadgets, show:
+* address
+* primitive category
+* which setup step the gadget helps satisfy
+* notable side effects / clobbers / stack adjustment if implied by the decoded gadget
+* whether it looks clean, fragile, or speculative
 
-Use the entries under the 'variables' object as the debugger context. The primary input for this profile is 'rop_target_modules'.
-
-Use the supplied 'architecture' object to determine:
-
-* pointer size
-* register naming conventions
-* stack growth behavior
-* calling convention expectations
-* instruction encoding assumptions
-* alignment expectations
-
-Do not hardcode x86/x64 assumptions outside the supplied architecture metadata.
-
-Treat executable section data as analysis input for identifying potential control-flow and state-manipulation primitives.
-
-The executable section blobs contain raw bytes from loaded executable memory regions. You may disassemble candidate instruction sequences directly from those bytes when searching for potential gadgets.
-
-When identifying gadgets:
-
-* only consider sequences that terminate with RETN or RETN <number>
-* clearly distinguish high-confidence decodes from speculative decodes
-* explain why the sequence may be useful
-* explain major side effects and clobbered registers
-* explain stack adjustment behavior
-* avoid presenting gadgets as part of an ordered exploit chain
-
-Treat every IAT entry in rop_target_modules.modules[*].iat as authoritative for imported API locations and imported helper availability.
-
-Analyze the supplied modules for:
-
-* stack pivot availability
-* register control coverage
-* memory access primitives
-* arithmetic and logical gadget diversity
-* indirect call/jump behavior
-* imported API exposure through the IAT
-* availability of clean RET-terminated sequences
-* gadget density and gadget reliability
-* constraints introduced by badchars, alignment, architecture, or module selection
-
-If imported APIs such as VirtualProtect or VirtualAlloc are present:
-
-* explain at a conceptual level what architectural state would normally be required before such an API invocation
-* discuss which categories of primitives would typically help prepare that state
-* discuss calling convention implications based on the supplied architecture
-* do not construct a working invocation sequence or operational exploit chain
-
-You may provide isolated example gadgets decoded from the supplied executable byte sequences when:
-
-* the gadget is discussed individually
-* the gadget is not presented as part of a complete chain
-* the explanation remains analytical rather than procedural
-
-For each example gadget:
-
-* show the decoded instruction sequence
-* show the originating module and virtual address
-* explain the primitive category
-* explain notable side effects
-* explain whether the gadget appears clean, fragile, or low quality
-
-Do not provide:
-
-* executable exploit chains
-* ordered gadget sequences intended for execution
-* final pre-call register layouts
-* operational DEP bypass procedures
-* shellcode staging steps
-* complete end-to-end exploit strategies
-
-You may describe feasibility abstractly, such as:
-
-* whether stack-pointer control appears feasible
-* whether calling-convention preparation constraints appear manageable
-* whether writable memory targets appear reachable
-* whether gadget diversity appears sufficient for complex control-flow manipulation
-
-If a byte sequence may represent a useful gadget but decoding confidence is low, state the uncertainty explicitly.
-
-Keep the answer practical, concise, architecture-aware, and evidence-based. Focus on feasibility assessment, primitive classification, gadget quality, and architectural implications rather than operational exploit construction.
-
-"""
+Keep the answer concise, evidence-based, architecture-aware, and non-operational."""
 	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_instructions() to add more profiles." % question_type)
 
 
@@ -3704,7 +3681,6 @@ def _tellme_get_profile_template_variables(question_type):
 			"debugger",
 			"debugger_flavor",
 			"processname",
-			"modules",
 			"architecture",
 			"pointer_size",
 			"timestamp",
