@@ -30649,8 +30649,9 @@ def procDumpLog(args):
 			curnr += 1
 			flipcnt += 1		
 			interruptMona()
+		dbg.log("[+] Done. Check %s for output" % thislog)
 	except:
-		dbg.log(" *** Unable to open logfile %s ***" % logfile,highlight=1)
+		dbg.log(" *** Unable to open logfile %s ***" % thislog,highlight=1)
 		dbg.log(traceback.format_exc())
 		return
 
