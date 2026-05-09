@@ -1184,6 +1184,22 @@ def _getCallStack(command="kb", max_lines=50):
 	return result
 
 
+def _getWindbgAnalyze(command="!analyze -v", max_lines=0):
+	result = OrderedDict()
+	result["command"] = command
+	try:
+		output = ensure_text(dbg.nativeCommand(command)).strip()
+		if isinstance(max_lines, int) and max_lines > 0:
+			lines = output.splitlines()
+			if len(lines) > max_lines:
+				output = "\n".join(lines[:max_lines])
+		result["output"] = _formatContextText(output, max_len=32768)
+	except Exception as e:
+		result["error"] = str(e)
+		mndbg.dbgp("tellme: !analyze output lookup failed using '%s': %s" % (command, str(e)), errormode=False)
+	return result
+
+
 def _getHeapChunkMetadata(address):
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
@@ -2904,6 +2920,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		if arch == 32:
 			context["seh_chain"] = _getSehChainSummary()
 		context["call_stack"] = _getCallStack("kb", max_lines=20)
+		context["windbg_analyze"] = _getWindbgAnalyze("!analyze -v")
 	if additional_context_files is None:
 		additional_context_files = []
 	if len(additional_context_files) > 0:
@@ -3538,6 +3555,7 @@ def _buildRequestVariables(context):
 		"seh_chain",
 		"findmsp",
 		"call_stack",
+		"windbg_analyze",
 		"instruction_heap_references",
 		"heap_details",
 		"heapdynamics",
@@ -3581,6 +3599,7 @@ Optimize token usage. Be detailed and accurate, but do not repeat debugger outpu
 Prefer concise synthesis over transcription. Cite only the specific registers, instructions, stack entries, chunks, offsets, or log lines that materially support your conclusion.
 Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
 Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
+Use windbg_analyze if present as additional crash-triage evidence, but treat it as heuristic debugger output that must be validated against the raw registers, disassembly, stack, and memory context.
 If a seh_chain entry is present, also inspect the Structured Exception Handling chain, explain whether it looks intact or corrupted, and connect that to the crash analysis.
 If a cyclic pattern appears anywhere in registers, stack, or nearby memory, point it out and explain why it looks like a cyclic pattern. If you can only infer it probabilistically, say so clearly.
 Use findmsp if present to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, and stack pointers into the cyclic pattern.
@@ -3651,6 +3670,7 @@ def _getProfileTemplateVariables(question_type):
 		"seh_chain",
 		"findmsp",
 		"call_stack",
+		"windbg_analyze",
 		"heap_details",
 		"heapdynamics",
 		"heapdynamics_mini",
@@ -25048,7 +25068,7 @@ class MnAI(object):
 			return True
 		default_template_path = _ensureDefaultTemplate(self.question_type, self.mona_config)
 		if default_template_path != "":
-			self.logInfo("Template available at %s (not used unless you run -q 9 -f %s)" % (
+			self.logInfo("Template created at %s (won't be used unless you run -q 9 -f %s)" % (
 				default_template_path,
 				default_template_path
 			))
@@ -33846,6 +33866,7 @@ Official model docs:
 	    [stack_memory]             = raw bytes near the current stack pointer
 	    [modules]                  = loaded module summary
 	    [call_stack]               = WinDBG call stack output
+	    [windbg_analyze]           = output of !analyze -v
 	    [findmsp]                  = cyclic-pattern analysis results
 	    [seh_chain]                = 32-bit SEH chain summary
 	    [instruction_heap_references] = heap and pointer context related to the current instruction
