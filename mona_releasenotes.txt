@@ -1,3 +1,23 @@
+[mona 3.0.3017]
+- Update revision (mona: 3017, windbglib: 3007)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/c762077">c762077</link> reduce request tokens, add submit flag, request confirmation before submitting
+  - <link cmd="https://github.com/corelan/mona3/commit/5e5b6c4">5e5b6c4</link> update tellmeUsage
+  - <link cmd="https://github.com/corelan/mona3/commit/e06e18a">e06e18a</link> refactor AI code
+  - <link cmd="https://github.com/corelan/mona3/commit/b558616">b558616</link> print filename at the end of dumplog
+  - <link cmd="https://github.com/corelan/mona3/commit/eaedd4b">eaedd4b</link> q3 improvements
+  - <link cmd="https://github.com/corelan/mona3/commit/7f85a9b">7f85a9b</link> updates to tellme
+  - <link cmd="https://github.com/corelan/mona3/commit/545a2fb">545a2fb</link> switch to offline instead of dryrun
+  - <link cmd="https://github.com/corelan/mona3/commit/ac40910">ac40910</link> Update mona.py
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/db18bb3">db18bb3</link> Update revision (mona: 3016)
+
+[windbglib 3.0.3007]
+- Update revision (mona: 3017, windbglib: 3007)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/83a9d30">83a9d30</link> add caching and statistics
+  - <link cmd="https://github.com/corelan/mona3/commit/eaedd4b">eaedd4b</link> q3 improvements
+
 [mona 3.0.3016]
 - Update revision (mona: 3016)
 corelanc0d3r:
@@ -145,13 +165,6 @@ github-actions[bot]:
 [windbglib 3.0.3005]
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
-
-[mona 3.0.3006]
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/c8097a1">c8097a1</link> fix output formatting bug in findmsp
-  - <link cmd="https://github.com/corelan/mona3/commit/9df60ee">9df60ee</link> compatibility with python 3.14.4
-  - <link cmd="https://github.com/corelan/mona3/commit/4b3ade3">4b3ade3</link> typo
-  - <link cmd="https://github.com/corelan/mona3/commit/64cb058">64cb058</link> print "all done"
 
 [windbglib 3.0.3004]
 - No file-specific commits found.
