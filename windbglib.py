@@ -71,6 +71,9 @@ global NativeCommandCache
 global disasmFwCache
 global disasmFwCacheRequests
 global disasmFwCacheHits
+global UnreadableMemoryProbeCache
+global UnreadableMemoryProbeCacheRequests
+global UnreadableMemoryProbeCacheHits
 
 global currentPID
 global currentTEBAddress
@@ -100,6 +103,9 @@ disasmFwCacheHits = 0
 OpcodeCache = {}
 InstructionCache = {}
 NativeCommandCache = {}
+UnreadableMemoryProbeCache = {}
+UnreadableMemoryProbeCacheRequests = 0
+UnreadableMemoryProbeCacheHits = 0
 
 Registers32BitsOrder = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"]
 Registers64BitsOrder = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
@@ -591,6 +597,9 @@ def clearvars():
 	global PageSections
 	global ModuleCache
 	global FuncCache
+	global UnreadableMemoryProbeCache
+	global UnreadableMemoryProbeCacheRequests
+	global UnreadableMemoryProbeCacheHits
 	global currentPID
 	global currentTEBAddress
 	global cpebaddress
@@ -606,6 +615,9 @@ def clearvars():
 	PageSections = _get_global("PageSections", {})
 	ModuleCache = _get_global("ModuleCache", {})
 	FuncCache = _get_global("FuncCache", {})
+	UnreadableMemoryProbeCache = _get_global("UnreadableMemoryProbeCache", {})
+	UnreadableMemoryProbeCacheRequests = _get_global("UnreadableMemoryProbeCacheRequests", 0)
+	UnreadableMemoryProbeCacheHits = _get_global("UnreadableMemoryProbeCacheHits", 0)
 
 	memory_pages_count = len(MemoryPages) if isinstance(MemoryPages, dict) else 0
 	asm_cache_count = len(AsmCache) if isinstance(AsmCache, dict) else 0
@@ -619,6 +631,10 @@ def clearvars():
 	page_sections_count = len(PageSections) if isinstance(PageSections, dict) else 0
 	module_cache_count = len(ModuleCache) if isinstance(ModuleCache, dict) else 0
 	func_cache_count = len(FuncCache) if isinstance(FuncCache, dict) else 0
+	unreadable_probe_cache_count = len(UnreadableMemoryProbeCache) if isinstance(UnreadableMemoryProbeCache, dict) else 0
+	unreadable_probe_cache_requests = UnreadableMemoryProbeCacheRequests if isinstance(UnreadableMemoryProbeCacheRequests, int) else 0
+	unreadable_probe_cache_hits = UnreadableMemoryProbeCacheHits if isinstance(UnreadableMemoryProbeCacheHits, int) else 0
+	unreadable_probe_cache_pct = (float(unreadable_probe_cache_hits) / float(unreadable_probe_cache_requests) * 100.0) if unreadable_probe_cache_requests else 0.0
 
 	dbgp("clearvars: MemoryPages keys before clear: %d" % memory_pages_count)
 	dbgp("clearvars: AsmCache keys before clear: %d" % asm_cache_count)
@@ -630,6 +646,12 @@ def clearvars():
 	dbgp("clearvars: PageSections keys before clear: %d" % page_sections_count)
 	dbgp("clearvars: ModuleCache keys before clear: %d" % module_cache_count)
 	dbgp("clearvars: FuncCache keys before clear: %d" % func_cache_count)
+	dbgp("clearvars: UnreadableMemoryProbeCache keys before clear: %d" % unreadable_probe_cache_count)
+	dbgp("clearvars: UnreadableMemoryProbeCache hits: %d / %d (%.2f%%)" % (
+		unreadable_probe_cache_hits,
+		unreadable_probe_cache_requests,
+		unreadable_probe_cache_pct
+	))
 
 	MemoryPages = {}
 	AsmCache = {}
@@ -642,10 +664,67 @@ def clearvars():
 	PageSections = {}
 	ModuleCache = {}
 	FuncCache = {}
+	UnreadableMemoryProbeCache = {}
+	UnreadableMemoryProbeCacheRequests = 0
+	UnreadableMemoryProbeCacheHits = 0
 	currentPID = 0
 	currentTEBAddress = 0
 	cpebaddress = 0
 	return
+
+
+def clearUnreadableMemoryProbeCache():
+	dbgp(get_current_function_name())
+	global UnreadableMemoryProbeCache
+	UnreadableMemoryProbeCache = {}
+	return
+
+
+def _getUnreadableMemoryProbeCacheKey(address, fallback_size=0x1000):
+	dbgp(get_current_function_name())
+	global MemoryPages
+	try:
+		address = int(address)
+	except Exception:
+		return None
+
+	if isinstance(MemoryPages, dict):
+		for pagestart in MemoryPages:
+			try:
+				thispage = MemoryPages[pagestart]
+				if thispage.begin <= address < thispage.end:
+					return (int(thispage.begin), int(thispage.size))
+			except Exception:
+				continue
+
+	page_base = address & ~0xfff
+	page_size = fallback_size if isinstance(fallback_size, int) and fallback_size > 0 else 0x1000
+	return (int(page_base), int(page_size))
+
+
+def isUnreadableMemoryProbeCached(address, fallback_size=0x1000):
+	dbgp(get_current_function_name())
+	global UnreadableMemoryProbeCache
+	global UnreadableMemoryProbeCacheRequests
+	global UnreadableMemoryProbeCacheHits
+	cache_key = _getUnreadableMemoryProbeCacheKey(address, fallback_size=fallback_size)
+	if cache_key is None:
+		return False
+	UnreadableMemoryProbeCacheRequests += 1
+	if cache_key in UnreadableMemoryProbeCache:
+		UnreadableMemoryProbeCacheHits += 1
+		return True
+	return False
+
+
+def markUnreadableMemoryProbeCached(address, fallback_size=0x1000):
+	dbgp(get_current_function_name())
+	global UnreadableMemoryProbeCache
+	cache_key = _getUnreadableMemoryProbeCacheKey(address, fallback_size=fallback_size)
+	if cache_key is None:
+		return None
+	UnreadableMemoryProbeCache[cache_key] = True
+	return cache_key
 
 
 def getTEBInfo():
@@ -665,6 +744,7 @@ def getTEBAddress():
 		# Context switched to another thread/process; drop dependent caches.
 		currentPID = 0
 		cpebaddress = 0
+		clearUnreadableMemoryProbeCache()
 	return currentTEBAddress
 
 
@@ -998,6 +1078,7 @@ class Debugger:
 			# Invalidate cached page map so subsequent page queries reflect
 			# the new allocation immediately.
 			self.MemoryPages = {}
+			clearUnreadableMemoryProbeCache()
 			return int(vaddr)
 		return 0
 
@@ -1034,6 +1115,7 @@ class Debugger:
 		if returnval:
 			# Invalidate cached page map so ACL changes are visible right away.
 			self.MemoryPages = {}
+			clearUnreadableMemoryProbeCache()
 		return returnval
 
 
@@ -4944,8 +5026,17 @@ class wpage():
 
 	def getMemory(self):
 		if self.getAccess() > 0x1:
+			if isUnreadableMemoryProbeCached(self.begin, fallback_size=self.size):
+				dbgp("")
+				dbgp("wpage.getMemory: unreadable page cache hit for %s-%s (size 0x%x)" % (
+					PTR_PRINT % self.begin,
+					PTR_PRINT % self.end,
+					self.size
+				), errormode=False)
+				return None
 			try:
-				dbgp("wpage.getMemory: trying direct read for page %s-%s (size 0x%x)" % (PTR_PRINT % self.begin, PTR_PRINT % self.end, self.size))
+				dbgp("")
+				dbgp("wpage.getMemory: trying direct read for page %s-%s (size 0x%x, access 0x%x)" % (PTR_PRINT % self.begin, PTR_PRINT % self.end, self.size, self.getAccess()))
 				#data =  pykd.loadChars(self.begin,self.size)
 				data = bytes(bytearray(pykd.loadBytes(self.begin, self.size)))
 				return data
@@ -4987,6 +5078,11 @@ class wpage():
 
 				def _windbg_db_has_real_bytes(addr, length):
 					"""Return True if `db` shows at least one concrete byte; False for all ??; None if inconclusive."""
+					if isUnreadableMemoryProbeCached(addr, fallback_size=length):
+						dbgp("wpage.getMemory: unreadable db probe cache hit at %s len=0x%x" % (
+							PTR_PRINT % addr, length
+						), errormode=False)
+						return False
 					try:
 						out = pykd.dbgCommand("db 0x%x L0x%x" % (addr, length))
 					except Exception:
@@ -4996,6 +5092,7 @@ class wpage():
 						return None
 					# If all visible bytes are ??, there is nothing useful to read.
 					if all(t is None for t in tokens):
+						markUnreadableMemoryProbeCached(addr, fallback_size=length)
 						return False
 					return True
 
@@ -5046,6 +5143,7 @@ class wpage():
 
 						db_probe = _windbg_db_has_real_bytes(addr, this_len)
 						if db_probe is False:
+							markUnreadableMemoryProbeCached(self.begin, fallback_size=self.size)
 							dbgp("wpage.getMemory: db shows only ?? at %s len=0x%x; giving up page %s-%s" %
 								 (PTR_PRINT % addr, this_len, PTR_PRINT % self.begin, PTR_PRINT % self.end), errormode=False)
 							return None
