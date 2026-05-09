@@ -584,12 +584,12 @@ Examples using `mona` config:
 ```python
 !mona config -set mona.ai.engine openai
 !mona config -set openai.key <your OpenAI API key>
-!mona config -set openai.model gpt-5.4
+!mona config -set openai.model gpt-5-mini
 !mona config -set openai.timeout 60
 !mona config -set openai.max_tokens 4096
 !mona config -set mona.ai.engine anthropic
 !mona config -set anthropic.key <your Anthropic API key>
-!mona config -set anthropic.model claude-opus-4-7
+!mona config -set anthropic.model claude-sonnet-4-6
 !mona config -set anthropic.timeout 60
 !mona config -set anthropic.max_tokens 4096
 ```
@@ -599,16 +599,18 @@ Examples using environment variables:
 ```batch
 set MONA_AI_ENGINE=openai
 set OPENAI_API_KEY=<your OpenAI API key>
-set OPENAI_MODEL=gpt-5.4
+set OPENAI_MODEL=gpt-5-mini
 set OPENAI_TIMEOUT=60
 set OPENAI_MAX_TOKENS=4096
 set ANTHROPIC_API_KEY=<your Anthropic API key>
-set ANTHROPIC_MODEL=claude-opus-4-7
+set ANTHROPIC_MODEL=claude-sonnet-4-6
 set ANTHROPIC_TIMEOUT=60
 set ANTHROPIC_MAX_TOKENS=4096
 ```
 
 If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model or timeout for a single request with `-model` and `-timeout`.
+
+When `tellme` is using a live provider, it first queries that provider's models API and checks whether the configured model is available to the current API key. If you run `tellme` without `-q` while a provider engine is configured, `mona` will print the available model IDs it can see for that API key instead of submitting a request.
 
 ## Manual request flow
 
@@ -624,16 +626,25 @@ If you just want the analysis and do not care about direct API integration, `-of
 
 That gives you a ready-to-submit request file while avoiding SDK installation, API keys, billing setup, or provider-specific runtime issues inside the debugger host.
 
-## Direct API usage and cyber-program verification
+## Direct API usage
 
-If you want `mona` to call the providers directly through their APIs, you should strongly consider completing the providers' cyber-safety / cyber-access verification flows first.
+If you want `mona` to call the providers directly through their APIs, make sure your account can access the provider and model you configured.
 
 These are the same links referenced in the `mona.py` source:
 
-* OpenAI: https://chatgpt.com/cyber
 * Anthropic: https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude
 
 Depending on the provider account, model, and risk controls, verification may be required before you can reliably use exploit-development or crash-triage prompts through the API.
+
+Recent model examples at the time of writing:
+
+* OpenAI: `gpt-5.5`, `gpt-5.1`, `gpt-5-mini`, `gpt-5-nano`
+* Anthropic: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+
+Official model docs:
+
+* OpenAI: https://developers.openai.com/api/docs/models
+* Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
 ## Usage
 
@@ -651,6 +662,7 @@ Basic examples:
 !mona tellme -e anthropic -q 2
 !mona tellme -e openai -q 2 -a kernel32!CreateFileW
 !mona tellme -e openai -q 1 -timeout 120
+!mona tellme -e openai -q 1 -submit
 !mona tellme -e openai -q 1 -offline
 ```
 
@@ -669,8 +681,12 @@ Useful options:
   override the configured model for one request
 * `-timeout <seconds>`:
   override the configured timeout for one request
+* `-submit`:
+  skip the confirmation prompt and submit the AI request immediately
 * `-offline`:
   build and save the request without calling the API
+
+If you omit `-q` while a provider-backed engine is selected, `tellme` will list the available models for that API key.
 
 How to choose a mode:
 
@@ -678,6 +694,7 @@ How to choose a mode:
 * Use `!mona tellme -q 2` when execution is at a useful code location and you want help understanding the current function.
 * Use `-a` with `-q 2` when the current instruction pointer is no longer trustworthy and you want to analyze a known-good symbol or address instead.
 * Use `-offline` when you want to manually submit the generated request to a browser-based AI session.
+* For direct API use, `tellme` asks for confirmation before sending the request unless you pass `-submit`.
 
 Template usage:
 

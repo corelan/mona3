@@ -38,6 +38,7 @@ __VERSION__ = '3.0'
 __REV__ = 3016
 
 DEBUG_MODE = False
+_AI_MODEL_LIST_CACHE = {}
 
 
 ## Some Python2/Python3 compatibility stuff
@@ -1068,7 +1069,13 @@ def _collectHeapDetails():
 		except Exception:
 			pass
 
+		heap_entry["segment_count"] = len(sortedsegments)
 		heap_entry["segments"] = []
+		heap_entry["total_chunk_count"] = 0
+		heap_entry["busy_chunk_count"] = 0
+		heap_entry["free_chunk_count"] = 0
+		heap_entry["largest_chunk_size"] = "0x0"
+		largest_chunk_size = 0
 		for seg in sortedsegments:
 			segstart = segments[seg][0]
 			segend = segments[seg][1]
@@ -1081,7 +1088,11 @@ def _collectHeapDetails():
 			seg_entry["first_entry"] = PTR_PRINT % FirstEntry
 			seg_entry["last_valid_entry"] = PTR_PRINT % LastValidEntry
 			seg_entry["size"] = "0x%x" % (segend - segstart)
-			seg_entry["chunks"] = []
+			seg_entry["chunk_count"] = 0
+			seg_entry["busy_chunk_count"] = 0
+			seg_entry["free_chunk_count"] = 0
+			seg_entry["largest_chunk_size"] = "0x0"
+			seg_largest_chunk_size = 0
 
 			seg_obj = seg_by_fe.get(FirstEntry)
 			if seg_obj is not None:
@@ -1096,32 +1107,28 @@ def _collectHeapDetails():
 
 			for block in sortedblocks:
 				thischunk = datablocks[block]
-				unused = thischunk.unused
-				headersize = thischunk.headersize
 				flagtxt = getHeapFlag(thischunk.flag)
-				if "virtallocd" in flagtxt.lower():
-					flagtxt += " (LFH)"
-					flagtxt = flagtxt.replace("Virtallocd", "Internal")
-				userptr = thischunk.userptr
-				psize = thischunk.prevsize * HEAPGRANULARITY
 				blocksize = thischunk.size * HEAPGRANULARITY
-				usersize = thischunk.usersize
-
-				chunk_entry = OrderedDict()
-				chunk_entry["chunk_ptr"] = PTR_PRINT % block
-				chunk_entry["prev_size"] = "0x%x" % psize
-				chunk_entry["size"] = "0x%x" % blocksize
-				chunk_entry["unused"] = "0x%x" % unused
-				chunk_entry["user_ptr"] = PTR_PRINT % userptr
-				chunk_entry["user_size"] = "0x%x" % usersize
-				chunk_entry["state"] = flagtxt
-				chunk_entry["first_16_bytes"] = _readFirstBytesPreview(userptr, 0x10, "heap_details_chunk")
-				seg_entry["chunks"].append(chunk_entry)
+				seg_entry["chunk_count"] += 1
+				heap_entry["total_chunk_count"] += 1
+				if "free" in flagtxt.lower():
+					seg_entry["free_chunk_count"] += 1
+					heap_entry["free_chunk_count"] += 1
+				else:
+					seg_entry["busy_chunk_count"] += 1
+					heap_entry["busy_chunk_count"] += 1
+				if blocksize > seg_largest_chunk_size:
+					seg_largest_chunk_size = blocksize
+					seg_entry["largest_chunk_size"] = "0x%x" % blocksize
+				if blocksize > largest_chunk_size:
+					largest_chunk_size = blocksize
+					heap_entry["largest_chunk_size"] = "0x%x" % blocksize
 
 			heap_entry["segments"].append(seg_entry)
 
 		vachunks = mHeap.getVirtualAllocdBlocks()
 		heap_entry["vadblocks"] = []
+		heap_entry["vadblock_count"] = 0
 		sorted_va_blocks = []
 		for block in vachunks:
 			sorted_va_blocks.append(block)
@@ -1135,8 +1142,8 @@ def _collectHeapDetails():
 			vad_entry["commit_size"] = "0x%x" % vainfo["commit_size"]
 			vad_entry["reserve_size"] = "0x%x" % vainfo["reserve_size"]
 			vad_entry["state"] = "VirtualAllocd"
-			vad_entry["first_16_bytes"] = _readFirstBytesPreview(block, 0x10, "heap_details_vadblock")
 			heap_entry["vadblocks"].append(vad_entry)
+			heap_entry["vadblock_count"] += 1
 
 		result["heaps"].append(heap_entry)
 
@@ -1493,17 +1500,13 @@ def _getInstructionWindow(address, depth_before=10, depth_after=10):
 		mndbg.dbgp("tellme: backward disasm failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 
 	try:
-		curr = address
-		for _ in range(depth_after):
-			next_addr = dbg.disasmForwardAddressOnly(curr, 1)
-			if next_addr == curr:
-				break
-			op = dbg.disasm(next_addr)
-			result["after"].append({
-				"address": PTR_PRINT % next_addr,
-				"instruction": _formatContextText(getDisasmInstruction(op))
-			})
-			curr = next_addr
+		next_addr = dbg.disasmForwardAddressOnly(address, 1)
+		if next_addr != address:
+			output = ensure_text(dbg.nativeCommand("u 0x%x L%d" % (next_addr, depth_after))).strip()
+			for line in output.splitlines():
+				line = line.rstrip()
+				if line != "":
+					result["after"].append(line)
 	except Exception as e:
 		result["after_error"] = str(e)
 		mndbg.dbgp("tellme: forward disasm failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
@@ -2348,7 +2351,8 @@ def _collectInstructionHeapContext(regs, pc, extra_references=None):
 			continue
 		seen_references.add(dedup_key)
 		entry = _buildHeapReferenceEntry(ref_name, reg_value, ref_source, instruction_text, layout_regions)
-		info["references"].append(entry)
+		if entry.get("match", "none") != "none":
+			info["references"].append(entry)
 		if entry.get("match", "none") in ["Chunk", "VADBlock"] and ref_name not in info["matching_registers"]:
 			info["matching_registers"].append(ref_name)
 			exact_match_count += 1
@@ -2870,7 +2874,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 
 	if question_type != "3":
 		try:
-			context["modules"] = _formatContextText(_renderModulesText(), max_len=65535)
+			context["modules"] = _formatContextText(_renderModulesText(focus_addresses=[pc], max_modules=0), max_len=65535)
 		except Exception as e:
 			context["modules_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
@@ -2899,7 +2903,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		context["ntglobal_flag"] = _getNtGlobalFlagSummary()
 		if arch == 32:
 			context["seh_chain"] = _getSehChainSummary()
-		context["call_stack"] = _getCallStack("kb")
+		context["call_stack"] = _getCallStack("kb", max_lines=20)
 	if additional_context_files is None:
 		additional_context_files = []
 	if len(additional_context_files) > 0:
@@ -2958,9 +2962,9 @@ def getAIModelAndKey(engine, mona_config):
 
 def getDefaultAIModel(engine):
 	if engine == "openai":
-		return "gpt-5.4"
+		return "gpt-5-mini"
 	if engine == "anthropic":
-		return "claude-opus-4-7"
+		return "claude-sonnet-4-6"
 	return ""
 
 
@@ -3055,7 +3059,7 @@ def getAIMaxTokens(engine, mona_config):
 
 def getAITestModel(engine):
 	if engine == "openai":
-		return "gpt-5.4-nano"
+		return "gpt-5-nano"
 	if engine == "anthropic":
 		return "claude-haiku-4-5"
 	return ""
@@ -3142,6 +3146,9 @@ def _logOpenAIError(err):
 	elif err_cls == "BadRequestError" or status_code in [400, 404, 413, 422] or "invalid_request" in err_marker or "bad request" in err_marker:
 		dbg.log("[!] OpenAI request failed: invalid request", highlight=1)
 		dbg.log("    The model name, prompt, or request parameters were rejected by the API.", highlight=1)
+		if error_code == "model_not_found" or "does not exist" in err_marker or "model_not_found" in err_marker:
+			dbg.log("    The selected model ID is not available to this API account or is not a valid public model name.", highlight=1)
+			dbg.log("    Try a documented model such as gpt-5.5, gpt-5.1, gpt-5-mini, or gpt-5-nano.", highlight=1)
 	elif err_cls == "APIConnectionError" or "connection" in err_marker or "unable to reach openai api" in err_marker or "urlerror" in err_marker:
 		dbg.log("[!] OpenAI request failed: connection error", highlight=1)
 		dbg.log("    Check internet access, proxy/firewall settings, and whether the API endpoint is reachable.", highlight=1)
@@ -3305,7 +3312,7 @@ def _renderLayoutCategoriesText(categories, include_chunks=True):
 	return "\n".join(lines)
 
 
-def _renderModulesText():
+def _renderModulesText(focus_addresses=None, max_modules=25):
 	lines = []
 	try:
 		if mnproc is None:
@@ -3313,18 +3320,14 @@ def _renderModulesText():
 		items = sorted(mnproc.getPEB().getModules().items(), key=lambda x: x[1].moduleBase)
 		for _, mod in items:
 			lines.append(
-				"%s | base=%s | end=%s | size=0x%x | rebase=%s | aslr=%s | safeseh=%s | cfg=%s | osdll=%s | version=%s | path=%s" % (
+				"%s | base=%s | top=%s | rebase=%s | aslr=%s | safeseh=%s | cfg=%s" % (
 					mod.moduleFilename or mod.moduleKey,
 					PTR_PRINT % mod.moduleBase,
 					PTR_PRINT % mod.moduleTop,
-					mod.moduleSize,
 					str(mod.isRebase),
 					str(mod.isAslr),
 					str(mod.isSafeSEH),
-					str(mod.isCFG),
-					str(mod.isOS),
-					str(mod.moduleVersion),
-					str(mod.modulePath)
+					str(mod.isCFG)
 				)
 			)
 	except Exception as e:
@@ -3909,6 +3912,188 @@ class AIProviderError(Exception):
 		self.type = error_type
 
 
+def _extractModelIdsFromListPayload(payload):
+	model_ids = []
+	data_items = []
+	if isinstance(payload, dict):
+		data_items = payload.get("data", [])
+	elif isinstance(payload, list):
+		data_items = payload
+	for item in data_items:
+		model_id = ""
+		if isinstance(item, dict):
+			model_id = ensure_text(item.get("id", "")).strip()
+		else:
+			try:
+				model_id = ensure_text(getattr(item, "id", "")).strip()
+			except Exception:
+				model_id = ""
+		if model_id != "" and model_id not in model_ids:
+			model_ids.append(model_id)
+	model_ids.sort(key=lambda x: x.lower())
+	return model_ids
+
+
+def _fetchOpenAIModelsDirect(api_key, timeout_seconds=20.0):
+	request = urllib_Request(
+		"https://api.openai.com/v1/models",
+		headers={
+			"authorization": "Bearer %s" % api_key,
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("request-id", "") or e.headers.get("x-request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		error_param = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+			error_param = ensure_text(error_obj.get("param", ""))
+		if error_message == "":
+			error_message = "OpenAI model list HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			param=error_param,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach OpenAI models API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"OpenAI model list setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	return _extractModelIdsFromListPayload(response_data)
+
+
+def _fetchAnthropicModelsDirect(api_key, timeout_seconds=20.0):
+	request = urllib_Request(
+		"https://api.anthropic.com/v1/models?limit=1000",
+		headers={
+			"x-api-key": api_key,
+			"anthropic-version": "2023-06-01",
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("request-id", "") or e.headers.get("x-request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+		if error_message == "":
+			error_message = "Anthropic model list HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach Anthropic models API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"Anthropic model list setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	return _extractModelIdsFromListPayload(response_data)
+
+
+def getAvailableAIModels(engine, api_key, timeout_seconds=20.0, refresh=False):
+	cache_key = (engine, api_key)
+	if not refresh and cache_key in _AI_MODEL_LIST_CACHE:
+		return list(_AI_MODEL_LIST_CACHE[cache_key])
+	if engine == "openai":
+		model_ids = _fetchOpenAIModelsDirect(api_key, timeout_seconds=timeout_seconds)
+	elif engine == "anthropic":
+		model_ids = _fetchAnthropicModelsDirect(api_key, timeout_seconds=timeout_seconds)
+	else:
+		model_ids = []
+	_AI_MODEL_LIST_CACHE[cache_key] = list(model_ids)
+	return list(model_ids)
+
+
 def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0):
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
@@ -4289,6 +4474,60 @@ def ensure_text(s, encoding='latin-1'):
 	if isinstance(s, str):
 		return s
 	return s.decode(encoding)	
+
+
+def askForConfirmation(displaytext="",default="N"):
+	"""
+	Ask the user to confirm whether execution should proceed.
+
+	Optional arguments:
+	displaytext - prompt text to display
+	default     - default answer ('Y' or 'N'), defaults to 'N'
+	"""
+	default_answer = str(default).strip().upper()
+	if default_answer not in ["Y", "N"]:
+		default_answer = "N"
+
+	prompt_text = str(displaytext).strip()
+	if prompt_text == "":
+		prompt_text = "[?] Do you want to proceed?"
+
+	prompt_suffix = " [y/N] "
+	if default_answer == "Y":
+		prompt_suffix = " [Y/n] "
+	full_prompt = prompt_text + prompt_suffix
+
+	while True:
+		user_input = ""
+		try:
+			if hasattr(dbg, "inputBox"):
+				user_input = dbg.inputBox(full_prompt)
+			else:
+				try:
+					user_input = raw_input(full_prompt)
+				except NameError:
+					user_input = input(full_prompt)
+		except EOFError:
+			user_input = ""
+		except KeyboardInterrupt:
+			dbg.log("[!] Confirmation interrupted by user", highlight=1)
+			return False
+		except Exception as e:
+			_ai_dbgp("confirmation prompt failed: %s" % str(e), errormode=False)
+			user_input = ""
+
+		if user_input is None:
+			user_input = ""
+		answer = str(user_input).strip()
+		if answer == "":
+			answer = default_answer
+		answer = answer.upper()
+
+		if answer in ["Y", "YES"]:
+			return True
+		if answer in ["N", "NO"]:
+			return False
+		dbg.log("[!] Please answer Y or N", highlight=1)
 
 
 def toHex(n):
@@ -24541,7 +24780,9 @@ class MnAI(object):
 		self.engine = "offline"
 		self.engine_source = "default"
 		self.offline = False
+		self.submit_requested = ("submit" in self.args)
 		self.testmode = ("test" in self.args)
+		self.question_profile_missing = False
 		self.model = getDefaultAIModel("openai")
 		self.timeout_seconds = 60.0
 		self.timeout_source = "default"
@@ -24565,6 +24806,7 @@ class MnAI(object):
 		self.request_logfile_path = ""
 		self.response_logfile_path = ""
 		self.offline_logfile_path = ""
+		self.available_model_ids = []
 
 	def logInfo(self, message):
 		"""Write a top-level informational message using the standard AI output prefix."""
@@ -24643,10 +24885,6 @@ class MnAI(object):
 			))
 		elif self.engine_source == "default":
 			self.logInfo("No default AI engine is configured. Defaulting to offline mode.")
-			self.logInfoDetail("Set %s, set %s, use -e, or keep using -offline/manual requests." % (
-				getDefaultAIEngineConfigName(),
-				getDefaultAIEngineEnvName()
-			))
 		self.logInfo("Selected engine: %s" % self.engine)
 
 		if self.engine not in self.available_engines:
@@ -24669,6 +24907,7 @@ class MnAI(object):
 	def parseQuestionProfile(self):
 		"""Validate the requested question profile and store the effective question type."""
 		if "q" not in self.args:
+			self.question_profile_missing = True
 			self.logError("Please select a question profile with -q")
 			dbg.log("")
 			self.logInfo("Available questions:")
@@ -24677,6 +24916,7 @@ class MnAI(object):
 			self.logInfoDetail("-q 9 : use a request template from -f <file>")
 			return False
 		if type(self.args["q"]).__name__.lower() == "bool":
+			self.question_profile_missing = True
 			self.logError("Please specify a question profile with -q <1|2|9>")
 			return False
 
@@ -24684,6 +24924,69 @@ class MnAI(object):
 		self.effective_question_type = self.question_type
 		mndbg.dbgp("tellme: selected question type '%s'" % self.question_type)
 		return True
+
+	def fetchAvailableModels(self, refresh=False, log_errors=False):
+		"""Fetch and cache provider-visible model IDs for the active API key."""
+		if self.engine == "offline" or self.api_key == "":
+			self.available_model_ids = []
+			return self.available_model_ids
+		timeout_seconds = self.timeout_seconds
+		if timeout_seconds <= 0:
+			timeout_seconds = 20.0
+		if timeout_seconds > 20.0:
+			timeout_seconds = 20.0
+		try:
+			self.available_model_ids = getAvailableAIModels(
+				self.engine,
+				self.api_key,
+				timeout_seconds=timeout_seconds,
+				refresh=refresh
+			)
+			return self.available_model_ids
+		except Exception as e:
+			self.available_model_ids = []
+			if log_errors:
+				self.logError("Unable to retrieve available models for engine '%s'." % self.engine)
+				logAIProviderError(self.engine, e)
+			raise
+
+	def _isConfiguredModelAvailable(self, available_models):
+		"""Return True if the configured model matches one of the provider-visible IDs."""
+		if self.model in available_models:
+			return True
+		if self.engine == "anthropic":
+			for available_model in available_models:
+				if available_model.startswith(self.model + "-"):
+					return True
+		return False
+
+	def logAvailableModels(self, models=None, error_mode=False):
+		"""Print the provider model IDs that are currently visible to the configured API key."""
+		if models is None:
+			models = self.available_model_ids
+		log_func = self.logInfoDetail
+		if error_mode:
+			log_func = self.logErrorDetail
+		if len(models) == 0:
+			log_func("No provider-visible model IDs were returned.")
+			return
+		log_func("Available %s models for this API key:" % self.engine)
+		for model_id in models:
+			log_func("  %s" % model_id)
+
+	def maybePrintAvailableModelsWhenIdle(self):
+		"""When no question profile was supplied, print provider models for configured default engines."""
+		if not self.question_profile_missing or self.offline or self.engine == "offline" or self.api_key == "":
+			return
+		try:
+			models = self.fetchAvailableModels(refresh=False, log_errors=False)
+		except Exception as e:
+			self.logInfo("Unable to retrieve available %s models for this idle tellme invocation." % self.engine)
+			self.logInfoDetail(str(e))
+			return
+		dbg.log("")
+		self.logInfo("No AI request was submitted.")
+		self.logAvailableModels(models=models, error_mode=False)
 
 	def parseTargetAddress(self):
 		"""Resolve an optional analysis target address from -a and map it to the active question profile."""
@@ -24812,20 +25115,20 @@ class MnAI(object):
 			dbg.log("")
 			self.logErrorDetail("OpenAI:")
 			self.logErrorDetail("  %s config -set openai.key <your OpenAI API key>" % getAliasName())
-			self.logErrorDetail("  %s config -set openai.model gpt-5.4" % getAliasName())
+			self.logErrorDetail("  %s config -set openai.model gpt-5-mini" % getAliasName())
 			self.logErrorDetail("  %s config -set openai.timeout 90" % getAliasName())
 			self.logErrorDetail("  or (globally):")
 			self.logErrorDetail("  set OPENAI_API_KEY=<your OpenAI API key>")
-			self.logErrorDetail("  set OPENAI_MODEL=gpt-5.4")
+			self.logErrorDetail("  set OPENAI_MODEL=gpt-5-mini")
 			self.logErrorDetail("  set OPENAI_TIMEOUT=90")
 			dbg.log("")
 			self.logErrorDetail("Anthropic:")
 			self.logErrorDetail("  %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
-			self.logErrorDetail("  %s config -set anthropic.model claude-opus-4-7" % getAliasName())
+			self.logErrorDetail("  %s config -set anthropic.model claude-sonnet-4-6" % getAliasName())
 			self.logErrorDetail("  %s config -set anthropic.timeout 90" % getAliasName())
 			self.logErrorDetail("  or (globally):")
 			self.logErrorDetail("  set ANTHROPIC_API_KEY=<your Anthropic API key>")
-			self.logErrorDetail("  set ANTHROPIC_MODEL=claude-opus-4-7")
+			self.logErrorDetail("  set ANTHROPIC_MODEL=claude-sonnet-4-6")
 			self.logErrorDetail("  set ANTHROPIC_TIMEOUT=90")
 			dbg.log("")
 			self.logErrorDetail("mona.ini values take precedence over environment variables")
@@ -24847,6 +25150,17 @@ class MnAI(object):
 			self.logErrorDetail("Set it with '%s config -set %s.model <model>'" % (
 				getAliasName(), self.engine
 			))
+			return False
+		try:
+			available_models = self.fetchAvailableModels(refresh=False, log_errors=False)
+		except Exception as e:
+			self.logInfo("Unable to retrieve available %s models. Skipping preflight model compatibility check." % self.engine)
+			self.logInfoDetail(str(e))
+			return True
+		if len(available_models) > 0 and not self._isConfiguredModelAvailable(available_models):
+			self.logError("Configured model '%s' is not available for engine '%s'." % (self.model, self.engine))
+			self.logErrorDetail("Choose a model returned by the provider models API or override it with -model <id>.")
+			self.logAvailableModels(models=available_models, error_mode=True)
 			return False
 		return True
 
@@ -25086,12 +25400,21 @@ class MnAI(object):
 			self.writeOfflineRequest()
 			return self.response
 
+		self.writeRequestLog()
+		if self.submit_requested:
+			self.logInfo("AI submission confirmed via -submit")
+		elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
+			self.response = ""
+			self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
+			if self.request_logfile_path != "":
+				self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
+			return self.response
+
 		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
 		self.logInfo("Asking %s model '%s' using question profile %s" % (self.engine, self.model, self.question_type))
 		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
 		if self.engine == "anthropic":
 			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
-		self.writeRequestLog()
 
 		max_attempts = 3
 		self.response = ""
@@ -25164,17 +25487,18 @@ class MnAI(object):
 		"""Run the full tellme workflow from argument parsing through request execution."""
 		if not self.parseEngineSelection():
 			return ""
+		if not self.parseRequestSettings():
+			return ""
+		if not self.validateProviderConfiguration():
+			return ""
 		if not self.parseQuestionProfile():
+			self.maybePrintAvailableModelsWhenIdle()
 			return ""
 		if not self.parseTargetAddress():
 			return ""
 		if not self.parseTemplateSelection():
 			return ""
 		if not self.ensureDefaultTemplates():
-			return ""
-		if not self.parseRequestSettings():
-			return ""
-		if not self.validateProviderConfiguration():
 			return ""
 		if not self.parseContextFiles():
 			return ""
@@ -33399,8 +33723,8 @@ Optional arguments:
 
 Supported engines:
     - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
-    - openai (you may have to complete verification at https://chatgpt.com/cyber first; requires the OpenAI Python SDK)
-    - anthropic (you may have to complete verification - check https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude; no Anthropic Python SDK required)
+    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
+    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
 
 Configuration:
     Choose one of these approaches:
@@ -33408,12 +33732,12 @@ Configuration:
     1. Store settings in mona.ini:
        %s config -set mona.ai.engine openai
        %s config -set openai.key <your OpenAI API key>
-       %s config -set openai.model gpt-5.4
+       %s config -set openai.model gpt-5-mini
        %s config -set openai.timeout 90
        %s config -set openai.max_tokens 4096
        %s config -set mona.ai.engine anthropic
        %s config -set anthropic.key <your Anthropic API key>
-       %s config -set anthropic.model claude-opus-4-7
+       %s config -set anthropic.model claude-sonnet-4-6
        %s config -set anthropic.timeout 90
        %s config -set anthropic.max_tokens 4096
 
@@ -33438,15 +33762,19 @@ Precedence:
     If the default engine has no API key or model configured, tellme falls back to offline
     -offline still overrules a configured default engine for that one request
 Default models:
-    - OpenAI   : gpt-5.4
-    - Anthropic: claude-opus-4-7
+    - OpenAI   : gpt-5-mini
+    - Anthropic: claude-sonnet-4-6
 
 Default timeout:
     - 60 seconds per request
 
 Common models:
-    - OpenAI   : gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.4-nano
-    - Anthropic: claude-opus-4-7, claude-opus-4-6
+    - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
+    - Anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+
+Official model docs:
+    - OpenAI   : https://developers.openai.com/api/docs/models
+    - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
 	Arguments:
 	    -e  <engine> : AI engine to use: offline, openai, or anthropic.
@@ -33454,9 +33782,12 @@ Common models:
 	                   and otherwise defaults to offline.
 	                   If the selected default engine has no API key or model configured,
 	                   tellme also falls back to offline
+	                   If you omit -q and a provider engine is configured, tellme prints
+	                   the available models visible to that API key instead of submitting a request
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
+	    -submit      : Skip the confirmation prompt and submit the AI request immediately
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
 	                   2 = analyse the current code location
@@ -33488,7 +33819,9 @@ Common models:
 	    %s tellme -e openai -q 2 -a kernel32!CreateFileW
 	    %s tellme -e openai -q 2 -a eip
 	    %s tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
-	    %s tellme -e openai -model gpt-5.4-mini -q 1
+	    %s tellme -e openai -model gpt-5-mini -q 1
+	    %s tellme -e anthropic -model claude-sonnet-4-6 -q 1
+	    %s tellme -e openai -q 1 -submit
 	    %s tellme -e openai -q 1 -timeout 120
 	    %s tellme -e openai -q 9 -f request.txt
 	    %s tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
@@ -33536,6 +33869,10 @@ Common models:
 	    That means manual submission is a supported workflow:
 	    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
 	    If you prefer direct API calls from mona instead, install a supported SDK and configure an API key.
+	    Before a live provider request is sent, tellme queries the provider models API and checks whether
+	    the configured model is available to that API key.
+	    Direct API requests ask for confirmation by default.
+	    Add -submit when you want mona to skip that prompt and send the request immediately.
 	    When you run -q 1 or -q 2, mona also rewrites ai.q1 or ai.q2 in the working folder if set,
 	    otherwise in the same folder as mona.ini.
 	    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
@@ -33551,9 +33888,9 @@ Common models:
 	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
 
 	Test model overrides:
-	    - OpenAI   : gpt-5.4-nano
+	    - OpenAI   : gpt-5-nano
 	    - Anthropic: claude-haiku-4-5
-		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
+		""" % (launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd, launchcmd)
 
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
