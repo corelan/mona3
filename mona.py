@@ -908,28 +908,28 @@ def getAvailableAIEngines(reason="", refresh=False):
 	return engines
 
 
-def _normalize_tellme_engine(engine_value):
+def _normalizeAIEngine(engine_value):
 	try:
 		return str(engine_value).strip().lower()
 	except Exception:
 		return ""
 
 
-def getTellMeDefaultEngineConfigName():
+def getDefaultAIEngineConfigName():
 	return "mona.ai.engine"
 
 
-def getTellMeDefaultEngineEnvName():
+def getDefaultAIEngineEnvName():
 	return "MONA_AI_ENGINE"
 
 
-def _tellme_is_supported_engine(engine_value):
+def _isSupportedAIEngine(engine_value):
 	return engine_value in ["openai", "anthropic"]
 
 
-def ensureTellMeDefaultEngineConfig(mona_config, available_engines):
-	config_name = getTellMeDefaultEngineConfigName()
-	current_engine = _normalize_tellme_engine(mona_config.get(config_name))
+def ensureDefaultAIEngineConfig(mona_config, available_engines):
+	config_name = getDefaultAIEngineConfigName()
+	current_engine = _normalizeAIEngine(mona_config.get(config_name))
 	if current_engine != "":
 		return current_engine
 	default_engine = ""
@@ -942,23 +942,23 @@ def ensureTellMeDefaultEngineConfig(mona_config, available_engines):
 	return ""
 
 
-def resolveTellMeEngine(engine_arg, mona_config, available_engines):
+def resolveAIEngine(engine_arg, mona_config, available_engines):
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
 		return "", engine_source, "Please specify an engine value with -e <openai|anthropic>", False
-	engine = _normalize_tellme_engine(engine_arg)
+	engine = _normalizeAIEngine(engine_arg)
 	if engine != "":
 		return engine, engine_source, "", False
 
-	config_name = getTellMeDefaultEngineConfigName()
-	env_name = getTellMeDefaultEngineEnvName()
+	config_name = getDefaultAIEngineConfigName()
+	env_name = getDefaultAIEngineEnvName()
 
-	engine = _normalize_tellme_engine(mona_config.get(config_name))
+	engine = _normalizeAIEngine(mona_config.get(config_name))
 	if engine != "":
 		engine_source = "config"
 		mndbg.dbgp("tellme: using default engine '%s' from %s" % (engine, config_name))
 	else:
-		engine = _normalize_tellme_engine(os.environ.get(env_name, ""))
+		engine = _normalizeAIEngine(os.environ.get(env_name, ""))
 		if engine != "":
 			engine_source = "environment"
 			mndbg.dbgp("tellme: using default engine '%s' from %s" % (engine, env_name))
@@ -971,7 +971,7 @@ def resolveTellMeEngine(engine_arg, mona_config, available_engines):
 	return engine, engine_source, "", False
 
 
-def _tellme_format_text(value, max_len=512):
+def _formatContextText(value, max_len=512):
 	try:
 		text = ensure_text(value)
 	except Exception:
@@ -986,7 +986,7 @@ def _tellme_format_text(value, max_len=512):
 	return text
 
 
-def _tellme_format_hex_ascii(raw, max_len=0x80):
+def _formatHexAsciiPreview(raw, max_len=0x80):
 	if raw is None:
 		return {"hex": "", "ascii": ""}
 	if len(raw) > max_len:
@@ -996,7 +996,7 @@ def _tellme_format_hex_ascii(raw, max_len=0x80):
 	return {"hex": hexdata, "ascii": ascii_data}
 
 
-def _tellme_read_memory(address, size, label):
+def _readMemoryPreview(address, size, label):
 	result = {
 		"label": label,
 		"address": PTR_PRINT % address,
@@ -1005,15 +1005,15 @@ def _tellme_read_memory(address, size, label):
 	try:
 		mndbg.dbgp("tellme: reading %s at %s (%d bytes)" % (label, PTR_PRINT % address, size))
 		raw = dbg.readMemory(address, size)
-		result.update(_tellme_format_hex_ascii(raw, max_len=size))
+		result.update(_formatHexAsciiPreview(raw, max_len=size))
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: unable to read %s at %s: %s" % (label, PTR_PRINT % address, str(e)), errormode=False)
 	return result
 
 
-def _tellme_read_first_bytes(address, size=0x10, label="first_bytes"):
-	info = _tellme_read_memory(address, size, label)
+def _readFirstBytesPreview(address, size=0x10, label="first_bytes"):
+	info = _readMemoryPreview(address, size, label)
 	return OrderedDict([
 		("address", info.get("address", "")),
 		("size", info.get("size", size)),
@@ -1023,7 +1023,7 @@ def _tellme_read_first_bytes(address, size=0x10, label="first_bytes"):
 	])
 
 
-def _tellme_collect_heap_details():
+def _collectHeapDetails():
 	mndbg.dbgp("tellme: collecting heap_details")
 	dbg.log("[+] Enumerating heap details")
 	result = OrderedDict()
@@ -1115,7 +1115,7 @@ def _tellme_collect_heap_details():
 				chunk_entry["user_ptr"] = PTR_PRINT % userptr
 				chunk_entry["user_size"] = "0x%x" % usersize
 				chunk_entry["state"] = flagtxt
-				chunk_entry["first_16_bytes"] = _tellme_read_first_bytes(userptr, 0x10, "heap_details_chunk")
+				chunk_entry["first_16_bytes"] = _readFirstBytesPreview(userptr, 0x10, "heap_details_chunk")
 				seg_entry["chunks"].append(chunk_entry)
 
 			heap_entry["segments"].append(seg_entry)
@@ -1135,7 +1135,7 @@ def _tellme_collect_heap_details():
 			vad_entry["commit_size"] = "0x%x" % vainfo["commit_size"]
 			vad_entry["reserve_size"] = "0x%x" % vainfo["reserve_size"]
 			vad_entry["state"] = "VirtualAllocd"
-			vad_entry["first_16_bytes"] = _tellme_read_first_bytes(block, 0x10, "heap_details_vadblock")
+			vad_entry["first_16_bytes"] = _readFirstBytesPreview(block, 0x10, "heap_details_vadblock")
 			heap_entry["vadblocks"].append(vad_entry)
 
 		result["heaps"].append(heap_entry)
@@ -1143,7 +1143,7 @@ def _tellme_collect_heap_details():
 	return result
 
 
-def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40, register_name=""):
+def _getPointerDump(address, bytes_before=0x28, line_count=0x40, register_name=""):
 	result = OrderedDict()
 	reg_name_l = str(register_name).lower().strip()
 	if reg_name_l == PROGRAM_COUNTER:
@@ -1161,7 +1161,7 @@ def _tellme_get_pointer_dump(address, bytes_before=0x28, line_count=0x40, regist
 	return result
 
 
-def _tellme_get_call_stack(command="kb", max_lines=50):
+def _getCallStack(command="kb", max_lines=50):
 	result = OrderedDict()
 	result["command"] = command
 	try:
@@ -1170,14 +1170,14 @@ def _tellme_get_call_stack(command="kb", max_lines=50):
 			lines = output.splitlines()
 			if len(lines) > max_lines:
 				output = "\n".join(lines[:max_lines])
-		result["output"] = _tellme_format_text(output, max_len=8192)
+		result["output"] = _formatContextText(output, max_len=8192)
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: call stack lookup failed using '%s': %s" % (command, str(e)), errormode=False)
 	return result
 
 
-def _tellme_get_heap_chunk_metadata(address):
+def _getHeapChunkMetadata(address):
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
 	global g_heap_cmd_prefix
@@ -1197,11 +1197,11 @@ def _tellme_get_heap_chunk_metadata(address):
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: heap metadata lookup failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
-	result["heap_x"] = _tellme_get_heap_x_metadata(address)
+	result["heap_x"] = _getHeapXMetadata(address)
 	return result
 
 
-def _tellme_get_heap_x_metadata(address):
+def _getHeapXMetadata(address):
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
 	global g_heap_cmd_prefix
@@ -1224,16 +1224,16 @@ def _tellme_get_heap_x_metadata(address):
 	return result
 
 
-def _tellme_collect_manual_heap_target_fallback(address):
+def _collectManualHeapTargetFallback(address):
 	info = OrderedDict()
 	info["address"] = PTR_PRINT % address
-	info["heap_metadata"] = _tellme_get_heap_chunk_metadata(address)
+	info["heap_metadata"] = _getHeapChunkMetadata(address)
 	start = max(int(address) - 100, 0)
-	info["memory_window"] = _tellme_read_memory(start, 200, "manual_heap_target_window")
+	info["memory_window"] = _readMemoryPreview(start, 200, "manual_heap_target_window")
 	return info
 
 
-def _tellme_get_chunk_dps_dump(chunk_address, chunk_size, label="chunk"):
+def _getChunkPointerDump(chunk_address, chunk_size, label="chunk"):
 	result = OrderedDict()
 	result["label"] = label
 	result["address"] = PTR_PRINT % chunk_address
@@ -1244,14 +1244,14 @@ def _tellme_get_chunk_dps_dump(chunk_address, chunk_size, label="chunk"):
 	cmd = "dps %s L %s" % (PTR_PRINT % chunk_address, word_expr)
 	result["command"] = cmd
 	try:
-		result["output"] = _tellme_format_text(ensure_text(dbg.nativeCommand(cmd)).strip(), max_len=16384)
+		result["output"] = _formatContextText(ensure_text(dbg.nativeCommand(cmd)).strip(), max_len=16384)
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: chunk dump failed for %s using '%s': %s" % (PTR_PRINT % chunk_address, cmd, str(e)), errormode=False)
 	return result
 
 
-def _tellme_describe_chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+def _describeChunkContext(chunk, mheap, va_blks, lfh_ranges, lfh_starts):
 	for va, vi in va_blks.items():
 		if va <= chunk.chunkptr < va + vi["commit_size"]:
 			return "VABlock @ %s" % (PTR_PRINT % va)
@@ -1263,7 +1263,7 @@ def _tellme_describe_chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts
 	return "Segment @ %s" % (PTR_PRINT % chunk.segmentbase)
 
 
-def _tellme_serialize_adjacent_chunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+def _serializeAdjacentChunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
 	if chunk is None:
 		return OrderedDict([
 			("label", label),
@@ -1279,19 +1279,19 @@ def _tellme_serialize_adjacent_chunk(label, chunk, mheap, va_blks, lfh_ranges, l
 	info["chunk_size"] = "0x%x" % chunk_size
 	info["state"] = getHeapFlag(chunk.flag)
 	info["heap"] = PTR_PRINT % mheap.heapbase
-	info["context"] = _tellme_describe_chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+	info["context"] = _describeChunkContext(chunk, mheap, va_blks, lfh_ranges, lfh_starts)
 	try:
 		info["first_8_bytes_at_user_ptr"] = bin2hex(dbg.readMemory(chunk.userptr, 8))
 	except Exception as e:
 		info["first_8_bytes_error"] = str(e)
 	content_size = min(max(chunk.usersize, 0), 0x50)
 	if content_size > 0:
-		info["contents"] = _tellme_read_memory(chunk.userptr, content_size, "%s_adjacent_chunk_contents" % label)
-	info["chunk_dump"] = _tellme_get_chunk_dps_dump(chunk.chunkptr, chunk_size, label=label)
+		info["contents"] = _readMemoryPreview(chunk.userptr, content_size, "%s_adjacent_chunk_contents" % label)
+	info["chunk_dump"] = _getChunkPointerDump(chunk.chunkptr, chunk_size, label=label)
 	return info
 
 
-def _tellme_collect_adjacent_chunk_context(refvalue):
+def _collectAdjacentChunkContext(refvalue):
 	info = OrderedDict()
 	info["reference"] = PTR_PRINT % refvalue
 
@@ -1356,9 +1356,9 @@ def _tellme_collect_adjacent_chunk_context(refvalue):
 		curr_chunk = sorted_chunks[idx]
 		next_chunk = sorted_chunks[idx + 1] if idx < len(sorted_chunks) - 1 else None
 		info["chunks"] = [
-			_tellme_serialize_adjacent_chunk("previous", prev_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
-			_tellme_serialize_adjacent_chunk("current", curr_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
-			_tellme_serialize_adjacent_chunk("next", next_chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+			_serializeAdjacentChunk("previous", prev_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
+			_serializeAdjacentChunk("current", curr_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
+			_serializeAdjacentChunk("next", next_chunk, mheap, va_blks, lfh_ranges, lfh_starts)
 		]
 	else:
 		_, _, vaaddr, vainfo = found_result
@@ -1387,8 +1387,8 @@ def _tellme_collect_adjacent_chunk_context(refvalue):
 			current["first_8_bytes_error"] = str(e)
 		content_size = min(max(user_size, 0), 0x50)
 		if content_size > 0:
-			current["contents"] = _tellme_read_memory(user_ptr, content_size, "current_adjacent_chunk_contents")
-		current["chunk_dump"] = _tellme_get_chunk_dps_dump(chunk_ptr, chunk_size, label="current")
+			current["contents"] = _readMemoryPreview(user_ptr, content_size, "current_adjacent_chunk_contents")
+		current["chunk_dump"] = _getChunkPointerDump(chunk_ptr, chunk_size, label="current")
 		info["chunks"] = [
 			OrderedDict([("label", "previous"), ("present", False)]),
 			current,
@@ -1398,7 +1398,7 @@ def _tellme_collect_adjacent_chunk_context(refvalue):
 	return info
 
 
-def _tellme_get_page_summary(address):
+def _getPageSummary(address):
 	summary = {"address": PTR_PRINT % address}
 	try:
 		page = dbg.getMemoryPageByAddress(address)
@@ -1419,7 +1419,7 @@ def _tellme_get_page_summary(address):
 	return summary
 
 
-def _tellme_get_module_summary(address):
+def _getModuleSummary(address):
 	summary = {"address": PTR_PRINT % address}
 	try:
 		if mnproc is None:
@@ -1441,10 +1441,10 @@ def _tellme_get_module_summary(address):
 	return summary
 
 
-def _tellme_get_symbol_name(address):
+def _getSymbolName(address):
 	try:
 		funcinfo = dbglib.Function(dbg, address)
-		symbol_name = _tellme_format_text(ensure_text(funcinfo.addressToSymbol()), max_len=1024)
+		symbol_name = _formatContextText(ensure_text(funcinfo.addressToSymbol()), max_len=1024)
 		if symbol_name != "":
 			return symbol_name
 	except Exception as e:
@@ -1454,21 +1454,21 @@ def _tellme_get_symbol_name(address):
 		for line in ln_output.splitlines():
 			line = line.strip()
 			if "!" in line:
-				return _tellme_format_text(line, max_len=1024)
+				return _formatContextText(line, max_len=1024)
 	except Exception as e:
 		mndbg.dbgp("tellme: ln lookup failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 	return ""
 
 
-def _tellme_get_nearest_symbol_output(address):
+def _getNearestSymbolOutput(address):
 	try:
-		return _tellme_format_text(ensure_text(dbg.nativeCommand("ln %s" % (PTR_PRINT % address))).strip(), max_len=4096)
+		return _formatContextText(ensure_text(dbg.nativeCommand("ln %s" % (PTR_PRINT % address))).strip(), max_len=4096)
 	except Exception as e:
 		mndbg.dbgp("tellme: nearest symbol output failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 		return ""
 
 
-def _tellme_get_instruction_window(address, depth_before=10, depth_after=10):
+def _getInstructionWindow(address, depth_before=10, depth_after=10):
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
 	result["current"] = ""
@@ -1477,7 +1477,7 @@ def _tellme_get_instruction_window(address, depth_before=10, depth_after=10):
 
 	try:
 		op = dbg.disasm(address)
-		result["current"] = _tellme_format_text(getDisasmInstruction(op))
+		result["current"] = _formatContextText(getDisasmInstruction(op))
 	except Exception as e:
 		result["current_error"] = str(e)
 		mndbg.dbgp("tellme: failed to disassemble current instruction at %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
@@ -1501,7 +1501,7 @@ def _tellme_get_instruction_window(address, depth_before=10, depth_after=10):
 			op = dbg.disasm(next_addr)
 			result["after"].append({
 				"address": PTR_PRINT % next_addr,
-				"instruction": _tellme_format_text(getDisasmInstruction(op))
+				"instruction": _formatContextText(getDisasmInstruction(op))
 			})
 			curr = next_addr
 	except Exception as e:
@@ -1511,7 +1511,7 @@ def _tellme_get_instruction_window(address, depth_before=10, depth_after=10):
 	return result
 
 
-def _tellme_extract_return_pointer_context(raw_line):
+def _extractReturnPointerContext(raw_line):
 	match = re.search(r"\bfrom\s+([0-9a-fA-F]+)\b", raw_line)
 	if not match:
 		return None
@@ -1521,26 +1521,26 @@ def _tellme_extract_return_pointer_context(raw_line):
 		return None
 	context = OrderedDict()
 	context["address"] = PTR_PRINT % return_address
-	symbol_name = _tellme_get_symbol_name(return_address)
+	symbol_name = _getSymbolName(return_address)
 	if symbol_name != "":
 		context["symbol"] = symbol_name
-	nearest_symbol_output = _tellme_get_nearest_symbol_output(return_address)
+	nearest_symbol_output = _getNearestSymbolOutput(return_address)
 	if nearest_symbol_output != "":
 		context["nearest_symbol_output"] = nearest_symbol_output
-	instruction_window = _tellme_get_instruction_window(return_address, depth_before=10, depth_after=10)
+	instruction_window = _getInstructionWindow(return_address, depth_before=10, depth_after=10)
 	context["backward_disasm"] = instruction_window.get("before", [])
 	context["instruction_window"] = instruction_window
 	return context
 
 
-def _tellme_get_disasm_summary(address, depth_before=10, depth_after=10):
+def _getDisasmSummary(address, depth_before=10, depth_after=10):
 	result = {
 		"address": PTR_PRINT % address,
 		"current": "",
 		"before": [],
 		"after": []
 	}
-	window = _tellme_get_instruction_window(address, depth_before=depth_before, depth_after=depth_after)
+	window = _getInstructionWindow(address, depth_before=depth_before, depth_after=depth_after)
 	for key, value in window.items():
 		if key == "address":
 			continue
@@ -1569,7 +1569,7 @@ def tellMeHasCurrentInstruction(address):
 		return False, str(e)
 
 
-def _tellme_try_parse_address_token(token):
+def _tryParseAddressToken(token):
 	try:
 		cleaned = ensure_text(token).strip().replace("`", "")
 	except Exception:
@@ -1583,7 +1583,7 @@ def _tellme_try_parse_address_token(token):
 	return 0
 
 
-def _tellme_resolve_function_start(address):
+def _resolveFunctionStart(address):
 	if not isinstance(address, int) or address <= 0:
 		return 0, "", "none", False
 
@@ -1593,7 +1593,7 @@ def _tellme_resolve_function_start(address):
 			try:
 				symboladdy = dbg.resolveSymbol(fname)
 				if symboladdy != "":
-					parsed = _tellme_try_parse_address_token(symboladdy)
+					parsed = _tryParseAddressToken(symboladdy)
 					if parsed > 0:
 						return parsed, fname, "symbol", True
 			except Exception:
@@ -1607,7 +1607,7 @@ def _tellme_resolve_function_start(address):
 			if "|" not in line:
 				continue
 			for token in line.split():
-				parsed = _tellme_try_parse_address_token(token)
+				parsed = _tryParseAddressToken(token)
 				if parsed > 0:
 					return parsed, "", "ln", True
 	except Exception:
@@ -1642,7 +1642,7 @@ def _tellme_resolve_function_start(address):
 	return address, "", "fallback", False
 
 
-def collectTellMeCurrentFunctionContext(address):
+def collectAICurrentFunctionContext(address):
 	context = {
 		"requested_address": PTR_PRINT % address,
 		"function_start": "",
@@ -1655,7 +1655,7 @@ def collectTellMeCurrentFunctionContext(address):
 		"resolution_method": "",
 	}
 	mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
-	function_start, resolved_symbol, resolution_method, found_function = _tellme_resolve_function_start(address)
+	function_start, resolved_symbol, resolution_method, found_function = _resolveFunctionStart(address)
 	context["resolution_method"] = resolution_method
 	if isinstance(function_start, int) and function_start > 0:
 		context["function_start"] = PTR_PRINT % function_start
@@ -1702,7 +1702,7 @@ def collectTellMeCurrentFunctionContext(address):
 	return context
 
 
-def _tellme_extract_instruction_registers(instruction_text, regs):
+def _extractInstructionRegisters(instruction_text, regs):
 	registers = []
 	if not instruction_text or not regs:
 		return registers
@@ -1716,7 +1716,7 @@ def _tellme_extract_instruction_registers(instruction_text, regs):
 	return registers
 
 
-def _tellme_find_layout_region(address, layout_regions):
+def _findLayoutRegion(address, layout_regions):
 	try:
 		mndbg.dbgp("tellme: searching layout regions for %s across %d candidate regions" % (
 			PTR_PRINT % address,
@@ -1760,7 +1760,7 @@ def _tellme_find_layout_region(address, layout_regions):
 				"category": category,
 				"start": start,
 				"end": end,
-				"description": _tellme_format_text(description, max_len=1024)
+				"description": _formatContextText(description, max_len=1024)
 			}
 			if best_match is None or category_rank.get(category, 99) < category_rank.get(best_match["category"], 99):
 				best_match = candidate
@@ -1779,7 +1779,7 @@ def _tellme_find_layout_region(address, layout_regions):
 				best_match["category"],
 				PTR_PRINT % best_match["start"],
 				PTR_PRINT % best_match["end"],
-				_tellme_format_text(best_match["description"], max_len=160)
+				_formatContextText(best_match["description"], max_len=160)
 			))
 		if prev_region is not None:
 			mndbg.dbgp("tellme: nearest preceding layout region for %s : %s [%s - %s] delta=0x%x desc=%s" % (
@@ -1788,7 +1788,7 @@ def _tellme_find_layout_region(address, layout_regions):
 				PTR_PRINT % prev_region[0],
 				PTR_PRINT % prev_region[1],
 				max(address - prev_region[1], 0),
-				_tellme_format_text(prev_region[3], max_len=160)
+				_formatContextText(prev_region[3], max_len=160)
 			))
 		else:
 			mndbg.dbgp("tellme: no preceding layout region found for %s" % (PTR_PRINT % address))
@@ -1799,7 +1799,7 @@ def _tellme_find_layout_region(address, layout_regions):
 				PTR_PRINT % next_region[0],
 				PTR_PRINT % next_region[1],
 				max(next_region[0] - address, 0),
-				_tellme_format_text(next_region[3], max_len=160)
+				_formatContextText(next_region[3], max_len=160)
 			))
 		else:
 			mndbg.dbgp("tellme: no following layout region found for %s" % (PTR_PRINT % address))
@@ -1814,7 +1814,7 @@ def _tellme_find_layout_region(address, layout_regions):
 	return None
 
 
-def _tellme_collect_layout_region_neighbors(address, layout_regions):
+def _collectLayoutRegionNeighbors(address, layout_regions):
 	result = OrderedDict()
 	result["reference"] = PTR_PRINT % address
 	if layout_regions is None or len(layout_regions) == 0:
@@ -1851,17 +1851,17 @@ def _tellme_collect_layout_region_neighbors(address, layout_regions):
 		entry["start"] = PTR_PRINT % start
 		entry["end"] = PTR_PRINT % end
 		entry["size"] = "0x%x" % max(end - start, 0)
-		entry["description"] = _tellme_format_text(description, max_len=1024)
+		entry["description"] = _formatContextText(description, max_len=1024)
 		read_size = min(max(end - start, 0), 0x50)
 		if read_size > 0:
-			entry["contents"] = _tellme_read_memory(start, read_size, "%s_layout_region_contents" % label)
+			entry["contents"] = _readMemoryPreview(start, read_size, "%s_layout_region_contents" % label)
 		neighbors.append(entry)
 	result["regions"] = neighbors
 	mndbg.dbgp("tellme: collected %d layout neighbor regions for %s" % (len(neighbors), PTR_PRINT % address))
 	return result
 
 
-def _tellme_parse_heap_hl_chunk_line(line):
+def _parseHeapHlChunkLine(line):
 	match = re.match(r"^(\s*)([0-9A-Fa-f`]+):\s+([0-9A-Fa-f]+)\s+-\s+(.+?)\s*$", line)
 	if not match:
 		return None
@@ -1870,7 +1870,7 @@ def _tellme_parse_heap_hl_chunk_line(line):
 		size = int(match.group(3), 16)
 	except Exception:
 		return None
-	state_text = _tellme_format_text(match.group(4), max_len=512)
+	state_text = _formatContextText(match.group(4), max_len=512)
 	return {
 		"line": line,
 		"indent": len(match.group(1).replace("\t", "    ")),
@@ -1881,7 +1881,7 @@ def _tellme_parse_heap_hl_chunk_line(line):
 	}
 
 
-def _tellme_parse_heap_hl_output(output, target_address):
+def _parseHeapHlOutput(output, target_address):
 	result = OrderedDict()
 	result["matched"] = False
 	lines = output.splitlines()
@@ -1899,11 +1899,11 @@ def _tellme_parse_heap_hl_output(output, target_address):
 				"line": line,
 				"indent": len(lfh_match.group(1).replace("\t", "    ")),
 				"address": region_address,
-				"header": _tellme_format_text(line, max_len=512),
-				"details": _tellme_format_text(lfh_match.group(3), max_len=512),
+				"header": _formatContextText(line, max_len=512),
+				"details": _formatContextText(lfh_match.group(3), max_len=512),
 			}
 			continue
-		chunk = _tellme_parse_heap_hl_chunk_line(line)
+		chunk = _parseHeapHlChunkLine(line)
 		if chunk is None:
 			continue
 		if current_lfh_region is not None and chunk["indent"] > current_lfh_region["indent"]:
@@ -1927,7 +1927,7 @@ def _tellme_parse_heap_hl_output(output, target_address):
 		("size", "0x%x" % match_chunk["size"]),
 		("offset", "0x%x" % (target_address - match_chunk["start"])),
 		("state", match_chunk["state"]),
-		("line", _tellme_format_text(match_chunk["line"], max_len=512)),
+		("line", _formatContextText(match_chunk["line"], max_len=512)),
 	])
 	if match_index > 0:
 		prev_chunk = chunks[match_index - 1]
@@ -1936,7 +1936,7 @@ def _tellme_parse_heap_hl_output(output, target_address):
 			("end", PTR_PRINT % prev_chunk["end"]),
 			("size", "0x%x" % prev_chunk["size"]),
 			("state", prev_chunk["state"]),
-			("line", _tellme_format_text(prev_chunk["line"], max_len=512)),
+			("line", _formatContextText(prev_chunk["line"], max_len=512)),
 		])
 	if match_index + 1 < len(chunks):
 		next_chunk = chunks[match_index + 1]
@@ -1945,7 +1945,7 @@ def _tellme_parse_heap_hl_output(output, target_address):
 			("end", PTR_PRINT % next_chunk["end"]),
 			("size", "0x%x" % next_chunk["size"]),
 			("state", next_chunk["state"]),
-			("line", _tellme_format_text(next_chunk["line"], max_len=512)),
+			("line", _formatContextText(next_chunk["line"], max_len=512)),
 		])
 	lfh_region = match_chunk.get("lfh_region")
 	if lfh_region is not None:
@@ -1962,11 +1962,11 @@ def _tellme_parse_heap_hl_output(output, target_address):
 	context_lines.append(result["matched_chunk"]["line"])
 	if "next_chunk" in result:
 		context_lines.append(result["next_chunk"]["line"])
-	result["context"] = _tellme_format_text("\n".join(context_lines), max_len=4096)
+	result["context"] = _formatContextText("\n".join(context_lines), max_len=4096)
 	return result
 
 
-def _tellme_get_heap_hl_context(heap_address, target_address):
+def _getHeapHlContext(heap_address, target_address):
 	result = OrderedDict()
 	result["heap"] = PTR_PRINT % heap_address
 	result["address"] = PTR_PRINT % target_address
@@ -1986,7 +1986,7 @@ def _tellme_get_heap_hl_context(heap_address, target_address):
 		output = ensure_text(dbg.nativeCommand(cmd))
 		lines = output.splitlines()
 		result["line_count"] = len(lines)
-		parsed = _tellme_parse_heap_hl_output(output, target_address)
+		parsed = _parseHeapHlOutput(output, target_address)
 		result.update(parsed)
 		if result.get("matched", False):
 			mndbg.dbgp("tellme: !heap -hl found %s inside heap %s as %s chunk %s-%s" % (
@@ -2009,7 +2009,7 @@ def _tellme_get_heap_hl_context(heap_address, target_address):
 	return result
 
 
-def _tellme_get_segment_heap_fallback(address, layout_region, layout_regions):
+def _getSegmentHeapFallback(address, layout_region, layout_regions):
 	result = OrderedDict()
 	if layout_region is None or layout_region.get("category", "") != "Segment":
 		result["error"] = "Address is not inside a layout segment"
@@ -2017,17 +2017,17 @@ def _tellme_get_segment_heap_fallback(address, layout_region, layout_regions):
 	result["address"] = PTR_PRINT % address
 	result["segment_start"] = PTR_PRINT % layout_region["start"]
 	result["segment_end"] = PTR_PRINT % layout_region["end"]
-	result["segment_description"] = _tellme_format_text(layout_region.get("description", ""), max_len=1024)
+	result["segment_description"] = _formatContextText(layout_region.get("description", ""), max_len=1024)
 	heap_region = None
 	segment_desc = layout_region.get("description", "")
 	heap_label = ""
 	label_match = re.search(r"Heap:\s*([^\|\)]+)", segment_desc)
 	if label_match:
-		heap_label = _tellme_format_text(label_match.group(1).strip(), max_len=256)
+		heap_label = _formatContextText(label_match.group(1).strip(), max_len=256)
 	for start, end, category, description in layout_regions:
 		if category != "Heap":
 			continue
-		desc_text = _tellme_format_text(description, max_len=1024)
+		desc_text = _formatContextText(description, max_len=1024)
 		if heap_label != "" and (desc_text.startswith(heap_label + " ") or desc_text.startswith(heap_label + " (") or desc_text == heap_label):
 			heap_region = {
 				"start": start,
@@ -2041,11 +2041,11 @@ def _tellme_get_segment_heap_fallback(address, layout_region, layout_regions):
 	result["heap_start"] = PTR_PRINT % heap_region["start"]
 	result["heap_end"] = PTR_PRINT % heap_region["end"]
 	result["heap_description"] = heap_region["description"]
-	result["heap_hl"] = _tellme_get_heap_hl_context(heap_region["start"], address)
+	result["heap_hl"] = _getHeapHlContext(heap_region["start"], address)
 	return result
 
 
-def _tellme_apply_heap_hl_chunk_match(entry, heap_hl_result, reg_value, ref_name):
+def _applyHeapHlChunkMatch(entry, heap_hl_result, reg_value, ref_name):
 	matched_chunk = heap_hl_result.get("matched_chunk", {})
 	try:
 		chunk_start = int(matched_chunk.get("start", "0"), 16)
@@ -2066,21 +2066,21 @@ def _tellme_apply_heap_hl_chunk_match(entry, heap_hl_result, reg_value, ref_name
 	entry["region_offset"] = "0x%x" % (reg_value - chunk_start)
 	entry["region_description"] = "Heap chunk resolved via !heap -hl"
 	read_size = min(0x50, max(chunk_end - reg_value, 0x10))
-	entry["referenced_memory"] = _tellme_read_memory(reg_value, read_size, "%s_referenced_memory" % ref_name)
+	entry["referenced_memory"] = _readMemoryPreview(reg_value, read_size, "%s_referenced_memory" % ref_name)
 
 
-def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruction_text, layout_regions):
+def _buildHeapReferenceEntry(ref_name, reg_value, ref_source, instruction_text, layout_regions):
 	is_manual_heap_target = (ref_source == "q1_-a")
 	entry = OrderedDict()
 	entry["register"] = ref_name
 	entry["source"] = ref_source
 	entry["value"] = PTR_PRINT % reg_value
-	entry["pointer_dump"] = _tellme_get_pointer_dump(reg_value, bytes_before=0x28, line_count=0x40, register_name=ref_name)
-	entry["nearby_memory"] = _tellme_read_memory(max(reg_value - 0x28, 0), 0x80, "%s_nearby_memory" % ref_name)
+	entry["pointer_dump"] = _getPointerDump(reg_value, bytes_before=0x28, line_count=0x40, register_name=ref_name)
+	entry["nearby_memory"] = _readMemoryPreview(max(reg_value - 0x28, 0), 0x80, "%s_nearby_memory" % ref_name)
 	mndbg.dbgp("tellme: evaluating register '%s' source='%s' value=%s for heap/vad context" % (
 		ref_name, ref_source, PTR_PRINT % reg_value
 	))
-	layout_region = _tellme_find_layout_region(reg_value, layout_regions)
+	layout_region = _findLayoutRegion(reg_value, layout_regions)
 	entry["match"] = "none"
 	if layout_region is None:
 		mndbg.dbgp("tellme: register '%s' (%s) did not match any precomputed Heap/Segment/Chunk/VADBlock region" % (
@@ -2144,9 +2144,9 @@ def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruct
 				entry["user_offset"] = "0x%x" % (reg_value - foundinchunk.userptr)
 			chunk_dump_size = min(max(foundinchunk.usersize, 0), 0x50)
 			if chunk_dump_size > 0:
-				entry["chunk_contents"] = _tellme_read_memory(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % ref_name)
-			entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
-			entry["referenced_memory"] = _tellme_read_memory(reg_value, min(0x50, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % ref_name)
+				entry["chunk_contents"] = _readMemoryPreview(foundinchunk.userptr, chunk_dump_size, "%s_chunk_contents" % ref_name)
+			entry["adjacent_chunks"] = _collectAdjacentChunkContext(reg_value)
+			entry["referenced_memory"] = _readMemoryPreview(reg_value, min(0x50, max((foundinchunk.chunkptr + (foundinchunk.size * HEAPGRANULARITY)) - reg_value, 0x10)), "%s_referenced_memory" % ref_name)
 			if layout_region is None:
 				layout_region = {
 					"category": "Chunk",
@@ -2155,7 +2155,7 @@ def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruct
 					"description": "Heap chunk resolved via MnPointer.getHeapInfo()"
 				}
 			if is_manual_heap_target:
-				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+				entry["manual_heap_fallback"] = _collectManualHeapTargetFallback(reg_value)
 		elif isinstance(foundinchunk, dict):
 			mndbg.dbgp("tellme: register '%s' resolved to VAD block: base=%s commit=0x%x reserve=0x%x" % (
 				ref_name,
@@ -2168,7 +2168,7 @@ def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruct
 			reserve_size = int(foundinchunk.get("reserve_size", 0))
 			entry["commit_size"] = "0x%x" % commit_size
 			entry["reserve_size"] = "0x%x" % reserve_size
-			entry["adjacent_chunks"] = _tellme_collect_adjacent_chunk_context(reg_value)
+			entry["adjacent_chunks"] = _collectAdjacentChunkContext(reg_value)
 			if layout_region is None:
 				vad_start = foundinva if isinstance(foundinva, int) and foundinva > 0 else reg_value
 				layout_region = {
@@ -2178,25 +2178,25 @@ def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruct
 					"description": "VAD block resolved via MnPointer.getHeapInfo()"
 				}
 			read_size = min(0x50, max((layout_region["end"] - reg_value), 0x10))
-			entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % ref_name)
+			entry["region_contents"] = _readMemoryPreview(reg_value, read_size, "%s_vad_contents" % ref_name)
 			if is_manual_heap_target:
-				entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+				entry["manual_heap_fallback"] = _collectManualHeapTargetFallback(reg_value)
 		elif is_manual_heap_target:
 			mndbg.dbgp("tellme: register '%s' did not resolve to chunk/VAD; keeping manual fallback" % ref_name)
-			entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+			entry["manual_heap_fallback"] = _collectManualHeapTargetFallback(reg_value)
 		else:
 			mndbg.dbgp("tellme: register '%s' did not resolve to chunk/VAD via getHeapInfo()" % ref_name)
 	except Exception as e:
 		entry["heap_lookup_error"] = str(e)
 		mndbg.dbgp("tellme: heap lookup for reference '%s' failed: %s" % (ref_name, str(e)), errormode=False)
 		if is_manual_heap_target:
-			entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+			entry["manual_heap_fallback"] = _collectManualHeapTargetFallback(reg_value)
 	if layout_region is not None and layout_region["category"] == "Segment":
-		entry["segment_fallback"] = _tellme_get_segment_heap_fallback(reg_value, layout_region, layout_regions)
+		entry["segment_fallback"] = _getSegmentHeapFallback(reg_value, layout_region, layout_regions)
 		heap_hl_match = entry["segment_fallback"].get("heap_hl", {})
 		if heap_hl_match.get("matched", False):
 			entry["heap_hl_match"] = heap_hl_match
-			_tellme_apply_heap_hl_chunk_match(entry, heap_hl_match, reg_value, ref_name)
+			_applyHeapHlChunkMatch(entry, heap_hl_match, reg_value, ref_name)
 			if "lfh_region" in heap_hl_match:
 				entry["lfh_region"] = heap_hl_match["lfh_region"]
 			mndbg.dbgp("tellme: register '%s' chunk was resolved via !heap -hl fallback instead of using segment containment" % ref_name)
@@ -2213,13 +2213,13 @@ def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruct
 		entry["region_size"] = "0x%x" % max(layout_region["end"] - layout_region["start"], 0)
 		entry["region_offset"] = "0x%x" % (reg_value - layout_region["start"])
 		entry["region_description"] = layout_region["description"]
-		entry["layout_regions"] = _tellme_collect_layout_region_neighbors(reg_value, layout_regions)
+		entry["layout_regions"] = _collectLayoutRegionNeighbors(reg_value, layout_regions)
 		if entry["match"] == "VADBlock" and "region_contents" not in entry:
 			read_size = min(0x50, max(layout_region["end"] - reg_value, 0x10))
-			entry["region_contents"] = _tellme_read_memory(reg_value, read_size, "%s_vad_contents" % ref_name)
+			entry["region_contents"] = _readMemoryPreview(reg_value, read_size, "%s_vad_contents" % ref_name)
 		elif entry["match"] == "Chunk" and "referenced_memory" not in entry:
 			read_size = min(0x50, max(layout_region["end"] - reg_value, 0x10))
-			entry["referenced_memory"] = _tellme_read_memory(reg_value, read_size, "%s_referenced_memory" % ref_name)
+			entry["referenced_memory"] = _readMemoryPreview(reg_value, read_size, "%s_referenced_memory" % ref_name)
 		mndbg.dbgp("tellme: finalized register '%s' as %s with region [%s - %s]" % (
 			ref_name,
 			entry["match"],
@@ -2227,7 +2227,7 @@ def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruct
 			entry["region_end"]
 		))
 	if entry.get("match", "none") == "none" and is_manual_heap_target:
-		entry["manual_heap_fallback"] = _tellme_collect_manual_heap_target_fallback(reg_value)
+		entry["manual_heap_fallback"] = _collectManualHeapTargetFallback(reg_value)
 	if entry.get("match", "none") == "none":
 		mndbg.dbgp("tellme: dropping register '%s' from q1 heap reference output because final match is none" % ref_name)
 	else:
@@ -2237,7 +2237,7 @@ def _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruct
 	return entry
 
 
-def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
+def _collectInstructionHeapContext(regs, pc, extra_references=None):
 	info = {
 		"instruction": "",
 		"all_registers_checked": [],
@@ -2256,14 +2256,14 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 	try:
 		if isinstance(pc, int) and pc > 0:
 			op = dbg.disasm(pc)
-			instruction_text = _tellme_format_text(getDisasmInstruction(op))
+			instruction_text = _formatContextText(getDisasmInstruction(op))
 			info["instruction"] = instruction_text
 	except Exception as e:
 		info["instruction_error"] = str(e)
 		mndbg.dbgp("tellme: unable to disassemble current instruction for heap context: %s" % str(e), errormode=False)
 		mndbg.dbgp("tellme: heap/register context will continue with full-register analysis despite disassembly failure")
 
-	referenced_registers = _tellme_extract_instruction_registers(instruction_text, regs)
+	referenced_registers = _extractInstructionRegisters(instruction_text, regs)
 	info["referenced_registers"] = referenced_registers
 
 	layout_regions = []
@@ -2287,7 +2287,7 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 					region[2],
 					PTR_PRINT % region[0],
 					PTR_PRINT % region[1],
-					_tellme_format_text(region[3], max_len=140)
+					_formatContextText(region[3], max_len=140)
 				))
 			except Exception:
 				pass
@@ -2347,7 +2347,7 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 			))
 			continue
 		seen_references.add(dedup_key)
-		entry = _tellme_build_heap_reference_entry(ref_name, reg_value, ref_source, instruction_text, layout_regions)
+		entry = _buildHeapReferenceEntry(ref_name, reg_value, ref_source, instruction_text, layout_regions)
 		info["references"].append(entry)
 		if entry.get("match", "none") in ["Chunk", "VADBlock"] and ref_name not in info["matching_registers"]:
 			info["matching_registers"].append(ref_name)
@@ -2376,7 +2376,7 @@ def _tellme_collect_instruction_heap_context(regs, pc, extra_references=None):
 	return info
 
 
-def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
+def _collectHeapdynamicsContext(regs, pc, heapdynamics_file=""):
 	info = OrderedDict()
 	info["instruction"] = ""
 	info["referenced_registers"] = []
@@ -2390,14 +2390,14 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 
 	try:
 		op = dbg.disasm(pc)
-		instruction_text = _tellme_format_text(getDisasmInstruction(op))
+		instruction_text = _formatContextText(getDisasmInstruction(op))
 		info["instruction"] = instruction_text
 	except Exception as e:
 		info["instruction_error"] = str(e)
 		mndbg.dbgp("tellme: unable to disassemble current instruction for heapdynamics context: %s" % str(e), errormode=False)
 		return info
 
-	referenced_registers = _tellme_extract_instruction_registers(instruction_text, regs)
+	referenced_registers = _extractInstructionRegisters(instruction_text, regs)
 	info["referenced_registers"] = referenced_registers
 	if len(referenced_registers) == 0:
 		return info
@@ -2492,9 +2492,9 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 			entry["heap_chunk_metadata"].append(OrderedDict([
 				("register", reg_name),
 				("value", PTR_PRINT % reg_value),
-				("heap", _tellme_get_heap_chunk_metadata(reg_value))
+				("heap", _getHeapChunkMetadata(reg_value))
 			]))
-		return_pointer = _tellme_extract_return_pointer_context(raw_line)
+		return_pointer = _extractReturnPointerContext(raw_line)
 		if return_pointer is not None:
 			entry["return_pointer"] = return_pointer
 		info["matched_entries"].append(entry)
@@ -2502,7 +2502,7 @@ def _tellme_collect_heapdynamics_context(regs, pc, heapdynamics_file=""):
 	return info
 
 
-def _tellme_build_heapdynamics_mini(heapdynamics):
+def _buildHeapdynamicsMini(heapdynamics):
 	mini_contexts = []
 	for info in heapdynamics:
 		mini = OrderedDict()
@@ -2513,7 +2513,7 @@ def _tellme_build_heapdynamics_mini(heapdynamics):
 	return mini_contexts
 
 
-def _tellme_read_context_file(file_path, label="context file"):
+def _readContextFile(file_path, label="context file"):
 	info = OrderedDict()
 	info["file"] = file_path
 	info["label"] = label
@@ -2530,8 +2530,8 @@ def _tellme_read_context_file(file_path, label="context file"):
 	return info
 
 
-def _tellme_file_looks_like_heapdynamics(file_path):
-	info = _tellme_read_context_file(file_path, label="candidate context file")
+def _isHeapdynamicsFile(file_path):
+	info = _readContextFile(file_path, label="candidate context file")
 	if info.get("file_contents", "") == "":
 		return False, info
 	for raw_line in info["file_contents"].splitlines():
@@ -2541,7 +2541,7 @@ def _tellme_file_looks_like_heapdynamics(file_path):
 	return False, info
 
 
-def _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files=None):
+def _collectHeapdynamicsContexts(regs, pc, heapdynamics_files=None):
 	dbg.log("[+] Checking if files(s) contain heap dynamics")
 	contexts = []
 	if heapdynamics_files is None:
@@ -2550,7 +2550,7 @@ def _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files=None):
 		heapdynamics_files = [r"c:\alloc.txt"]
 
 	for file_path in heapdynamics_files:
-		info = _tellme_collect_heapdynamics_context(regs, pc, file_path)
+		info = _collectHeapdynamicsContext(regs, pc, file_path)
 		if len(info.get("referenced_registers", [])) == 0:
 			continue
 		if len(info.get("matched_registers", [])) == 0:
@@ -2560,7 +2560,7 @@ def _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files=None):
 	return contexts
 
 
-def getTellMePattern():
+def getAIPattern():
 	global g_tellme_pattern_cache
 	if g_tellme_pattern_cache is None:
 		mndbg.dbgp("tellme: generating reusable cyclic pattern (20280 bytes)")
@@ -2568,13 +2568,13 @@ def getTellMePattern():
 	return g_tellme_pattern_cache
 
 
-def _tellme_get_architecture_name():
+def _getArchitectureName():
 	if arch == 64:
 		return "x64"
 	return "x86"
 
 
-def _tellme_render_badchars(raw_badchars):
+def _renderBadchars(raw_badchars):
 	if raw_badchars in [None, b"", ""]:
 		return ""
 	if not isinstance(raw_badchars, bytes_type):
@@ -2585,7 +2585,7 @@ def _tellme_render_badchars(raw_badchars):
 	return "\\x" + "\\x".join(bin2hex(raw_badchars).split(" "))
 
 
-def _tellme_read_blob_hex(address, size, label="", chunk_size=0x1000):
+def _readBlobHex(address, size, label="", chunk_size=0x1000):
 	try:
 		integer_types = (int, long)
 	except NameError:
@@ -2631,7 +2631,7 @@ def _tellme_read_blob_hex(address, size, label="", chunk_size=0x1000):
 	return info
 
 
-def _tellme_get_module_return_windows(module_obj, max_windows=None, context_before=16):
+def _getModuleReturnWindows(module_obj, max_windows=None, context_before=16):
 	windows = []
 	try:
 		try:
@@ -2711,7 +2711,7 @@ def _tellme_get_module_return_windows(module_obj, max_windows=None, context_befo
 	return windows
 
 
-def _tellme_get_module_iat_entries(module_obj):
+def _getModuleIatEntries(module_obj):
 	entries = []
 	allowed_names = ["virtualalloc", "virtualprotect"]
 	try:
@@ -2724,7 +2724,7 @@ def _tellme_get_module_iat_entries(module_obj):
 		func_name = iat[iat_address]
 		if iat_address == 0 and func_name == "no_iat_found":
 			continue
-		func_name_text = _tellme_format_text(func_name, max_len=1024)
+		func_name_text = _formatContextText(func_name, max_len=1024)
 		func_name_lower = func_name_text.lower()
 		if not any(name in func_name_lower for name in allowed_names):
 			continue
@@ -2740,7 +2740,7 @@ def _tellme_get_module_iat_entries(module_obj):
 	return entries
 
 
-def _tellme_collect_rop_target_modules(args):
+def _collectRopTargetModules(args):
 	has_module_scope = False
 	for scope_key in ["m", "cm", "cmp"]:
 		if scope_key in args and type(args[scope_key]).__name__.lower() != "bool" and str(args[scope_key]).strip() != "":
@@ -2762,7 +2762,7 @@ def _tellme_collect_rop_target_modules(args):
 	selection = OrderedDict()
 	selection["architecture"] = OrderedDict([
 		("bits", arch),
-		("name", _tellme_get_architecture_name()),
+		("name", _getArchitectureName()),
 		("pointer_size", PTR_SIZE),
 	])
 	selection["filters"] = OrderedDict([
@@ -2775,7 +2775,7 @@ def _tellme_collect_rop_target_modules(args):
 	raw_badchars = criteria.get("badchars", b"")
 	selection["badchars"] = OrderedDict([
 		("specified", raw_badchars not in [None, b"", ""]),
-		("hex", _tellme_render_badchars(raw_badchars))
+		("hex", _renderBadchars(raw_badchars))
 	])
 	selection["modules"] = []
 
@@ -2794,14 +2794,14 @@ def _tellme_collect_rop_target_modules(args):
 		module_entry["cfg"] = tmod.isCFG
 		module_entry["nx"] = tmod.isNX
 		module_entry["os"] = tmod.isOS
-		module_entry["iat"] = _tellme_get_module_iat_entries(tmod)
-		module_entry["return_windows"] = _tellme_get_module_return_windows(tmod)
+		module_entry["iat"] = _getModuleIatEntries(tmod)
+		module_entry["return_windows"] = _getModuleReturnWindows(tmod)
 		selection["modules"].append(module_entry)
 
 	return selection
 
 
-def collectTellMeContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0):
+def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0):
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
 	context = {
 		"debugger": __DEBUGGERAPP__,
@@ -2817,7 +2817,7 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 	try:
 		process_name = dbg.getDebuggedName()
 		if process_name:
-			context["processname"] = _tellme_format_text(process_name, max_len=1024)
+			context["processname"] = _formatContextText(process_name, max_len=1024)
 	except Exception as e:
 		context["processname_error"] = str(e)
 		mndbg.dbgp("tellme: failed to collect process name: %s" % str(e), errormode=False)
@@ -2830,7 +2830,7 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 			if isinstance(reg_val, int):
 				context["registers"][reg_name.lower()] = PTR_PRINT % reg_val
 			else:
-				context["registers"][reg_name.lower()] = _tellme_format_text(reg_val)
+				context["registers"][reg_name.lower()] = _formatContextText(reg_val)
 	except Exception as e:
 		context["registers_error"] = str(e)
 		mndbg.dbgp("tellme: failed to collect registers: %s" % str(e), errormode=False)
@@ -2851,81 +2851,81 @@ def collectTellMeContext(question_type="", heapdynamics_files=None, additional_c
 					"address": PTR_PRINT % heap_target_address,
 					"source": "-a"
 				}
-			context["instruction_heap_references"] = _tellme_collect_instruction_heap_context(regs, pc, extra_references=extra_references)
+			context["instruction_heap_references"] = _collectInstructionHeapContext(regs, pc, extra_references=extra_references)
 		except Exception as e:
 			context["instruction_heap_references_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
 		try:
-			context["findmsp"] = _tellme_get_findmsp_summary()
+			context["findmsp"] = _getFindMspSummary()
 		except Exception as e:
 			context["findmsp_error"] = str(e)
 			context["findmsp_error_type"] = e.__class__.__name__
 			context["findmsp_error_traceback"] = traceback.format_exc()
 			mndbg.dbgp("tellme: failed to collect findmsp context:\n%s" % context["findmsp_error_traceback"], errormode=False)
 		try:
-			context["heap_details"] = _tellme_collect_heap_details()
+			context["heap_details"] = _collectHeapDetails()
 		except Exception as e:
 			context["heap_details_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heap_details: %s" % str(e), errormode=False)
 
 	if question_type != "3":
 		try:
-			context["modules"] = _tellme_format_text(_tellme_render_modules_text(), max_len=65535)
+			context["modules"] = _formatContextText(_renderModulesText(), max_len=65535)
 		except Exception as e:
 			context["modules_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
 
 	if question_type == "1" and isinstance(pc, int) and pc > 0:
 		context["program_counter"] = PTR_PRINT % pc
-		context["pc_disasm"] = _tellme_get_disasm_summary(pc)
-		context["pc_page"] = _tellme_get_page_summary(pc)
-		context["pc_module"] = _tellme_get_module_summary(pc)
-		context["pc_memory"] = _tellme_read_memory(pc, 0x40, "pc_memory")
+		context["pc_disasm"] = _getDisasmSummary(pc)
+		context["pc_page"] = _getPageSummary(pc)
+		context["pc_module"] = _getModuleSummary(pc)
+		context["pc_memory"] = _readMemoryPreview(pc, 0x40, "pc_memory")
 		try:
-			heapdynamics = _tellme_collect_heapdynamics_contexts(regs, pc, heapdynamics_files)
+			heapdynamics = _collectHeapdynamicsContexts(regs, pc, heapdynamics_files)
 			if len(heapdynamics) > 0:
 				context["heapdynamics"] = heapdynamics
-				context["heapdynamics_mini"] = _tellme_build_heapdynamics_mini(heapdynamics)
+				context["heapdynamics_mini"] = _buildHeapdynamicsMini(heapdynamics)
 		except Exception as e:
 			context["heapdynamics_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
 
 	if question_type == "1" and isinstance(sp, int) and sp > 0:
 		context["stack_pointer"] = PTR_PRINT % sp
-		context["stack_page"] = _tellme_get_page_summary(sp)
-		context["stack_memory"] = _tellme_read_memory(sp, 0x100, "stack_memory")
+		context["stack_page"] = _getPageSummary(sp)
+		context["stack_memory"] = _readMemoryPreview(sp, 0x100, "stack_memory")
 
 	if question_type == "1":
-		context["ntglobal_flag"] = _tellme_get_ntglobalflag_summary()
+		context["ntglobal_flag"] = _getNtGlobalFlagSummary()
 		if arch == 32:
-			context["seh_chain"] = _tellme_get_seh_chain_summary()
-		context["call_stack"] = _tellme_get_call_stack("kb")
+			context["seh_chain"] = _getSehChainSummary()
+		context["call_stack"] = _getCallStack("kb")
 	if additional_context_files is None:
 		additional_context_files = []
 	if len(additional_context_files) > 0:
 		context["additional_context_files"] = []
 		for file_path in additional_context_files:
-			context["additional_context_files"].append(_tellme_read_context_file(file_path, label="additional context file"))
+			context["additional_context_files"].append(_readContextFile(file_path, label="additional context file"))
 	if poc_file != "":
-		context["poc_file"] = _tellme_read_context_file(poc_file, label="poc file")
+		context["poc_file"] = _readContextFile(poc_file, label="poc file")
 
 	return context
 
 
-def buildTellMePrompt(question_type, context):
+def buildAIPrompt(question_type, context):
 	mndbg.dbgp("tellme: building prompt for question type '%s'" % question_type)
-	request_variables = _tellme_build_request_variables(context)
+	request_variables = _buildRequestVariables(context)
 
 	if question_type == "9":
 		raise ValueError("Question type '9' must be built from a template file with -f")
 
-	instructions = _tellme_get_profile_instructions(question_type)
+	instructions = _getProfileInstructions(question_type)
 
-	request_payload = _tellme_build_request_payload("profile", question_type, request_variables)
+	request_payload = _buildRequestPayload("profile", question_type, request_variables)
 	return instructions + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
 
 
-def getTellMeModelAndKey(engine, mona_config):
+def getAIModelAndKey(engine, mona_config):
 	key_name = "%s.key" % engine
 	model_name = "%s.model" % engine
 	api_key = mona_config.get(key_name).strip()
@@ -2951,12 +2951,12 @@ def getTellMeModelAndKey(engine, mona_config):
 			mndbg.dbgp("tellme: using environment fallback for %s.model via %s" % (engine, env_model_name))
 
 	if model == "":
-		model = getTellMeDefaultModel(engine)
+		model = getDefaultAIModel(engine)
 
 	return api_key, model
 
 
-def getTellMeDefaultModel(engine):
+def getDefaultAIModel(engine):
 	if engine == "openai":
 		return "gpt-5.4"
 	if engine == "anthropic":
@@ -2964,7 +2964,7 @@ def getTellMeDefaultModel(engine):
 	return ""
 
 
-def _tellme_import_openai():
+def _importOpenAI():
 	mndbg.dbgp("tellme: loading OpenAI SDK on demand")
 	try:
 		dbg.log("[+] Loading OpenAI SDK...")
@@ -2979,7 +2979,7 @@ def _tellme_import_openai():
 		return None, "", traceback.format_exc()
 
 
-def getTellMeTimeout(engine, mona_config, args=None):
+def getAITimeout(engine, mona_config, args=None):
 	timeout_name = "%s.timeout" % engine
 	timeout = 60.0
 	timeout_source = "default"
@@ -3019,7 +3019,7 @@ def getTellMeTimeout(engine, mona_config, args=None):
 	return timeout, timeout_source
 
 
-def getTellMeMaxTokens(engine, mona_config):
+def getAIMaxTokens(engine, mona_config):
 	max_tokens_name = "%s.max_tokens" % engine
 	max_tokens = 4096
 	max_tokens_source = "default"
@@ -3053,7 +3053,7 @@ def getTellMeMaxTokens(engine, mona_config):
 	return max_tokens, max_tokens_source
 
 
-def getTellMeTestModel(engine):
+def getAITestModel(engine):
 	if engine == "openai":
 		return "gpt-5.4-nano"
 	if engine == "anthropic":
@@ -3061,7 +3061,7 @@ def getTellMeTestModel(engine):
 	return ""
 
 
-def _tellme_extract_error_payload(err):
+def _extractProviderErrorPayload(err):
 	payload = {}
 	for attr in ["request_id", "status_code", "code", "param", "type"]:
 		try:
@@ -3084,8 +3084,8 @@ def _tellme_extract_error_payload(err):
 	return payload
 
 
-def _tellme_get_nested_error_dict(err):
-	payload = _tellme_extract_error_payload(err)
+def _getNestedErrorDict(err):
+	payload = _extractProviderErrorPayload(err)
 	body = payload.get("body", None)
 	if isinstance(body, dict):
 		if "error" in body and isinstance(body["error"], dict):
@@ -3094,8 +3094,8 @@ def _tellme_get_nested_error_dict(err):
 	return {}
 
 
-def _tellme_get_error_message(err):
-	nested = _tellme_get_nested_error_dict(err)
+def _getProviderErrorMessage(err):
+	nested = _getNestedErrorDict(err)
 	for key in ["message", "error", "detail"]:
 		value = nested.get(key, "")
 		if value:
@@ -3106,7 +3106,7 @@ def _tellme_get_error_message(err):
 	return err.__class__.__name__
 
 
-def _tellme_log_error_details(prefix, payload):
+def _logProviderErrorDetails(prefix, payload):
 	if "request_id" in payload:
 		dbg.log("    %s request id : %s" % (prefix, payload["request_id"]), highlight=1)
 	if "status_code" in payload:
@@ -3117,10 +3117,10 @@ def _tellme_log_error_details(prefix, payload):
 		dbg.log("    %s param      : %s" % (prefix, payload["param"]), highlight=1)
 
 
-def _tellme_log_openai_error(err):
-	payload = _tellme_extract_error_payload(err)
-	nested = _tellme_get_nested_error_dict(err)
-	message = _tellme_get_error_message(err)
+def _logOpenAIError(err):
+	payload = _extractProviderErrorPayload(err)
+	nested = _getNestedErrorDict(err)
+	message = _getProviderErrorMessage(err)
 	error_type = nested.get("type", "") or err.__class__.__name__
 	error_code = nested.get("code", "") or payload.get("code", "")
 	err_cls = err.__class__.__name__
@@ -3155,12 +3155,12 @@ def _tellme_log_openai_error(err):
 
 	if message:
 		dbg.log("    Message       : %s" % message, highlight=1)
-	_tellme_log_error_details("OpenAI", payload)
+	_logProviderErrorDetails("OpenAI", payload)
 
 
-def _tellme_log_anthropic_error(err):
-	payload = _tellme_extract_error_payload(err)
-	message = _tellme_get_error_message(err)
+def _logAnthropicError(err):
+	payload = _extractProviderErrorPayload(err)
+	message = _getProviderErrorMessage(err)
 	err_cls = err.__class__.__name__
 	try:
 		err_type = ensure_text(getattr(err, "type", ""))
@@ -3191,30 +3191,30 @@ def _tellme_log_anthropic_error(err):
 
 	if message:
 		dbg.log("    Message       : %s" % message, highlight=1)
-	_tellme_log_error_details("Anthropic", payload)
+	_logProviderErrorDetails("Anthropic", payload)
 
 
-def logTellMeProviderError(engine, err):
+def logAIProviderError(engine, err):
 	mndbg.dbgp("tellme: formatting provider error for engine '%s'" % engine)
 	if engine == "openai":
 		try:
-			_tellme_log_openai_error(err)
+			_logOpenAIError(err)
 			return
 		except Exception:
 			mndbg.dbgp("tellme: OpenAI error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
 
 	if engine == "anthropic":
 		try:
-			_tellme_log_anthropic_error(err)
+			_logAnthropicError(err)
 			return
 		except Exception:
 			mndbg.dbgp("tellme: Anthropic error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
 
 	dbg.log("[!] %s request failed" % engine.capitalize(), highlight=1)
-	dbg.log("    Message       : %s" % _tellme_get_error_message(err), highlight=1)
+	dbg.log("    Message       : %s" % _getProviderErrorMessage(err), highlight=1)
 
 
-def _tellme_is_timeout_error(engine, err):
+def _isTimeoutError(engine, err):
 	if engine == "openai" and err.__class__.__name__ == "APITimeoutError":
 		return True
 
@@ -3225,20 +3225,20 @@ def _tellme_is_timeout_error(engine, err):
 		return True
 
 	try:
-		message = _tellme_get_error_message(err).lower()
+		message = _getProviderErrorMessage(err).lower()
 	except Exception:
 		message = str(err).lower()
 	return ("timeout" in message) or ("timed out" in message)
 
 
-def formatTellMeResponseLines(answer):
+def formatAIResponseLines(answer):
 	lines = []
 	for raw_line in answer.splitlines():
 		lines.append(raw_line.replace("\t", "    ").rstrip())
 	return lines
 
 
-def _tellme_render_registers_text():
+def _renderRegistersText():
 	lines = []
 	try:
 		regs = getAllRegisters()
@@ -3247,13 +3247,13 @@ def _tellme_render_registers_text():
 			if isinstance(reg_val, int):
 				lines.append("%s = %s" % (reg_name.lower(), PTR_PRINT % reg_val))
 			else:
-				lines.append("%s = %s" % (reg_name.lower(), _tellme_format_text(reg_val)))
+				lines.append("%s = %s" % (reg_name.lower(), _formatContextText(reg_val)))
 	except Exception as e:
 		lines.append("Unable to read registers: %s" % str(e))
 	return "\n".join(lines)
 
 
-def _tellme_render_stack_text(max_bytes=0x1000):
+def _renderStackText(max_bytes=0x1000):
 	lines = []
 	try:
 		if mnproc is None:
@@ -3287,7 +3287,7 @@ def _tellme_render_stack_text(max_bytes=0x1000):
 	return "\n".join(lines)
 
 
-def _tellme_render_layout_categories_text(categories, include_chunks=True):
+def _renderLayoutCategoriesText(categories, include_chunks=True):
 	lines = []
 	try:
 		if mnproc is None:
@@ -3305,7 +3305,7 @@ def _tellme_render_layout_categories_text(categories, include_chunks=True):
 	return "\n".join(lines)
 
 
-def _tellme_render_modules_text():
+def _renderModulesText():
 	lines = []
 	try:
 		if mnproc is None:
@@ -3332,7 +3332,7 @@ def _tellme_render_modules_text():
 	return "\n".join(lines)
 
 
-def _tellme_get_ntglobalflag_summary():
+def _getNtGlobalFlagSummary():
 	info = OrderedDict()
 	try:
 		if mnproc is None:
@@ -3359,7 +3359,7 @@ def _tellme_get_ntglobalflag_summary():
 	return info
 
 
-def _tellme_get_seh_chain_summary():
+def _getSehChainSummary():
 	info = OrderedDict()
 	if arch != 32:
 		info["error"] = "Structured Exception Handling chain collection is only applicable on 32-bit targets"
@@ -3386,7 +3386,7 @@ def _tellme_get_seh_chain_summary():
 				entry["handler"] = PTR_PRINT % sehandler if isinstance(sehandler, int) and sehandler > 0 else "0x00000000"
 				try:
 					ptr = MnPointer(sehandler)
-					entry["function"] = _tellme_format_text(ptr.getPtrFunction(), max_len=512)
+					entry["function"] = _formatContextText(ptr.getPtrFunction(), max_len=512)
 				except Exception as e:
 					entry["function_error"] = str(e)
 					entry["function"] = ""
@@ -3403,14 +3403,14 @@ def _tellme_get_seh_chain_summary():
 						)
 						info["overwritten"].append(OrderedDict([
 							("record", PTR_PRINT % recaddress),
-							("type", _tellme_format_text(overwritedata[0], max_len=64)),
+							("type", _formatContextText(overwritedata[0], max_len=64)),
 							("offset", int(overwritedata[1]))
 						]))
 				except Exception as e:
 					entry["overwrite_check_error"] = str(e)
 				if nsehvalue == 0xffffffff and info_text == "":
 					info_text = "End of SEH chain"
-				entry["info"] = _tellme_format_text(info_text, max_len=512)
+				entry["info"] = _formatContextText(info_text, max_len=512)
 				info["records"].append(entry)
 			except Exception as e:
 				info["records"].append(OrderedDict([
@@ -3423,7 +3423,7 @@ def _tellme_get_seh_chain_summary():
 	return info
 
 
-def _tellme_get_findmsp_summary(args=None):
+def _getFindMspSummary(args=None):
 	info = OrderedDict()
 	osilent = None
 	dbg.log("[+] Running findmsp")
@@ -3448,11 +3448,11 @@ def _tellme_get_findmsp_summary(args=None):
 						entry["offset"] = int(value[1])
 					if len(value) > 2:
 						if key == "registers":
-							entry["pattern_type"] = _tellme_format_text(value[2], max_len=64)
+							entry["pattern_type"] = _formatContextText(value[2], max_len=64)
 						else:
 							entry["length"] = int(value[2])
 					if len(value) > 3:
-						entry["pattern_type"] = _tellme_format_text(value[3], max_len=64)
+						entry["pattern_type"] = _formatContextText(value[3], max_len=64)
 					section[name] = entry
 				info[key] = section
 			elif key == "seh":
@@ -3466,7 +3466,7 @@ def _tellme_get_findmsp_summary(args=None):
 					if len(value) > 1:
 						entry["offset"] = int(value[1])
 					if len(value) > 2:
-						entry["pattern_type"] = _tellme_format_text(value[2], max_len=64)
+						entry["pattern_type"] = _formatContextText(value[2], max_len=64)
 					if len(value) > 3:
 						entry["trailing_pattern_length"] = int(value[3])
 					section.append(entry)
@@ -3480,7 +3480,7 @@ def _tellme_get_findmsp_summary(args=None):
 					if len(value) > 0:
 						entry["length"] = int(value[0])
 					if len(value) > 1:
-						entry["pattern_type"] = _tellme_format_text(value[1], max_len=64)
+						entry["pattern_type"] = _formatContextText(value[1], max_len=64)
 					section.append(entry)
 				info[key] = section
 			else:
@@ -3492,27 +3492,27 @@ def _tellme_get_findmsp_summary(args=None):
 					if len(value) > 0:
 						entry["stack_offset"] = int(value[0])
 					if len(value) > 1:
-						entry["stack_direction"] = _tellme_format_text(value[1], max_len=8)
+						entry["stack_direction"] = _formatContextText(value[1], max_len=8)
 					if len(value) > 2:
 						entry["pattern_offset"] = int(value[2])
 					if len(value) > 3:
 						entry["length"] = int(value[3])
 					if len(value) > 4:
-						entry["pattern_type"] = _tellme_format_text(value[4], max_len=64)
+						entry["pattern_type"] = _formatContextText(value[4], max_len=64)
 					section.append(entry)
 				info[key] = section
 	except Exception as e:
 		info["error"] = str(e)
 		info["error_type"] = e.__class__.__name__
 		info["error_traceback"] = traceback.format_exc()
-		mndbg.dbgp("tellme: _tellme_get_findmsp_summary failed:\n%s" % info["error_traceback"], errormode=False)
+		mndbg.dbgp("tellme: _getFindMspSummary failed:\n%s" % info["error_traceback"], errormode=False)
 	finally:
 		if not osilent is None:
 			g_silent = osilent
 	return info
 
 
-def _tellme_build_request_variables(context):
+def _buildRequestVariables(context):
 	variables = OrderedDict()
 	preferred_keys = [
 		"debugger",
@@ -3557,7 +3557,7 @@ def _tellme_build_request_variables(context):
 	return variables
 
 
-def _tellme_build_request_payload(mode, question_type, variables, template_text="", template_file=""):
+def _buildRequestPayload(mode, question_type, variables, template_text="", template_file=""):
 	request_payload = OrderedDict()
 	request_payload["mode"] = mode
 	request_payload["question_type"] = question_type
@@ -3569,7 +3569,7 @@ def _tellme_build_request_payload(mode, question_type, variables, template_text=
 	return request_payload
 
 
-def _tellme_get_profile_instructions(question_type):
+def _getProfileInstructions(question_type):
 	if question_type == "1":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on crash triage and immediate exploit-relevant observations.
@@ -3623,10 +3623,10 @@ For useful example gadgets, show:
 * whether it looks clean, fragile, or speculative
 
 Keep the answer concise, evidence-based, architecture-aware, and non-operational."""
-	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_instructions() to add more profiles." % question_type)
+	raise ValueError("Unsupported question type '%s'. Customize _getProfileInstructions() to add more profiles." % question_type)
 
 
-def _tellme_get_profile_template_variables(question_type):
+def _getProfileTemplateVariables(question_type):
 	common_vars = [
 		"debugger",
 		"debugger_flavor",
@@ -3686,27 +3686,27 @@ def _tellme_get_profile_template_variables(question_type):
 			"timestamp",
 			"rop_target_modules",
 		]
-	raise ValueError("Unsupported question type '%s'. Customize _tellme_get_profile_template_variables() to add more profiles." % question_type)
+	raise ValueError("Unsupported question type '%s'. Customize _getProfileTemplateVariables() to add more profiles." % question_type)
 
 
-def _tellme_build_profile_template_text(question_type):
+def _buildProfileTemplateText(question_type):
 	request_payload = OrderedDict()
 	request_payload["mode"] = "profile"
 	request_payload["question_type"] = question_type
 	request_payload["variables"] = OrderedDict()
-	for var_name in _tellme_get_profile_template_variables(question_type):
+	for var_name in _getProfileTemplateVariables(question_type):
 		request_payload["variables"][var_name] = "[%s]" % var_name
 
-	return _tellme_get_profile_instructions(question_type) + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
+	return _getProfileInstructions(question_type) + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
 
 
-def _tellme_get_default_template_filename(question_type):
+def _getDefaultTemplateFilename(question_type):
 	if question_type in ["1", "2"]:
 		return "ai.q%s" % question_type
 	return ""
 
 
-def _tellme_guess_template_question_type(template_path):
+def _guessTemplateQuestionType(template_path):
 	template_name = os.path.basename(template_path).strip().lower()
 	if template_name == "ai.q1":
 		return "1"
@@ -3717,15 +3717,15 @@ def _tellme_guess_template_question_type(template_path):
 	return ""
 
 
-def _tellme_contains_template_placeholders(text):
+def _containsTemplatePlaceholders(text):
 	try:
 		return re.search(r"\[([A-Za-z0-9_]+)\]", text or "") is not None
 	except Exception:
 		return False
 
 
-def _tellme_ensure_default_template(question_type, mona_config):
-	template_name = _tellme_get_default_template_filename(question_type)
+def _ensureDefaultTemplate(question_type, mona_config):
+	template_name = _getDefaultTemplateFilename(question_type)
 	if template_name == "":
 		return ""
 
@@ -3740,7 +3740,7 @@ def _tellme_ensure_default_template(question_type, mona_config):
 			logfile = MnLog(template_name)
 			template_path = logfile.reset(showheader=False, skipModuleTable=True)
 		with open(template_path, "wb") as fh:
-			fh.write(_tellme_build_profile_template_text(question_type).encode("latin-1"))
+			fh.write(_buildProfileTemplateText(question_type).encode("latin-1"))
 	except Exception as e:
 		mndbg.dbgp("tellme: unable to write default template %s: %s" % (template_path, str(e)), errormode=False)
 		return ""
@@ -3748,7 +3748,7 @@ def _tellme_ensure_default_template(question_type, mona_config):
 	return template_path
 
 
-def _tellme_extract_prebuilt_prompt(template_path):
+def _extractPrebuiltPrompt(template_path):
 	mndbg.dbgp("tellme: checking whether %s already contains a built request prompt" % template_path)
 	try:
 		with open(template_path, "rb") as fh:
@@ -3772,7 +3772,7 @@ def _tellme_extract_prebuilt_prompt(template_path):
 			start_idx += 1
 		prompt = "\n".join(lines[start_idx:prompt_end]).strip()
 		if prompt != "":
-			if _tellme_contains_template_placeholders(prompt):
+			if _containsTemplatePlaceholders(prompt):
 				mndbg.dbgp("tellme: PROMPT block in %s still contains template placeholders, so runtime expansion is required" % template_path)
 			else:
 				mndbg.dbgp("tellme: extracted prebuilt prompt block from %s" % template_path)
@@ -3780,7 +3780,7 @@ def _tellme_extract_prebuilt_prompt(template_path):
 
 	trimmed = template_text.strip()
 	if "Debugger request JSON:" in trimmed or "Template request JSON:" in trimmed:
-		if _tellme_contains_template_placeholders(trimmed):
+		if _containsTemplatePlaceholders(trimmed):
 			mndbg.dbgp("tellme: raw request text in %s still contains template placeholders, so runtime expansion is required" % template_path)
 		else:
 			mndbg.dbgp("tellme: treating %s as an already-built raw request prompt" % template_path)
@@ -3789,7 +3789,7 @@ def _tellme_extract_prebuilt_prompt(template_path):
 	return ""
 
 
-def buildTellMePromptFromTemplateFile(template_path, context, question_type="9"):
+def buildAIPromptFromTemplateFile(template_path, context, question_type="9"):
 	mndbg.dbgp("tellme: building prompt from template file %s" % template_path)
 	try:
 		with open(template_path, "rb") as fh:
@@ -3797,7 +3797,7 @@ def buildTellMePromptFromTemplateFile(template_path, context, question_type="9")
 	except Exception as e:
 		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
 
-	available_variables = _tellme_build_request_variables(context)
+	available_variables = _buildRequestVariables(context)
 	used_variables = OrderedDict()
 	unknown_placeholders = []
 	empty_placeholders = []
@@ -3838,7 +3838,7 @@ def buildTellMePromptFromTemplateFile(template_path, context, question_type="9")
 	return template_text.strip()
 
 
-def writeTellMeRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
+def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
 	mndbg.dbgp("tellme: writing AI request to tellme_request.txt")
 	logfile = MnLog("tellme_request.txt")
 	thislog = logfile.reset(showheader=False, skipModuleTable=True)
@@ -3862,7 +3862,7 @@ def writeTellMeRequestLog(engine, model, question_type, prompt, request_id="", t
 	return thislog
 
 
-def writeTellMeResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source=""):
+def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source=""):
 	mndbg.dbgp("tellme: writing AI response to tellme_response.md")
 	logfile = MnLog("tellme_response.md")
 	thislog = logfile.reset()
@@ -3885,9 +3885,9 @@ def writeTellMeResponseLog(engine, model, question_type, request_id, ai_response
 	return thislog
 
 
-def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="", target_address=0, target_address_source=""):
+def writeAIOfflineLog(engine, model, question_type, prompt, template_file="", target_address=0, target_address_source=""):
 	mndbg.dbgp("tellme: writing offline prompt to tellme_request.txt")
-	return writeTellMeRequestLog(
+	return writeAIRequestLog(
 		engine,
 		model,
 		question_type,
@@ -3898,7 +3898,7 @@ def writeTellMeDryRunLog(engine, model, question_type, prompt, template_file="",
 	)
 
 
-class TellMeProviderError(Exception):
+class AIProviderError(Exception):
 	def __init__(self, message, request_id="", status_code=None, code="", param="", body=None, error_type=""):
 		Exception.__init__(self, message)
 		self.request_id = request_id
@@ -3909,7 +3909,7 @@ class TellMeProviderError(Exception):
 		self.type = error_type
 
 
-def callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0):
+def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0):
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
 	response = client.responses.create(
@@ -3928,7 +3928,7 @@ def callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_second
 		raise RuntimeError("OpenAI returned an empty or unexpected response payload")
 
 
-def _tellme_extract_openai_text(response_data):
+def _extractOpenAIText(response_data):
 	if not isinstance(response_data, dict):
 		return ""
 	output_text = ensure_text(response_data.get("output_text", "")).strip()
@@ -3947,7 +3947,7 @@ def _tellme_extract_openai_text(response_data):
 	return "\n".join([part for part in parts if part]).strip()
 
 
-def callTellMeOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0):
+def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0):
 	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	request_body = {
 		"model": model,
@@ -4010,7 +4010,7 @@ def callTellMeOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0):
 			error_param = ensure_text(error_obj.get("param", ""))
 		if error_message == "":
 			error_message = "OpenAI HTTP error %s" % str(status_code)
-		raise TellMeProviderError(
+		raise AIProviderError(
 			error_message,
 			request_id=request_id,
 			status_code=status_code,
@@ -4020,7 +4020,7 @@ def callTellMeOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0):
 			error_type=error_type
 		)
 	except urllib_URLError as e:
-		raise TellMeProviderError(
+		raise AIProviderError(
 			"Unable to reach OpenAI API: %s" % str(getattr(e, "reason", e)),
 			body={"error": {"message": str(getattr(e, "reason", e))}},
 			error_type=e.__class__.__name__
@@ -4028,14 +4028,14 @@ def callTellMeOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0):
 	except socket.timeout:
 		raise
 	except Exception as e:
-		raise TellMeProviderError(
+		raise AIProviderError(
 			"OpenAI request setup failed: %s" % str(e),
 			body={"error": {"message": str(e)}},
 			error_type=e.__class__.__name__
 		)
 	if request_id:
 		mndbg.dbgp("tellme: OpenAI HTTPS fallback response id: %s" % request_id)
-	text = _tellme_extract_openai_text(response_data)
+	text = _extractOpenAIText(response_data)
 	if text:
 		return text, request_id
 	raise RuntimeError("OpenAI returned an empty or unexpected response payload")
@@ -4063,7 +4063,7 @@ def _anthropic_extract_text(message):
 	return "\n".join([p for p in parts if p]).strip()
 
 
-def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096):
+def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096):
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
 	))
@@ -4133,7 +4133,7 @@ def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens
 			error_type = ensure_text(error_obj.get("type", ""))
 		if error_message == "":
 			error_message = "Anthropic HTTP error %s" % str(status_code)
-		raise TellMeProviderError(
+		raise AIProviderError(
 			error_message,
 			request_id=request_id,
 			status_code=status_code,
@@ -4142,7 +4142,7 @@ def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens
 			error_type=error_type
 		)
 	except urllib_URLError as e:
-		raise TellMeProviderError(
+		raise AIProviderError(
 			"Unable to reach Anthropic API: %s" % str(getattr(e, "reason", e)),
 			body={"error": {"message": str(getattr(e, "reason", e))}},
 			error_type=e.__class__.__name__
@@ -4150,7 +4150,7 @@ def callTellMeAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens
 	except socket.timeout:
 		raise
 	except Exception as e:
-		raise TellMeProviderError(
+		raise AIProviderError(
 			"Anthropic request setup failed: %s" % str(e),
 			body={"error": {"message": str(e)}},
 			error_type=e.__class__.__name__
@@ -24526,473 +24526,685 @@ def procInfo(args):
 		dbg.logLines(output)
 	dbg.log("")
 
-# ----- tellme: Ask an AI engine to analyze the current debugger state ----- #
-def procTellMe(args):
-	mndbg.dbgp("tellme: command invoked with args %s" % str(args))
 
-	if not mndbg.isWinDBG():
-		dbg.log("The 'tellme' command is only available under WinDBG", highlight=1)
-		return
 
-	available_engines = getAvailableAIEngines(reason="procTellMe", refresh=True)
-	mndbg.dbgp("tellme: available AI engines: %s" % ", ".join(available_engines))
 
-	mona_config = MnConfig()
-	ensureTellMeDefaultEngineConfig(mona_config, available_engines)
-	engine_arg_raw = args.get("e", "")
-	config_default_engine = _normalize_tellme_engine(mona_config.get(getTellMeDefaultEngineConfigName()))
-	env_default_engine = _normalize_tellme_engine(os.environ.get(getTellMeDefaultEngineEnvName(), ""))
-	no_engine_arg_specified = (type(engine_arg_raw).__name__.lower() != "bool") and (_normalize_tellme_engine(engine_arg_raw) == "")
-	auto_offline_no_default = no_engine_arg_specified and config_default_engine == "" and env_default_engine == ""
+class MnAI(object):
+	"""Coordinate mona tellme engine selection, prompt building, request execution, and logging."""
 
-	engine, engine_source, engine_error, engine_is_fallback = resolveTellMeEngine(
-		engine_arg_raw,
-		mona_config,
-		available_engines
-	)
-	if engine_error != "":
-		dbg.log(engine_error, highlight=1)
-		return
+	def __init__(self, args, mona_config=None):
+		"""Initialize an AI request session from command arguments and config defaults."""
+		self.args = args or {}
+		self.mona_config = mona_config or MnConfig()
+		self.available_provider_engines = getAvailableAIEngines(reason="MnAI", refresh=True)
+		self.available_engines = ["offline"] + list(self.available_provider_engines)
+		self.engine = "offline"
+		self.engine_source = "default"
+		self.offline = False
+		self.testmode = ("test" in self.args)
+		self.model = getDefaultAIModel("openai")
+		self.timeout_seconds = 60.0
+		self.timeout_source = "default"
+		self.max_tokens = 4096
+		self.max_tokens_source = "default"
+		self.api_key = ""
+		self.question_type = ""
+		self.effective_question_type = ""
+		self.target_address = 0
+		self.target_address_source = PROGRAM_COUNTER.upper()
+		self.heap_target_address = 0
+		self.rop_target_modules = None
+		self.template_file = ""
+		self.prebuilt_prompt = ""
+		self.heapdynamics_files = []
+		self.additional_context_files = []
+		self.poc_file = ""
+		self.prompt = ""
+		self.response = ""
+		self.request_id = ""
+		self.request_logfile_path = ""
+		self.response_logfile_path = ""
+		self.offline_logfile_path = ""
 
-	if engine_source == "config":
-		dbg.log("[+] No -e value specified, using default engine '%s' from %s" % (
-			engine, getTellMeDefaultEngineConfigName()
-		))
-	elif engine_source == "environment":
-		dbg.log("[+] No -e value specified, using default engine '%s' from %s" % (
-			engine, getTellMeDefaultEngineEnvName()
-		))
-	elif engine_is_fallback and not auto_offline_no_default:
-		if engine == "manual":
-			dbg.log("[+] No -e value specified, defaulting to manual request generation")
+	def logInfo(self, message):
+		"""Write a top-level informational message using the standard AI output prefix."""
+		dbg.log("[+] %s" % message)
+
+	def logInfoDetail(self, message):
+		"""Write an indented informational continuation line aligned under the status prefix."""
+		dbg.log("    %s" % message)
+
+	def logError(self, message):
+		"""Write a top-level error message using the standard AI output prefix."""
+		dbg.log("[!] %s" % message, highlight=True)
+
+	def logErrorDetail(self, message):
+		"""Write an indented error continuation line aligned under the status prefix."""
+		dbg.log("    %s" % message, highlight=True)
+
+	def isDefaultEngineSelection(self):
+		"""Return True when the current engine came from config, environment, or implicit default selection."""
+		return self.engine_source in ["config", "environment", "default"]
+
+	def switchToOfflineEngine(self, reason, details=None):
+		"""Switch the active request engine to offline mode and report why the fallback happened."""
+		self.engine = "offline"
+		self.engine_source = "fallback"
+		self.offline = True
+		self.api_key = ""
+		self.model = getDefaultAIModel("openai")
+		self.timeout_seconds = 60.0
+		self.timeout_source = "default"
+		self.max_tokens = 4096
+		self.max_tokens_source = "default"
+		self.logInfo(reason)
+		if details:
+			self.logInfoDetail(details)
+		self.logInfoDetail("Selected engine: %s" % self.engine)
+
+	def getConfiguredDefaultEngine(self):
+		"""Return the configured default engine from mona.ini or the environment."""
+		config_engine = _normalizeAIEngine(self.mona_config.get(getDefaultAIEngineConfigName()))
+		if config_engine != "":
+			return config_engine, "config"
+		env_engine = _normalizeAIEngine(os.environ.get(getDefaultAIEngineEnvName(), ""))
+		if env_engine != "":
+			return env_engine, "environment"
+		return "offline", "default"
+
+	def parseEngineSelection(self):
+		"""Resolve the effective engine and offline mode from command arguments and defaults."""
+		engine_arg_raw = self.args.get("e", "")
+		if type(engine_arg_raw).__name__.lower() == "bool":
+			self.logError("Please specify an engine value with -e <offline|openai|anthropic>")
+			return False
+
+		explicit_engine = _normalizeAIEngine(engine_arg_raw)
+		if explicit_engine != "":
+			self.engine = explicit_engine
+			self.engine_source = "argument"
 		else:
-			dbg.log("[+] No -e value specified, defaulting to '%s'" % engine)
+			self.engine, self.engine_source = self.getConfiguredDefaultEngine()
 
-	if (engine != "manual") and (not _tellme_is_supported_engine(engine)):
-		dbg.log("Invalid AI engine '%s'. Valid values: openai, anthropic" % engine, highlight=1)
-		return
+		self.offline = ("offline" in self.args) or ("dryrun" in self.args) or (self.engine == "offline")
+		mndbg.dbgp("tellme: effective engine=%s source=%s offline=%s" % (
+			self.engine,
+			self.engine_source,
+			str(self.offline)
+		))
 
-	if engine not in available_engines:
-		dbg.log("The '%s' engine is not available in this Python environment. Available: %s" % (
-			engine, ", ".join(available_engines)
-		), highlight=1)
-		return
+		if self.engine_source == "config":
+			self.logInfo("No -e value specified, using default engine '%s' from %s" % (
+				self.engine, getDefaultAIEngineConfigName()
+			))
+		elif self.engine_source == "environment":
+			self.logInfo("No -e value specified, using default engine '%s' from %s" % (
+				self.engine, getDefaultAIEngineEnvName()
+			))
+		elif self.engine_source == "default":
+			self.logInfo("No default AI engine is configured. Defaulting to offline mode.")
+			self.logInfoDetail("Set %s, set %s, use -e, or keep using -offline/manual requests." % (
+				getDefaultAIEngineConfigName(),
+				getDefaultAIEngineEnvName()
+			))
+		self.logInfo("Selected engine: %s" % self.engine)
 
-	if "q" not in args:
-		dbg.log("Please select a question profile with -q", highlight=1)
-		dbg.log("")
-		dbg.log("Available questions:")
-		dbg.log("    -q 1 : analyse the crash context")
-		dbg.log("    -q 2 : analyse the current function")
-		dbg.log("    -q 9 : use a request template from -f <file>")
-		return
-	if type(args["q"]).__name__.lower() == "bool":
-		dbg.log("Please specify a question profile with -q <1|2|9>", highlight=1)
-		return
+		if self.engine not in self.available_engines:
+			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, anthropic" % self.engine)
+			return False
+		if self.engine != "offline" and self.engine not in self.available_provider_engines:
+			if self.isDefaultEngineSelection():
+				self.switchToOfflineEngine(
+					"Default engine '%s' is not available in this Python environment. Falling back to offline mode." % self.engine,
+					"Available engines: %s" % ", ".join(self.available_provider_engines)
+				)
+				return True
+			self.logError("The '%s' engine is not available in this Python environment." % self.engine)
+			self.logErrorDetail("Available: %s" % ", ".join(self.available_provider_engines))
+			return False
+		if ("offline" in self.args or "dryrun" in self.args) and self.engine != "offline":
+			self.logInfo("Offline mode requested. The '%s' provider settings will be used only to build/save the request." % self.engine)
+		return True
 
-	question_type = str(args.get("q", "")).strip()
-	mndbg.dbgp("tellme: selected question type '%s'" % question_type)
-	offline = ("offline" in args) or ("dryrun" in args)
-	testmode = ("test" in args)
-	if auto_offline_no_default and not offline:
-		offline = True
-		dbg.log("[+] No default AI engine is configured and no -e value was specified.", highlight=1)
-		dbg.log("    Switching to offline mode by default to avoid consuming API tokens.", highlight=1)
-		dbg.log("    Set %s, set %s, or use -e to send the request directly." % (
-			getTellMeDefaultEngineConfigName(),
-			getTellMeDefaultEngineEnvName()
-		), highlight=1)
-	mndbg.dbgp("tellme: offline=%s, testmode=%s" % (str(offline), str(testmode)))
-	target_address = 0
-	target_address_source = PROGRAM_COUNTER.upper()
-	heap_target_address = 0
-	rop_target_modules = None
-	effective_question_type = question_type
+	def parseQuestionProfile(self):
+		"""Validate the requested question profile and store the effective question type."""
+		if "q" not in self.args:
+			self.logError("Please select a question profile with -q")
+			dbg.log("")
+			self.logInfo("Available questions:")
+			self.logInfoDetail("-q 1 : analyse the crash context")
+			self.logInfoDetail("-q 2 : analyse the current function")
+			self.logInfoDetail("-q 9 : use a request template from -f <file>")
+			return False
+		if type(self.args["q"]).__name__.lower() == "bool":
+			self.logError("Please specify a question profile with -q <1|2|9>")
+			return False
 
-	if "a" in args:
-		if type(args["a"]).__name__.lower() == "bool":
-			dbg.log("Please specify a valid address/register/module/module!function/symbol expression with -a", highlight=1)
-			return
-		target_address, addyok = getAddyArg(args["a"])
+		self.question_type = str(self.args.get("q", "")).strip()
+		self.effective_question_type = self.question_type
+		mndbg.dbgp("tellme: selected question type '%s'" % self.question_type)
+		return True
+
+	def parseTargetAddress(self):
+		"""Resolve an optional analysis target address from -a and map it to the active question profile."""
+		if "a" not in self.args:
+			return True
+		if type(self.args["a"]).__name__.lower() == "bool":
+			self.logError("Please specify a valid address/register/module/module!function/symbol expression with -a")
+			return False
+
+		self.target_address, addyok = getAddyArg(self.args["a"])
 		if not addyok:
-			dbg.log("Please specify a valid address/register/module/module!function/symbol expression with -a", highlight=1)
-			return
-		if effective_question_type == "1":
-			heap_target_address = target_address
-			target_address_source = "-a"
-			mndbg.dbgp("tellme: using heap analysis target %s from -a for q1" % (PTR_PRINT % heap_target_address))
+			self.logError("Please specify a valid address/register/module/module!function/symbol expression with -a")
+			return False
+
+		self.target_address_source = "-a"
+		if self.effective_question_type == "1":
+			self.heap_target_address = self.target_address
+			mndbg.dbgp("tellme: using heap analysis target %s from -a for q1" % (PTR_PRINT % self.heap_target_address))
 		else:
-			target_address_source = "-a"
-			mndbg.dbgp("tellme: using target address override %s from -a" % (PTR_PRINT % target_address))
+			mndbg.dbgp("tellme: using target address override %s from -a" % (PTR_PRINT % self.target_address))
+		return True
 
-	template_file = ""
-	prebuilt_prompt = ""
-	if question_type == "9":
-		if "f" not in args or type(args["f"]).__name__.lower() == "bool":
-			dbg.log("Question profile '-q 9' requires -f <file>", highlight=1)
-			return
-		template_file = getAbsolutePath(str(args["f"]).replace('"', "").replace("'", ""))
-		if not os.path.isfile(template_file):
-			dbg.log("Unable to find/read template file %s" % template_file, highlight=1)
-			return
+	def parseTemplateSelection(self):
+		"""Load and validate a request template when question profile 9 is selected."""
+		if self.question_type != "9":
+			return True
+		if "f" not in self.args or type(self.args["f"]).__name__.lower() == "bool":
+			self.logError("Question profile '-q 9' requires -f <file>")
+			return False
+
+		self.template_file = getAbsolutePath(str(self.args["f"]).replace('"', "").replace("'", ""))
+		if not os.path.isfile(self.template_file):
+			self.logError("Unable to find/read template file %s" % self.template_file)
+			return False
 		try:
-			prebuilt_prompt = _tellme_extract_prebuilt_prompt(template_file)
+			self.prebuilt_prompt = _extractPrebuiltPrompt(self.template_file)
 		except Exception as e:
-			dbg.log("Unable to parse request/template file %s: %s" % (template_file, str(e)), highlight=1)
-			return
-		effective_question_type = _tellme_guess_template_question_type(template_file)
-		mndbg.dbgp("tellme: using template file %s for q9" % template_file)
-		if prebuilt_prompt != "":
-			mndbg.dbgp("tellme: q9 will reuse the prebuilt request prompt from %s" % template_file)
-			dbg.log("[+] Using prebuilt request from: %s" % template_file)
-		if effective_question_type != "":
-			mndbg.dbgp("tellme: inferred base question type '%s' from template name" % effective_question_type)
-			if target_address > 0 and heap_target_address == 0 and target_address_source == "-a" and effective_question_type == "1":
-				heap_target_address = target_address
-				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for ai.q1 template" % (PTR_PRINT % heap_target_address))
-		elif prebuilt_prompt == "":
-			dbg.log("[+] Using request template: %s" % template_file)
+			self.logError("Unable to parse request/template file %s" % self.template_file)
+			self.logErrorDetail(str(e))
+			return False
 
-	if question_type in ["1", "2"]:
-		default_template_path = _tellme_ensure_default_template(question_type, mona_config)
+		self.effective_question_type = _guessTemplateQuestionType(self.template_file)
+		mndbg.dbgp("tellme: using template file %s for q9" % self.template_file)
+		if self.prebuilt_prompt != "":
+			mndbg.dbgp("tellme: q9 will reuse the prebuilt request prompt from %s" % self.template_file)
+			self.logInfo("Using prebuilt request from: %s" % self.template_file)
+		if self.effective_question_type != "":
+			mndbg.dbgp("tellme: inferred base question type '%s' from template name" % self.effective_question_type)
+			if self.target_address > 0 and self.heap_target_address == 0 and self.target_address_source == "-a" and self.effective_question_type == "1":
+				self.heap_target_address = self.target_address
+				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for ai.q1 template" % (PTR_PRINT % self.heap_target_address))
+		elif self.prebuilt_prompt == "":
+			self.logInfo("Using request template: %s" % self.template_file)
+		return True
+
+	def ensureDefaultTemplates(self):
+		"""Create built-in template files for q1 and q2 when needed."""
+		if self.question_type not in ["1", "2"]:
+			return True
+		default_template_path = _ensureDefaultTemplate(self.question_type, self.mona_config)
 		if default_template_path != "":
-			dbg.log("[+] Template available at %s (not used unless you run -q 9 -f %s)" % (
+			self.logInfo("Template available at %s (not used unless you run -q 9 -f %s)" % (
 				default_template_path,
 				default_template_path
 			))
-	api_key = ""
-	model = getTellMeDefaultModel(engine)
-	timeout_seconds = 60.0
-	timeout_source = "default"
-	max_tokens = 4096
-	max_tokens_source = "default"
+		return True
 
-	if not offline:
-		api_key, model = getTellMeModelAndKey(engine, mona_config)
-		mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (engine, model))
+	def parseRequestSettings(self):
+		"""Resolve API key, model, timeout, token budget, and test overrides for the request."""
+		if self.engine != "offline":
+			self.api_key, self.model = getAIModelAndKey(self.engine, self.mona_config)
+			mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (self.engine, self.model))
+			try:
+				self.timeout_seconds, self.timeout_source = getAITimeout(self.engine, self.mona_config, args=self.args)
+			except ValueError as e:
+				self.logError(str(e))
+				return False
+			if self.effective_question_type == "3" and self.timeout_source == "default":
+				self.timeout_seconds += 30.0
+				mndbg.dbgp("tellme: extending default timeout for q3 to %.1fs" % self.timeout_seconds)
+			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
+			mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
+				self.engine, self.timeout_seconds, self.timeout_source
+			))
+			mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
+				self.engine, self.max_tokens, self.max_tokens_source
+			))
+		else:
+			self.model = getDefaultAIModel("openai")
+			mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
+
+		if "model" in self.args:
+			if type(self.args["model"]).__name__.lower() == "bool":
+				self.logError("Please specify a model value with -model <id>")
+				return False
+			explicit_model = str(self.args["model"]).strip()
+			if explicit_model != "":
+				self.model = explicit_model
+				self.logInfo("Overriding model to '%s'" % self.model)
+				mndbg.dbgp("tellme: using explicit -model override '%s'" % self.model)
+
+		if self.testmode:
+			test_model = getAITestModel(self.engine if self.engine != "offline" else "openai")
+			if test_model != "":
+				self.model = test_model
+				self.logInfo("Test mode enabled, overriding model to '%s'" % self.model)
+				mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (self.model, self.engine))
+		return True
+
+	def validateProviderConfiguration(self):
+		"""Stop direct provider execution when the required API key or model is missing."""
+		if self.offline or self.engine == "offline":
+			return True
+		if self.api_key == "":
+			if self.isDefaultEngineSelection():
+				self.switchToOfflineEngine(
+					"No API key was found for the default engine '%s'. Falling back to offline mode." % self.engine,
+					"Set the API key in mona.ini, set the matching environment variable, or use -e to override the engine."
+				)
+				return True
+			self.logError("Missing API key '%s.key'" % self.engine)
+			self.logErrorDetail("To configure API access, do the following:")
+			self.logErrorDetail("1. Create or retrieve an API key for your chosen provider")
+			self.logErrorDetail("2. Store it in mona's config file, or set the matching environment variable")
+			self.logErrorDetail("3. Optionally configure the model name")
+			dbg.log("")
+			self.logErrorDetail("OpenAI:")
+			self.logErrorDetail("  %s config -set openai.key <your OpenAI API key>" % getAliasName())
+			self.logErrorDetail("  %s config -set openai.model gpt-5.4" % getAliasName())
+			self.logErrorDetail("  %s config -set openai.timeout 90" % getAliasName())
+			self.logErrorDetail("  or (globally):")
+			self.logErrorDetail("  set OPENAI_API_KEY=<your OpenAI API key>")
+			self.logErrorDetail("  set OPENAI_MODEL=gpt-5.4")
+			self.logErrorDetail("  set OPENAI_TIMEOUT=90")
+			dbg.log("")
+			self.logErrorDetail("Anthropic:")
+			self.logErrorDetail("  %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
+			self.logErrorDetail("  %s config -set anthropic.model claude-opus-4-7" % getAliasName())
+			self.logErrorDetail("  %s config -set anthropic.timeout 90" % getAliasName())
+			self.logErrorDetail("  or (globally):")
+			self.logErrorDetail("  set ANTHROPIC_API_KEY=<your Anthropic API key>")
+			self.logErrorDetail("  set ANTHROPIC_MODEL=claude-opus-4-7")
+			self.logErrorDetail("  set ANTHROPIC_TIMEOUT=90")
+			dbg.log("")
+			self.logErrorDetail("mona.ini values take precedence over environment variables")
+			self.logErrorDetail("The -model and -timeout arguments override both for a single request")
+			dbg.log("")
+			self.logErrorDetail("Then run:")
+			self.logErrorDetail("  %s tellme -e %s -q %s" % (getAliasName(), self.engine, self.question_type))
+			dbg.log("")
+			self.logErrorDetail("Run '%s tellme -h' to see the full usage text" % getAliasName())
+			return False
+		if self.model == "":
+			if self.isDefaultEngineSelection():
+				self.switchToOfflineEngine(
+					"No model was configured for the default engine '%s'. Falling back to offline mode." % self.engine,
+					"Set it with '%s config -set %s.model <model>'" % (getAliasName(), self.engine)
+				)
+				return True
+			self.logError("Missing config value '%s.model'." % self.engine)
+			self.logErrorDetail("Set it with '%s config -set %s.model <model>'" % (
+				getAliasName(), self.engine
+			))
+			return False
+		return True
+
+	def parseContextFiles(self):
+		"""Classify optional context files into heapdynamics logs and generic attachments."""
+		self.heapdynamics_files = []
+		self.additional_context_files = []
+		if "l" in self.args:
+			if type(self.args["l"]).__name__.lower() == "bool":
+				self.logError("Please specify at least one context file with -l <file1,file2,...>")
+				return False
+			for raw_file in str(self.args["l"]).replace('"', "").replace("'", "").split(","):
+				raw_file = raw_file.strip()
+				if raw_file == "":
+					continue
+				context_file = getAbsolutePath(raw_file)
+				if not os.path.isfile(context_file):
+					self.logError("Unable to find/read context file %s" % context_file)
+					return False
+				looks_like_heapdynamics, _ = _isHeapdynamicsFile(context_file)
+				if looks_like_heapdynamics:
+					self.heapdynamics_files.append(context_file)
+				else:
+					self.additional_context_files.append(context_file)
+			if len(self.heapdynamics_files) == 0 and len(self.additional_context_files) == 0:
+				self.logError("Please specify at least one valid context file with -l")
+				return False
+			if len(self.heapdynamics_files) > 0:
+				mndbg.dbgp("tellme: using heapdynamics files %s" % ", ".join(self.heapdynamics_files))
+			if len(self.additional_context_files) > 0:
+				mndbg.dbgp("tellme: using additional context files %s" % ", ".join(self.additional_context_files))
+		if len(self.heapdynamics_files) > 0:
+			self.logInfo("Will check if %s contains useful information" % ", ".join(self.heapdynamics_files))
+		else:
+			self.logInfo("Will check if c:\\alloc.txt contains useful information")
+		if len(self.additional_context_files) > 0:
+			self.logInfo("Will read additional context from: %s" % ", ".join(self.additional_context_files))
+		return True
+
+	def parsePocFile(self):
+		"""Resolve an optional PoC/trigger file to add to the request context."""
+		self.poc_file = ""
+		if "p" not in self.args:
+			return True
+		if type(self.args["p"]).__name__.lower() == "bool":
+			self.logError("Please specify a PoC file with -p <file>")
+			return False
+		self.poc_file = getAbsolutePath(str(self.args["p"]).replace('"', "").replace("'", "").strip())
+		if not os.path.isfile(self.poc_file):
+			self.logError("Unable to find/read PoC file %s" % self.poc_file)
+			return False
+		mndbg.dbgp("tellme: using poc file %s" % self.poc_file)
+		self.logInfo("Will read PoC/trigger from: %s" % self.poc_file)
+		return True
+
+	def parseRopModuleSelection(self):
+		"""Resolve q3-specific module, IAT, and section scope information."""
+		if self.effective_question_type != "3":
+			return True
 		try:
-			timeout_seconds, timeout_source = getTellMeTimeout(engine, mona_config, args=args)
+			self.rop_target_modules = _collectRopTargetModules(self.args)
 		except ValueError as e:
-			dbg.log(str(e), highlight=1)
-			return
-		if effective_question_type == "3" and timeout_source == "default":
-			timeout_seconds += 30.0
-			mndbg.dbgp("tellme: extending default timeout for q3 to %.1fs" % timeout_seconds)
-		mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (engine, timeout_seconds, timeout_source))
-		max_tokens, max_tokens_source = getTellMeMaxTokens(engine, mona_config)
-		mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
-			engine, max_tokens, max_tokens_source
-		))
-	else:
-		mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
-
-	if "model" in args:
-		if type(args["model"]).__name__.lower() == "bool":
-			dbg.log("Please specify a model value with -model <id>", highlight=1)
-			return
-		explicit_model = str(args["model"]).strip()
-		if explicit_model != "":
-			model = explicit_model
-			dbg.log("[+] Overriding model to '%s'" % model)
-			mndbg.dbgp("tellme: using explicit -model override '%s'" % model)
-
-	if testmode:
-		test_model = getTellMeTestModel(engine)
-		if test_model != "":
-			model = test_model
-			dbg.log("[+] Test mode enabled, overriding model to '%s'" % model)
-			mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (model, engine))
-
-	if api_key == "" and not offline:
-		dbg.log("    Missing API key '%s.key'" % engine, highlight=1)
-		dbg.log("    To configure API access, do the following:")
-		dbg.log("    1. Create or retrieve an API key for your chosen provider")
-		dbg.log("    2. Store it in mona's config file, or set the matching environment variable")
-		dbg.log("    3. Optionally configure the model name")
-		dbg.log("")
-		dbg.log("    OpenAI:")
-		dbg.log("      %s config -set openai.key <your OpenAI API key>" % getAliasName())
-		dbg.log("      %s config -set openai.model gpt-5.4" % getAliasName())
-		dbg.log("      %s config -set openai.timeout 90" % getAliasName())
-		dbg.log("      or (globally):")
-		dbg.log("      set OPENAI_API_KEY=<your OpenAI API key>")
-		dbg.log("      set OPENAI_MODEL=gpt-5.4")
-		dbg.log("      set OPENAI_TIMEOUT=90")
-		dbg.log("")
-		dbg.log("    Anthropic:")
-		dbg.log("      %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
-		dbg.log("      %s config -set anthropic.model claude-opus-4-7" % getAliasName())
-		dbg.log("      %s config -set anthropic.timeout 90" % getAliasName())
-		dbg.log("      or (globally):")
-		dbg.log("      set ANTHROPIC_API_KEY=<your Anthropic API key>")
-		dbg.log("      set ANTHROPIC_MODEL=claude-opus-4-7")
-		dbg.log("      set ANTHROPIC_TIMEOUT=90")
-		dbg.log("")
-		dbg.log("    mona.ini values take precedence over environment variables")
-		dbg.log("    The -model and -timeout arguments override both for a single request")
-		dbg.log("")
-		dbg.log("    Then run:")
-		dbg.log("      %s tellme -e %s -q %s" % (getAliasName(), engine, question_type))
-		dbg.log("")
-		dbg.log("    Run '%s tellme -h' to see the full usage text" % getAliasName())
-		return
-
-	if model == "" and not offline:
-		dbg.log("Missing config value '%s.model'. Set it with '%s config -set %s.model <model>'" % (
-			engine, getAliasName(), engine
-		), highlight=1)
-		return
-
-	heapdynamics_files = []
-	additional_context_files = []
-	if "l" in args:
-		if type(args["l"]).__name__.lower() == "bool":
-			dbg.log("Please specify at least one context file with -l <file1,file2,...>", highlight=1)
-			return
-		for raw_file in str(args["l"]).replace('"', "").replace("'", "").split(","):
-			raw_file = raw_file.strip()
-			if raw_file == "":
-				continue
-			context_file = getAbsolutePath(raw_file)
-			if not os.path.isfile(context_file):
-				dbg.log("Unable to find/read context file %s" % context_file, highlight=1)
-				return
-			looks_like_heapdynamics, _ = _tellme_file_looks_like_heapdynamics(context_file)
-			if looks_like_heapdynamics:
-				heapdynamics_files.append(context_file)
-			else:
-				additional_context_files.append(context_file)
-		if len(heapdynamics_files) == 0 and len(additional_context_files) == 0:
-			dbg.log("Please specify at least one valid context file with -l", highlight=1)
-			return
-		if len(heapdynamics_files) > 0:
-			mndbg.dbgp("tellme: using heapdynamics files %s" % ", ".join(heapdynamics_files))
-		if len(additional_context_files) > 0:
-			mndbg.dbgp("tellme: using additional context files %s" % ", ".join(additional_context_files))
-	if len(heapdynamics_files) > 0:
-		dbg.log("[+] Will check if %s contains useful information" % ", ".join(heapdynamics_files))
-	else:
-		dbg.log("[+] Will check if c:\\alloc.txt contains useful information")
-	if len(additional_context_files) > 0:
-		dbg.log("[+] Will read additional context from: %s" % ", ".join(additional_context_files))
-
-	poc_file = ""
-	if "p" in args:
-		if type(args["p"]).__name__.lower() == "bool":
-			dbg.log("Please specify a PoC file with -p <file>", highlight=1)
-			return
-		poc_file = getAbsolutePath(str(args["p"]).replace('"', "").replace("'", "").strip())
-		if not os.path.isfile(poc_file):
-			dbg.log("Unable to find/read PoC file %s" % poc_file, highlight=1)
-			return
-		mndbg.dbgp("tellme: using poc file %s" % poc_file)
-		dbg.log("[+] Will read PoC/trigger from: %s" % poc_file)
-
-	if effective_question_type == "3":
-		try:
-			rop_target_modules = _tellme_collect_rop_target_modules(args)
-		except ValueError as e:
-			dbg.log(str(e), highlight=1)
-			return
-		except Exception as e:
-			dbg.log("Failed to collect module/IAT/section context for '-q 3': %s" % str(e), highlight=1)
+			self.logError(str(e))
+			return False
+		except Exception:
+			self.logError("Failed to collect module/IAT/section context for '-q 3'")
+			self.logErrorDetail(traceback.format_exc().splitlines()[-1])
 			mndbg.dbgp("tellme: q3 module collection failed:\n%s" % traceback.format_exc(), errormode=False)
-			return
-		if rop_target_modules.get("selection_mode", "") == "default_non_aslr_non_rebase":
-			dbg.log("[+] No module filter supplied. Defaulting to modules with ASLR=False and Rebase=False")
-		dbg.log("[+] ROP module scope contains %d module(s)" % len(rop_target_modules.get("modules", [])))
+			return False
+		if self.rop_target_modules.get("selection_mode", "") == "default_non_aslr_non_rebase":
+			self.logInfo("No module filter supplied. Defaulting to modules with ASLR=False and Rebase=False")
+		self.logInfo("ROP module scope contains %d module(s)" % len(self.rop_target_modules.get("modules", [])))
+		return True
 
-	if effective_question_type == "2" and prebuilt_prompt == "":
-		if target_address == 0:
+	def validateCurrentInstruction(self):
+		"""Ensure q2 has a valid current instruction before collecting function context."""
+		if self.effective_question_type != "2" or self.prebuilt_prompt != "":
+			return True
+		if self.target_address == 0:
 			regs = getAllRegisters()
-			target_address = regs.get(PROGRAM_COUNTER, 0)
-		has_instr, instr_reason = tellMeHasCurrentInstruction(target_address)
+			self.target_address = regs.get(PROGRAM_COUNTER, 0)
+		has_instr, instr_reason = tellMeHasCurrentInstruction(self.target_address)
 		mndbg.dbgp("tellme: q2 current-instruction check: %s (%s)" % (str(has_instr), instr_reason))
 		if not has_instr:
-			dbg.log("Cannot use '-q 2' because there is no valid current instruction at %s" % target_address_source, highlight=1)
-			dbg.log("    Reason: %s" % instr_reason, highlight=1)
-			dbg.log("    This usually means there is no reliable current function to analyse.", highlight=1)
-			dbg.log("    Try '-q 1' instead, or provide a valid code address with -a to analyse.", highlight=1)
-			return
+			self.logError("Cannot use '-q 2' because there is no valid current instruction at %s" % self.target_address_source)
+			self.logErrorDetail("Reason: %s" % instr_reason)
+			self.logErrorDetail("This usually means there is no reliable current function to analyse.")
+			self.logErrorDetail("Try '-q 1' instead, or provide a valid code address with -a to analyse.")
+			return False
+		return True
+
+	def getRequestContext(self):
+		"""Collect debugger context and enrich it with function or ROP metadata when needed."""
+		if self.question_type == "9" and self.prebuilt_prompt != "":
+			return None
+		if mnproc is None:
+			mndbg.dbgp("tellme: initializing shared process context")
+			MnProc.ensure()
+		if mnproc is None:
+			self.logError("Unable to initialize process context for tellme")
+			return None
+
+		self.logInfo("Collecting context and preparing request...")
+		context = collectAIContext(
+			self.effective_question_type,
+			heapdynamics_files=self.heapdynamics_files,
+			additional_context_files=self.additional_context_files,
+			poc_file=self.poc_file,
+			heap_target_address=self.heap_target_address
+		)
+		if self.effective_question_type == "3" and self.rop_target_modules is not None:
+			context["rop_target_modules"] = self.rop_target_modules
+		self.logInfoDetail("Done")
+
+		if self.effective_question_type == "2":
+			context["analysis_target"] = {
+				"address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
+				"source": self.target_address_source
+			}
+			try:
+				context["current_function"] = collectAICurrentFunctionContext(self.target_address)
+			except Exception as e:
+				context["current_function_error"] = str(e)
+				mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
+		return context
+
+	def buildRequestPrompt(self):
+		"""Build or reuse the final prompt text that will be saved or sent to the provider."""
+		try:
+			if self.question_type == "9" and self.prebuilt_prompt != "":
+				self.prompt = self.prebuilt_prompt
+				return True
+
+			context = self.getRequestContext()
+			if context is None and not (self.question_type == "9" and self.prebuilt_prompt != ""):
+				return False
+			if self.question_type == "9":
+				self.prompt = buildAIPromptFromTemplateFile(self.template_file, context, question_type=self.question_type)
+			else:
+				self.prompt = buildAIPrompt(self.question_type, context)
+			return True
+		except Exception as e:
+			if self.prebuilt_prompt != "":
+				self.logError("Failed to prepare the prebuilt request from '%s'" % self.template_file)
+				self.logErrorDetail(str(e))
+			else:
+				self.logError("Failed to build the prompt for question type '%s'" % self.question_type)
+				self.logErrorDetail(str(e))
+			mndbg.dbgp("tellme: prompt generation failed:\n%s" % traceback.format_exc(), errormode=False)
+			return False
+
+	def writeOfflineRequest(self):
+		"""Persist the generated request without sending it to an API provider."""
+		self.offline_logfile_path = writeAIOfflineLog(
+			self.engine,
+			self.model,
+			self.question_type,
+			self.prompt,
+			template_file=self.template_file,
+			target_address=self.target_address,
+			target_address_source=self.target_address_source
+		)
+		self.logInfo("Offline mode requested. No API request will be made.")
+		self.logInfoDetail("Engine : %s" % self.engine)
+		self.logInfoDetail("Model  : %s" % self.model)
+		self.logInfoDetail("Q Type : %s" % self.question_type)
+		if self.template_file != "":
+			self.logInfoDetail("File   : %s" % self.template_file)
+		if self.target_address_source == "-a":
+			self.logInfoDetail("Target : %s (%s)" % (PTR_PRINT % self.target_address, self.target_address_source))
+		self.logInfoDetail("Saved  : %s" % self.offline_logfile_path)
+		return self.offline_logfile_path
+
+	def getOpenAIRequestMode(self):
+		"""Prepare the OpenAI client or HTTP fallback path for provider requests."""
+		openai_client_class = None
+		openai_import_error = ""
+		openai_use_http_fallback = False
+		if self.engine == "openai":
+			openai_client_class, _openai_version, openai_import_error = _importOpenAI()
+			if openai_client_class is None:
+				openai_use_http_fallback = True
+				self.logError("OpenAI SDK import failed.")
+				self.logErrorDetail("Python executable: %s" % sys.executable)
+				if sys.version_info[0] == 3 and sys.version_info[1] < 9:
+					if "may only be initialized once per interpreter process" in openai_import_error:
+						self.logErrorDetail("Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
+							sys.version_info[0], sys.version_info[1]))
+						self.logErrorDetail("On this interpreter, the OpenAI module may work only once per WinDBG process.")
+						self.logErrorDetail("The direct HTTPS fallback avoids that import path for this request.")
+				self.logErrorDetail("OpenAI import error: %s" % openai_import_error.splitlines()[-1])
+				self.logInfo("OpenAI: Falling back to direct HTTPS request.")
+		return openai_client_class, openai_use_http_fallback
+
+	def writeRequestLog(self, request_id=""):
+		"""Write the outgoing request to disk and remember the generated file path."""
+		self.request_logfile_path = writeAIRequestLog(
+			self.engine,
+			self.model,
+			self.question_type,
+			self.prompt,
+			request_id=request_id,
+			template_file=self.template_file,
+			target_address=self.target_address,
+			target_address_source=self.target_address_source
+		)
+		return self.request_logfile_path
+
+	def writeResponseLog(self):
+		"""Write the formatted AI response to disk and remember the generated file path."""
+		ai_response_lines = formatAIResponseLines(self.response)
+		self.response_logfile_path = writeAIResponseLog(
+			self.engine,
+			self.model,
+			self.question_type,
+			self.request_id,
+			ai_response_lines,
+			template_file=self.template_file,
+			target_address=self.target_address,
+			target_address_source=self.target_address_source
+		)
+		return ai_response_lines, self.response_logfile_path
+
+	def request(self, question_type=None, prompt=None):
+		"""Send the prepared request or save it offline, and keep the response text on the instance."""
+		if question_type is not None:
+			self.question_type = question_type
+		if prompt is not None:
+			self.prompt = prompt
+		if self.prompt == "":
+			self.logError("Cannot execute an empty tellme request")
+			return self.response
+
+		mndbg.dbgp("tellme: prompt length is %d bytes" % len(self.prompt))
+		if self.offline or self.engine == "offline":
+			self.response = ""
+			self.writeOfflineRequest()
+			return self.response
+
+		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
+		self.logInfo("Asking %s model '%s' using question profile %s" % (self.engine, self.model, self.question_type))
+		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
+		if self.engine == "anthropic":
+			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
+		self.writeRequestLog()
+
+		max_attempts = 3
+		self.response = ""
+		self.request_id = ""
+		for attempt in xrange(1, max_attempts + 1):
+			attempt_timeout = self.timeout_seconds
+			if self.timeout_source == "default":
+				attempt_timeout = self.timeout_seconds + ((attempt - 1) * 10.0)
+			dbg.log("")
+			self.logInfoDetail("Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
+			try:
+				if self.engine == "openai":
+					if openai_use_http_fallback:
+						self.response, self.request_id = callAIOpenAIDirect(
+							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout
+						)
+					else:
+						self.response, self.request_id = callAIOpenAI(
+							openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout
+						)
+				else:
+					self.response, self.request_id = callAIAnthropic(
+						self.api_key,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						max_tokens=self.max_tokens
+					)
+				break
+			except Exception as e:
+				mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
+					attempt,
+					max_attempts,
+					traceback.format_exc()
+				), errormode=False)
+				logAIProviderError(self.engine, e)
+				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
+					return self.response
+				next_timeout = self.timeout_seconds
+				retry_sleep_seconds = 10
+				if self.timeout_source == "default":
+					next_timeout = self.timeout_seconds + (attempt * 10.0)
+					retry_sleep_seconds = attempt * 10
+					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
+						retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
+					))
+				else:
+					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d)" % (
+						retry_sleep_seconds, attempt + 1, max_attempts
+					))
+				time.sleep(retry_sleep_seconds)
+
+		if self.request_id:
+			self.logInfoDetail("Request id: %s" % self.request_id)
+		self.writeRequestLog(request_id=self.request_id)
+		ai_response_lines, _response_logfile_path = self.writeResponseLog()
+		dbg.log("")
+		self.logInfo("AI response:")
+		for line in ai_response_lines:
+			self.logInfoDetail(line)
+		if self.response.strip() == "":
+			self.logInfoDetail("<empty response>")
+		else:
+			dbg.log("")
+			self.logInfoDetail("Request saved to %s" % self.request_logfile_path)
+			self.logInfoDetail("Response saved to %s" % self.response_logfile_path)
+		return self.response
+
+	def execute(self):
+		"""Run the full tellme workflow from argument parsing through request execution."""
+		if not self.parseEngineSelection():
+			return ""
+		if not self.parseQuestionProfile():
+			return ""
+		if not self.parseTargetAddress():
+			return ""
+		if not self.parseTemplateSelection():
+			return ""
+		if not self.ensureDefaultTemplates():
+			return ""
+		if not self.parseRequestSettings():
+			return ""
+		if not self.validateProviderConfiguration():
+			return ""
+		if not self.parseContextFiles():
+			return ""
+		if not self.parsePocFile():
+			return ""
+		if not self.parseRopModuleSelection():
+			return ""
+		if not self.validateCurrentInstruction():
+			return ""
+		if not self.buildRequestPrompt():
+			return ""
+		return self.request()
+
+
+# ----- tellme: Ask an AI engine to analyze the current debugger state ----- #
+def procTellMe(args):
+	"""Parse tellme arguments, create an MnAI session, and run the required request flow."""
+	mndbg.dbgp("tellme: command invoked with args %s" % str(args))
+
+	if not mndbg.isWinDBG():
+		dbg.log("[!] The 'tellme' command is only available under WinDBG", highlight=True)
+		return
 
 	try:
-		if question_type == "9" and prebuilt_prompt != "":
-			prompt = prebuilt_prompt
-		else:
-			if mnproc is None:
-				mndbg.dbgp("tellme: initializing shared process context")
-				MnProc.ensure()
-			if mnproc is None:
-				dbg.log("Unable to initialize process context for tellme", highlight=1)
-				return
-
-			dbg.log("[+] Collecting context and preparing request...")
-			context = collectTellMeContext(
-				effective_question_type,
-				heapdynamics_files=heapdynamics_files,
-				additional_context_files=additional_context_files,
-				poc_file=poc_file,
-				heap_target_address=heap_target_address
-			)
-			if effective_question_type == "3" and rop_target_modules is not None:
-				context["rop_target_modules"] = rop_target_modules
-			dbg.log("    Done")
-
-			if effective_question_type == "2":
-				context["analysis_target"] = {
-					"address": PTR_PRINT % target_address if isinstance(target_address, int) and target_address > 0 else "",
-					"source": target_address_source
-				}
-				try:
-					context["current_function"] = collectTellMeCurrentFunctionContext(target_address)
-				except Exception as e:
-					context["current_function_error"] = str(e)
-					mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
-
-		if question_type == "9" and prebuilt_prompt == "":
-			prompt = buildTellMePromptFromTemplateFile(template_file, context, question_type=question_type)
-		elif question_type != "9":
-			prompt = buildTellMePrompt(question_type, context)
+		mnai = MnAI(args)
+		mnai.execute()
 	except Exception as e:
-		if prebuilt_prompt != "":
-			dbg.log("Failed to prepare the prebuilt request from '%s': %s" % (template_file, str(e)), highlight=1)
-		else:
-			dbg.log("Failed to build the prompt for question type '%s': %s" % (question_type, str(e)), highlight=1)
-		mndbg.dbgp("tellme: prompt generation failed:\n%s" % traceback.format_exc(), errormode=False)
+		dbg.log("[!] tellme failed: %s" % str(e), highlight=True)
+		mndbg.dbgp("tellme: unexpected failure:\n%s" % traceback.format_exc(), errormode=False)
 		return
-
-	mndbg.dbgp("tellme: prompt length is %d bytes" % len(prompt))
-
-	if offline:
-		offline_logfile = writeTellMeDryRunLog(
-			engine,
-			model,
-			question_type,
-			prompt,
-			template_file=template_file,
-			target_address=target_address,
-			target_address_source=target_address_source
-		)
-		dbg.log("[+] Offline mode requested. No API request will be made.")
-		dbg.log("    Engine : %s" % engine)
-		dbg.log("    Model  : %s" % model)
-		dbg.log("    Q Type : %s" % question_type)
-		if template_file != "":
-			dbg.log("    File   : %s" % template_file)
-		if target_address_source == "-a":
-			dbg.log("    Target : %s (%s)" % (PTR_PRINT % target_address, target_address_source))
-		dbg.log("    Saved  : %s" % offline_logfile)
-		return
-
-	openai_client_class = None
-	openai_version = ""
-	openai_import_error = ""
-	openai_use_http_fallback = False
-	if engine == "openai":
-		openai_client_class, openai_version, openai_import_error = _tellme_import_openai()
-		if openai_client_class is None:
-			openai_use_http_fallback = True
-			dbg.log("[!] OpenAI SDK import failed.", highlight=1)
-			dbg.log("    Python executable: %s" % sys.executable)
-			if sys.version_info[0] == 3 and sys.version_info[1] < 9:
-				if "may only be initialized once per interpreter process" in openai_import_error:
-					dbg.log("    Warning: Python %d.%d is affected by a PyO3 limitation for this OpenAI dependency stack." % (
-						sys.version_info[0], sys.version_info[1]))
-					dbg.log("             On this interpreter, the OpenAI module may work only once per WinDBG process.")
-					dbg.log("             The direct HTTPS fallback avoids that import path for this request.")
-			dbg.log("    OpenAI import error: %s" % openai_import_error.splitlines()[-1])
-			dbg.log("[+] OpenAI : Falling back to direct HTTPS request.", highlight=1)
-
-	dbg.log("[+] Asking %s model '%s' using question profile %s" % (engine, model, question_type))
-	dbg.log("    Timeout   : %.1f seconds" % timeout_seconds)
-	if engine == "anthropic":
-		dbg.log("    Max tokens: %d" % max_tokens)
-	request_logfile_path = writeTellMeRequestLog(
-		engine,
-		model,
-		question_type,
-		prompt,
-		template_file=template_file,
-		target_address=target_address,
-		target_address_source=target_address_source
-	)
-
-	max_attempts = 3
-	answer = ""
-	request_id = ""
-	for attempt in xrange(1, max_attempts + 1):
-		attempt_timeout = timeout_seconds
-		if timeout_source == "default":
-			attempt_timeout = timeout_seconds + ((attempt - 1) * 10.0)
-		dbg.log("")
-		dbg.log("    Sending request to %s (attempt %d, timeout %.1fs)" % (engine, attempt, attempt_timeout), highlight=1)
-		try:
-			if engine == "openai":
-				if openai_use_http_fallback:
-					answer, request_id = callTellMeOpenAIDirect(api_key, model, prompt, timeout_seconds=attempt_timeout)
-				else:
-					answer, request_id = callTellMeOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=attempt_timeout)
-			else:
-				answer, request_id = callTellMeAnthropic(
-					api_key,
-					model,
-					prompt,
-					timeout_seconds=attempt_timeout,
-					max_tokens=max_tokens
-				)
-			break
-		except Exception as e:
-			mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
-				attempt,
-				max_attempts,
-				traceback.format_exc()
-			), errormode=False)
-			logTellMeProviderError(engine, e)
-			if not _tellme_is_timeout_error(engine, e) or attempt >= max_attempts:
-				return
-			next_timeout = timeout_seconds
-			retry_sleep_seconds = 10
-			if timeout_source == "default":
-				next_timeout = timeout_seconds + (attempt * 10.0)
-				retry_sleep_seconds = attempt * 10
-				dbg.log("    Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (retry_sleep_seconds, attempt + 1, max_attempts, next_timeout), highlight=1)
-			else:
-				dbg.log("    Retrying in %d seconds... (attempt %d/%d)" % (retry_sleep_seconds, attempt + 1, max_attempts), highlight=1)
-			time.sleep(retry_sleep_seconds)
-
-	if request_id:
-		dbg.log("    Request id: %s" % request_id)
-	ai_response_lines = formatTellMeResponseLines(answer)
-	request_logfile_path = writeTellMeRequestLog(
-		engine,
-		model,
-		question_type,
-		prompt,
-		request_id=request_id,
-		template_file=template_file,
-		target_address=target_address,
-		target_address_source=target_address_source
-	)
-	response_logfile_path = writeTellMeResponseLog(
-		engine,
-		model,
-		question_type,
-		request_id,
-		ai_response_lines,
-		template_file=template_file,
-		target_address=target_address,
-		target_address_source=target_address_source
-	)
-	dbg.log("")
-	dbg.log("[+] AI response:")
-	for line in ai_response_lines:
-		dbg.log("    %s" % line)
-	if answer.strip() == "":
-		dbg.log("    <empty response>")
-	else:
-		dbg.log("")
-		dbg.log("    Request saved to %s" % request_logfile_path)
-		dbg.log("    Response saved to %s" % response_logfile_path)
 
 # ----- dump: Dump some memory to a file ----- #
 def procDump(args):
@@ -33186,6 +33398,7 @@ Optional arguments:
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
 Supported engines:
+    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
     - openai (you may have to complete verification at https://chatgpt.com/cyber first; requires the OpenAI Python SDK)
     - anthropic (you may have to complete verification - check https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude; no Anthropic Python SDK required)
 
@@ -33221,8 +33434,8 @@ Precedence:
     If both are present, mona.ini values take precedence over environment variables
     For a single request, -model and -timeout override both config and environment values
     max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
-    If neither a default engine nor -e is specified, tellme announces this at the start of the run
-    and switches to offline mode by default
+    If neither a default engine nor -e is specified, tellme uses offline as the default engine
+    -offline still overrules a configured default engine for that one request
 Default models:
     - OpenAI   : gpt-5.4
     - Anthropic: claude-opus-4-7
@@ -33235,10 +33448,9 @@ Common models:
     - Anthropic: claude-opus-4-7, claude-opus-4-6
 
 	Arguments:
-	    -e  <engine> : AI engine to use. If omitted, mona checks mona.ai.engine first,
-	                   then MONA_AI_ENGINE.
-	                   If no default engine is configured and -e is omitted, tellme announces that fact
-	                   at the start of the run and works in offline mode by default to avoid consuming API tokens
+	    -e  <engine> : AI engine to use: offline, openai, or anthropic.
+	                   If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
+	                   and otherwise defaults to offline to avoid consuming API tokens
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
@@ -33264,7 +33476,7 @@ Common models:
 	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
 	                   If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:)
 	                   and no placeholders remain, mona reuses that request body directly instead of rebuilding debugger context
-	    -offline     : Build the request file, but do not call the API or print the full request on screen
+	    -offline     : Force offline behavior for this request even when a default engine is configured
 	    -test        : Override the configured model with a lower-cost test model
 
 	Examples:
