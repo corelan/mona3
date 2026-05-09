@@ -33435,6 +33435,7 @@ Precedence:
     For a single request, -model and -timeout override both config and environment values
     max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
     If neither a default engine nor -e is specified, tellme uses offline as the default engine
+    If the default engine has no API key or model configured, tellme falls back to offline
     -offline still overrules a configured default engine for that one request
 Default models:
     - OpenAI   : gpt-5.4
@@ -33450,21 +33451,22 @@ Common models:
 	Arguments:
 	    -e  <engine> : AI engine to use: offline, openai, or anthropic.
 	                   If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
-	                   and otherwise defaults to offline to avoid consuming API tokens
+	                   and otherwise defaults to offline.
+	                   If the selected default engine has no API key or model configured,
+	                   tellme also falls back to offline
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
 	    -q <number>  : Required. Prompt profile to use:
-	                   1 = analyse the crash context
-	                   2 = analyse the current function
+	                   1 = analyse the current crash state
+	                   2 = analyse the current code location
 	                   9 = load a request template from -f <file>
 	                   Running -q 1 or -q 2 also rewrites ai.q1 or ai.q2 in the working folder if set,
 	                   otherwise next to mona.ini
 	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
-	                   With -q 1, this address is treated as an extra heap target to investigate.
-	                   With -q 2, this is the code address/function location to analyse,
-	                   primarily useful when EIP/RIP is already corrupted
+	                   With -q 1, this adds an extra heap target.
+	                   With -q 2, this selects the code address to analyse
 	    -l <files>   : Optional comma-separated context files, for example -l "file1,file2"
 	                   Any file containing alloc()/free() lines is treated as a heapdynamics log
 	                   Other files are added as supporting context under [additional_context_files]
@@ -33495,35 +33497,34 @@ Common models:
 	    %s tellme -e openai -q 1 -test
 
 	Debugger context variables:
-	    [debugger]                    = debugger backend name
-	    [debugger_flavor]             = human-readable debugger flavor
-	    [processname]                 = debugged process image name
-	    [modules]                     = loaded modules with mitigation/properties summary (rebase, aslr, safeseh, cfg, osdll, version, path)
-	    [architecture]                = target architecture
-	    [pointer_size]                = pointer width in bytes
-	    [timestamp]                   = local timestamp when the request was built
-	    [registers]                   = current register set and values
-	    [program_counter]             = current instruction pointer
-	    [stack_pointer]               = current stack pointer
-	    [pc_disasm]                   = current instruction plus nearby disassembly
-	    [pc_page]                     = memory page summary for the current instruction pointer
-	    [pc_module]                   = module summary for the current instruction pointer
-	    [pc_memory]                   = raw bytes near the current instruction pointer
-	    [stack_page]                  = memory page summary for the current stack pointer
-	    [stack_memory]                = raw bytes near the current stack pointer
-	    [seh_chain]                   = 32-bit Structured Exception Handling chain summary
-	    [findmsp]                     = silent cyclic-pattern analysis results from findmsp
-	    [call_stack]                  = WinDBG call stack output
-	    [instruction_heap_references] = heap/chunk/pointer context for all positive register values, with extra focus on current-instruction references
-	    [heap_details]                = all heaps, segments, VAD blocks, and segment chunks, using the same size/state logic as proclayout plus the first 16 bytes for each VAD block and chunk
-	    [heap_analysis_target]        = optional extra heap-focused target address from -a when using -q 1
-	    [heapdynamics]                = full heapdynamics file contents plus matched-register metadata and saved return-pointer context
-	    [heapdynamics_mini]           = only the matched heapdynamics lines and nearby context for addresses referenced by the current instruction
-	    [additional_context_files]    = user-supplied supporting files from -l that do not contain alloc()/free() lines
-	    [poc_file]                    = optional PoC/trigger file contents from -p
-	    [analysis_target]             = resolved target address/source for -q 2
-	    [current_function]            = current function symbol/disassembly context for -q 2
-	    Error variables may also appear when collection fails, for example [registers_error], [instruction_heap_references_error], or [heapdynamics_error]
+	    [debugger]                 = debugger backend name
+	    [processname]              = debugged process image name
+	    [architecture]             = target architecture
+	    [pointer_size]             = pointer width in bytes
+	    [timestamp]                = local timestamp when the request was built
+	    [registers]                = current register set and values
+	    [program_counter]          = current instruction pointer
+	    [stack_pointer]            = current stack pointer
+	    [pc_disasm]                = current instruction plus nearby disassembly
+	    [pc_module]                = module summary for the current instruction pointer
+	    [pc_page]                  = memory page summary for the current instruction pointer
+	    [stack_page]               = memory page summary for the current stack pointer
+	    [pc_memory]                = raw bytes near the current instruction pointer
+	    [stack_memory]             = raw bytes near the current stack pointer
+	    [modules]                  = loaded module summary
+	    [call_stack]               = WinDBG call stack output
+	    [findmsp]                  = cyclic-pattern analysis results
+	    [seh_chain]                = 32-bit SEH chain summary
+	    [instruction_heap_references] = heap and pointer context related to the current instruction
+	    [heap_details]             = heap, segment, VAD, and chunk summary
+	    [heap_analysis_target]     = extra heap-focused target from -a when using -q 1
+	    [heapdynamics]             = full heapdynamics file contents
+	    [heapdynamics_mini]        = focused heapdynamics matches near current references
+	    [additional_context_files] = supporting files from -l that are not heapdynamics logs
+	    [poc_file]                 = optional PoC/trigger file contents from -p
+	    [analysis_target]          = resolved target address/source for -q 2
+	    [current_function]         = current function context for -q 2
+	    Error variables may also appear when collection fails
 	For -q 1 and -q 2, the final request sent to the AI uses the structured 'variables' object.
 	For -q 9, mona reads the template file and replaces placeholders such as [registers] and [pc_disasm]
 	with the actual debugger values before submitting the resulting prompt.
@@ -33545,22 +33546,8 @@ Common models:
 	    full request to the debugger console.
 
 	Question notes:
-	    -q 1 collects crash context, cyclic-pattern hints, and extra heap/pointer context for the current registers.
-	         This includes instruction windows around the current PC, pointer dumps and nearby memory for registers,
-	         plus heap chunk/VAD metadata when those register values point into known heap-managed regions.
-	         The JSON also includes [findmsp], and on 32-bit targets it includes [seh_chain].
-	         If -a is supplied with -q 1, that address is also treated as an extra heap target and included
-	         in the heap-reference investigation even if it is not directly referenced by the faulting instruction.
-	         If heap walking or getAllSorted() cannot resolve that q1 -a address, tellme still collects fallback data:
-	         !heap -p -a, !heap -x (or !ext.heap -p -a / !ext.heap -x under WinDBGX), plus a memory dump spanning 100 bytes before and 100 bytes after the address.
-	         When a register value only lands in heap segment memory, tellme uses that as a trigger to inspect !heap -hl
-	         and recover neighboring chunk context, including LFH region details when available.
-	         If heapdynamics files are supplied via -l, or c:\\alloc.txt exists, the entire heapdynamics file contents are added under [heapdynamics].
-	         Focused matches for addresses referenced by the current instruction are added under [heapdynamics_mini].
-	         Any -l files that are not heapdynamics logs are added under [additional_context_files], and -p adds a dedicated [poc_file] entry.
-	         Matching heapdynamics entries include saved return pointers from alloc/free lines,
-	         nearest symbol information, backward and forward disassembly, and both !heap -p -a and !heap -x (or !ext.heap -p -a and !ext.heap -x) output for matching addresses.
-	    -q 2 requires a valid current instruction at the selected target address. If the current PC is corrupted, use -a with a known-good code address or function location.
+	    -q 1 focuses on the current crash state, nearby memory, and related heap context.
+	    -q 2 focuses on the current code location or a code address supplied with -a.
 	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
 
 	Test model overrides:
