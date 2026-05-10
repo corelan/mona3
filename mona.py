@@ -1759,6 +1759,10 @@ def collectAICurrentFunctionContext(address):
 	mndbg.dbgp(get_current_function_name())
 	context = {
 		"requested_address": PTR_PRINT % address,
+		"source": "",
+		"valid_location": False,
+		"valid_location_reason": "",
+		"analysis_scope": "",
 		"function_start": "",
 		"symbol": "",
 		"symbol_offset": "",
@@ -1769,6 +1773,17 @@ def collectAICurrentFunctionContext(address):
 		"resolution_method": "",
 	}
 	mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
+	has_instr, instr_reason = tellMeHasCurrentInstruction(address)
+	context["valid_location"] = has_instr
+	context["valid_location_reason"] = instr_reason
+	if not has_instr:
+		context["invalid_location"] = True
+		context["function_resolution_note"] = "The requested address is not a valid code location, so no containing function could be analyzed."
+		context["nearest_symbol_output"] = _getNearestSymbolOutput(address)
+		context["module"] = _getModuleSummary(address)
+		context["page"] = _getPageSummary(address)
+		return context
+
 	function_start, resolved_symbol, resolution_method, found_function = _resolveFunctionStart(address)
 	context["resolution_method"] = resolution_method
 	if isinstance(function_start, int) and function_start > 0:
@@ -1798,9 +1813,11 @@ def collectAICurrentFunctionContext(address):
 	commands = [("nearest_symbol_output", "ln %s" % (PTR_PRINT % address))]
 	if found_function:
 		commands.append(("uf_output", "uf %s" % (PTR_PRINT % function_start)))
+		context["analysis_scope"] = "function"
 	else:
 		commands.append(("code_before", "ub %s L100" % (PTR_PRINT % address)))
 		commands.append(("code_after", "u %s L100" % (PTR_PRINT % address)))
+		context["analysis_scope"] = "code_window"
 
 	for label, cmd in commands:
 		try:
@@ -1813,7 +1830,162 @@ def collectAICurrentFunctionContext(address):
 	if not found_function:
 		context["function_resolution_note"] = "Unable to confidently resolve a containing function start. Falling back to code around the requested address."
 
+	disasm_source = ""
+	if context.get("uf_output", "") != "":
+		disasm_source = context.get("uf_output", "")
+	else:
+		disasm_parts = []
+		if context.get("code_before", "") != "":
+			disasm_parts.append(context.get("code_before", ""))
+		if context.get("code_after", "") != "":
+			disasm_parts.append(context.get("code_after", ""))
+		disasm_source = "\n".join(disasm_parts).strip()
+	if disasm_source != "":
+		context["control_flow_targets"] = _collectDisassemblyTargetContexts(disasm_source)
+	else:
+		context["control_flow_targets"] = []
+
 	return context
+
+
+def _parseDisassemblyTextEntries(disasm_text):
+	mndbg.dbgp(get_current_function_name())
+	entries = []
+	if not disasm_text:
+		return entries
+	for raw_line in ensure_text(disasm_text).splitlines():
+		line = raw_line.strip()
+		if line == "" or line.endswith(":"):
+			continue
+		parts = line.split()
+		if len(parts) < 2:
+			continue
+		addr = _tryParseAddressToken(parts[0])
+		if addr <= 0:
+			continue
+		idx = 1
+		while idx < len(parts):
+			token = parts[idx].replace("`", "")
+			if re.match(r"^[0-9a-fA-F?]+$", token) and len(token) >= 2:
+				idx += 1
+				continue
+			break
+		if idx >= len(parts):
+			continue
+		instruction = " ".join(parts[idx:]).strip().lower()
+		if instruction == "":
+			continue
+		entries.append(OrderedDict([
+			("address", addr),
+			("address_text", PTR_PRINT % addr),
+			("instruction", instruction),
+			("raw_line", raw_line.rstrip())
+		]))
+	return entries
+
+
+def _normalizeDisassemblyTargetOperand(operand):
+	mndbg.dbgp(get_current_function_name())
+	normalized = ensure_text(operand).strip().lower()
+	if ";" in normalized:
+		normalized = normalized.split(";", 1)[0].strip()
+	if " (" in normalized:
+		normalized = normalized.split(" (", 1)[0].strip()
+	for prefix in [
+		"short ",
+		"near ptr ",
+		"far ptr ",
+		"qword ptr ",
+		"dword ptr ",
+		"word ptr ",
+		"byte ptr ",
+		"ptr "
+	]:
+		while normalized.startswith(prefix):
+			normalized = normalized[len(prefix):].strip()
+	return normalized
+
+
+def _resolveDisassemblyTargetOperand(operand):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("operand", ensure_text(operand).strip()),
+		("normalized_operand", ""),
+		("resolved", False),
+		("resolution_reason", "")
+	])
+	normalized = _normalizeDisassemblyTargetOperand(operand)
+	result["normalized_operand"] = normalized
+	if normalized == "":
+		result["resolution_reason"] = "Empty target operand"
+		return result
+
+	regs = getAllRegisters()
+	reg_names = set([str(reg_name).lower() for reg_name in regs.keys()])
+	if normalized in reg_names:
+		result["resolution_reason"] = "Indirect register target; cannot resolve statically from function disassembly alone"
+		return result
+
+	if normalized.startswith("[") and normalized.endswith("]"):
+		result["indirect"] = True
+
+	target_address, addyok = getAddyArg(normalized)
+	if not addyok or target_address <= 0:
+		result["resolution_reason"] = "Unable to resolve target operand to a concrete address"
+		return result
+
+	result["resolved"] = True
+	result["target_address"] = target_address
+	result["target_address_text"] = PTR_PRINT % target_address
+	return result
+
+
+def _collectDisassemblyTargetContexts(disasm_text, max_targets=32):
+	mndbg.dbgp(get_current_function_name())
+	targets = []
+	entries = _parseDisassemblyTextEntries(disasm_text)
+	if len(entries) == 0:
+		return targets
+
+	cached_target_contexts = {}
+	for entry in entries:
+		if len(targets) >= max_targets:
+			break
+		instruction = entry.get("instruction", "")
+		if not (instruction.startswith("call ") or instruction.startswith("jmp ")):
+			continue
+
+		target_kind = "call"
+		if instruction.startswith("jmp "):
+			target_kind = "jmp"
+		operand = instruction.split(" ", 1)[1].strip()
+		target_entry = OrderedDict([
+			("kind", target_kind),
+			("instruction_address", entry.get("address_text", "")),
+			("instruction", instruction),
+			("target_operand", operand)
+		])
+
+		resolved = _resolveDisassemblyTargetOperand(operand)
+		for key, value in resolved.items():
+			if key not in target_entry:
+				target_entry[key] = value
+		if not resolved.get("resolved", False):
+			targets.append(target_entry)
+			continue
+
+		target_address = resolved.get("target_address", 0)
+		if target_address not in cached_target_contexts:
+			cached_target_contexts[target_address] = OrderedDict([
+				("module", _getModuleSummary(target_address)),
+				("symbol", _getSymbolName(target_address)),
+				("nearest_symbol_output", _getNearestSymbolOutput(target_address)),
+				("disasm", _getDisasmSummary(target_address, depth_before=0, depth_after=10))
+			])
+		for key, value in cached_target_contexts[target_address].items():
+			target_entry[key] = value
+		targets.append(target_entry)
+	return targets
 
 
 def _extractInstructionRegisters(instruction_text, regs):
@@ -4169,6 +4341,9 @@ def _buildRequestVariables(context):
 		"heap_analysis_target",
 		"analysis_target",
 		"current_function",
+		"additional_function",
+		"additional_function_note",
+		"function_analyses",
 		"rop_target_modules",
 	]
 	for key in preferred_keys:
@@ -4219,17 +4394,24 @@ If control appears partial or uncertain, say so explicitly.
 Keep the answer practical and precise."""
 	if question_type == "2":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on understanding what the target function does, not on crash triage.
-Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
-Optimize token usage. Be detailed and accurate, but do not repeat debugger output, restate the same conclusion in multiple ways, or quote large supplied blocks when a focused summary is enough.
-Prefer concise synthesis over transcription. Cite only the specific symbols, instructions, register values, module facts, or pseudocode fragments that materially support your conclusion.
-Use the supplied function-start information and the output of uf to identify the function boundaries, explain what the function appears to do, and describe its logic in clear human language.
-If a containing function could not be resolved confidently, use the fallback code windows around the requested address instead and say clearly that the analysis is based on nearby code rather than a full function boundary.
-Provide decompiled code or high-quality pseudocode for the function when possible, based on the available uf output and any symbol information. If only fallback code windows are available, provide pseudocode for that code region and explain the uncertainty.
-If a target address was supplied, treat it as a point inside the function and reason from the start of the associated function rather than focusing on the single instruction at that address.
-Do not focus on the current instruction pointer, crash context, stack state, or call stack unless they are directly required to understand the function.
-If symbol information is missing or ambiguous, say so clearly and fall back to describing the function body from uf output instead of inventing a function name.
-Be specific, but do not invent facts that are not present in the snapshot."""
+Focus on what the function does, not on crash triage.
+Use the entries under 'variables' as the debugger context. Ignore variables that are not useful and briefly say why only when that matters.
+Be concise. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, or pseudocode fragments that support the conclusion.
+Analyze function_analyses in order. The live %s function is primary. If a second entry sourced from -a is present and not marked as duplicate, analyze that function too.
+For each analyzed function, cover:
+1. whether the location is valid and whether full function boundaries were resolved
+2. the most likely function purpose in plain English
+3. the main logic blocks / branches
+4. high-quality pseudocode or decompiled-style logic
+5. the meaning of important calls and unconditional jumps using control_flow_targets when available
+If a location is invalid, say so clearly. If a containing function could not be resolved confidently, fall back to the supplied code window and explain the uncertainty.
+Reason from the start of the containing function, not from the single instruction offset alone.
+Use symbol names when they are reliable. If symbols are missing or ambiguous, say so and infer behavior from uf output and target disassembly without inventing names or semantics.
+Do not focus on stack state, call stack, or broader crash context unless they are required to explain the function logic.
+Do not invent facts that are not present in the snapshot.""" % (
+			PROGRAM_COUNTER.upper(),
+			PROGRAM_COUNTER.upper()
+		)
 	if question_type == "3":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on ROP primitive quality and feasibility.
@@ -4313,6 +4495,9 @@ def _getProfileTemplateVariables(question_type):
 		return q2_common_vars + [
 			"analysis_target",
 			"current_function",
+			"additional_function",
+			"additional_function_note",
+			"function_analyses",
 		]
 	if question_type == "3":
 		return [
@@ -25462,6 +25647,8 @@ class MnAI(object):
 		self.effective_question_type = ""
 		self.target_address = 0
 		self.target_address_source = PROGRAM_COUNTER.upper()
+		self.current_pc_address = 0
+		self.additional_target_address = 0
 		self.heap_target_address = 0
 		self.rop_target_modules = None
 		self.template_file = ""
@@ -25685,7 +25872,8 @@ class MnAI(object):
 			self.heap_target_address = self.target_address
 			mndbg.dbgp("tellme: using heap analysis target %s from -a for q1" % (PTR_PRINT % self.heap_target_address))
 		else:
-			mndbg.dbgp("tellme: using target address override %s from -a" % (PTR_PRINT % self.target_address))
+			self.additional_target_address = self.target_address
+			mndbg.dbgp("tellme: using additional q2 target %s from -a" % (PTR_PRINT % self.additional_target_address))
 		return True
 
 	def parseTemplateSelection(self):
@@ -25932,21 +26120,35 @@ class MnAI(object):
 		return True
 
 	def validateCurrentInstruction(self):
-		"""Ensure q2 has a valid current instruction before collecting function context."""
+		"""Resolve q2 code locations and keep enough state to report invalid locations in the prompt."""
 		mndbg.dbgp(get_current_function_name())
 		if self.effective_question_type != "2" or self.prebuilt_prompt != "":
 			return True
+		regs = getAllRegisters()
+		self.current_pc_address = regs.get(PROGRAM_COUNTER, 0)
 		if self.target_address == 0:
-			regs = getAllRegisters()
-			self.target_address = regs.get(PROGRAM_COUNTER, 0)
-		has_instr, instr_reason = tellMeHasCurrentInstruction(self.target_address)
-		mndbg.dbgp("tellme: q2 current-instruction check: %s (%s)" % (str(has_instr), instr_reason))
+			self.target_address = self.current_pc_address
+			self.target_address_source = PROGRAM_COUNTER.upper()
+		has_instr, instr_reason = tellMeHasCurrentInstruction(self.current_pc_address)
+		mndbg.dbgp("tellme: q2 current-instruction check at %s: %s (%s)" % (
+			PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "0x0",
+			str(has_instr),
+			instr_reason
+		))
 		if not has_instr:
-			self.logError("Cannot use '-q 2' because there is no valid current instruction at %s" % self.target_address_source)
-			self.logErrorDetail("Reason: %s" % instr_reason)
-			self.logErrorDetail("This usually means there is no reliable current function to analyse.")
-			self.logErrorDetail("Try '-q 1' instead, or provide a valid code address with -a to analyse.")
-			return False
+			self.logInfo("Current %s does not point to a valid instruction." % PROGRAM_COUNTER.upper())
+			self.logInfoDetail("Reason: %s" % instr_reason)
+			self.logInfoDetail("The request will report that invalid location and continue with any additional -a target.")
+		if self.additional_target_address > 0:
+			addy_ok, addy_reason = tellMeHasCurrentInstruction(self.additional_target_address)
+			mndbg.dbgp("tellme: q2 -a target check at %s: %s (%s)" % (
+				PTR_PRINT % self.additional_target_address,
+				str(addy_ok),
+				addy_reason
+			))
+			if not addy_ok:
+				self.logInfo("The address supplied with -a is not a valid instruction location.")
+				self.logInfoDetail("Reason: %s" % addy_reason)
 		return True
 
 	def getRequestContext(self):
@@ -25975,14 +26177,28 @@ class MnAI(object):
 
 		if self.effective_question_type == "2":
 			context["analysis_target"] = {
-				"address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
-				"source": self.target_address_source
+				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
+				"source": PROGRAM_COUNTER.upper()
 			}
+			context["function_analyses"] = []
 			try:
-				context["current_function"] = collectAICurrentFunctionContext(self.target_address)
+				context["current_function"] = collectAICurrentFunctionContext(self.current_pc_address)
+				context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+				context["function_analyses"].append(context["current_function"])
 			except Exception as e:
 				context["current_function_error"] = str(e)
 				mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
+			if self.additional_target_address > 0:
+				if self.additional_target_address == self.current_pc_address:
+					context["additional_function_note"] = "The -a address matches the current %s value, so only one function analysis was collected." % PROGRAM_COUNTER.upper()
+				else:
+					try:
+						context["additional_function"] = collectAICurrentFunctionContext(self.additional_target_address)
+						context["additional_function"]["source"] = "-a"
+						context["function_analyses"].append(context["additional_function"])
+					except Exception as e:
+						context["additional_function_error"] = str(e)
+						mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
 		return context
 
 	def buildRequestPrompt(self):
@@ -34509,14 +34725,15 @@ Official model docs:
 	    -submit      : Skip the confirmation prompt and submit the AI request immediately
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
-	                   2 = analyse the current code location
+	                   2 = analyse the current __PC__ function, plus an optional extra function from -a
 	                   9 = load a request template from -f <file>
 	                   Running -q 1 or -q 2 also rewrites ai.q1 or ai.q2 in the working folder if set,
 	                   otherwise next to mona.ini
 	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this adds an extra heap target.
-	                   With -q 2, this selects the code address to analyse
+	                   With -q 2, this adds a second function analysis rooted at that location,
+	                   while still keeping the live __PC__ function as the primary context
 	    -l <files>   : Optional comma-separated context files, for example -l "file1,file2"
 	                   Any file containing alloc()/free() lines is treated as a heapdynamics log
 	                   Other files are added as supporting context under [additional_context_files]
@@ -34585,8 +34802,11 @@ Official model docs:
 	    [omitted_sections]         = sections dropped or blanked only when mini evidence omits data or -maxsize forces reduction
 	    [additional_context_files] = supporting files from -l that are not heapdynamics logs
 	    [poc_file]                 = optional PoC/trigger file contents from -p
-	    [analysis_target]          = resolved target address/source for -q 2
-	    [current_function]         = current function context for -q 2
+	    [analysis_target]          = live __PC__ address/source used as the primary q2 context
+	    [current_function]         = function context for the live __PC__ location
+	    [additional_function]      = extra q2 function context collected from -a when it differs
+	    [additional_function_note] = note explaining when -a matched the live __PC__ location
+	    [function_analyses]        = ordered list of q2 function analyses, including invalid-location reports
 	    Error variables may also appear when collection fails
 	For -q 1 and -q 2, the final request sent to the AI uses the structured 'variables' object.
 	For -q 1 specifically, compact variables are used by default, but larger *_full variables are still kept unless
@@ -34616,13 +34836,13 @@ Official model docs:
 
 	Question notes:
 	    -q 1 focuses on the current crash state, nearby memory, and related heap context.
-	    -q 2 focuses on the current code location or a code address supplied with -a.
+	    -q 2 focuses on the function containing the live __PC__ location and optionally a second function from -a.
 	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
 
 	Test model overrides:
 	    - OpenAI   : gpt-5-nano
 	    - Anthropic: claude-haiku-4-5
-		""".replace("__LAUNCHCMD__", launchcmd)
+		""".replace("__LAUNCHCMD__", launchcmd).replace("__PC__", PROGRAM_COUNTER.upper())
 
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
