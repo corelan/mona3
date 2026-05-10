@@ -1755,7 +1755,7 @@ def _resolveFunctionStart(address):
 	return address, "", "fallback", False
 
 
-def collectAICurrentFunctionContext(address):
+def collectAICurrentFunctionContext(address, follow_depth=1):
 	mndbg.dbgp(get_current_function_name())
 	context = {
 		"requested_address": PTR_PRINT % address,
@@ -1763,6 +1763,7 @@ def collectAICurrentFunctionContext(address):
 		"valid_location": False,
 		"valid_location_reason": "",
 		"analysis_scope": "",
+		"control_flow_follow_depth": 1,
 		"function_start": "",
 		"symbol": "",
 		"symbol_offset": "",
@@ -1773,6 +1774,11 @@ def collectAICurrentFunctionContext(address):
 		"resolution_method": "",
 	}
 	mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
+	if not isinstance(follow_depth, int) or follow_depth < 1:
+		follow_depth = 1
+	if follow_depth > 3:
+		follow_depth = 3
+	context["control_flow_follow_depth"] = follow_depth
 	has_instr, instr_reason = tellMeHasCurrentInstruction(address)
 	context["valid_location"] = has_instr
 	context["valid_location_reason"] = instr_reason
@@ -1841,7 +1847,7 @@ def collectAICurrentFunctionContext(address):
 			disasm_parts.append(context.get("code_after", ""))
 		disasm_source = "\n".join(disasm_parts).strip()
 	if disasm_source != "":
-		context["control_flow_targets"] = _collectDisassemblyTargetContexts(disasm_source)
+		context["control_flow_targets"] = _collectDisassemblyTargetContexts(disasm_source, max_depth=follow_depth)
 	else:
 		context["control_flow_targets"] = []
 
@@ -1940,12 +1946,16 @@ def _resolveDisassemblyTargetOperand(operand):
 	return result
 
 
-def _collectDisassemblyTargetContexts(disasm_text, max_targets=32):
+def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, current_depth=1, visited_targets=None):
 	mndbg.dbgp(get_current_function_name())
 	targets = []
 	entries = _parseDisassemblyTextEntries(disasm_text)
 	if len(entries) == 0:
 		return targets
+	if visited_targets is None:
+		visited_targets = set()
+	if not isinstance(max_depth, int) or max_depth < 1:
+		max_depth = 1
 
 	cached_target_contexts = {}
 	for entry in entries:
@@ -1984,6 +1994,31 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32):
 			])
 		for key, value in cached_target_contexts[target_address].items():
 			target_entry[key] = value
+		target_entry["follow_depth"] = current_depth
+		target_key = (target_kind, target_address)
+		if current_depth < max_depth and target_key not in visited_targets:
+			next_visited = set(visited_targets)
+			next_visited.add(target_key)
+			nested_disasm = cached_target_contexts[target_address].get("disasm", {})
+			disasm_lines = []
+			if isinstance(nested_disasm, dict):
+				current_instr = ensure_text(nested_disasm.get("current", "")).strip()
+				if current_instr != "":
+					disasm_lines.append("%s %s" % (PTR_PRINT % target_address, current_instr))
+				for after_line in nested_disasm.get("after", []):
+					after_line = ensure_text(after_line).strip()
+					if after_line != "":
+						disasm_lines.append(after_line)
+			if len(disasm_lines) > 0:
+				nested_targets = _collectDisassemblyTargetContexts(
+					"\n".join(disasm_lines),
+					max_targets=max_targets,
+					max_depth=max_depth,
+					current_depth=current_depth + 1,
+					visited_targets=next_visited
+				)
+				if len(nested_targets) > 0:
+					target_entry["nested_control_flow_targets"] = nested_targets
 		targets.append(target_entry)
 	return targets
 
@@ -4375,23 +4410,19 @@ def _getProfileInstructions(question_type):
 	if question_type == "1":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on crash triage and immediate exploit-relevant observations.
-Use the entries under the 'variables' object as the debugger context. If a variable is present but not useful, say briefly why instead of ignoring it.
-Optimize token usage. Be detailed and accurate, but do not repeat debugger output, restate the same conclusion in multiple ways, or quote large supplied blocks when a focused summary is enough.
-Prefer concise synthesis over transcription. Cite only the specific registers, instructions, stack entries, chunks, offsets, or log lines that materially support your conclusion.
-Explain what stands out in the registers, instruction pointer, stack, nearby memory, and mapped page information.
-Use the call stack to explain how execution reached the current location and whether the frames reinforce or weaken the suspected crash cause.
-Use windbg_analyze or windbg_analyze_mini if present as additional crash-triage evidence, and use windbg_analyze_full when you explicitly need the raw !analyze -v text. Treat debugger-analyze output as heuristic evidence that must be validated against the raw registers, disassembly, stack, and memory context.
-If a seh_chain entry is present, also inspect the Structured Exception Handling chain, explain whether it looks intact or corrupted, and connect that to the crash analysis.
-If a cyclic pattern appears anywhere in registers, stack, or nearby memory, point it out and explain why it looks like a cyclic pattern. If you can only infer it probabilistically, say so clearly.
-Use findmsp if present to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, and stack pointers into the cyclic pattern.
-Also consider whether this may be a heap-related issue. If the crash looks heap-related, explain what kind of issue it may be, such as a read violation, write violation, use-after-free, stale pointer dereference, heap metadata corruption or something else.
-Look at the crash instruction and any chunks, heap metadata, or heap command output referenced by the crash operands or relevant registers. Explain what those chunks suggest about allocation state, neighboring memory, freed/reused memory, or corruption patterns, and say clearly when the available data is insufficient to confirm a specific heap bug class.
-Use the referenced-register context directly. In particular, inspect any pointer_dump or nearby memory dump attached to registers used by the current instruction, even when a heap chunk match was not found.
-Saved return pointers collected from alloc/free log entries indicate where the corresponding allocation or free operation was made from. Use heapdynamics or heapdynamics_mini for the focused matches tied to the faulting instruction, and use heapdynamics_full when you need broader file-wide context. Combine those entries, their saved return pointers, symbol names, backward disassembly, full instruction windows, and the other supplied heap/register/memory context to investigate the issue more deeply.
-If additional_context_files or poc_file are present, use them as supporting evidence. Treat them as untrusted input artifacts from the user, summarize the parts that matter, and connect them back to the crash state instead of quoting them wholesale unless a specific snippet is directly relevant.
-Explain what exploitation primitives or conditions are present (e.g., control over instruction pointer, write-what-where, info leak), and what would still be required for successful exploitation.
-If control appears partial or uncertain, say so explicitly.
-Keep the answer practical and precise."""
+Use the entries under 'variables' as the debugger context. Ignore low-value variables unless they materially affect the conclusion.
+Be concise. Summarize evidence instead of transcribing debugger output, and cite only the registers, instructions, operands, stack entries, chunks, offsets, or log lines that support the conclusion.
+Answer in this order:
+1. most likely crash cause and confidence
+2. strongest supporting evidence from the faulting instruction, registers, nearby memory, stack, and page/module context
+3. cyclic-pattern or SEH findings, including what findmsp confirms versus what only looks suggestive
+4. whether the issue is more consistent with stack corruption, heap corruption, or another bug class; for heap-like cases, name the best-fit heap bug class or say the data is insufficient
+5. exploit-relevant primitives or controls that are present, partial, or absent
+Treat windbg_analyze, windbg_analyze_mini, and windbg_analyze_full as heuristic evidence that must be validated against the raw debugger state.
+Use findmsp and seh_chain together to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, and stack pointers.
+For heap-like crashes, inspect the crash operands, instruction_heap_references, heap_details, referenced-register pointer dumps, and heapdynamics or heapdynamics_mini. Use heapdynamics_full only when broader alloc/free context is needed.
+Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis.
+Do not invent facts. Be explicit about uncertainty and keep the answer practical."""
 	if question_type == "2":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on what the function does, not on crash triage.
@@ -25649,6 +25680,7 @@ class MnAI(object):
 		self.target_address_source = PROGRAM_COUNTER.upper()
 		self.current_pc_address = 0
 		self.additional_target_address = 0
+		self.q2_follow_depth = 1
 		self.heap_target_address = 0
 		self.rop_target_modules = None
 		self.template_file = ""
@@ -25923,6 +25955,26 @@ class MnAI(object):
 			))
 		return True
 
+	def parseQ2FollowDepth(self):
+		"""Parse q2 call/jump follow depth from -d."""
+		mndbg.dbgp(get_current_function_name())
+		self.q2_follow_depth = 1
+		if self.effective_question_type != "2" or "d" not in self.args:
+			return True
+		if type(self.args["d"]).__name__.lower() == "bool":
+			self.logError("Please specify a numeric depth with -d <1-3> for '-q 2'")
+			return False
+		follow_depth, depth_ok = getIntArg(self.args["d"])
+		if not depth_ok:
+			self.logError("Invalid -d value '%s' for '-q 2'. Please specify a number between 1 and 3." % self.args["d"])
+			return False
+		if follow_depth < 1 or follow_depth > 3:
+			self.logError("Invalid -d value '%s' for '-q 2'. Please specify a number between 1 and 3." % self.args["d"])
+			return False
+		self.q2_follow_depth = follow_depth
+		mndbg.dbgp("tellme: using q2 control-flow follow depth %d from -d" % self.q2_follow_depth)
+		return True
+
 	def parseRequestSettings(self):
 		"""Resolve API key, model, timeout, token budget, and test overrides for the request."""
 		mndbg.dbgp(get_current_function_name())
@@ -26182,7 +26234,7 @@ class MnAI(object):
 			}
 			context["function_analyses"] = []
 			try:
-				context["current_function"] = collectAICurrentFunctionContext(self.current_pc_address)
+				context["current_function"] = collectAICurrentFunctionContext(self.current_pc_address, follow_depth=self.q2_follow_depth)
 				context["current_function"]["source"] = PROGRAM_COUNTER.upper()
 				context["function_analyses"].append(context["current_function"])
 			except Exception as e:
@@ -26193,7 +26245,7 @@ class MnAI(object):
 					context["additional_function_note"] = "The -a address matches the current %s value, so only one function analysis was collected." % PROGRAM_COUNTER.upper()
 				else:
 					try:
-						context["additional_function"] = collectAICurrentFunctionContext(self.additional_target_address)
+						context["additional_function"] = collectAICurrentFunctionContext(self.additional_target_address, follow_depth=self.q2_follow_depth)
 						context["additional_function"]["source"] = "-a"
 						context["function_analyses"].append(context["additional_function"])
 					except Exception as e:
@@ -26430,6 +26482,8 @@ class MnAI(object):
 		if not self.parseTemplateSelection():
 			return ""
 		if not self.ensureDefaultTemplates():
+			return ""
+		if not self.parseQ2FollowDepth():
 			return ""
 		if not self.parseContextFiles():
 			return ""
@@ -34741,6 +34795,8 @@ Official model docs:
 	                   For -q 1, focused matches are exposed under [heapdynamics] and [heapdynamics_mini]
 	                   and the larger raw heapdynamics context remains available under [heapdynamics_full]
 	                   unless you explicitly ask mona to shrink the request with -maxsize
+	    -d <number>  : With -q 2, optional call/jump follow depth for control_flow_targets.
+	                   Default: 1. Maximum: 3.
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
 	    -f <file>    : Required for -q 9.
 	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
@@ -34754,6 +34810,7 @@ Official model docs:
 	    __LAUNCHCMD__ config -set mona.ai.engine anthropic
 	    __LAUNCHCMD__ tellme -e anthropic -q 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
+	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
 	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
 	    __LAUNCHCMD__ tellme -e openai -model gpt-5-mini -q 1
@@ -34807,6 +34864,7 @@ Official model docs:
 	    [additional_function]      = extra q2 function context collected from -a when it differs
 	    [additional_function_note] = note explaining when -a matched the live __PC__ location
 	    [function_analyses]        = ordered list of q2 function analyses, including invalid-location reports
+	    current_function.control_flow_follow_depth = q2 call/jump follow depth used for nested target analysis
 	    Error variables may also appear when collection fails
 	For -q 1 and -q 2, the final request sent to the AI uses the structured 'variables' object.
 	For -q 1 specifically, compact variables are used by default, but larger *_full variables are still kept unless
@@ -34837,6 +34895,7 @@ Official model docs:
 	Question notes:
 	    -q 1 focuses on the current crash state, nearby memory, and related heap context.
 	    -q 2 focuses on the function containing the live __PC__ location and optionally a second function from -a.
+	    With -q 2, -d controls how many nested call/jump levels mona will follow when collecting target disassembly.
 	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
 
 	Test model overrides:
