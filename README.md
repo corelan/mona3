@@ -39,7 +39,7 @@
 This repository contains the necessary Python files to run **Mona v3** under **WinDBG(X)** and **Immunity Debugger**.
 
 ### Highlights
-* **Python 3 Support**: Compatible with **Python 3.9.13** (via PyKD and PyKD-ext). (Technically, `mona` is compatible with Python 3.14.4 as well, but you'll have to install the pykd library manually. Instructions are provided below).   We recommend using pykd-ext bootstrapper version 2.0.0.25 or later.
+* **Python 3 Support**: Compatible with **Python 3** (and tested with versions up to 3.14.4.) You'll need a recent version of the PyKD Python Library and the PyKD-ext bootstrapper. We recommend using pykd-ext bootstrapper version 2.0.0.25 or later.
 * **Backwards Compatible**: Still runs on **Python 2.7.18** (via PyKD and PyKD-ext)
 * **Multi-Architecture**: Supports both ***x86 and x64*** debugging sessions *(note: not all `mona`commands are available in 64-bit)*
 * **Tested on**: Windows 7, Windows 10, and Windows 11
