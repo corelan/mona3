@@ -3157,7 +3157,7 @@ def _collectRopTargetModules(args):
 	return selection
 
 
-def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0):
+def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0, ai_args=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
 	context = {
@@ -3213,7 +3213,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["instruction_heap_references_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
 		try:
-			context["findmsp"] = _getFindMspSummary()
+			context["findmsp"] = _getFindMspSummary(args=ai_args or {})
 		except Exception as e:
 			context["findmsp_error"] = str(e)
 			context["findmsp_error_type"] = e.__class__.__name__
@@ -3819,6 +3819,40 @@ def _getFindMspSummary(args=None):
 		g_silent = True
 		mspresults = goFindMSP(100, args or {})
 		info["distance"] = 100
+		register_trampolines = {}
+		raw_registers_to = mspresults.get("registers_to", {})
+		if raw_registers_to:
+			modulecriteria = {
+				"aslr": False,
+				"rebase": False,
+			}
+			trampoline_criteria = {
+				"accesslevel": "X",
+			}
+			if args and "cpb" in args and type(args["cpb"]).__name__.lower() != "bool":
+				strb, badcharsok = cpbArgToBytes(args["cpb"])
+				if badcharsok and strb not in [None, b"", ""]:
+					trampoline_criteria["badchars"] = strb
+			global g_ptr_to_get
+			global g_ptr_counter
+			old_ptr_to_get = g_ptr_to_get
+			old_ptr_counter = g_ptr_counter
+			try:
+				for reg_name in sorted(raw_registers_to.keys()):
+					g_ptr_to_get = 1
+					g_ptr_counter = 0
+					jmp_results = findJMP(modulecriteria, trampoline_criteria, reg_name.lower())
+					for instruction in jmp_results:
+						pointers = jmp_results[instruction]
+						if len(pointers) > 0:
+							register_trampolines[reg_name] = OrderedDict([
+								("address", PTR_PRINT % pointers[0]),
+								("instruction", _formatContextText(instruction, max_len=256))
+							])
+							break
+			finally:
+				g_ptr_to_get = old_ptr_to_get
+				g_ptr_counter = old_ptr_counter
 		for key in ["registers", "registers_to", "seh", "memory", "stack", "stackcontains"]:
 			raw = mspresults.get(key, {})
 			if not raw:
@@ -3839,6 +3873,8 @@ def _getFindMspSummary(args=None):
 							entry["length"] = int(value[2])
 					if len(value) > 3:
 						entry["pattern_type"] = _formatContextText(value[3], max_len=64)
+					if key == "registers_to" and name in register_trampolines:
+						entry["trampoline"] = register_trampolines[name]
 					section[name] = entry
 				info[key] = section
 			elif key == "seh":
@@ -26278,7 +26314,8 @@ class MnAI(object):
 			heapdynamics_files=self.heapdynamics_files,
 			additional_context_files=self.additional_context_files,
 			poc_file=self.poc_file,
-			heap_target_address=self.heap_target_address
+			heap_target_address=self.heap_target_address,
+			ai_args=self.args
 		)
 		if self.effective_question_type == "3" and self.rop_target_modules is not None:
 			context["rop_target_modules"] = self.rop_target_modules
@@ -34852,6 +34889,11 @@ Official model docs:
 	                   For -q 1, focused matches are exposed under [heapdynamics] and [heapdynamics_mini]
 	                   and the larger raw heapdynamics context remains available under [heapdynamics_full]
 	                   unless you explicitly ask mona to shrink the request with -maxsize
+	    -cpb <bytes> : Optional badchars for pointer filtering, for example '\\x00\\x0a\\x0d'
+	                   With -q 1, and with -q 9 when the template still resolves live [findmsp] context,
+	                   mona will use this list when looking for first trampoline candidates for registers
+	                   that point into the cyclic pattern. This is usually a good idea, otherwise the
+	                   suggested trampoline may contain bytes you already know you cannot use
 	    -d <number>  : With -q 2, optional call/jump follow depth for control_flow_targets.
 	                   Default: 1. Maximum: 3.
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
@@ -34875,8 +34917,10 @@ Official model docs:
 	    __LAUNCHCMD__ tellme -e openai -q 1 -submit
 	    __LAUNCHCMD__ tellme -e openai -q 1 -timeout 120
 	    __LAUNCHCMD__ tellme -e openai -q 1 -maxsize 300
+	    __LAUNCHCMD__ tellme -e openai -q 1 -cpb '\\x00\\x0a\\x0d'
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.txt
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
+	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -cpb '\\x00\\x0a\\x0d'
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
 	    __LAUNCHCMD__ tellme -e openai -q 1 -offline
 	    __LAUNCHCMD__ tellme -e openai -q 1 -test
@@ -34904,6 +34948,10 @@ Official model docs:
 	    [windbg_analyze_mini]      = explicit alias of the compact !analyze -v crash summary
 	    [windbg_analyze_full]      = full raw !analyze -v output
 	    [findmsp]                  = cyclic-pattern analysis results
+	                                 For q1, and for q9 templates that still resolve live debugger context,
+	                                 registers that point into the pattern may also include a first
+	                                 trampoline candidate from findJMP(). Consider using -cpb so those
+	                                 candidates are filtered against known badchars
 	    [seh_chain]                = 32-bit SEH chain summary
 	    [instruction_heap_references] = heap and pointer context related to the current instruction
 	    [heap_details]             = heap, segment, VAD, and chunk summary
