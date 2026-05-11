@@ -1,3 +1,25 @@
+[mona 3.0.3018]
+- Update revision (mona: 3018, windbglib: 3008) bugfixes
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/bf98b5a">bf98b5a</link> remove line from end
+  - <link cmd="https://github.com/corelan/mona3/commit/154cacc">154cacc</link> fix indentation issue
+  - <link cmd="https://github.com/corelan/mona3/commit/a5c7f5f">a5c7f5f</link> bugfix in windbglib, add extra cache for mona rop
+  - <link cmd="https://github.com/corelan/mona3/commit/eed0081">eed0081</link> add option to specify depth to ai profile q 2
+  - <link cmd="https://github.com/corelan/mona3/commit/488273a">488273a</link> update prompts for profile 2
+  - <link cmd="https://github.com/corelan/mona3/commit/b90b59f">b90b59f</link> add caching for performance, improve ai requests
+  - <link cmd="https://github.com/corelan/mona3/commit/1fda001">1fda001</link> add output of analyze to context
+  - <link cmd="https://github.com/corelan/mona3/commit/c762077">c762077</link> reduce request tokens, add submit flag, request confirmation before submitting
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/5895209">5895209</link> Update revision (mona: 3017, windbglib: 3007)
+
+[windbglib 3.0.3008]
+- Update revision (mona: 3018, windbglib: 3008) bugfixes
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/a5c7f5f">a5c7f5f</link> bugfix in windbglib, add extra cache for mona rop
+  - <link cmd="https://github.com/corelan/mona3/commit/b90b59f">b90b59f</link> add caching for performance, improve ai requests
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/5895209">5895209</link> Update revision (mona: 3017, windbglib: 3007)
+
 [mona 3.0.3017]
 - Update revision (mona: 3017, windbglib: 3007)
 corelanc0d3r:
@@ -150,16 +172,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/8c89103">8c89103</link> added mona tellme function
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/ca42e7f">ca42e7f</link> Update revision (mona: 3007, windbglib: 3005) Added AI integration with tellme
-  - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
-
-[mona 3.0.3007]
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/1e43df1">1e43df1</link> hide key contents in mona config -list and set default model to -1
-  - <link cmd="https://github.com/corelan/mona3/commit/9cdfe80">9cdfe80</link> update usage and default models
-  - <link cmd="https://github.com/corelan/mona3/commit/6e920e5">6e920e5</link> Merge branch 'main' of https://github.com/corelan/mona3
-  - <link cmd="https://github.com/corelan/mona3/commit/8c89103">8c89103</link> added mona tellme function
-  - <link cmd="https://github.com/corelan/mona3/commit/c8097a1">c8097a1</link> fix output formatting bug in findmsp
-github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
 
 [windbglib 3.0.3005]
