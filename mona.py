@@ -181,6 +181,10 @@ _symbol_dirs_cache = None
 _unreadable_page_cache = {}
 _unreadable_page_cache_requests = 0
 _unreadable_page_cache_hits = 0
+_invalid_instr_cache = set()
+_invalid_instr_cache_requests = 0
+_invalid_instr_cache_hits = 0
+_invalid_instr_cache_stores = 0
 
 #
 # some global helper vars
@@ -208,17 +212,9 @@ g_tellme_pattern_cache = None
 mnproc = None
 mndbg = None
 
-def _ai_dbgp(msg, errormode=False):
-	try:
-		if mndbg is not None:
-			mndbg.dbgp(msg, errormode=errormode)
-			return
-	except Exception:
-		pass
-	try:
-		dbglib.dbgp(msg, errormode=errormode)
-	except Exception:
-		pass
+def getInvalidInstrCacheStats():
+	pct = (float(_invalid_instr_cache_hits) / float(_invalid_instr_cache_requests) * 100.0) if _invalid_instr_cache_requests else 0.0
+	return _invalid_instr_cache_hits, _invalid_instr_cache_requests, _invalid_instr_cache_stores, pct
 
 
 def _mask_config_debug_line(line_text):
@@ -848,6 +844,10 @@ def resetGlobals():
 	global _unreadable_page_cache
 	global _unreadable_page_cache_requests
 	global _unreadable_page_cache_hits
+	global _invalid_instr_cache
+	global _invalid_instr_cache_requests
+	global _invalid_instr_cache_hits
+	global _invalid_instr_cache_stores
 	global g_dbgp_counter
 
 	def _len_or_zero(value):
@@ -861,16 +861,24 @@ def resetGlobals():
 			mndbg.dbgp(msg)
 
 	unreadable_page_cache_pct = (float(_unreadable_page_cache_hits) / float(_unreadable_page_cache_requests) * 100.0) if _unreadable_page_cache_requests else 0.0
+	invalid_instr_cache_pct = (float(_invalid_instr_cache_hits) / float(_invalid_instr_cache_requests) * 100.0) if _invalid_instr_cache_requests else 0.0
 	_reset_dbgp("resetGlobals: currentArgs length before reset: %d" % _len_or_zero(currentArgs))
 	_reset_dbgp("resetGlobals: _memory_page_acl_cache length before reset: %d" % _len_or_zero(_memory_page_acl_cache))
 	_reset_dbgp("resetGlobals: _config_file_cache length before reset: %d" % _len_or_zero(_config_file_cache))
 	_reset_dbgp("resetGlobals: _cfg_table_cache length before reset: %d" % _len_or_zero(_cfg_table_cache))
 	_reset_dbgp("resetGlobals: _funcptr_cache length before reset: %d" % _len_or_zero(_funcptr_cache))
 	_reset_dbgp("resetGlobals: _unreadable_page_cache length before reset: %d" % _len_or_zero(_unreadable_page_cache))
+	_reset_dbgp("resetGlobals: _invalid_instr_cache length before reset: %d" % _len_or_zero(_invalid_instr_cache))
 	_reset_dbgp("resetGlobals: _unreadable_page_cache hits: %d / %d (%.2f%%)" % (
 		_unreadable_page_cache_hits,
 		_unreadable_page_cache_requests,
 		unreadable_page_cache_pct
+	))
+	_reset_dbgp("resetGlobals: _invalid_instr_cache hits: %d / %d (%.2f%%), stores: %d" % (
+		_invalid_instr_cache_hits,
+		_invalid_instr_cache_requests,
+		invalid_instr_cache_pct,
+		_invalid_instr_cache_stores
 	))
 
 	mnproc = None
@@ -882,6 +890,10 @@ def resetGlobals():
 	_unreadable_page_cache = {}
 	_unreadable_page_cache_requests = 0
 	_unreadable_page_cache_hits = 0
+	_invalid_instr_cache = set()
+	_invalid_instr_cache_requests = 0
+	_invalid_instr_cache_hits = 0
+	_invalid_instr_cache_stores = 0
 	g_dbgp_counter = 0
 	return
 
@@ -964,7 +976,7 @@ def _safe_int(v):
 def getAvailableAIEngines(reason="", refresh=False):
 	mndbg.dbgp(get_current_function_name())
 	engines = ["openai", "anthropic"]
-	_ai_dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
+	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
 		", ".join(engines)
@@ -5330,6 +5342,18 @@ def get_current_function_name():
 
 
 
+def dbgGetModuleSafe(modulename):
+	"""
+	PyKD may raise DbgException for missing modules instead of returning None.
+	Normalize that behavior so callers can treat lookup misses as non-fatal.
+	"""
+	try:
+		return dbg.getModule(modulename)
+	except Exception as e:
+		mndbg.dbgp("dbg.getModule failed for '%s': %s" % (modulename, str(e)), errormode=False)
+		return None
+
+
 def getPythonVersion():
 	versioninfo = sys.version
 	versioninfolines = versioninfo.split('\n')
@@ -5384,7 +5408,7 @@ def askForConfirmation(displaytext="",default="N"):
 			dbg.log("[!] Confirmation interrupted by user", highlight=1)
 			return False
 		except Exception as e:
-			_ai_dbgp("confirmation prompt failed: %s" % str(e), errormode=False)
+			mndbg.dbgp("confirmation prompt failed: %s" % str(e), errormode=False)
 			user_input = ""
 
 		if user_input is None:
@@ -7977,7 +8001,7 @@ def getModuleObj(modname):
 	and then a case insensitive search in case nothing was found
 	"""
 	# Method 1
-	mod = dbg.getModule(modname)
+	mod = dbgGetModuleSafe(modname)
 	if mod is not None:
 		return MnModule(modname)
 	# Method 2
@@ -7990,7 +8014,7 @@ def getModuleObj(modname):
 		#WinDBG optimized
 		if mndbg.isWinDBG():	
 			for tmod_s in allmod:
-				tmod = dbg.getModule(tmod_s)
+				tmod = dbgGetModuleSafe(tmod_s)
 				if not tmod == None:
 					if tmod.getName() == modname_search:
 						return MnModule(tmod_s)
@@ -7999,7 +8023,7 @@ def getModuleObj(modname):
 						if imname == modname_search:
 							return MnModule(tmod)
 			for tmod_s in allmod:
-				tmod = dbg.getModule(tmod_s)
+				tmod = dbgGetModuleSafe(tmod_s)
 				if not tmod == None:
 					if tmod.getName().lower() == modname_search.lower():
 						return MnModule(tmod_s)
@@ -8008,7 +8032,7 @@ def getModuleObj(modname):
 						if imname.lower() == modname_search.lower():
 							return MnModule(tmod)
 			for tmod_s in allmod:
-				tmod = dbg.getModule(tmod_s)
+				tmod = dbgGetModuleSafe(tmod_s)
 				if not tmod == None:
 					if tmod_s.lower() == modname_search.lower():
 						return MnModule(tmod_s)
@@ -9516,11 +9540,20 @@ class MnModule: # TODO: Add getters
 			if not path:
 				path = _mod.modulePath if _mod else ""
 		if mzbase == 0:
-			self.moduleobj = dbg.getModule(modulename)
+			self.moduleobj = dbgGetModuleSafe(modulename)
 			mzbase = self.moduleobj.getBaseAddress() if self.moduleobj else 0
 		if not path:
+			if mzbase != 0:
+				try:
+					MnProc.ensure()
+					if mnproc is not None:
+						_mod = mnproc.getPEB().getModuleByAddress(mzbase)
+						if _mod:
+							path = _mod.modulePath
+				except Exception:
+					pass
 			if not hasattr(self, 'moduleobj'):
-				self.moduleobj = dbg.getModule(modulename)
+				self.moduleobj = dbgGetModuleSafe(modulename)
 			if self.moduleobj:
 				try:
 					path = self.moduleobj.getPath()
@@ -10481,7 +10514,7 @@ class MnModule: # TODO: Add getters
 					dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)") 
 					# this may not work well on Immunity.  Module.getSymbols() may not return anything         
 					try:
-						themod = dbg.getModule(self.moduleKey)
+						themod = dbgGetModuleSafe(self.moduleKey)
 						syms = themod.getSymbols()
 						thename = ""
 						dbg.log("      %d symbols found, now filtering relevant entries" % len(syms))
@@ -16063,7 +16096,7 @@ def searchInModule(sequences, name, criteria=[], refresh_pages=True):
 	Dictionary (text opcode => array of addresses)
 	"""	
 	
-	module = dbg.getModule(name)
+	module = dbgGetModuleSafe(name)
 	if(not module):
 		dbg.log("Module %s not found" % name)
 		return []
@@ -16105,7 +16138,7 @@ def getRangesOutsideModules():
 def isModuleLoadedInProcess(modulename):
 	MnProc.ensure()
 	modulefound = False
-	module = dbg.getModule(modulename)
+	module = dbgGetModuleSafe(modulename)
 	if(not module):
 		modulefound = False
 	else:
@@ -17375,6 +17408,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	dbg.log("")
 
 	global g_silent
+	global _invalid_instr_cache
+	global _invalid_instr_cache_requests
+	global _invalid_instr_cache_hits
+	global _invalid_instr_cache_stores
 	if not usefiles:		
 		dbg.log("[+] Expanding and filtering gadgets for %d endings" % tp)
 	else:
@@ -17385,6 +17422,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	interestinggadgets = {}
 	# won't store chain details, we can pick them up from ropgadgets
 	valid_cfg_target_gadgets = []
+	_invalid_instr_cache = set()
+	_invalid_instr_cache_requests = 0
+	_invalid_instr_cache_hits = 0
+	_invalid_instr_cache_stores = 0
 	stackpivots = {}
 	stackpivots_safeseh = {}
 	adcnt = 0
@@ -17461,6 +17502,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							if isGoodGadgetPtr(startptr,criteria): 
 								# only lookup if it's a good gadget
 								if not startptr in ropgadgets and not startptr in interestinggadgets:
+									_invalid_instr_cache_requests += 1
+									if startptr in _invalid_instr_cache:
+										_invalid_instr_cache_hits += 1
+										startptr = startptr+1
+										continue
 									#if DEBUG_MODE:
 									#	mndbg.dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
 									invalidinstr = False
@@ -17486,6 +17532,10 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 										else:
 											invalidinstr = True
 										avoidunlimitedloop += 1
+									if invalidinstr:
+										if not startptr in _invalid_instr_cache:
+											_invalid_instr_cache.add(startptr)
+											_invalid_instr_cache_stores += 1
 									mndbg.dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
@@ -17579,6 +17629,19 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	mndbg.dbgp("Final Number of stackpivots: %d" % len(stackpivots))
 	mndbg.dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))
 	mndbg.dbgp("Final Number of valid CFG target gadgets: %d" % len(valid_cfg_target_gadgets))			
+	invalid_instr_cache_hits, invalid_instr_cache_requests, invalid_instr_cache_stores, invalid_instr_cache_pct = getInvalidInstrCacheStats()
+	dbg.log("      - Invalid instruction cache: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
+		invalid_instr_cache_hits,
+		invalid_instr_cache_requests,
+		invalid_instr_cache_stores,
+		invalid_instr_cache_pct
+	))
+	mndbg.dbgp("Invalid instruction cache stats: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
+		invalid_instr_cache_hits,
+		invalid_instr_cache_requests,
+		invalid_instr_cache_stores,
+		invalid_instr_cache_pct
+	))
 
 	if mode == "all":
 		if len(ropgadgets) > 0 and len(interestinggadgets) > 0:
@@ -23997,7 +24060,6 @@ def getAbsolutePath(filename):
 					dbg.log("   ** Unable to create working folder %s, the debugger program folder will be used instead" % workingfolder,highlight=1)
 
 		return os.path.join(workingfolder, filename)
-
 #-----------------------------------------------------------------------#
 # 1st level functions that get called when running a mona command
 #-----------------------------------------------------------------------#	
@@ -35315,17 +35377,25 @@ def main(args):
 			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (getAliasName(), str(arch)), highlight=True)
 
 		
-		# ----- report ----- #
-		endtime = datetime.datetime.now()
-		delta = endtime - starttime
-		dbg.log("")
-		if mndbg.isWinDBG():
-			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-		else:
-			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-		if yesno():
-			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
-		dbg.setStatusBar("Done")
+			# ----- report ----- #
+			endtime = datetime.datetime.now()
+			delta = endtime - starttime
+			dbg.log("")
+			if mndbg.isWinDBG():
+				dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+			else:
+				dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+			if _invalid_instr_cache_requests > 0 or _invalid_instr_cache_stores > 0:
+				invalid_instr_cache_hits, invalid_instr_cache_requests, invalid_instr_cache_stores, invalid_instr_cache_pct = getInvalidInstrCacheStats()
+				dbg.log("[ -- END -- ] Invalid instruction cache: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
+					invalid_instr_cache_hits,
+					invalid_instr_cache_requests,
+					invalid_instr_cache_stores,
+					invalid_instr_cache_pct
+				))
+			if yesno():
+				dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
+			dbg.setStatusBar("Done")
 		if DEBUG_MODE and mndbg.isWinDBG():
 			dbg.nativeCommand(".logclose")
 			dbg.log("")

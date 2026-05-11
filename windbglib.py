@@ -564,17 +564,73 @@ def _lmCheckSymbols(module_name):
 def getNtHeaders(modulebase):
 	dbgp(get_current_function_name())
 
-	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_DOS_HEADER.html
-	# http://www.nirsoft.net/kernel_struct/vista/IMAGE_NT_HEADERS.html
-	if arch == 64:
-		ntheaders = "_IMAGE_NT_HEADERS64"
-	else:
-		ntheaders = "_IMAGE_NT_HEADERS"
+	class _DirEntry(object):
+		def __init__(self, va=0, size=0):
+			self.VirtualAddress = va
+			self.Size = size
 
-	# modulebase + 0x3c = IMAGE_DOS_HEADER.e_lfanew
+	class _FileHeader(object):
+		def __init__(self, number_of_sections=0, size_of_optional_header=0):
+			self.NumberOfSections = number_of_sections
+			self.SizeOfOptionalHeader = size_of_optional_header
+
+	class _OptionalHeader(object):
+		def __init__(self, address=0, size_of_image=0, entrypoint=0, directories=None):
+			self._address = address
+			self.SizeOfImage = size_of_image
+			self.AddressOfEntryPoint = entrypoint
+			self.DataDirectory = directories or []
+
+		def getAddress(self):
+			return self._address
+
+	class _NtHeaders(object):
+		def __init__(self, file_header=None, optional_header=None):
+			self.FileHeader = file_header
+			self.OptionalHeader = optional_header
+
 	nth = None
 	try:
-		nth = pykd.module("ntdll").typedVar(ntheaders, modulebase + pykd.ptrDWord(modulebase + 0x3c))
+		e_lfanew = pykd.ptrDWord(modulebase + 0x3c)
+		pebase = modulebase + e_lfanew
+		sig = pykd.ptrDWord(pebase)
+		if sig != 0x4550:
+			dbgp("ERROR: invalid PE signature 0x%x at 0x%x" % (sig, pebase), errormode=False)
+			return None
+
+		number_of_sections = pykd.ptrWord(pebase + 0x6)
+		size_of_optional_header = pykd.ptrWord(pebase + 0x14)
+		optional_header_addr = pebase + 0x18
+		magic = pykd.ptrWord(optional_header_addr)
+		if magic == 0x20b:
+			size_of_image_off = 0x38
+			address_of_entrypoint_off = 0x10
+			number_of_rva_and_sizes_off = 0x6c
+			data_directory_off = 0x70
+		else:
+			size_of_image_off = 0x38
+			address_of_entrypoint_off = 0x10
+			number_of_rva_and_sizes_off = 0x5c
+			data_directory_off = 0x60
+
+		size_of_image = pykd.ptrDWord(optional_header_addr + size_of_image_off)
+		address_of_entrypoint = pykd.ptrDWord(optional_header_addr + address_of_entrypoint_off)
+		number_of_rva_and_sizes = pykd.ptrDWord(optional_header_addr + number_of_rva_and_sizes_off)
+		directory_count = min(int(number_of_rva_and_sizes), 16)
+		directories = []
+		for idx in range(directory_count):
+			entry_addr = optional_header_addr + data_directory_off + (idx * 8)
+			directories.append(_DirEntry(
+				pykd.ptrDWord(entry_addr),
+				pykd.ptrDWord(entry_addr + 4)
+			))
+		while len(directories) < 16:
+			directories.append(_DirEntry())
+
+		nth = _NtHeaders(
+			_FileHeader(number_of_sections, size_of_optional_header),
+			_OptionalHeader(optional_header_addr, size_of_image, address_of_entrypoint, directories)
+		)
 	except Exception as e:
 		dbgp("ERROR: %s" % str(e), errormode=False)
 	return nth
@@ -3776,7 +3832,7 @@ class Debugger:
 			return ensure_bytes(b"")
 
 	def readString(self,location):
-		dbgp("readString(%s) called" % (PTR_PRINT % location))
+		#dbgp("readString(%s) called" % (PTR_PRINT % location))
 		if pykd.isValid(location):
 			try:
 				result = pykd.loadCStr(location)
@@ -4251,20 +4307,21 @@ class Debugger:
 				#pykd.dprintln("I was not able to find '%s' via PEB walk" % modulename)
 				return None
 
-			thismod = pykd.module(dll_base)
-			if thismod is None:
-				return None
+			thismodname = base_name if base_name else os.path.basename(fullpath)
+			thismodbase = dll_base
+			thismodsize = 0
+			ntHeader = getNtHeaders(dll_base)
+			if ntHeader is not None:
+				try:
+					thismodsize = int(ntHeader.OptionalHeader.SizeOfImage)
+				except Exception:
+					thismodsize = 0
 
-			thisimagename = thismod.image()
-			thismodname   = thismod.name()
-			thismodbase   = thismod.begin()
-			thismodsize   = thismod.size()
-
-			dbgp("       image: %s" % thisimagename)
+			dbgp("       image: %s" % fullpath)
 			dbgp("       name: %s"  % thismodname)
 			dbgp("       begin: 0x%08x" % thismodbase)
 			dbgp("       size: 0x%08x"  % thismodsize)
-			dbgp("    Building wmodule for %s. Base: 0x%08x" % (thisimagename, thismodbase))
+			dbgp("    Building wmodule for %s. Base: 0x%08x" % (thismodname, thismodbase))
 
 			wmod = wmodule(thismodname)
 			wmod.setBaseAddress(thismodbase)
@@ -4291,13 +4348,17 @@ class Debugger:
 					imagename = imagename + "_%08x" % dll_base
 				seen_names.append(imagename)
 				try:
-					thismod = pykd.module(dll_base)
-					if thismod is None:
-						continue
-					wmod = wmodule(thismod.name())
-					wmod.setBaseAddress(thismod.begin())
+					ntHeader = getNtHeaders(dll_base)
+					modsize = 0
+					if ntHeader is not None:
+						try:
+							modsize = int(ntHeader.OptionalHeader.SizeOfImage)
+						except Exception:
+							modsize = 0
+					wmod = wmodule(base_name if base_name else modulename)
+					wmod.setBaseAddress(dll_base)
 					wmod.setPath(full_path)
-					wmod.setSize(thismod.size())
+					wmod.setSize(modsize)
 					self.allmodules[imagename] = wmod
 					self._allmodules_lower[imagename.lower()] = wmod
 				except:
@@ -4312,9 +4373,7 @@ class Debugger:
 		try:
 			for dll_base, base_name, _ in self._peb_walk():
 				if os.path.splitext(base_name)[0].lower() == fname:
-					thismod = pykd.module(dll_base)
-					if thismod is not None:
-						return thismod.name()
+					return base_name
 		except:
 			pykd.dprintln(traceback.format_exc())
 		return None
