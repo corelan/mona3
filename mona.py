@@ -35380,14 +35380,6 @@ def main(args):
 			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
 		else:
 			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-		if _invalid_instr_cache_requests > 0 or _invalid_instr_cache_stores > 0:
-			invalid_instr_cache_hits, invalid_instr_cache_requests, invalid_instr_cache_stores, invalid_instr_cache_pct = getInvalidInstrCacheStats()
-			dbg.log("[ -- END -- ] Invalid instruction cache: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
-				invalid_instr_cache_hits,
-				invalid_instr_cache_requests,
-				invalid_instr_cache_stores,
-				invalid_instr_cache_pct
-			))
 		if yesno():
 			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
 		dbg.setStatusBar("Done")
