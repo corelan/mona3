@@ -17630,12 +17630,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	mndbg.dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))
 	mndbg.dbgp("Final Number of valid CFG target gadgets: %d" % len(valid_cfg_target_gadgets))			
 	invalid_instr_cache_hits, invalid_instr_cache_requests, invalid_instr_cache_stores, invalid_instr_cache_pct = getInvalidInstrCacheStats()
-	dbg.log("      - Invalid instruction cache: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
-		invalid_instr_cache_hits,
-		invalid_instr_cache_requests,
-		invalid_instr_cache_stores,
-		invalid_instr_cache_pct
-	))
+
 	mndbg.dbgp("Invalid instruction cache stats: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
 		invalid_instr_cache_hits,
 		invalid_instr_cache_requests,
@@ -35377,25 +35372,25 @@ def main(args):
 			dbg.logLines("Hint: run %s without arguments to see all global options\n      as well a list of all supported commands on %sbit" % (getAliasName(), str(arch)), highlight=True)
 
 		
-			# ----- report ----- #
-			endtime = datetime.datetime.now()
-			delta = endtime - starttime
-			dbg.log("")
-			if mndbg.isWinDBG():
-				dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-			else:
-				dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
-			if _invalid_instr_cache_requests > 0 or _invalid_instr_cache_stores > 0:
-				invalid_instr_cache_hits, invalid_instr_cache_requests, invalid_instr_cache_stores, invalid_instr_cache_pct = getInvalidInstrCacheStats()
-				dbg.log("[ -- END -- ] Invalid instruction cache: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
-					invalid_instr_cache_hits,
-					invalid_instr_cache_requests,
-					invalid_instr_cache_stores,
-					invalid_instr_cache_pct
-				))
-			if yesno():
-				dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
-			dbg.setStatusBar("Done")
+		# ----- report ----- #
+		endtime = datetime.datetime.now()
+		delta = endtime - starttime
+		dbg.log("")
+		if mndbg.isWinDBG():
+			dbg.log("[ -- END -- ] %s | <b>%s</b> took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+		else:
+			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
+		if _invalid_instr_cache_requests > 0 or _invalid_instr_cache_stores > 0:
+			invalid_instr_cache_hits, invalid_instr_cache_requests, invalid_instr_cache_stores, invalid_instr_cache_pct = getInvalidInstrCacheStats()
+			dbg.log("[ -- END -- ] Invalid instruction cache: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
+				invalid_instr_cache_hits,
+				invalid_instr_cache_requests,
+				invalid_instr_cache_stores,
+				invalid_instr_cache_pct
+			))
+		if yesno():
+			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
+		dbg.setStatusBar("Done")
 		if DEBUG_MODE and mndbg.isWinDBG():
 			dbg.nativeCommand(".logclose")
 			dbg.log("")
