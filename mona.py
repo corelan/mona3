@@ -975,7 +975,7 @@ def _safe_int(v):
 
 def getAvailableAIEngines(reason="", refresh=False):
 	mndbg.dbgp(get_current_function_name())
-	engines = ["openai", "anthropic"]
+	engines = ["openai", "anthropic", "ollama", "customai"]
 	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
@@ -1004,7 +1004,7 @@ def getDefaultAIEngineEnvName():
 
 def _isSupportedAIEngine(engine_value):
 	mndbg.dbgp(get_current_function_name())
-	return engine_value in ["openai", "anthropic"]
+	return engine_value in ["openai", "anthropic", "ollama", "customai"]
 
 
 def ensureDefaultAIEngineConfig(mona_config, available_engines):
@@ -3305,6 +3305,10 @@ def getAIModelAndKey(engine, mona_config):
 	elif engine == "anthropic":
 		env_key_name = "ANTHROPIC_API_KEY"
 		env_model_name = "ANTHROPIC_MODEL"
+	elif engine == "ollama":
+		env_model_name = "OLLAMA_MODEL"
+	elif engine == "customai":
+		env_model_name = "CUSTOMAI_MODEL"
 
 	if api_key == "" and env_key_name != "":
 		api_key = os.environ.get(env_key_name, "").strip()
@@ -3320,6 +3324,124 @@ def getAIModelAndKey(engine, mona_config):
 		model = getDefaultAIModel(engine)
 
 	return api_key, model
+
+
+def getAIUrl(engine, mona_config):
+	mndbg.dbgp(get_current_function_name())
+	url_name = "%s.url" % engine
+	url_value = mona_config.get(url_name).strip()
+
+	env_url_name = ""
+	if engine == "ollama":
+		env_url_name = "OLLAMA_URL"
+	elif engine == "customai":
+		env_url_name = "CUSTOMAI_URL"
+
+	if url_value == "" and env_url_name != "":
+		url_value = os.environ.get(env_url_name, "").strip()
+		if url_value != "":
+			mndbg.dbgp("tellme: using environment fallback for %s.url via %s" % (engine, env_url_name))
+
+	return url_value
+
+
+def getAIResponseField(engine, mona_config):
+	mndbg.dbgp(get_current_function_name())
+	field_name = "%s.response_field" % engine
+	field_value = mona_config.get(field_name).strip()
+
+	env_field_name = ""
+	if engine == "ollama":
+		env_field_name = "OLLAMA_RESPONSE_FIELD"
+	elif engine == "customai":
+		env_field_name = "CUSTOMAI_RESPONSE_FIELD"
+
+	if field_value == "" and env_field_name != "":
+		field_value = os.environ.get(env_field_name, "").strip()
+		if field_value != "":
+			mndbg.dbgp("tellme: using environment fallback for %s.response_field via %s" % (engine, env_field_name))
+
+	return field_value
+
+
+def _coerceConfigOptionValue(raw_value):
+	mndbg.dbgp(get_current_function_name())
+	text = ensure_text(raw_value).strip()
+	if text == "":
+		return ""
+	text_l = text.lower()
+	if text_l == "true":
+		return True
+	if text_l == "false":
+		return False
+	if text_l == "null" or text_l == "none":
+		return None
+	if text.startswith("{") or text.startswith("["):
+		try:
+			return json.loads(text)
+		except Exception:
+			pass
+	int_value, int_ok = getIntArg(text)
+	if int_ok:
+		return int_value
+	float_value, float_ok = getFloatArg(text)
+	if float_ok:
+		return float_value
+	return text
+
+
+def _mergeNestedOptionValue(target_dict, path_parts, option_value):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(target_dict, dict):
+		return
+	if len(path_parts) == 0:
+		return
+	current_key = ensure_text(path_parts[0]).strip()
+	if current_key == "":
+		return
+	if len(path_parts) == 1:
+		target_dict[current_key] = option_value
+		return
+	if current_key not in target_dict or not isinstance(target_dict[current_key], dict):
+		target_dict[current_key] = {}
+	_mergeNestedOptionValue(target_dict[current_key], path_parts[1:], option_value)
+
+
+def _collectAIOptions(engine, model, mona_config):
+	mndbg.dbgp(get_current_function_name())
+	options_prefix = "%s.options." % engine.strip().lower()
+	all_entries = mona_config.getAll(prefix=options_prefix)
+	model = ensure_text(model).strip()
+	general_options = {}
+	model_specific_options = {}
+
+	for config_key in sorted(all_entries.keys()):
+		option_suffix = config_key[len(options_prefix):].strip()
+		if option_suffix == "":
+			continue
+		option_value = _coerceConfigOptionValue(all_entries[config_key])
+		target_dict = general_options
+		target_suffix = option_suffix
+		if model != "":
+			model_prefix = model + "."
+			if option_suffix.startswith(model_prefix):
+				target_dict = model_specific_options
+				target_suffix = option_suffix[len(model_prefix):]
+		path_parts = [part for part in target_suffix.split(".") if part.strip() != ""]
+		if len(path_parts) == 0:
+			continue
+		_mergeNestedOptionValue(target_dict, path_parts, option_value)
+
+	def _merge_dicts(base_dict, override_dict):
+		for merge_key in override_dict:
+			if merge_key in base_dict and isinstance(base_dict[merge_key], dict) and isinstance(override_dict[merge_key], dict):
+				_merge_dicts(base_dict[merge_key], override_dict[merge_key])
+			else:
+				base_dict[merge_key] = copy.deepcopy(override_dict[merge_key])
+
+	merged_options = copy.deepcopy(general_options)
+	_merge_dicts(merged_options, model_specific_options)
+	return merged_options
 
 
 def getDefaultAIModel(engine):
@@ -3365,6 +3487,10 @@ def getAITimeout(engine, mona_config, args=None):
 		env_timeout_name = "OPENAI_TIMEOUT"
 	elif engine == "anthropic":
 		env_timeout_name = "ANTHROPIC_TIMEOUT"
+	elif engine == "ollama":
+		env_timeout_name = "OLLAMA_TIMEOUT"
+	elif engine == "customai":
+		env_timeout_name = "CUSTOMAI_TIMEOUT"
 
 	if timeout_raw == "" and env_timeout_name != "":
 		env_timeout = os.environ.get(env_timeout_name, "").strip()
@@ -3611,6 +3737,61 @@ def _isTimeoutError(engine, err):
 	except Exception:
 		message = str(err).lower()
 	return ("timeout" in message) or ("timed out" in message)
+
+
+def _normalizeUrlWithSuffix(base_url, suffix):
+	mndbg.dbgp(get_current_function_name())
+	base_url = ensure_text(base_url).strip().rstrip("/")
+	suffix = ensure_text(suffix).strip()
+	if base_url == "":
+		return ""
+	if suffix == "":
+		return base_url
+	known_suffixes = ["/api/generate", "/api/tags", "/api/chat"]
+	for known_suffix in known_suffixes:
+		if base_url.lower().endswith(known_suffix):
+			base_url = base_url[:-len(known_suffix)]
+			break
+	if base_url.lower().endswith("/api"):
+		return base_url + suffix
+	return base_url + "/api" + suffix
+
+
+def _extractJsonPathValue(value, path_text):
+	mndbg.dbgp(get_current_function_name())
+	current_value = value
+	path_text = ensure_text(path_text).strip()
+	if path_text == "":
+		return None
+	for path_part in path_text.split("."):
+		part = ensure_text(path_part).strip()
+		if part == "":
+			return None
+		if isinstance(current_value, dict):
+			if part not in current_value:
+				return None
+			current_value = current_value.get(part)
+			continue
+		if isinstance(current_value, list):
+			try:
+				index_value = int(part)
+			except Exception:
+				return None
+			if index_value < 0 or index_value >= len(current_value):
+				return None
+			current_value = current_value[index_value]
+			continue
+		return None
+	return current_value
+
+
+def _coerceAITextValue(value):
+	mndbg.dbgp(get_current_function_name())
+	if isinstance(value, text_type):
+		return value.strip()
+	if isinstance(value, bytes_type):
+		return ensure_text(value).strip()
+	return ""
 
 
 def formatAIResponseLines(answer):
@@ -4845,6 +5026,22 @@ def _extractModelIdsFromListPayload(payload):
 	return model_ids
 
 
+def _extractModelIdsFromOllamaTagsPayload(payload):
+	mndbg.dbgp(get_current_function_name())
+	model_ids = []
+	model_items = []
+	if isinstance(payload, dict):
+		model_items = payload.get("models", [])
+	for item in model_items:
+		model_id = ""
+		if isinstance(item, dict):
+			model_id = ensure_text(item.get("name", "")).strip()
+		if model_id != "" and model_id not in model_ids:
+			model_ids.append(model_id)
+	model_ids.sort(key=lambda x: x.lower())
+	return model_ids
+
+
 def _fetchOpenAIModelsDirect(api_key, timeout_seconds=20.0):
 	mndbg.dbgp(get_current_function_name())
 	request = urllib_Request(
@@ -4993,29 +5190,95 @@ def _fetchAnthropicModelsDirect(api_key, timeout_seconds=20.0):
 	return _extractModelIdsFromListPayload(response_data)
 
 
-def getAvailableAIModels(engine, api_key, timeout_seconds=20.0, refresh=False):
+def _fetchOllamaModelsDirect(base_url, timeout_seconds=20.0):
 	mndbg.dbgp(get_current_function_name())
-	cache_key = (engine, api_key)
+	request = urllib_Request(
+		_normalizeUrlWithSuffix(base_url, "/tags"),
+		headers={
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		error_message = ""
+		if isinstance(parsed_body, dict):
+			error_message = ensure_text(parsed_body.get("error", ""))
+			if error_message == "" and isinstance(parsed_body.get("message", ""), text_type):
+				error_message = ensure_text(parsed_body.get("message", ""))
+		if error_message == "":
+			error_message = "Ollama model list HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			status_code=status_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type="HTTPError"
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach Ollama API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"Ollama model list setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	return _extractModelIdsFromOllamaTagsPayload(response_data)
+
+
+def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, refresh=False):
+	mndbg.dbgp(get_current_function_name())
+	cache_key = (engine, api_key, base_url)
 	if not refresh and cache_key in _AI_MODEL_LIST_CACHE:
 		return list(_AI_MODEL_LIST_CACHE[cache_key])
 	if engine == "openai":
 		model_ids = _fetchOpenAIModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "anthropic":
 		model_ids = _fetchAnthropicModelsDirect(api_key, timeout_seconds=timeout_seconds)
+	elif engine == "ollama":
+		model_ids = _fetchOllamaModelsDirect(base_url, timeout_seconds=timeout_seconds)
 	else:
 		model_ids = []
 	_AI_MODEL_LIST_CACHE[cache_key] = list(model_ids)
 	return list(model_ids)
 
 
-def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0):
+def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
-	response = client.responses.create(
-		model=model,
-		input=prompt
-	)
+	request_kwargs = {
+		"model": model,
+		"input": prompt
+	}
+	if isinstance(options, dict) and len(options) > 0:
+		request_kwargs["extra_body"] = {"options": options}
+	response = client.responses.create(**request_kwargs)
 	request_id = getattr(response, "_request_id", "")
 	if request_id:
 		mndbg.dbgp("tellme: OpenAI request id: %s" % request_id)
@@ -5048,13 +5311,15 @@ def _extractOpenAIText(response_data):
 	return "\n".join([part for part in parts if part]).strip()
 
 
-def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0):
+def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	request_body = {
 		"model": model,
 		"input": prompt
 	}
+	if isinstance(options, dict) and len(options) > 0:
+		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
 	request = urllib_Request(
 		"https://api.openai.com/v1/responses",
@@ -5166,7 +5431,7 @@ def _anthropic_extract_text(message):
 	return "\n".join([p for p in parts if p]).strip()
 
 
-def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096):
+def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
@@ -5181,6 +5446,8 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 			}
 		]
 	}
+	if isinstance(options, dict) and len(options) > 0:
+		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
 	request = urllib_Request(
 		"https://api.anthropic.com/v1/messages",
@@ -5265,6 +5532,202 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 	if text:
 		return text, response_id
 	raise RuntimeError("Anthropic returned an empty or unexpected response payload")
+
+
+def _extractCustomAIText(response_data, response_field=""):
+	mndbg.dbgp(get_current_function_name())
+	if response_field != "":
+		return _coerceAITextValue(_extractJsonPathValue(response_data, response_field))
+	if isinstance(response_data, text_type):
+		return response_data.strip()
+	if not isinstance(response_data, dict):
+		return ""
+	for field_name in ["response", "text", "output_text", "output", "content", "message"]:
+		field_value = response_data.get(field_name, "")
+		if isinstance(field_value, text_type) and field_value.strip() != "":
+			return field_value.strip()
+	if "choices" in response_data and isinstance(response_data["choices"], list) and len(response_data["choices"]) > 0:
+		first_choice = response_data["choices"][0]
+		if isinstance(first_choice, dict):
+			message = first_choice.get("message", {})
+			if isinstance(message, dict):
+				content = message.get("content", "")
+				if isinstance(content, text_type) and content.strip() != "":
+					return content.strip()
+			text_value = first_choice.get("text", "")
+			if isinstance(text_value, text_type) and text_value.strip() != "":
+				return text_value.strip()
+	return ""
+
+
+def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="response", options=None):
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling Ollama model '%s' at '%s' with timeout %.1fs" % (
+		model, base_url, timeout_seconds
+	))
+	request_body = {
+		"model": model,
+		"prompt": prompt,
+		"stream": False
+	}
+	if isinstance(options, dict) and len(options) > 0:
+		request_body["options"] = options
+	request_data = json.dumps(request_body).encode("utf-8")
+	request = urllib_Request(
+		_normalizeUrlWithSuffix(base_url, "/generate"),
+		data=request_data,
+		headers={
+			"content-type": "application/json",
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": raw_body} if raw_body.strip() != "" else {}
+		error_message = ""
+		if isinstance(parsed_body, dict):
+			error_message = ensure_text(parsed_body.get("error", ""))
+			if error_message == "" and isinstance(parsed_body.get("message", ""), text_type):
+				error_message = ensure_text(parsed_body.get("message", ""))
+		if error_message == "":
+			error_message = "Ollama HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			status_code=status_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type="HTTPError"
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach Ollama API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"Ollama request setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	text = _extractCustomAIText(response_data, response_field=response_field)
+	if text:
+		response_id = ""
+		if isinstance(response_data, dict):
+			response_id = ensure_text(response_data.get("id", "")).strip()
+		return text, response_id
+	raise RuntimeError("Ollama returned an empty or unexpected response payload")
+
+
+def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="", options=None):
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling customai model '%s' at '%s' with timeout %.1fs" % (
+		model, base_url, timeout_seconds
+	))
+	request_body = {
+		"model": model,
+		"prompt": prompt
+	}
+	if isinstance(options, dict) and len(options) > 0:
+		request_body["options"] = options
+	request_data = json.dumps(request_body).encode("utf-8")
+	request = urllib_Request(
+		ensure_text(base_url).strip(),
+		data=request_data,
+		headers={
+			"content-type": "application/json",
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			request_id = ""
+			try:
+				request_id = response.headers.get("request-id", "") or response.headers.get("x-request-id", "")
+			except Exception:
+				request_id = ""
+			try:
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			except Exception:
+				response_data = response_text
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": raw_body} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("request-id", "") or e.headers.get("x-request-id", "")
+		except Exception:
+			request_id = ""
+		error_message = ""
+		if isinstance(parsed_body, dict):
+			error_message = ensure_text(parsed_body.get("error", ""))
+			if error_message == "" and isinstance(parsed_body.get("message", ""), text_type):
+				error_message = ensure_text(parsed_body.get("message", ""))
+		if error_message == "":
+			error_message = "CustomAI HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type="HTTPError"
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach CustomAI API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"CustomAI request setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	text = _extractCustomAIText(response_data, response_field=response_field)
+	if text:
+		return text, request_id
+	raise RuntimeError("CustomAI returned an empty or unexpected response payload")
 
 
 def _ord(x):
@@ -9012,6 +9475,30 @@ class MnConfig:
 				mndbg.dbgp("Config file %s does not seem to exist" % self.fullpath)
 
 		return toreturn
+
+	def getAll(self, prefix=""):
+		"""
+		Return a dict with all config parameters, optionally filtered by prefix.
+
+		Arguments:
+		prefix - optional key prefix filter
+
+		Return:
+		dict with lowercased config keys and their string values
+		"""
+		global _config_file_cache
+
+		mndbg.dbgp(get_current_function_name())
+
+		prefix = prefix.strip().lower()
+		if len(_config_file_cache) == 0:
+			self.get("__mona_cache_warmup__")
+
+		results = {}
+		for config_key in _config_file_cache:
+			if prefix == "" or config_key.startswith(prefix):
+				results[config_key] = _config_file_cache[config_key]
+		return results
 
 	def set(self, parameter, paramvalue):
 		"""
@@ -25767,6 +26254,9 @@ class MnAI(object):
 		self.max_tokens = 4096
 		self.max_tokens_source = "default"
 		self.api_key = ""
+		self.api_url = ""
+		self.response_field = ""
+		self.api_options = {}
 		self.question_type = ""
 		self.effective_question_type = ""
 		self.target_address = 0
@@ -25805,6 +26295,123 @@ class MnAI(object):
 		"""Write an indented error continuation line aligned under the status prefix."""
 		dbg.log("    %s" % message, highlight=True)
 
+	def _getEngineOptionDefinitions(self):
+		"""Return engine-specific configuration option metadata."""
+		mndbg.dbgp(get_current_function_name())
+		engine = self.engine
+		if engine == "openai":
+			return [
+				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True, "default": "4096"},
+			]
+		if engine == "anthropic":
+			return [
+				{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "4096"},
+			]
+		if engine == "ollama":
+			return [
+				{"name": "url", "required": True, "env": "OLLAMA_URL", "show_value": True},
+				{"name": "model", "required": True, "env": "OLLAMA_MODEL", "show_value": True},
+				{"name": "timeout", "required": False, "env": "OLLAMA_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "response_field", "required": False, "env": "OLLAMA_RESPONSE_FIELD", "show_value": True, "default": "response"},
+			]
+		if engine == "customai":
+			return [
+				{"name": "url", "required": True, "env": "CUSTOMAI_URL", "show_value": True},
+				{"name": "model", "required": True, "env": "CUSTOMAI_MODEL", "show_value": True},
+				{"name": "timeout", "required": False, "env": "CUSTOMAI_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "response_field", "required": False, "env": "CUSTOMAI_RESPONSE_FIELD", "show_value": True},
+			]
+		return []
+
+	def _getEngineOptionStatus(self, option_name):
+		"""Resolve whether an engine option is currently set and from where."""
+		mndbg.dbgp(get_current_function_name())
+		engine = self.engine
+		config_name = "%s.%s" % (engine, option_name)
+		config_value = self.mona_config.get(config_name).strip()
+		if config_value != "":
+			return True, "config", config_value
+
+		env_name = ""
+		for option in self._getEngineOptionDefinitions():
+			if option.get("name", "") == option_name:
+				env_name = option.get("env", "")
+				break
+		if env_name != "":
+			env_value = os.environ.get(env_name, "").strip()
+			if env_value != "":
+				return True, "environment", env_value
+
+		if option_name == "model" and "model" in self.args and type(self.args["model"]).__name__.lower() != "bool":
+			arg_value = str(self.args["model"]).strip()
+			if arg_value != "":
+				return True, "argument", arg_value
+		if option_name == "timeout" and "timeout" in self.args and type(self.args["timeout"]).__name__.lower() != "bool":
+			arg_value = str(self.args["timeout"]).strip()
+			if arg_value != "":
+				return True, "argument", arg_value
+
+		return False, "", ""
+
+	def logEngineConfigHelp(self, missing_component=""):
+		"""Print engine-specific configuration help including all supported options and their current status."""
+		mndbg.dbgp(get_current_function_name())
+		engine = self.engine
+		alias_name = getAliasName()
+		option_definitions = self._getEngineOptionDefinitions()
+		if len(option_definitions) == 0:
+			return
+
+		missing_required_settings = []
+		for option in option_definitions:
+			if option.get("required", False):
+				is_set, _source_name, _source_value = self._getEngineOptionStatus(option.get("name", ""))
+				if not is_set:
+					missing_required_settings.append("%s.%s" % (engine, option.get("name", "")))
+		if len(missing_required_settings) > 0:
+			self.logErrorDetail("Missing required settings: %s" % ", ".join(missing_required_settings))
+		elif missing_component != "":
+			self.logErrorDetail("Missing required setting: %s.%s" % (engine, missing_component))
+		self.logErrorDetail("Available %s engine options:" % engine)
+		for option in option_definitions:
+			option_name = option.get("name", "")
+			is_required = option.get("required", False)
+			is_set, source_name, source_value = self._getEngineOptionStatus(option_name)
+			status_parts = ["set" if is_set else "not set"]
+			status_parts.append("required" if is_required else "optional")
+			if is_set and source_name != "":
+				status_parts.append("via %s" % source_name)
+			status_line = ", ".join(status_parts)
+			display_value = ""
+			if is_set and option.get("show_value", False):
+				display_value = " = %s" % source_value
+			elif is_set and not option.get("show_value", False):
+				display_value = " = <masked>"
+			elif not is_set and option.get("default", "") != "":
+				display_value = " (default if omitted: %s)" % option.get("default", "")
+			self.logErrorDetail("%s.%s : %s%s" % (
+				engine, option_name, status_line, display_value
+			))
+			self.logInfoDetail("  config: %s config -set %s.%s <%s>" % (
+				alias_name, engine, option_name, option_name
+			))
+			if option.get("env", "") != "":
+				self.logInfoDetail("  env   : set %s=<%s>" % (
+					option.get("env", ""), option_name
+				))
+		self.logErrorDetail("mona.ini values take precedence over environment variables")
+		self.logErrorDetail("The -model and -timeout arguments override both for a single request")
+		if self.question_type != "":
+			self.logErrorDetail("Then run:")
+			self.logErrorDetail("  %s tellme -e %s -q %s" % (alias_name, engine, self.question_type))
+		self.logErrorDetail("Run '%s tellme -h' to see the full usage text" % alias_name)
+
 	def isDefaultEngineSelection(self):
 		"""Return True when the current engine came from config, environment, or implicit default selection."""
 		mndbg.dbgp(get_current_function_name())
@@ -25817,6 +26424,9 @@ class MnAI(object):
 		self.engine_source = "fallback"
 		self.offline = True
 		self.api_key = ""
+		self.api_url = ""
+		self.response_field = ""
+		self.api_options = {}
 		self.model = getDefaultAIModel("openai")
 		self.timeout_seconds = 60.0
 		self.timeout_source = "default"
@@ -25843,7 +26453,7 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine_arg_raw = self.args.get("e", "")
 		if type(engine_arg_raw).__name__.lower() == "bool":
-			self.logError("Please specify an engine value with -e <offline|openai|anthropic>")
+			self.logError("Please specify an engine value with -e <offline|openai|anthropic|ollama|customai>")
 			return False
 
 		explicit_engine = _normalizeAIEngine(engine_arg_raw)
@@ -25873,7 +26483,7 @@ class MnAI(object):
 		self.logInfo("Selected engine: %s" % self.engine)
 
 		if self.engine not in self.available_engines:
-			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, anthropic" % self.engine)
+			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, anthropic, ollama, customai" % self.engine)
 			return False
 		if self.engine != "offline" and self.engine not in self.available_provider_engines:
 			if self.isDefaultEngineSelection():
@@ -25912,9 +26522,15 @@ class MnAI(object):
 		return True
 
 	def fetchAvailableModels(self, refresh=False, log_errors=False):
-		"""Fetch and cache provider-visible model IDs for the active API key."""
+		"""Fetch and cache provider-visible model IDs for the active provider configuration."""
 		mndbg.dbgp(get_current_function_name())
-		if self.engine == "offline" or self.api_key == "":
+		if self.engine == "offline":
+			self.available_model_ids = []
+			return self.available_model_ids
+		if self.engine in ["openai", "anthropic"] and self.api_key == "":
+			self.available_model_ids = []
+			return self.available_model_ids
+		if self.engine == "ollama" and self.api_url == "":
 			self.available_model_ids = []
 			return self.available_model_ids
 		timeout_seconds = self.timeout_seconds
@@ -25925,7 +26541,8 @@ class MnAI(object):
 		try:
 			self.available_model_ids = getAvailableAIModels(
 				self.engine,
-				self.api_key,
+				api_key=self.api_key,
+				base_url=self.api_url,
 				timeout_seconds=timeout_seconds,
 				refresh=refresh
 			)
@@ -25949,7 +26566,7 @@ class MnAI(object):
 		return False
 
 	def logAvailableModels(self, models=None, error_mode=False):
-		"""Print the provider model IDs that are currently visible to the configured API key."""
+		"""Print the provider model IDs that are currently visible to the configured provider."""
 		mndbg.dbgp(get_current_function_name())
 		if models is None:
 			models = self.available_model_ids
@@ -25959,14 +26576,19 @@ class MnAI(object):
 		if len(models) == 0:
 			log_func("No provider-visible model IDs were returned.")
 			return
-		log_func("Available %s models for this API key:" % self.engine)
+		log_func("Available %s models:" % self.engine)
 		for model_id in models:
 			log_func("  %s" % model_id)
 
 	def maybePrintAvailableModelsWhenIdle(self):
 		"""When no question profile was supplied, print provider models for configured default engines."""
 		mndbg.dbgp(get_current_function_name())
-		if not self.question_profile_missing or self.offline or self.engine == "offline" or self.api_key == "":
+		has_provider_config = False
+		if self.engine in ["openai", "anthropic"] and self.api_key != "":
+			has_provider_config = True
+		if self.engine == "ollama" and self.api_url != "":
+			has_provider_config = True
+		if not self.question_profile_missing or self.offline or self.engine == "offline" or not has_provider_config:
 			return
 		try:
 			models = self.fetchAvailableModels(refresh=False, log_errors=False)
@@ -25977,6 +26599,27 @@ class MnAI(object):
 		dbg.log("")
 		self.logInfo("No AI request was submitted.")
 		self.logAvailableModels(models=models, error_mode=False)
+
+	def validateCpbArgument(self):
+		"""Validate -cpb syntax early so tellme does not continue with a silently ignored badchar filter."""
+		mndbg.dbgp(get_current_function_name())
+		if "cpb" not in self.args:
+			return True
+		if type(self.args["cpb"]).__name__.lower() == "bool":
+			self.logError("Please specify badchars with -cpb <bytes>")
+			self.logErrorDetail("Example: -cpb '\\x00\\x0a\\x0d'")
+			return False
+		strb, badcharsok = cpbArgToBytes(self.args["cpb"])
+		if not badcharsok:
+			self.logError("Unable to parse -cpb value '%s'" % self.args["cpb"])
+			self.logErrorDetail("Use \\xNN byte syntax, for example: -cpb '\\x00\\x20\\x0a\\x0d\\x3f'")
+			self.logErrorDetail("Ranges are also supported, for example: -cpb '\\x00..\\x05\\x20\\x3f'")
+			return False
+		mndbg.dbgp("tellme: validated -cpb value '%s' -> %s" % (
+			self.args["cpb"],
+			_renderBadchars(strb)
+		))
+		return True
 
 	def parseTargetAddress(self):
 		"""Resolve an optional analysis target address from -a and map it to the active question profile."""
@@ -26083,7 +26726,13 @@ class MnAI(object):
 
 		if self.engine != "offline":
 			self.api_key, self.model = getAIModelAndKey(self.engine, self.mona_config)
+			self.api_url = getAIUrl(self.engine, self.mona_config)
+			self.response_field = getAIResponseField(self.engine, self.mona_config)
 			mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (self.engine, self.model))
+			if self.api_url != "":
+				mndbg.dbgp("tellme: config url for engine '%s' is '%s'" % (self.engine, self.api_url))
+			if self.response_field != "":
+				mndbg.dbgp("tellme: config response_field for engine '%s' is '%s'" % (self.engine, self.response_field))
 			try:
 				self.timeout_seconds, self.timeout_source = getAITimeout(self.engine, self.mona_config, args=self.args)
 			except ValueError as e:
@@ -26119,6 +26768,12 @@ class MnAI(object):
 				self.model = test_model
 				self.logInfo("Test mode enabled, overriding model to '%s'" % self.model)
 				mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (self.model, self.engine))
+		if self.engine != "offline":
+			self.api_options = _collectAIOptions(self.engine, self.model, self.mona_config)
+			if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+				mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
+					self.engine, json.dumps(self.api_options, sort_keys=True)
+				))
 		return True
 
 	def validateProviderConfiguration(self):
@@ -26126,44 +26781,25 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		if self.offline or self.engine == "offline":
 			return True
-		if self.api_key == "":
+		if self.engine in ["openai", "anthropic"] and self.api_key == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
 					"No API key was found for the default engine '%s'. Falling back to offline mode." % self.engine,
 					"Set the API key in mona.ini, set the matching environment variable, or use -e to override the engine."
 				)
 				return True
-			self.logError("Missing API key '%s.key'" % self.engine)
-			self.logErrorDetail("To configure API access, do the following:")
-			self.logErrorDetail("1. Create or retrieve an API key for your chosen provider")
-			self.logErrorDetail("2. Store it in mona's config file, or set the matching environment variable")
-			self.logErrorDetail("3. Optionally configure the model name")
-			dbg.log("")
-			self.logErrorDetail("OpenAI:")
-			self.logErrorDetail("  %s config -set openai.key <your OpenAI API key>" % getAliasName())
-			self.logErrorDetail("  %s config -set openai.model gpt-5-mini" % getAliasName())
-			self.logErrorDetail("  %s config -set openai.timeout 90" % getAliasName())
-			self.logErrorDetail("  or (globally):")
-			self.logErrorDetail("  set OPENAI_API_KEY=<your OpenAI API key>")
-			self.logErrorDetail("  set OPENAI_MODEL=gpt-5-mini")
-			self.logErrorDetail("  set OPENAI_TIMEOUT=90")
-			dbg.log("")
-			self.logErrorDetail("Anthropic:")
-			self.logErrorDetail("  %s config -set anthropic.key <your Anthropic API key>" % getAliasName())
-			self.logErrorDetail("  %s config -set anthropic.model claude-sonnet-4-6" % getAliasName())
-			self.logErrorDetail("  %s config -set anthropic.timeout 90" % getAliasName())
-			self.logErrorDetail("  or (globally):")
-			self.logErrorDetail("  set ANTHROPIC_API_KEY=<your Anthropic API key>")
-			self.logErrorDetail("  set ANTHROPIC_MODEL=claude-sonnet-4-6")
-			self.logErrorDetail("  set ANTHROPIC_TIMEOUT=90")
-			dbg.log("")
-			self.logErrorDetail("mona.ini values take precedence over environment variables")
-			self.logErrorDetail("The -model and -timeout arguments override both for a single request")
-			dbg.log("")
-			self.logErrorDetail("Then run:")
-			self.logErrorDetail("  %s tellme -e %s -q %s" % (getAliasName(), self.engine, self.question_type))
-			dbg.log("")
-			self.logErrorDetail("Run '%s tellme -h' to see the full usage text" % getAliasName())
+			self.logError("Missing required configuration for engine '%s'." % self.engine)
+			self.logEngineConfigHelp("key")
+			return False
+		if self.engine in ["ollama", "customai"] and self.api_url == "":
+			if self.isDefaultEngineSelection():
+				self.switchToOfflineEngine(
+					"No URL was configured for the default engine '%s'. Falling back to offline mode." % self.engine,
+					"Set it with '%s config -set %s.url <url>'" % (getAliasName(), self.engine)
+				)
+				return True
+			self.logError("Missing required configuration for engine '%s'." % self.engine)
+			self.logEngineConfigHelp("url")
 			return False
 		if self.model == "":
 			if self.isDefaultEngineSelection():
@@ -26172,10 +26808,8 @@ class MnAI(object):
 					"Set it with '%s config -set %s.model <model>'" % (getAliasName(), self.engine)
 				)
 				return True
-			self.logError("Missing config value '%s.model'." % self.engine)
-			self.logErrorDetail("Set it with '%s config -set %s.model <model>'" % (
-				getAliasName(), self.engine
-			))
+			self.logError("Missing required configuration for engine '%s'." % self.engine)
+			self.logEngineConfigHelp("model")
 			return False
 		try:
 			available_models = self.fetchAvailableModels(refresh=False, log_errors=False)
@@ -26489,6 +27123,12 @@ class MnAI(object):
 		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
 		self.logInfo("Asking %s model '%s' using question profile %s" % (self.engine, self.model, self.question_type))
 		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
+		if self.engine in ["ollama", "customai"] and self.api_url != "":
+			self.logInfoDetail("URL       : %s" % self.api_url)
+		if self.engine in ["ollama", "customai"] and self.response_field != "":
+			self.logInfoDetail("Response  : %s" % self.response_field)
+		if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+			self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
 		if self.engine == "anthropic":
 			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
 
@@ -26496,52 +27136,71 @@ class MnAI(object):
 		self.response = ""
 		self.request_id = ""
 		for attempt in xrange(1, max_attempts + 1):
-			attempt_timeout = self.timeout_seconds
-			if self.timeout_source == "default":
-				attempt_timeout = self.timeout_seconds + ((attempt - 1) * 10.0)
-			dbg.log("")
-			self.logInfoDetail("Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
-			try:
-				if self.engine == "openai":
-					if openai_use_http_fallback:
-						self.response, self.request_id = callAIOpenAIDirect(
-							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout
+				attempt_timeout = self.timeout_seconds
+				if self.timeout_source == "default":
+					attempt_timeout = self.timeout_seconds + ((attempt - 1) * 10.0)
+				dbg.log("")
+				self.logInfoDetail("Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
+				try:
+					if self.engine == "openai":
+						if openai_use_http_fallback:
+							self.response, self.request_id = callAIOpenAIDirect(
+								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+							)
+						else:
+							self.response, self.request_id = callAIOpenAI(
+								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+							)
+					elif self.engine == "anthropic":
+						self.response, self.request_id = callAIAnthropic(
+							self.api_key,
+							self.model,
+							self.prompt,
+							timeout_seconds=attempt_timeout,
+							max_tokens=self.max_tokens,
+							options=self.api_options
+						)
+					elif self.engine == "ollama":
+						self.response, self.request_id = callAIOllama(
+							self.api_url,
+							self.model,
+							self.prompt,
+							timeout_seconds=attempt_timeout,
+							response_field=self.response_field or "response",
+							options=self.api_options
 						)
 					else:
-						self.response, self.request_id = callAIOpenAI(
-							openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout
+						self.response, self.request_id = callAICustom(
+							self.api_url,
+							self.model,
+							self.prompt,
+							timeout_seconds=attempt_timeout,
+							response_field=self.response_field,
+							options=self.api_options
 						)
-				else:
-					self.response, self.request_id = callAIAnthropic(
-						self.api_key,
-						self.model,
-						self.prompt,
-						timeout_seconds=attempt_timeout,
-						max_tokens=self.max_tokens
-					)
-				break
-			except Exception as e:
-				mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
-					attempt,
-					max_attempts,
-					traceback.format_exc()
-				), errormode=False)
-				logAIProviderError(self.engine, e)
-				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
-					return self.response
-				next_timeout = self.timeout_seconds
-				retry_sleep_seconds = 10
-				if self.timeout_source == "default":
-					next_timeout = self.timeout_seconds + (attempt * 10.0)
-					retry_sleep_seconds = attempt * 10
-					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
-						retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
-					))
-				else:
-					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d)" % (
-						retry_sleep_seconds, attempt + 1, max_attempts
-					))
-				time.sleep(retry_sleep_seconds)
+					break
+				except Exception as e:
+					mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
+						attempt,
+						max_attempts,
+						traceback.format_exc()
+					), errormode=False)
+					logAIProviderError(self.engine, e)
+					if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
+						return self.response
+					next_timeout = self.timeout_seconds
+					retry_sleep_seconds = 10
+					if self.timeout_source == "default":
+						next_timeout = self.timeout_seconds + (attempt * 10.0)
+						retry_sleep_seconds = attempt * 10
+						self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
+							retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
+						))
+					else:
+						self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d)" % (
+							retry_sleep_seconds, attempt + 1, max_attempts
+						))
+					time.sleep(retry_sleep_seconds)
 
 		if self.request_id:
 			self.logInfoDetail("Request id: %s" % self.request_id)
@@ -26562,6 +27221,8 @@ class MnAI(object):
 	def execute(self):
 		"""Run the full tellme workflow from argument parsing through request execution."""
 		mndbg.dbgp(get_current_function_name())
+		if not self.validateCpbArgument():
+			return ""
 		if not self.parseEngineSelection():
 			return ""
 		if not self.parseRequestSettings():
@@ -34805,6 +35466,8 @@ Supported engines:
     - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
     - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
     - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
+    - ollama (uses <ollama.url> as the Ollama server base URL and posts to /api/generate)
+    - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
 
 Configuration:
     Choose one of these approaches:
@@ -34820,6 +35483,18 @@ Configuration:
        __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
        __LAUNCHCMD__ config -set anthropic.timeout 90
        __LAUNCHCMD__ config -set anthropic.max_tokens 4096
+       __LAUNCHCMD__ config -set mona.ai.engine ollama
+       __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434
+       __LAUNCHCMD__ config -set ollama.model llama3
+       __LAUNCHCMD__ config -set ollama.timeout 90
+       __LAUNCHCMD__ config -set ollama.response_field response
+       __LAUNCHCMD__ config -set mona.ai.engine customai
+       __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
+       __LAUNCHCMD__ config -set customai.model llama3
+       __LAUNCHCMD__ config -set customai.timeout 90
+       __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
+       __LAUNCHCMD__ config -set ollama.options.num_ctx 256000
+       __LAUNCHCMD__ config -set ollama.options.dolphin-llama3.num_ctx 256000
 
     2. Or use environment variables instead:
        - MONA_AI_ENGINE
@@ -34831,6 +35506,14 @@ Configuration:
        - ANTHROPIC_MODEL
        - ANTHROPIC_TIMEOUT
        - ANTHROPIC_MAX_TOKENS
+       - OLLAMA_URL
+       - OLLAMA_MODEL
+       - OLLAMA_TIMEOUT
+       - OLLAMA_RESPONSE_FIELD
+       - CUSTOMAI_URL
+       - CUSTOMAI_MODEL
+       - CUSTOMAI_TIMEOUT
+       - CUSTOMAI_RESPONSE_FIELD
 
 Precedence:
     If -e is specified, it overrides everything else
@@ -34838,12 +35521,16 @@ Precedence:
     If both are present, mona.ini values take precedence over environment variables
     For a single request, -model and -timeout override both config and environment values
     max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
+    response_field can be controlled via <engine>.response_field or the matching environment variable
+    Additional request options can be configured via <engine>.options.*
     If neither a default engine nor -e is specified, tellme uses offline as the default engine
-    If the default engine has no API key or model configured, tellme falls back to offline
+    If the default engine has no required configuration or model configured, tellme falls back to offline
     -offline still overrules a configured default engine for that one request
 Default models:
     - OpenAI   : gpt-5-mini
     - Anthropic: claude-sonnet-4-6
+    - Ollama   : none, must be configured
+    - CustomAI : none, must be configured
 
 Default timeout:
     - 60 seconds per request
@@ -34851,22 +35538,27 @@ Default timeout:
 Common models:
     - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
     - Anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+    - Ollama   : depends on what is installed locally, for example llama3
+    - CustomAI : depends on the target API
 
 Official model docs:
     - OpenAI   : https://developers.openai.com/api/docs/models
     - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
 	Arguments:
-	    -e  <engine> : AI engine to use: offline, openai, or anthropic.
+	    -e  <engine> : AI engine to use: offline, openai, anthropic, ollama, or customai.
 	                   If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
 	                   and otherwise defaults to offline.
-	                   If the selected default engine has no API key or model configured,
+	                   If the selected default engine has no required configuration or model configured,
 	                   tellme also falls back to offline
 	                   If you omit -q and a provider engine is configured, tellme prints
-	                   the available models visible to that API key instead of submitting a request
+	                   the available models visible to that provider configuration instead of submitting a request
+	                   For ollama/customai, a key is not required; those engines use <engine>.url instead
+	                   Engine-specific request options can be configured generically via <engine>.options.*
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
+	                   For ollama/customai response parsing, configure <engine>.response_field if the returned text is nested in JSON
 	    -maxsize <kb>: Optional q1 request-size target in kilobytes. By default, tellme keeps the larger evidence set
 	                   and only reports the final request size. If you set -maxsize, mona will try to reduce lower-priority
 	                   evidence to stay within that target and will record any reductions under [omitted_sections]
@@ -34908,6 +35600,15 @@ Official model docs:
 	    __LAUNCHCMD__ tellme -q 1
 	    __LAUNCHCMD__ config -set mona.ai.engine anthropic
 	    __LAUNCHCMD__ tellme -e anthropic -q 2
+	    __LAUNCHCMD__ config -set mona.ai.engine ollama
+	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434
+	    __LAUNCHCMD__ config -set ollama.model llama3
+	    __LAUNCHCMD__ tellme -e ollama -q 1
+	    __LAUNCHCMD__ config -set mona.ai.engine customai
+	    __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
+	    __LAUNCHCMD__ config -set customai.model llama3
+	    __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
+	    __LAUNCHCMD__ tellme -e customai -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
 	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
@@ -34979,13 +35680,18 @@ Official model docs:
 	Unknown placeholders are reported and left unchanged instead of aborting prompt generation.
 
 	Request generation notes:
-	    tellme can always build and save the request file, even if no supported OpenAI or Anthropic SDK is installed
-	    and/or no API key is configured.
+	    tellme can always build and save the request file, even if no supported OpenAI SDK is installed
+	    and/or no provider credentials or URL are configured.
 	    That means manual submission is a supported workflow:
 	    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
-	    If you prefer direct API calls from mona instead, install a supported SDK and configure an API key.
+	    If you prefer direct API calls from mona instead, install a supported SDK where needed and configure the engine settings.
 	    Before a live provider request is sent, tellme queries the provider models API and checks whether
-	    the configured model is available to that API key.
+	    the configured model is available to that provider configuration when the engine supports model discovery.
+	    If mona.ini contains entries such as <engine>.options.name=value, tellme collects them into an
+	    'options' object and includes that object in the provider request body.
+	    Model-specific overrides are also supported via keys such as <engine>.options.<model>.name=value.
+	    Those entries are only applied when that exact model is selected, and they override generic
+	    <engine>.options.name values when both are present.
 	    Direct API requests ask for confirmation by default.
 	    Add -submit when you want mona to skip that prompt and send the request immediately.
 	    When you run -q 1 or -q 2, mona also rewrites ai.q1 or ai.q2 in the working folder if set,
