@@ -5923,27 +5923,13 @@ def _extractPrebuiltPrompt(template_path):
 	except Exception as e:
 		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
 
-	lines = template_text.splitlines()
-	prompt_begin = -1
-	prompt_end = -1
-	for idx, line in enumerate(lines):
-		if line.strip() == "PROMPT BEGIN":
-			prompt_begin = idx
-		elif line.strip() == "PROMPT END":
-			prompt_end = idx
-			break
-
-	if prompt_begin > -1 and prompt_end > prompt_begin:
-		start_idx = prompt_begin + 1
-		if start_idx < prompt_end and set(lines[start_idx].strip()) == set("-"):
-			start_idx += 1
-		prompt = "\n".join(lines[start_idx:prompt_end]).strip()
-		if prompt != "":
-			if _containsTemplatePlaceholders(prompt):
-				mndbg.dbgp("tellme: PROMPT block in %s still contains template placeholders, so runtime expansion is required" % template_path)
-			else:
-				mndbg.dbgp("tellme: extracted prebuilt prompt block from %s" % template_path)
-				return prompt
+	prompt = _extractPromptBlockFromSavedRequestText(template_text)
+	if prompt != "":
+		if _containsTemplatePlaceholders(prompt):
+			mndbg.dbgp("tellme: PROMPT block in %s still contains template placeholders, so runtime expansion is required" % template_path)
+		else:
+			mndbg.dbgp("tellme: extracted prebuilt prompt block from %s" % template_path)
+			return prompt
 
 	trimmed = template_text.strip()
 	if "Debugger request JSON:" in trimmed or "Template request JSON:" in trimmed:
@@ -6009,6 +5995,10 @@ def buildAIPromptFromTemplateFile(template_path, context, question_type="9"):
 			template_text = fh.read().decode("latin-1")
 	except Exception as e:
 		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
+	prompt_block_text = _extractPromptBlockFromSavedRequestText(template_text)
+	if prompt_block_text != "":
+		mndbg.dbgp("tellme: using PROMPT BEGIN/PROMPT END block from template %s" % template_path)
+		template_text = prompt_block_text
 
 	available_variables = _buildRequestVariables(context)
 	used_variables = OrderedDict()
