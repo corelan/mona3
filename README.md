@@ -619,7 +619,7 @@ set ANTHROPIC_TIMEOUT=60
 set ANTHROPIC_MAX_TOKENS=4096
 ```
 
-For OpenAI direct integration, install the OpenAI Python library for every Python version you use with `mona`. For example, if you run Mona under both Python 3.9 and Python 3.14, install the library into both environments.
+For `openai` direct integration, install the OpenAI Python library for every Python version you use with `mona`. For example, if you run Mona under both Python 3.9 and Python 3.14, install the library into both environments.
 
 ```batch
 py -3.9-32 -m pip install openai
@@ -627,6 +627,33 @@ py -3.9 -m pip install openai
 py -3.14-32 -m pip install openai
 py -3.14 -m pip install openai
 ```
+
+For `openaiagents`, the dependency is different. That engine starts a separate Python bridge outside the debugger and that bridge must be able to import both the OpenAI Agents SDK and the OpenAI Python library.
+
+Install those dependencies into the Python environment that will be used by `openaiagents.bridge.python`.
+
+For example, if your bridge is configured to use Python 3.14:
+
+```batch
+py -3.14 -m pip install openai-agents openai
+```
+
+If you want Mona to launch the bridge with that interpreter, configure it like this:
+
+```python
+!mona config -set mona.ai.engine openaiagents
+!mona config -set openaiagents.bridge.python py -3.14
+```
+
+If you use a different Python version for the bridge, run the same `pip install` command against that interpreter instead.
+
+At runtime, Mona validates that the configured `openaiagents.bridge.python` environment can import:
+
+* `agents`
+* `Agent`, `Runner`, `ModelSettings`, and `RunConfig` from the Agents SDK
+* `openai.types.shared.Reasoning` from the OpenAI Python library
+
+Make sure you install those libraries into the Python environment used by `openaiagents.bridge.python`, not just the Python environment used inside WinDBG.
 
 When `tellme` is using a live provider, it checks the selected model where supported. If you run `tellme` without `-q` while a provider-backed engine is configured, Mona will list the available model IDs it can see for that configuration instead of sending a request.
 
@@ -638,7 +665,7 @@ Currently supported engines are:
 
 * `offline`: save the request only; do not submit it
 * `openai`: direct OpenAI API integration
-* `openaiagents`: local bridge that uses the OpenAI Agents SDK outside the debugger
+* `openaiagents`: local bridge that uses the OpenAI Agents SDK and OpenAI Python library outside the debugger
 * `anthropic`: direct Anthropic API integration
 * `ollama`: local or remote Ollama endpoint
 * `customai`: generic POST JSON endpoint for other compatible backends
