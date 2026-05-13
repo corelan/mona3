@@ -3703,6 +3703,15 @@ def _logOpenAIAgentError(err):
 	err_marker = (err_cls + " " + err_type + " " + message).lower()
 	if "unsupportedenvironmenterror" in err_marker or "set_wakeup_fd only works in main thread of the main interpreter" in err_marker:
 		dbg.log("[+] OpenAI Agents SDK is not supported in this WinDBG execution context.")
+		if message:
+			dbg.log("    Reason        : %s" % message)
+		dbg.log("    Meaning       : the Agents SDK attempted to use Python wakeup/signal handling that only works")
+		dbg.log("                    in the main thread of the main interpreter.")
+		dbg.log("    Likely cause  : WinDBG is running mona inside an embedded Python environment/thread that does")
+		dbg.log("                    not satisfy that requirement for Runner.run_sync().")
+		dbg.log("    What works    : the plain 'openai' engine in mona, which calls the Responses API directly.")
+		dbg.log("    Real fix      : run openai-agents in a separate normal Python process and have mona talk to")
+		dbg.log("                    that helper over stdin/stdout or a local HTTP endpoint.")
 		return
 	try:
 		_logOpenAIError(err)
