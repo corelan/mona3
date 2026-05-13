@@ -975,7 +975,7 @@ def _safe_int(v):
 
 def getAvailableAIEngines(reason="", refresh=False):
 	mndbg.dbgp(get_current_function_name())
-	engines = ["openai", "anthropic", "ollama", "customai"]
+	engines = ["openai", "openai-agents", "anthropic", "ollama", "customai"]
 	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
@@ -1004,7 +1004,7 @@ def getDefaultAIEngineEnvName():
 
 def _isSupportedAIEngine(engine_value):
 	mndbg.dbgp(get_current_function_name())
-	return engine_value in ["openai", "anthropic", "ollama", "customai"]
+	return engine_value in ["openai", "openai-agents", "anthropic", "ollama", "customai"]
 
 
 def ensureDefaultAIEngineConfig(mona_config, available_engines):
@@ -1027,7 +1027,7 @@ def resolveAIEngine(engine_arg, mona_config, available_engines):
 	mndbg.dbgp(get_current_function_name())
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
-		return "", engine_source, "Please specify an engine value with -e <openai|anthropic>", False
+		return "", engine_source, "Please specify an engine value with -e <openai|openai-agents|anthropic>", False
 	engine = _normalizeAIEngine(engine_arg)
 	if engine != "":
 		return engine, engine_source, "", False
@@ -3302,6 +3302,9 @@ def getAIModelAndKey(engine, mona_config):
 	if engine == "openai":
 		env_key_name = "OPENAI_API_KEY"
 		env_model_name = "OPENAI_MODEL"
+	elif engine == "openai-agents":
+		env_key_name = "OPENAI_API_KEY"
+		env_model_name = "OPENAI_AGENTS_MODEL"
 	elif engine == "anthropic":
 		env_key_name = "ANTHROPIC_API_KEY"
 		env_model_name = "ANTHROPIC_MODEL"
@@ -3448,6 +3451,8 @@ def getDefaultAIModel(engine):
 	mndbg.dbgp(get_current_function_name())
 	if engine == "openai":
 		return "gpt-5-mini"
+	if engine == "openai-agents":
+		return "gpt-5-mini"
 	if engine == "anthropic":
 		return "claude-sonnet-4-6"
 	return ""
@@ -3469,6 +3474,23 @@ def _importOpenAI():
 		return None, "", traceback.format_exc()
 
 
+def _importOpenAIAgents():
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: loading OpenAI Agents SDK on demand")
+	try:
+		import agents as agents_module
+		from agents import Agent as openai_agent_class
+		from agents import Runner as openai_agent_runner_class
+		agents_version = getattr(agents_module, "__version__", "").strip()
+		if agents_version == "":
+			agents_version = "unknown"
+		dbg.log("[+] Loading OpenAI Agents SDK...")
+		dbg.log("    OpenAI Agents SDK version: %s" % agents_version)
+		return openai_agent_class, openai_agent_runner_class, agents_version, ""
+	except Exception:
+		return None, None, "", traceback.format_exc()
+
+
 def getAITimeout(engine, mona_config, args=None):
 	mndbg.dbgp(get_current_function_name())
 	timeout_name = "%s.timeout" % engine
@@ -3485,6 +3507,8 @@ def getAITimeout(engine, mona_config, args=None):
 	env_timeout_name = ""
 	if engine == "openai":
 		env_timeout_name = "OPENAI_TIMEOUT"
+	elif engine == "openai-agents":
+		env_timeout_name = "OPENAI_AGENTS_TIMEOUT"
 	elif engine == "anthropic":
 		env_timeout_name = "ANTHROPIC_TIMEOUT"
 	elif engine == "ollama":
@@ -3532,6 +3556,8 @@ def getAIMaxTokens(engine, mona_config):
 	env_max_tokens_name = ""
 	if engine == "openai":
 		env_max_tokens_name = "OPENAI_MAX_TOKENS"
+	elif engine == "openai-agents":
+		env_max_tokens_name = "OPENAI_AGENTS_MAX_TOKENS"
 	elif engine == "anthropic":
 		env_max_tokens_name = "ANTHROPIC_MAX_TOKENS"
 
@@ -3552,6 +3578,8 @@ def getAIMaxTokens(engine, mona_config):
 def getAITestModel(engine):
 	mndbg.dbgp(get_current_function_name())
 	if engine == "openai":
+		return "gpt-5-nano"
+	if engine == "openai-agents":
 		return "gpt-5-nano"
 	if engine == "anthropic":
 		return "claude-haiku-4-5"
@@ -3663,6 +3691,26 @@ def _logOpenAIError(err):
 	_logProviderErrorDetails("OpenAI", payload)
 
 
+def _logOpenAIAgentError(err):
+	mndbg.dbgp(get_current_function_name())
+	message = _getProviderErrorMessage(err)
+	err_cls = err.__class__.__name__
+	try:
+		err_type = ensure_text(getattr(err, "type", ""))
+	except Exception:
+		err_type = ""
+	err_marker = (err_cls + " " + err_type + " " + message).lower()
+	if "unsupportedenvironmenterror" in err_marker or "set_wakeup_fd only works in main thread of the main interpreter" in err_marker:
+		dbg.log("[+] OpenAI Agents SDK is not supported in this WinDBG execution context.")
+		return
+	try:
+		_logOpenAIError(err)
+	except Exception:
+		dbg.log("[!] OpenAI Agents SDK request failed", highlight=1)
+		if message:
+			dbg.log("    Message       : %s" % message, highlight=1)
+
+
 def _logAnthropicError(err):
 	mndbg.dbgp(get_current_function_name())
 	payload = _extractProviderErrorPayload(err)
@@ -3710,6 +3758,13 @@ def logAIProviderError(engine, err):
 		except Exception:
 			mndbg.dbgp("tellme: OpenAI error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
 
+	if engine == "openai-agents":
+		try:
+			_logOpenAIAgentError(err)
+			return
+		except Exception:
+			mndbg.dbgp("tellme: OpenAI Agents SDK error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
+
 	if engine == "anthropic":
 		try:
 			_logAnthropicError(err)
@@ -3724,6 +3779,8 @@ def logAIProviderError(engine, err):
 def _isTimeoutError(engine, err):
 	mndbg.dbgp(get_current_function_name())
 	if engine == "openai" and err.__class__.__name__ == "APITimeoutError":
+		return True
+	if engine == "openai-agents" and err.__class__.__name__ == "APITimeoutError":
 		return True
 
 	err_cls = err.__class__.__name__
@@ -5258,6 +5315,8 @@ def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, 
 		return list(_AI_MODEL_LIST_CACHE[cache_key])
 	if engine == "openai":
 		model_ids = _fetchOpenAIModelsDirect(api_key, timeout_seconds=timeout_seconds)
+	elif engine == "openai-agents":
+		model_ids = _fetchOpenAIModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "anthropic":
 		model_ids = _fetchAnthropicModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "ollama":
@@ -5289,6 +5348,59 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		return str(response.output[0].content[0].text), request_id
 	except Exception:
 		raise RuntimeError("OpenAI returned an empty or unexpected response payload")
+
+
+def callAIOpenAIAgent(agent_class, runner_class, api_key, model, prompt, timeout_seconds=60.0, options=None):
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling OpenAI Agents SDK model '%s' with timeout %.1fs" % (model, timeout_seconds))
+	previous_api_key = os.environ.get("OPENAI_API_KEY", None)
+	request_id = ""
+	try:
+		os.environ["OPENAI_API_KEY"] = api_key
+		agent = agent_class(
+			name="Mona TellMe",
+			instructions="You are a helpful exploit development and WinDBG analysis assistant.",
+			model=model
+		)
+		result = runner_class.run_sync(agent, prompt)
+		final_output = getattr(result, "final_output", "")
+		if not isinstance(final_output, text_type):
+			final_output = _coerceAITextValue(final_output)
+		if final_output:
+			for attr_name in ["response_id", "request_id", "last_response_id"]:
+				try:
+					request_id = ensure_text(getattr(result, attr_name, "")).strip()
+				except Exception:
+					request_id = ""
+				if request_id != "":
+					break
+			return final_output, request_id
+		raise RuntimeError("OpenAI Agents SDK returned an empty or unexpected response payload")
+	except socket.timeout:
+		raise
+	except Exception as e:
+		error_message = str(e)
+		if "set_wakeup_fd only works in main thread of the main interpreter" in error_message.lower():
+			raise AIProviderError(
+				"OpenAI Agents SDK is not supported in this WinDBG execution context.",
+				request_id=request_id,
+				body={"error": {"message": error_message}},
+				error_type="UnsupportedEnvironmentError"
+			)
+		raise AIProviderError(
+			"OpenAI Agents SDK request failed: %s" % error_message,
+			request_id=request_id,
+			body={"error": {"message": error_message}},
+			error_type=e.__class__.__name__
+		)
+	finally:
+		if previous_api_key is None:
+			try:
+				del os.environ["OPENAI_API_KEY"]
+			except Exception:
+				pass
+		else:
+			os.environ["OPENAI_API_KEY"] = previous_api_key
 
 
 def _extractOpenAIText(response_data):
@@ -26306,6 +26418,13 @@ class MnAI(object):
 				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "60"},
 				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True, "default": "4096"},
 			]
+		if engine == "openai-agents":
+			return [
+				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "OPENAI_AGENTS_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "OPENAI_AGENTS_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "max_tokens", "required": False, "env": "OPENAI_AGENTS_MAX_TOKENS", "show_value": True, "default": "4096"},
+			]
 		if engine == "anthropic":
 			return [
 				{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
@@ -26453,7 +26572,7 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine_arg_raw = self.args.get("e", "")
 		if type(engine_arg_raw).__name__.lower() == "bool":
-			self.logError("Please specify an engine value with -e <offline|openai|anthropic|ollama|customai>")
+			self.logError("Please specify an engine value with -e <offline|openai|openai-agents|anthropic|ollama|customai>")
 			return False
 
 		explicit_engine = _normalizeAIEngine(engine_arg_raw)
@@ -26483,7 +26602,7 @@ class MnAI(object):
 		self.logInfo("Selected engine: %s" % self.engine)
 
 		if self.engine not in self.available_engines:
-			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, anthropic, ollama, customai" % self.engine)
+			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openai-agents, anthropic, ollama, customai" % self.engine)
 			return False
 		if self.engine != "offline" and self.engine not in self.available_provider_engines:
 			if self.isDefaultEngineSelection():
@@ -26527,9 +26646,9 @@ class MnAI(object):
 		if self.engine == "offline":
 			self.available_model_ids = []
 			return self.available_model_ids
-		if self.engine in ["openai", "anthropic"] and self.api_key == "":
-			self.available_model_ids = []
-			return self.available_model_ids
+			if self.engine in ["openai", "openai-agents", "anthropic"] and self.api_key == "":
+				self.available_model_ids = []
+				return self.available_model_ids
 		if self.engine == "ollama" and self.api_url == "":
 			self.available_model_ids = []
 			return self.available_model_ids
@@ -26580,14 +26699,14 @@ class MnAI(object):
 		for model_id in models:
 			log_func("  %s" % model_id)
 
-	def maybePrintAvailableModelsWhenIdle(self):
-		"""When no question profile was supplied, print provider models for configured default engines."""
-		mndbg.dbgp(get_current_function_name())
-		has_provider_config = False
-		if self.engine in ["openai", "anthropic"] and self.api_key != "":
-			has_provider_config = True
-		if self.engine == "ollama" and self.api_url != "":
-			has_provider_config = True
+		def maybePrintAvailableModelsWhenIdle(self):
+			"""When no question profile was supplied, print provider models for configured default engines."""
+			mndbg.dbgp(get_current_function_name())
+			has_provider_config = False
+			if self.engine in ["openai", "openai-agents", "anthropic"] and self.api_key != "":
+				has_provider_config = True
+			if self.engine == "ollama" and self.api_url != "":
+				has_provider_config = True
 		if not self.question_profile_missing or self.offline or self.engine == "offline" or not has_provider_config:
 			return
 		try:
@@ -26781,7 +26900,8 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		if self.offline or self.engine == "offline":
 			return True
-		if self.engine in ["openai", "anthropic"] and self.api_key == "":
+
+		if self.engine in ["openai", "openai-agents", "anthropic"] and self.api_key == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
 					"No API key was found for the default engine '%s'. Falling back to offline mode." % self.engine,
@@ -26791,6 +26911,21 @@ class MnAI(object):
 			self.logError("Missing required configuration for engine '%s'." % self.engine)
 			self.logEngineConfigHelp("key")
 			return False
+
+		if self.engine == "openai-agents":
+			openai_agent_class, openai_agent_runner_class, _agents_version, openai_agent_import_error = _importOpenAIAgents()
+			if openai_agent_class is None or openai_agent_runner_class is None:
+				if self.isDefaultEngineSelection():
+					self.switchToOfflineEngine(
+						"OpenAI Agents SDK is not installed for the default engine '%s'. Falling back to offline mode." % self.engine,
+						"Install the 'openai-agents' package in the WinDBG Python environment or switch engines with -e."
+					)
+					return True
+				mndbg.dbgp("tellme: OpenAI Agents SDK is not available in this Python environment: %s" % (
+					openai_agent_import_error.splitlines()[-1] if openai_agent_import_error.strip() != "" else "unknown import error"
+				), errormode=False)
+				return False
+
 		if self.engine in ["ollama", "customai"] and self.api_url == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
@@ -27058,9 +27193,23 @@ class MnAI(object):
 							sys.version_info[0], sys.version_info[1]))
 						self.logErrorDetail("On this interpreter, the OpenAI module may work only once per WinDBG process.")
 						self.logErrorDetail("The direct HTTPS fallback avoids that import path for this request.")
-				self.logErrorDetail("OpenAI import error: %s" % openai_import_error.splitlines()[-1])
-				self.logInfo("OpenAI: Falling back to direct HTTPS request.")
+					self.logErrorDetail("OpenAI import error: %s" % openai_import_error.splitlines()[-1])
+					self.logInfo("OpenAI: Falling back to direct HTTPS request.")
 		return openai_client_class, openai_use_http_fallback
+
+	def getOpenAIAgentRequestMode(self):
+		"""Prepare the OpenAI Agents SDK classes for provider requests."""
+		mndbg.dbgp(get_current_function_name())
+		openai_agent_class = None
+		openai_agent_runner_class = None
+		openai_agent_import_error = ""
+		if self.engine == "openai-agents":
+			openai_agent_class, openai_agent_runner_class, _agents_version, openai_agent_import_error = _importOpenAIAgents()
+			if openai_agent_class is None or openai_agent_runner_class is None:
+				self.logError("OpenAI Agents SDK import failed.")
+				self.logErrorDetail("Python executable: %s" % sys.executable)
+				self.logErrorDetail("OpenAI Agents import error: %s" % openai_agent_import_error.splitlines()[-1])
+		return openai_agent_class, openai_agent_runner_class
 
 	def writeRequestLog(self, request_id=""):
 		"""Write the outgoing request to disk and remember the generated file path."""
@@ -27121,6 +27270,9 @@ class MnAI(object):
 			return self.response
 
 		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
+		openai_agent_class, openai_agent_runner_class = self.getOpenAIAgentRequestMode()
+		if self.engine == "openai-agents" and (openai_agent_class is None or openai_agent_runner_class is None):
+			return self.response
 		self.logInfo("Asking %s model '%s' using question profile %s" % (self.engine, self.model, self.question_type))
 		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
 		if self.engine in ["ollama", "customai"] and self.api_url != "":
@@ -27136,71 +27288,81 @@ class MnAI(object):
 		self.response = ""
 		self.request_id = ""
 		for attempt in xrange(1, max_attempts + 1):
-				attempt_timeout = self.timeout_seconds
+			attempt_timeout = self.timeout_seconds
+			if self.timeout_source == "default":
+				attempt_timeout = self.timeout_seconds + ((attempt - 1) * 10.0)
+			dbg.log("")
+			self.logInfoDetail("Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
+			try:
+				if self.engine == "openai":
+					if openai_use_http_fallback:
+						self.response, self.request_id = callAIOpenAIDirect(
+							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+						)
+					else:
+						self.response, self.request_id = callAIOpenAI(
+							openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+						)
+				elif self.engine == "openai-agents":
+					self.response, self.request_id = callAIOpenAIAgent(
+						openai_agent_class,
+						openai_agent_runner_class,
+						self.api_key,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						options=self.api_options
+					)
+				elif self.engine == "anthropic":
+					self.response, self.request_id = callAIAnthropic(
+						self.api_key,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						max_tokens=self.max_tokens,
+						options=self.api_options
+					)
+				elif self.engine == "ollama":
+					self.response, self.request_id = callAIOllama(
+						self.api_url,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						response_field=self.response_field or "response",
+						options=self.api_options
+					)
+				else:
+					self.response, self.request_id = callAICustom(
+						self.api_url,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						response_field=self.response_field,
+						options=self.api_options
+					)
+				break
+			except Exception as e:
+				mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
+					attempt,
+					max_attempts,
+					traceback.format_exc()
+				), errormode=False)
+				logAIProviderError(self.engine, e)
+				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
+					return self.response
+				next_timeout = self.timeout_seconds
+				retry_sleep_seconds = 10
 				if self.timeout_source == "default":
-					attempt_timeout = self.timeout_seconds + ((attempt - 1) * 10.0)
-				dbg.log("")
-				self.logInfoDetail("Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
-				try:
-					if self.engine == "openai":
-						if openai_use_http_fallback:
-							self.response, self.request_id = callAIOpenAIDirect(
-								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
-							)
-						else:
-							self.response, self.request_id = callAIOpenAI(
-								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
-							)
-					elif self.engine == "anthropic":
-						self.response, self.request_id = callAIAnthropic(
-							self.api_key,
-							self.model,
-							self.prompt,
-							timeout_seconds=attempt_timeout,
-							max_tokens=self.max_tokens,
-							options=self.api_options
-						)
-					elif self.engine == "ollama":
-						self.response, self.request_id = callAIOllama(
-							self.api_url,
-							self.model,
-							self.prompt,
-							timeout_seconds=attempt_timeout,
-							response_field=self.response_field or "response",
-							options=self.api_options
-						)
-					else:
-						self.response, self.request_id = callAICustom(
-							self.api_url,
-							self.model,
-							self.prompt,
-							timeout_seconds=attempt_timeout,
-							response_field=self.response_field,
-							options=self.api_options
-						)
-					break
-				except Exception as e:
-					mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
-						attempt,
-						max_attempts,
-						traceback.format_exc()
-					), errormode=False)
-					logAIProviderError(self.engine, e)
-					if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
-						return self.response
-					next_timeout = self.timeout_seconds
-					retry_sleep_seconds = 10
-					if self.timeout_source == "default":
-						next_timeout = self.timeout_seconds + (attempt * 10.0)
-						retry_sleep_seconds = attempt * 10
-						self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
-							retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
-						))
-					else:
-						self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d)" % (
-							retry_sleep_seconds, attempt + 1, max_attempts
-						))
-					time.sleep(retry_sleep_seconds)
+					next_timeout = self.timeout_seconds + (attempt * 10.0)
+					retry_sleep_seconds = attempt * 10
+					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
+						retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
+					))
+				else:
+					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d)" % (
+						retry_sleep_seconds, attempt + 1, max_attempts
+					))
+				time.sleep(retry_sleep_seconds)
 
 		if self.request_id:
 			self.logInfoDetail("Request id: %s" % self.request_id)
@@ -35462,10 +35624,11 @@ Optional arguments:
 
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
-Supported engines:
-    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
-    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
-    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
+	Supported engines:
+	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
+	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
+	    - openai-agents (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Agents SDK package `openai-agents`)
+	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
     - ollama (uses <ollama.url> as the Ollama server base URL and posts to /api/generate)
     - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
 
@@ -35473,12 +35636,17 @@ Configuration:
     Choose one of these approaches:
 
     1. Store settings in mona.ini:
-       __LAUNCHCMD__ config -set mona.ai.engine openai
-       __LAUNCHCMD__ config -set openai.key <your OpenAI API key>
-       __LAUNCHCMD__ config -set openai.model gpt-5-mini
-       __LAUNCHCMD__ config -set openai.timeout 90
-       __LAUNCHCMD__ config -set openai.max_tokens 4096
-       __LAUNCHCMD__ config -set mona.ai.engine anthropic
+	       __LAUNCHCMD__ config -set mona.ai.engine openai
+	       __LAUNCHCMD__ config -set openai.key <your OpenAI API key>
+	       __LAUNCHCMD__ config -set openai.model gpt-5-mini
+	       __LAUNCHCMD__ config -set openai.timeout 90
+	       __LAUNCHCMD__ config -set openai.max_tokens 4096
+	       __LAUNCHCMD__ config -set mona.ai.engine openai-agents
+	       __LAUNCHCMD__ config -set openai-agents.key <your OpenAI API key>
+	       __LAUNCHCMD__ config -set openai-agents.model gpt-5-mini
+	       __LAUNCHCMD__ config -set openai-agents.timeout 90
+	       __LAUNCHCMD__ config -set openai-agents.max_tokens 4096
+	       __LAUNCHCMD__ config -set mona.ai.engine anthropic
        __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
        __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
        __LAUNCHCMD__ config -set anthropic.timeout 90
@@ -35498,11 +35666,14 @@ Configuration:
 
     2. Or use environment variables instead:
        - MONA_AI_ENGINE
-       - OPENAI_API_KEY
-       - OPENAI_MODEL
-       - OPENAI_TIMEOUT
-       - OPENAI_MAX_TOKENS
-       - ANTHROPIC_API_KEY
+	       - OPENAI_API_KEY
+	       - OPENAI_MODEL
+	       - OPENAI_TIMEOUT
+	       - OPENAI_MAX_TOKENS
+	       - OPENAI_AGENTS_MODEL
+	       - OPENAI_AGENTS_TIMEOUT
+	       - OPENAI_AGENTS_MAX_TOKENS
+	       - ANTHROPIC_API_KEY
        - ANTHROPIC_MODEL
        - ANTHROPIC_TIMEOUT
        - ANTHROPIC_MAX_TOKENS
@@ -35526,18 +35697,20 @@ Precedence:
     If neither a default engine nor -e is specified, tellme uses offline as the default engine
     If the default engine has no required configuration or model configured, tellme falls back to offline
     -offline still overrules a configured default engine for that one request
-Default models:
-    - OpenAI   : gpt-5-mini
-    - Anthropic: claude-sonnet-4-6
+	Default models:
+	    - OpenAI   : gpt-5-mini
+	    - OpenAI Agents: gpt-5-mini
+	    - Anthropic: claude-sonnet-4-6
     - Ollama   : none, must be configured
     - CustomAI : none, must be configured
 
 Default timeout:
     - 60 seconds per request
 
-Common models:
-    - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
-    - Anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+	Common models:
+	    - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
+	    - OpenAI Agents: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
+	    - Anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
     - Ollama   : depends on what is installed locally, for example llama3
     - CustomAI : depends on the target API
 
@@ -35546,7 +35719,7 @@ Official model docs:
     - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
 	Arguments:
-	    -e  <engine> : AI engine to use: offline, openai, anthropic, ollama, or customai.
+		    -e  <engine> : AI engine to use: offline, openai, openai-agents, anthropic, ollama, or customai.
 	                   If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
 	                   and otherwise defaults to offline.
 	                   If the selected default engine has no required configuration or model configured,
@@ -35610,6 +35783,8 @@ Official model docs:
 	    __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
 	    __LAUNCHCMD__ tellme -e customai -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
+	    __LAUNCHCMD__ tellme -e openai-agents -q 1
+	    __LAUNCHCMD__ tellme -e openai-agents -model gpt-5-mini -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
 	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
