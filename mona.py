@@ -65,6 +65,10 @@ try:
 	from urllib.error import HTTPError as urllib_HTTPError, URLError as urllib_URLError
 except ImportError:
 	from urllib2 import Request as urllib_Request, urlopen as urllib_urlopen, HTTPError as urllib_HTTPError, URLError as urllib_URLError
+try:
+	from urllib.parse import urlparse
+except ImportError:
+	from urlparse import urlparse
 
 
 if PY3:
@@ -133,6 +137,8 @@ import math
 import argparse
 import time
 import socket
+import subprocess
+import shlex
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -284,6 +290,76 @@ class MnDebugger:
 		if __DEBUGGERAPP__ == "Immunity Debugger":
 			return True
 		return False
+
+	def execOSCommand(self, command_array, nowait=False):
+		"""Execute an OS command from an argument array and optionally capture its output."""
+		if not isinstance(command_array, (list, tuple)) or len(command_array) == 0:
+			raise ValueError("execOSCommand requires a non-empty array with the command and arguments")
+		command_args = [ensure_text(arg) for arg in command_array]
+		if nowait:
+			devnull_handle = None
+			try:
+				devnull_handle = open(os.devnull, "wb")
+				subprocess.Popen(
+					command_args,
+					stdout=devnull_handle,
+					stderr=devnull_handle,
+					stdin=devnull_handle
+				)
+			finally:
+				if devnull_handle is not None:
+					devnull_handle.close()
+			return []
+		process = subprocess.Popen(
+			command_args,
+			stdout=subprocess.PIPE,
+			stderr=subprocess.STDOUT
+		)
+		output_data = process.communicate()[0]
+		output_text = ensure_text(output_data)
+		return output_text.split("\n")
+
+	def launchDetachedCommand(self, command_array, output_path="", redirect_output=True):
+		"""Launch a detached OS command and optionally redirect stdout/stderr to a log file."""
+		if not isinstance(command_array, (list, tuple)) or len(command_array) == 0:
+			raise ValueError("launchDetachedCommand requires a non-empty array with the command and arguments")
+		command_args = [ensure_text(arg) for arg in command_array]
+		stdout_target = None
+		stderr_target = None
+		stdin_target = None
+		log_handle = None
+		popen_kwargs = {}
+		if redirect_output:
+			if output_path != "":
+				output_dir = os.path.dirname(output_path)
+				if output_dir != "" and not os.path.isdir(output_dir):
+					try:
+						os.makedirs(output_dir)
+					except OSError:
+						if not os.path.isdir(output_dir):
+							raise
+				log_handle = open(output_path, "wb")
+				stdout_target = log_handle
+				stderr_target = log_handle
+			else:
+				devnull_handle = open(os.devnull, "wb")
+				log_handle = devnull_handle
+				stdout_target = devnull_handle
+				stderr_target = devnull_handle
+				stdin_target = devnull_handle
+		try:
+			process = subprocess.Popen(
+				command_args,
+				stdout=stdout_target,
+				stderr=stderr_target,
+				stdin=stdin_target,
+				close_fds=False,
+				**popen_kwargs
+			)
+		finally:
+			if log_handle is not None:
+				log_handle.close()
+		return process.pid
 
 	def getWinDBGVersion(self):
 		"""
@@ -975,7 +1051,7 @@ def _safe_int(v):
 
 def getAvailableAIEngines(reason="", refresh=False):
 	mndbg.dbgp(get_current_function_name())
-	engines = ["openai", "anthropic", "ollama", "customai"]
+	engines = ["openai", "openaiagents", "anthropic", "ollama", "customai"]
 	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
@@ -1004,7 +1080,7 @@ def getDefaultAIEngineEnvName():
 
 def _isSupportedAIEngine(engine_value):
 	mndbg.dbgp(get_current_function_name())
-	return engine_value in ["openai", "anthropic", "ollama", "customai"]
+	return engine_value in ["openai", "openaiagents", "anthropic", "ollama", "customai"]
 
 
 def ensureDefaultAIEngineConfig(mona_config, available_engines):
@@ -1027,7 +1103,7 @@ def resolveAIEngine(engine_arg, mona_config, available_engines):
 	mndbg.dbgp(get_current_function_name())
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
-		return "", engine_source, "Please specify an engine value with -e <openai|anthropic|ollama|customai>", False
+		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|ollama|customai>", False
 	engine = _normalizeAIEngine(engine_arg)
 	if engine != "":
 		return engine, engine_source, "", False
@@ -3290,6 +3366,796 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 	return instructions + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
 
 
+def generateAIRequestId():
+	mndbg.dbgp(get_current_function_name())
+	try:
+		timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+	except Exception:
+		timestamp = time.strftime("%Y%m%d%H%M%S")
+	try:
+		pid_value = os.getpid()
+	except Exception:
+		pid_value = 0
+	try:
+		random_value = "%04x" % random.randint(0, 0xFFFF)
+	except Exception:
+		random_value = "0000"
+	return "%s-%d-%s" % (timestamp, pid_value, random_value)
+
+
+def _normalizeLocalBridgeUrl(base_url, path_suffix=""):
+	mndbg.dbgp(get_current_function_name())
+	base_url = ensure_text(base_url).strip()
+	path_suffix = ensure_text(path_suffix).strip()
+	if base_url == "":
+		return ""
+	if "://" not in base_url:
+		base_url = "http://" + base_url
+	parsed = urlparse(base_url)
+	scheme = ensure_text(getattr(parsed, "scheme", "")).strip() or "http"
+	netloc = ensure_text(getattr(parsed, "netloc", "")).strip()
+	if netloc == "":
+		netloc = ensure_text(getattr(parsed, "path", "")).strip()
+	root_url = "%s://%s" % (scheme, netloc)
+	if path_suffix == "":
+		return root_url
+	return root_url.rstrip("/") + "/" + path_suffix.lstrip("/")
+
+
+def _getLocalBridgeHostPort(base_url, default_host="127.0.0.1", default_port=8765):
+	mndbg.dbgp(get_current_function_name())
+	normalized_url = _normalizeLocalBridgeUrl(base_url)
+	host_value = default_host
+	port_value = default_port
+	if normalized_url == "":
+		return host_value, port_value
+	parsed = urlparse(normalized_url)
+	netloc = ensure_text(getattr(parsed, "netloc", "")).strip()
+	if netloc == "":
+		return host_value, port_value
+	if ":" in netloc:
+		host_text, port_text = netloc.rsplit(":", 1)
+		host_text = host_text.strip()
+		parsed_port, port_ok = getIntArg(port_text)
+		if port_ok and parsed_port > 0:
+			port_value = parsed_port
+		if host_text != "":
+			host_value = host_text
+	else:
+		host_value = netloc
+	return host_value, port_value
+
+
+def _getOpenAIAgentsBridgeScriptText():
+	mndbg.dbgp(get_current_function_name())
+	return textwrap.dedent(r'''#!/usr/bin/env python
+from __future__ import print_function
+
+import argparse
+import asyncio
+import datetime
+import json
+import os
+import sys
+import threading
+import traceback
+
+try:
+	import queue
+except ImportError:
+	import Queue as queue
+
+try:
+	from http.server import BaseHTTPRequestHandler, HTTPServer
+except ImportError:
+	from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
+
+
+BRIDGE_VERSION = "1"
+JOB_QUEUE = queue.Queue()
+LOG_FILE = ""
+HTTP_SERVER = None
+
+
+def _ensure_text(value):
+	if value is None:
+		return ""
+	try:
+		if isinstance(value, bytes):
+			return value.decode("utf-8", "replace")
+	except Exception:
+		pass
+	try:
+		return str(value)
+	except Exception:
+		return ""
+
+
+def _log(message):
+	text = "[%s] %s" % (
+		datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+		_ensure_text(message)
+	)
+	try:
+		sys.stdout.write(text + "\n")
+		sys.stdout.flush()
+	except Exception:
+		pass
+	if LOG_FILE:
+		try:
+			with open(LOG_FILE, "a") as fh:
+				fh.write(text + "\n")
+		except Exception:
+			pass
+
+
+def _ensure_parent_dir(path_value):
+	parent_dir = os.path.dirname(path_value)
+	if parent_dir and not os.path.isdir(parent_dir):
+		try:
+			os.makedirs(parent_dir)
+		except OSError:
+			if not os.path.isdir(parent_dir):
+				raise
+
+
+def _write_text_file(path_value, text_value):
+	_ensure_parent_dir(path_value)
+	with open(path_value, "wb") as fh:
+		fh.write(_ensure_text(text_value).encode("utf-8"))
+
+def _safe_serialize(value, max_depth=3):
+	if max_depth <= 0:
+		return _ensure_text(type(value).__name__)
+	if value is None or isinstance(value, (bool, int, float)):
+		return value
+	if isinstance(value, bytes):
+		return _ensure_text(value)
+	if isinstance(value, str):
+		return value
+	if isinstance(value, (list, tuple)):
+		return [_safe_serialize(item, max_depth=max_depth - 1) for item in list(value)]
+	if isinstance(value, dict):
+		out = {}
+		for key in value:
+			out[_ensure_text(key)] = _safe_serialize(value[key], max_depth=max_depth - 1)
+		return out
+	if hasattr(value, "__dict__"):
+		try:
+			return _safe_serialize(vars(value), max_depth=max_depth - 1)
+		except Exception:
+			pass
+	return _ensure_text(value)
+
+
+def _write_json_file(path_value, payload):
+	serialized_payload = _safe_serialize(payload, max_depth=6)
+	_write_text_file(path_value, json.dumps(serialized_payload, indent=2, sort_keys=True))
+
+
+def _get_status_payload(job, status_value, message_text="", extra_payload=None):
+	payload = {
+		"bridge_version": BRIDGE_VERSION,
+		"request_id": _ensure_text(job.get("request_id", "")).strip(),
+		"status": status_value,
+		"message": _ensure_text(message_text).strip(),
+		"updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+		"output_file": _ensure_text(job.get("output_file", "")).strip(),
+		"model": _ensure_text(job.get("model", "")).strip()
+	}
+	if isinstance(extra_payload, dict):
+		for payload_key in extra_payload:
+			payload[payload_key] = extra_payload[payload_key]
+	return payload
+
+
+def _write_status(job, status_value, message_text="", extra_payload=None):
+	status_file = _ensure_text(job.get("status_file", "")).strip()
+	if status_file == "":
+		return
+	_write_json_file(status_file, _get_status_payload(job, status_value, message_text, extra_payload=extra_payload))
+
+
+def _build_result_debug_payload(job, result, final_output_text, response_id):
+	payload = {
+		"request_id": _ensure_text(job.get("request_id", "")).strip(),
+		"model": _ensure_text(job.get("model", "")).strip(),
+		"response_id": _ensure_text(response_id).strip(),
+		"final_output_length": len(_ensure_text(final_output_text)),
+		"result_type": _ensure_text(type(result).__name__),
+		"result_attrs": {}
+	}
+	for attr_name in ["final_output", "last_response_id", "input_guardrail_results", "output_guardrail_results", "context_wrapper", "new_items", "raw_responses"]:
+		try:
+			payload["result_attrs"][attr_name] = _safe_serialize(getattr(result, attr_name, None))
+		except Exception as e:
+			payload["result_attrs"][attr_name] = "<error: %s>" % _ensure_text(e)
+	try:
+		raw_response_outputs = []
+		for raw_response in getattr(result, "raw_responses", []) or []:
+			output_value = getattr(raw_response, "output", None)
+			raw_response_outputs.append(_safe_serialize(output_value, max_depth=8))
+		payload["raw_response_outputs"] = raw_response_outputs
+	except Exception as e:
+		payload["raw_response_outputs"] = "<error: %s>" % _ensure_text(e)
+	try:
+		payload["result_repr"] = _ensure_text(result)
+	except Exception:
+		payload["result_repr"] = "<unprintable>"
+	return payload
+
+
+def _build_run_input_text(request_data):
+	request_body = request_data
+	if isinstance(request_body, (dict, list)):
+		request_body = json.dumps(request_body, indent=2, sort_keys=True)
+	else:
+		request_body = _ensure_text(request_body)
+	return (
+		"Analyze the following debugger request JSON and produce the requested crash analysis now. "
+		"Use the agent instructions as the policy for how to interpret and answer it. "
+		"Return a final plain-text answer only, not JSON, not metadata, and not a reasoning summary.\n\n"
+		"Debugger request JSON:\n"
+		+ request_body
+	)
+
+
+class _BridgeRunError(Exception):
+	def __init__(self, message, partial_output="", traceback_text=""):
+		Exception.__init__(self, message)
+		self.partial_output = _ensure_text(partial_output)
+		self.traceback_text = _ensure_text(traceback_text)
+
+
+async def _run_agent_stream(agent, run_input, max_turns_value, run_config):
+	from agents import Runner
+	result = Runner.run_streamed(agent, input=run_input, max_turns=max_turns_value, run_config=run_config)
+	streamed_text_fragments = []
+	saw_reasoning_update = False
+	saw_message_output = False
+	saw_output_text = False
+	try:
+		async for event in result.stream_events():
+			event_type = _ensure_text(getattr(event, "type", "")).strip()
+			if event_type == "agent_updated_stream_event":
+				try:
+					_log("mona OpenAI Agents bridge: active agent -> %s" % _ensure_text(getattr(getattr(event, "new_agent", None), "name", "")).strip())
+				except Exception:
+					pass
+				continue
+			if event_type == "run_item_stream_event":
+				event_name = _ensure_text(getattr(event, "name", "")).strip()
+				if event_name == "reasoning_item_created" and not saw_reasoning_update:
+					saw_reasoning_update = True
+					_log("mona OpenAI Agents bridge: model is reasoning...")
+				elif event_name == "message_output_created" and not saw_message_output:
+					saw_message_output = True
+					_log("mona OpenAI Agents bridge: message output created.")
+				elif event_name == "tool_called":
+					_log("mona OpenAI Agents bridge: tool call requested.")
+				elif event_name == "tool_output":
+					_log("mona OpenAI Agents bridge: tool output received.")
+				continue
+			if event_type == "raw_response_event":
+				raw_event = getattr(event, "data", None)
+				raw_event_type = _ensure_text(getattr(raw_event, "type", "")).strip()
+				if raw_event_type.startswith("response.reasoning") and not saw_reasoning_update:
+					saw_reasoning_update = True
+					_log("mona OpenAI Agents bridge: model is reasoning...")
+				elif raw_event_type == "response.output_text.delta":
+					delta_text = _ensure_text(getattr(raw_event, "delta", ""))
+					if delta_text != "":
+						if not saw_output_text:
+							saw_output_text = True
+							_log("mona OpenAI Agents bridge: model is generating final answer text...")
+						streamed_text_fragments.append(delta_text)
+				elif raw_event_type == "response.completed":
+					_log("mona OpenAI Agents bridge: model response completed.")
+	except Exception as e:
+		raise _BridgeRunError(_ensure_text(e), partial_output="".join(streamed_text_fragments), traceback_text=traceback.format_exc())
+	return result, "".join(streamed_text_fragments)
+
+
+def _collect_text_fragments_from_value(value, fragments, depth=6):
+	if depth <= 0 or value is None:
+		return
+	if isinstance(value, bytes):
+		text_value = _ensure_text(value).strip()
+		if text_value != "":
+			fragments.append(text_value)
+		return
+	if isinstance(value, str):
+		text_value = value.strip()
+		if text_value != "":
+			fragments.append(text_value)
+		return
+	if isinstance(value, (list, tuple)):
+		for item in value:
+			_collect_text_fragments_from_value(item, fragments, depth=depth - 1)
+		return
+	if isinstance(value, dict):
+		for text_key in ["text", "output_text", "summary", "refusal"]:
+			text_value = value.get(text_key, None)
+			if isinstance(text_value, (str, bytes)):
+				_collect_text_fragments_from_value(text_value, fragments, depth=depth - 1)
+		for nested_key in ["content", "contents", "output", "message", "messages", "item", "items", "raw_item"]:
+			if nested_key in value:
+				_collect_text_fragments_from_value(value.get(nested_key), fragments, depth=depth - 1)
+		return
+	if hasattr(value, "__dict__"):
+		try:
+			object_dict = vars(value)
+			object_type_name = _ensure_text(type(value).__name__).lower()
+			if "message" in object_type_name or "response" in object_type_name or "item" in object_type_name or "output" in object_type_name:
+				_collect_text_fragments_from_value(object_dict, fragments, depth=depth - 1)
+			return
+		except Exception:
+			pass
+
+
+def _extract_text_from_response_output_item(output_item):
+	if output_item is None:
+		return ""
+	if isinstance(output_item, dict):
+		item_type = _ensure_text(output_item.get("type", "")).strip().lower()
+		if item_type in ["message", "output_message"]:
+			for content_item in output_item.get("content", []) or []:
+				text_value = _extract_text_from_response_output_item(content_item)
+				if text_value != "":
+					return text_value
+		for text_key in ["text", "output_text", "summary"]:
+			raw_text_value = output_item.get(text_key, "")
+			if isinstance(raw_text_value, bytes):
+				text_value = _ensure_text(raw_text_value).strip()
+				if text_value != "":
+					return text_value
+			elif isinstance(raw_text_value, str):
+				text_value = raw_text_value.strip()
+				if text_value != "":
+					return text_value
+		for nested_key in ["content", "output", "message"]:
+			nested_value = output_item.get(nested_key, None)
+			if nested_value is not None:
+				text_value = _extract_text_from_response_output_item(nested_value)
+				if text_value != "":
+					return text_value
+		return ""
+	if isinstance(output_item, (list, tuple)):
+		for nested_item in output_item:
+			text_value = _extract_text_from_response_output_item(nested_item)
+			if text_value != "":
+				return text_value
+		return ""
+	if isinstance(output_item, bytes):
+		return _ensure_text(output_item).strip()
+	if isinstance(output_item, str):
+		return output_item.strip()
+	if hasattr(output_item, "__dict__"):
+		try:
+			return _extract_text_from_response_output_item(vars(output_item))
+		except Exception:
+			return ""
+	return ""
+
+
+def _extract_fallback_output_from_result(result):
+	try:
+		for raw_response in getattr(result, "raw_responses", []) or []:
+			text_value = _extract_text_from_response_output_item(getattr(raw_response, "output", None))
+			if _ensure_text(text_value).strip() != "":
+				return _ensure_text(text_value).strip()
+	except Exception:
+		pass
+	fragments = []
+	try:
+		_collect_text_fragments_from_value(getattr(result, "new_items", None), fragments, depth=6)
+	except Exception:
+		pass
+	try:
+		_collect_text_fragments_from_value(getattr(result, "raw_responses", None), fragments, depth=6)
+	except Exception:
+		pass
+	seen = set()
+	filtered = []
+	for fragment in fragments:
+		fragment = _ensure_text(fragment).strip()
+		if fragment == "":
+			continue
+		if fragment in seen:
+			continue
+		seen.add(fragment)
+		filtered.append(fragment)
+	if len(filtered) == 0:
+		return ""
+	return "\n\n".join(filtered)
+
+
+def _render_output_text(job, body_text, response_id="", error_text="", troubleshooting_lines=None):
+	lines = []
+	lines.append("AI engine : openaiagents")
+	lines.append("Model     : %s" % _ensure_text(job.get("model", "")).strip())
+	lines.append("Question  : %s" % _ensure_text(job.get("question_type", "")).strip())
+	if _ensure_text(job.get("request_id", "")).strip() != "":
+		lines.append("Request id: %s" % _ensure_text(job.get("request_id", "")).strip())
+	if _ensure_text(response_id).strip() != "":
+		lines.append("Response id: %s" % _ensure_text(response_id).strip())
+	if _ensure_text(job.get("template_file", "")).strip() != "":
+		lines.append("Template  : %s" % _ensure_text(job.get("template_file", "")).strip())
+	if _ensure_text(job.get("target_address", "")).strip() != "":
+		lines.append("Target    : %s" % _ensure_text(job.get("target_address", "")).strip())
+	if _ensure_text(job.get("target_address_source", "")).strip() != "":
+		lines.append("Target src: %s" % _ensure_text(job.get("target_address_source", "")).strip())
+	lines.append("")
+	if _ensure_text(error_text).strip() != "":
+		lines.append("Bridge error:")
+		lines.append("")
+		lines.append(_ensure_text(error_text).strip())
+		lines.append("")
+	if isinstance(troubleshooting_lines, list) and len(troubleshooting_lines) > 0:
+		lines.append("Bridge troubleshooting:")
+		lines.append("")
+		for troubleshooting_line in troubleshooting_lines:
+			lines.append(_ensure_text(troubleshooting_line).rstrip())
+		lines.append("")
+	lines.append("AI response:")
+	lines.append("")
+	lines.append(_ensure_text(body_text).rstrip())
+	return "\n".join(lines).rstrip() + "\n"
+
+
+def _normalize_final_output(final_output):
+	if isinstance(final_output, (dict, list, tuple)):
+		try:
+			return json.dumps(final_output, indent=2, sort_keys=True)
+		except Exception:
+			return _ensure_text(final_output)
+	return _ensure_text(final_output)
+
+
+def _split_prompt_and_request_data(prompt_text):
+	prompt_text = _ensure_text(prompt_text)
+	for marker in ["Debugger request JSON:", "Template request JSON:"]:
+		if marker in prompt_text:
+			instructions_text, json_text = prompt_text.split(marker, 1)
+			instructions_text = instructions_text.strip()
+			json_text = json_text.strip()
+			if json_text != "":
+				try:
+					return instructions_text, json.loads(json_text), marker
+				except Exception:
+					return instructions_text, json_text, marker
+	return prompt_text.strip(), None, ""
+
+
+def _build_bridge_error_summary(job, error_text):
+	error_text = _ensure_text(error_text)
+	error_summary = "The bridge failed while processing the request."
+	troubleshooting_lines = []
+	if "response.incomplete" in error_text and "max_output_tokens" in error_text:
+		error_summary = "The model stopped before producing a complete final answer because max_output_tokens was reached."
+		troubleshooting_lines.append("The OpenAI Agents run ended with response.incomplete due to max_output_tokens.")
+		try:
+			max_tokens_value = int(job.get("max_tokens", 0))
+		except Exception:
+			max_tokens_value = 0
+		if max_tokens_value > 0:
+			troubleshooting_lines.append("Current openaiagents.max_tokens value: %d" % max_tokens_value)
+		troubleshooting_lines.append("Increase openaiagents.max_tokens and try again.")
+	return error_summary, troubleshooting_lines
+
+
+def _is_partial_output_useful(partial_output_text):
+	partial_output_text = _ensure_text(partial_output_text).strip()
+	return partial_output_text != ""
+
+
+def _run_job(job):
+	request_id = _ensure_text(job.get("request_id", "")).strip()
+	_log("mona OpenAI Agents bridge: processing job %s" % request_id)
+	_write_status(job, "running", "The bridge worker is executing the request.")
+	try:
+		api_key = _ensure_text(job.get("api_key", "")).strip()
+		if api_key != "":
+			os.environ["OPENAI_API_KEY"] = api_key
+
+		from agents import Agent, ModelSettings, RunConfig
+
+		model_name = _ensure_text(job.get("model", "")).strip()
+		prompt_text = _ensure_text(job.get("prompt", ""))
+		instructions_text, request_data, request_marker = _split_prompt_and_request_data(prompt_text)
+		if _ensure_text(job.get("instructions", "")).strip() != "":
+			instructions_text = _ensure_text(job.get("instructions", "")).strip()
+		if instructions_text == "":
+			instructions_text = "You are mona tellme. Follow the submitted debugger-analysis request exactly and provide the final answer only."
+		run_input = prompt_text
+		if request_data is not None:
+			run_input = _build_run_input_text(request_data)
+
+		model_settings_kwargs = {}
+		max_tokens_raw = job.get("max_tokens", None)
+		try:
+			max_tokens_value = int(max_tokens_raw)
+			if max_tokens_value > 0:
+				model_settings_kwargs["max_tokens"] = max_tokens_value
+		except Exception:
+			pass
+		verbosity_value = _ensure_text(job.get("verbosity", "")).strip()
+		if verbosity_value != "":
+			model_settings_kwargs["verbosity"] = verbosity_value
+		reasoning_effort_value = _ensure_text(job.get("reasoning_effort", "")).strip()
+		if reasoning_effort_value != "":
+			try:
+				from openai.types.shared import Reasoning
+				model_settings_kwargs["reasoning"] = Reasoning(effort=reasoning_effort_value)
+			except Exception:
+				pass
+
+		model_settings = None
+		if len(model_settings_kwargs) > 0:
+			model_settings = ModelSettings(**model_settings_kwargs)
+
+		agent_kwargs = {
+			"name": "MonaTellmeAgent",
+			"instructions": instructions_text,
+			"output_type": str
+		}
+		if model_name != "":
+			agent_kwargs["model"] = model_name
+		if model_settings is not None:
+			agent_kwargs["model_settings"] = model_settings
+		agent = Agent(**agent_kwargs)
+
+		run_config = None
+		run_config_kwargs = {}
+		if model_name != "":
+			run_config_kwargs["model"] = model_name
+		if model_settings is not None:
+			run_config_kwargs["model_settings"] = model_settings
+		if len(run_config_kwargs) > 0:
+			run_config = RunConfig(**run_config_kwargs)
+
+		max_turns_value = 8
+		try:
+			parsed_turns = int(job.get("max_turns", 8))
+			if parsed_turns > 0:
+				max_turns_value = parsed_turns
+		except Exception:
+			pass
+
+		raw_request_file = _ensure_text(job.get("raw_request_file", "")).strip()
+		if raw_request_file != "":
+			_write_json_file(raw_request_file, {
+				"request_id": request_id,
+				"model": model_name,
+				"prompt": prompt_text,
+				"instructions": instructions_text,
+				"request_marker": request_marker,
+				"request_data": request_data,
+				"run_input": run_input,
+				"max_turns": max_turns_value,
+				"model_settings_kwargs": model_settings_kwargs
+			})
+		result, streamed_output_text = asyncio.run(_run_agent_stream(agent, run_input, max_turns_value, run_config))
+		final_output_text = _normalize_final_output(getattr(result, "final_output", ""))
+		response_id = _ensure_text(getattr(result, "last_response_id", "")).strip()
+		fallback_output_text = ""
+		fallback_used = False
+		if _ensure_text(final_output_text).strip() == "":
+			if _ensure_text(streamed_output_text).strip() != "":
+				final_output_text = _ensure_text(streamed_output_text).strip()
+				fallback_used = True
+				fallback_output_text = final_output_text
+			else:
+				fallback_output_text = _extract_fallback_output_from_result(result)
+				if _ensure_text(fallback_output_text).strip() != "":
+					final_output_text = fallback_output_text
+					fallback_used = True
+		raw_result_payload = _build_result_debug_payload(job, result, final_output_text, response_id)
+		raw_result_file = _ensure_text(job.get("raw_result_file", "")).strip()
+		if raw_result_file != "":
+			_write_json_file(raw_result_file, raw_result_payload)
+		troubleshooting_lines = []
+		status_message = "The bridge completed the request successfully."
+		extra_status_payload = {"response_id": response_id}
+		if fallback_used:
+			status_message = "The bridge completed the request and recovered output from raw result surfaces."
+			extra_status_payload["warning"] = "used_fallback_output_extraction"
+			_log("mona OpenAI Agents bridge: job %s used fallback output extraction from raw result surfaces" % request_id)
+			if raw_result_file != "":
+				troubleshooting_lines.append("Fallback extraction was used because result.final_output was empty.")
+				troubleshooting_lines.append("Raw result/debug file: %s" % raw_result_file)
+		elif _ensure_text(final_output_text).strip() == "":
+			status_message = "The bridge completed the request, but final_output was empty."
+			extra_status_payload["warning"] = "empty_final_output"
+			_log("mona OpenAI Agents bridge: job %s returned an empty final_output" % request_id)
+			troubleshooting_lines.append("The Agents SDK run completed, but result.final_output was empty.")
+			try:
+				raw_response_outputs = raw_result_payload.get("raw_response_outputs", [])
+				if isinstance(raw_response_outputs, list) and len(raw_response_outputs) > 0:
+					troubleshooting_lines.append("The raw response output contained reasoning activity but no final assistant message item.")
+			except Exception:
+				pass
+			if response_id != "":
+				troubleshooting_lines.append("Response id: %s" % response_id)
+			if raw_result_file != "":
+				troubleshooting_lines.append("Raw result/debug file: %s" % raw_result_file)
+			if raw_request_file != "":
+				troubleshooting_lines.append("Raw request file: %s" % raw_request_file)
+		_write_text_file(job["output_file"], _render_output_text(job, final_output_text, response_id=response_id, troubleshooting_lines=troubleshooting_lines))
+		_write_status(job, "completed", status_message, extra_payload=extra_status_payload)
+		_log("mona OpenAI Agents bridge: completed job %s" % request_id)
+	except Exception as e:
+		error_text = traceback.format_exc()
+		partial_output_text = ""
+		if isinstance(e, _BridgeRunError):
+			partial_output_text = _ensure_text(getattr(e, "partial_output", "")).strip()
+			if _ensure_text(getattr(e, "traceback_text", "")).strip() != "":
+				error_text = _ensure_text(getattr(e, "traceback_text", "")).strip()
+		error_summary, troubleshooting_lines = _build_bridge_error_summary(job, error_text)
+		if _is_partial_output_useful(partial_output_text):
+			troubleshooting_lines.append("A partial answer was returned before the run stopped.")
+			troubleshooting_lines.append("Increase openaiagents.max_tokens if you want the full answer.")
+		if _ensure_text(job.get("raw_request_file", "")).strip() != "":
+			troubleshooting_lines.append("Raw request file: %s" % _ensure_text(job.get("raw_request_file", "")).strip())
+		if _ensure_text(job.get("raw_result_file", "")).strip() != "":
+			_write_json_file(_ensure_text(job.get("raw_result_file", "")).strip(), {
+				"request_id": request_id,
+				"error_summary": error_summary,
+				"partial_output": partial_output_text,
+				"error": error_text
+			})
+			troubleshooting_lines.append("Raw result/debug file: %s" % _ensure_text(job.get("raw_result_file", "")).strip())
+		_write_text_file(job["output_file"], _render_output_text(job, partial_output_text, error_text=error_text, troubleshooting_lines=troubleshooting_lines))
+		_write_status(job, "failed", error_summary, extra_payload={"error": error_text})
+		_log("mona OpenAI Agents bridge: job %s failed\n%s" % (request_id, error_text))
+
+
+def _worker_loop():
+	while True:
+		job = JOB_QUEUE.get()
+		try:
+			if job is None:
+				return
+			_run_job(job)
+		finally:
+			JOB_QUEUE.task_done()
+		if JOB_QUEUE.qsize() == 0:
+			_log("mona OpenAI Agents bridge: queue is empty, shutting down.")
+			try:
+				if HTTP_SERVER is not None:
+					HTTP_SERVER.shutdown()
+			except Exception:
+				pass
+			return
+
+
+class BridgeHandler(BaseHTTPRequestHandler):
+	server_version = "MonaOpenAIAgentsBridge/" + BRIDGE_VERSION
+
+	def log_message(self, format_text, *args):
+		_log(format_text % args)
+
+	def _send_json(self, status_code, payload):
+		body = json.dumps(payload).encode("utf-8")
+		self.send_response(status_code)
+		self.send_header("Content-Type", "application/json")
+		self.send_header("Content-Length", str(len(body)))
+		self.end_headers()
+		self.wfile.write(body)
+
+	def do_GET(self):
+		if self.path != "/health":
+			self._send_json(404, {"ok": False, "error": "not_found"})
+			return
+		self._send_json(200, {
+			"ok": True,
+			"bridge_version": BRIDGE_VERSION,
+			"queue_size": JOB_QUEUE.qsize()
+		})
+
+	def do_POST(self):
+		if self.path != "/submit":
+			self._send_json(404, {"accepted": False, "error": "not_found"})
+			return
+		content_length = 0
+		try:
+			content_length = int(self.headers.get("Content-Length", "0"))
+		except Exception:
+			content_length = 0
+		raw_body = self.rfile.read(content_length)
+		try:
+			payload = json.loads(_ensure_text(raw_body))
+		except Exception:
+			self._send_json(400, {"accepted": False, "error": "invalid_json"})
+			return
+		request_id = _ensure_text(payload.get("request_id", "")).strip()
+		prompt_text = _ensure_text(payload.get("prompt", ""))
+		output_file = _ensure_text(payload.get("output_file", "")).strip()
+		if request_id == "" or prompt_text == "" or output_file == "":
+			self._send_json(400, {"accepted": False, "error": "missing_required_fields"})
+			return
+		if _ensure_text(payload.get("status_file", "")).strip() == "":
+			payload["status_file"] = os.path.splitext(output_file)[0] + ".status.json"
+		if _ensure_text(payload.get("raw_request_file", "")).strip() == "":
+			payload["raw_request_file"] = os.path.splitext(output_file)[0] + ".bridge_request.json"
+		if _ensure_text(payload.get("raw_result_file", "")).strip() == "":
+			payload["raw_result_file"] = os.path.splitext(output_file)[0] + ".bridge_result.json"
+		_log("mona OpenAI Agents bridge: accepted job %s" % request_id)
+		_log("  model=%s" % _ensure_text(payload.get("model", "")).strip())
+		_log("  question_type=%s" % _ensure_text(payload.get("question_type", "")).strip())
+		_log("  output_file=%s" % output_file)
+		_log("  status_file=%s" % _ensure_text(payload.get("status_file", "")).strip())
+		_log("  raw_request_file=%s" % _ensure_text(payload.get("raw_request_file", "")).strip())
+		_log("  raw_result_file=%s" % _ensure_text(payload.get("raw_result_file", "")).strip())
+		_log("  reasoning_effort=%s" % _ensure_text(payload.get("reasoning_effort", "")).strip())
+		_log("  verbosity=%s" % _ensure_text(payload.get("verbosity", "")).strip())
+		_log("  max_turns=%s" % _ensure_text(payload.get("max_turns", "")).strip())
+		_log("  max_tokens=%s" % _ensure_text(payload.get("max_tokens", "")).strip())
+		_log("  queue_size_before_enqueue=%d" % JOB_QUEUE.qsize())
+		_write_status(payload, "queued", "The request was accepted by the bridge and queued for processing.")
+		JOB_QUEUE.put(payload)
+		self._send_json(202, {
+			"accepted": True,
+			"request_id": request_id,
+			"status": "queued",
+			"output_file": output_file,
+			"status_file": payload["status_file"]
+		})
+
+
+def main():
+	global LOG_FILE
+	global HTTP_SERVER
+	parser = argparse.ArgumentParser()
+	parser.add_argument("--serve", action="store_true")
+	parser.add_argument("--host", default="127.0.0.1")
+	parser.add_argument("--port", type=int, default=8765)
+	parser.add_argument("--log-file", default="")
+	args = parser.parse_args()
+	LOG_FILE = _ensure_text(args.log_file).strip()
+	if LOG_FILE:
+		try:
+			_ensure_parent_dir(LOG_FILE)
+			with open(LOG_FILE, "wb") as fh:
+				fh.write(b"")
+		except Exception:
+			pass
+	_log("============================================================")
+	_log("mona OpenAI Agents bridge helper")
+	_log("This is a bridge script generated and launched by mona.py.")
+	_log("It runs outside the debugger and waits for AI requests from mona.")
+	_log("Provider flow: mona.py -> localhost bridge -> OpenAI Agents SDK")
+	_log("Purpose: let mona submit requests through the OpenAI Agents SDK")
+	_log("         while keeping the heavy AI processing out of the debugger.")
+	_log("Bridge version : %s" % BRIDGE_VERSION)
+	_log("Python         : %s" % sys.executable)
+	_log("Host           : %s" % _ensure_text(args.host))
+	_log("Port           : %d" % int(args.port))
+	_log("Health URL     : http://%s:%d/health" % (_ensure_text(args.host), int(args.port)))
+	_log("Submit URL     : http://%s:%d/submit" % (_ensure_text(args.host), int(args.port)))
+	if LOG_FILE:
+		_log("Bridge log file: %s" % LOG_FILE)
+	_log("The bridge will also shut itself down automatically when its queue becomes empty.")
+	_log("============================================================")
+	worker = threading.Thread(target=_worker_loop)
+	worker.daemon = True
+	worker.start()
+	server = HTTPServer((args.host, args.port), BridgeHandler)
+	HTTP_SERVER = server
+	_log("Bridge worker thread started.")
+	_log("Bridge listening on %s:%d and waiting for requests." % (args.host, args.port))
+	try:
+		server.serve_forever()
+	except KeyboardInterrupt:
+		pass
+	_log("mona OpenAI Agents bridge helper stopped.")
+
+
+if __name__ == "__main__":
+	main()
+''').replace("\r\n", "\n")
+
+
 def getAIModelAndKey(engine, mona_config):
 	mndbg.dbgp(get_current_function_name())
 	key_name = "%s.key" % engine
@@ -3300,6 +4166,9 @@ def getAIModelAndKey(engine, mona_config):
 	env_key_name = ""
 	env_model_name = ""
 	if engine == "openai":
+		env_key_name = "OPENAI_API_KEY"
+		env_model_name = "OPENAI_MODEL"
+	elif engine == "openaiagents":
 		env_key_name = "OPENAI_API_KEY"
 		env_model_name = "OPENAI_MODEL"
 	elif engine == "anthropic":
@@ -3334,6 +4203,8 @@ def getAIUrl(engine, mona_config):
 	env_url_name = ""
 	if engine == "ollama":
 		env_url_name = "OLLAMA_URL"
+	elif engine == "openaiagents":
+		env_url_name = "OPENAIAGENTS_URL"
 	elif engine == "customai":
 		env_url_name = "CUSTOMAI_URL"
 
@@ -3341,6 +4212,8 @@ def getAIUrl(engine, mona_config):
 		url_value = os.environ.get(env_url_name, "").strip()
 		if url_value != "":
 			mndbg.dbgp("tellme: using environment fallback for %s.url via %s" % (engine, env_url_name))
+	if url_value == "" and engine == "openaiagents":
+		url_value = "http://127.0.0.1:8765"
 
 	return url_value
 
@@ -3362,6 +4235,79 @@ def getAIResponseField(engine, mona_config):
 			mndbg.dbgp("tellme: using environment fallback for %s.response_field via %s" % (engine, env_field_name))
 
 	return field_value
+
+
+def getAIBridgePythonCommand(mona_config=None):
+	mndbg.dbgp(get_current_function_name())
+	python_value = ""
+	if mona_config is not None:
+		try:
+			python_value = mona_config.get("openaiagents.bridge.python").strip()
+		except Exception:
+			python_value = ""
+	if python_value != "":
+		return [ensure_text(part).strip() for part in shlex.split(python_value, posix=False) if ensure_text(part).strip() != ""]
+	if mndbg.isWinDBG():
+		return ["py", "-%d.%d" % (sys.version_info[0], sys.version_info[1])]
+	return [sys.executable]
+
+
+def formatAIBridgePythonCommand(command_parts):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(command_parts, (list, tuple)) or len(command_parts) == 0:
+		return ""
+	return " ".join([ensure_text(part) for part in command_parts])
+
+
+def getAIReasoningEffort(engine, mona_config):
+	mndbg.dbgp(get_current_function_name())
+	effort_name = "%s.reasoning_effort" % engine
+	effort_value = mona_config.get(effort_name).strip()
+	env_effort_name = ""
+	if engine == "openaiagents":
+		env_effort_name = "OPENAIAGENTS_REASONING_EFFORT"
+	if effort_value == "" and env_effort_name != "":
+		effort_value = os.environ.get(env_effort_name, "").strip()
+		if effort_value != "":
+			mndbg.dbgp("tellme: using environment fallback for %s.reasoning_effort via %s" % (engine, env_effort_name))
+	if effort_value == "":
+		effort_value = "high"
+	return effort_value
+
+
+def getAIVerbosity(engine, mona_config):
+	mndbg.dbgp(get_current_function_name())
+	verbosity_name = "%s.verbosity" % engine
+	verbosity_value = mona_config.get(verbosity_name).strip()
+	env_verbosity_name = ""
+	if engine == "openaiagents":
+		env_verbosity_name = "OPENAIAGENTS_VERBOSITY"
+	if verbosity_value == "" and env_verbosity_name != "":
+		verbosity_value = os.environ.get(env_verbosity_name, "").strip()
+		if verbosity_value != "":
+			mndbg.dbgp("tellme: using environment fallback for %s.verbosity via %s" % (engine, env_verbosity_name))
+	if verbosity_value == "":
+		verbosity_value = "low"
+	return verbosity_value
+
+
+def getAIMaxTurns(engine, mona_config):
+	mndbg.dbgp(get_current_function_name())
+	max_turns_name = "%s.max_turns" % engine
+	max_turns_value = 8
+	max_turns_raw = mona_config.get(max_turns_name).strip()
+	env_max_turns_name = ""
+	if engine == "openaiagents":
+		env_max_turns_name = "OPENAIAGENTS_MAX_TURNS"
+	if max_turns_raw == "" and env_max_turns_name != "":
+		max_turns_raw = os.environ.get(env_max_turns_name, "").strip()
+		if max_turns_raw != "":
+			mndbg.dbgp("tellme: using environment fallback for %s.max_turns via %s" % (engine, env_max_turns_name))
+	if max_turns_raw != "":
+		parsed_turns, turns_ok = getIntArg(max_turns_raw)
+		if turns_ok and parsed_turns > 0:
+			max_turns_value = parsed_turns
+	return max_turns_value
 
 
 def _coerceConfigOptionValue(raw_value):
@@ -3446,7 +4392,7 @@ def _collectAIOptions(engine, model, mona_config):
 
 def getDefaultAIModel(engine):
 	mndbg.dbgp(get_current_function_name())
-	if engine == "openai":
+	if engine == "openai" or engine == "openaiagents":
 		return "gpt-5-mini"
 	if engine == "anthropic":
 		return "claude-sonnet-4-6"
@@ -3485,6 +4431,8 @@ def getAITimeout(engine, mona_config, args=None):
 	env_timeout_name = ""
 	if engine == "openai":
 		env_timeout_name = "OPENAI_TIMEOUT"
+	elif engine == "openaiagents":
+		env_timeout_name = "OPENAI_TIMEOUT"
 	elif engine == "anthropic":
 		env_timeout_name = "ANTHROPIC_TIMEOUT"
 	elif engine == "ollama":
@@ -3518,6 +4466,8 @@ def getAIMaxTokens(engine, mona_config):
 	mndbg.dbgp(get_current_function_name())
 	max_tokens_name = "%s.max_tokens" % engine
 	max_tokens = 4096
+	if engine == "openaiagents":
+		max_tokens = 8192
 	max_tokens_source = "default"
 	max_tokens_raw = mona_config.get(max_tokens_name).strip()
 	if max_tokens_raw != "":
@@ -3530,7 +4480,7 @@ def getAIMaxTokens(engine, mona_config):
 			))
 
 	env_max_tokens_name = ""
-	if engine == "openai":
+	if engine == "openai" or engine == "openaiagents":
 		env_max_tokens_name = "OPENAI_MAX_TOKENS"
 	elif engine == "anthropic":
 		env_max_tokens_name = "ANTHROPIC_MAX_TOKENS"
@@ -3549,9 +4499,29 @@ def getAIMaxTokens(engine, mona_config):
 	return max_tokens, max_tokens_source
 
 
+def deriveOpenAIAgentsMaxTokensFromPrompt(prompt_text):
+	mndbg.dbgp(get_current_function_name())
+	if isinstance(prompt_text, text_type):
+		prompt_bytes = len(prompt_text.encode("utf-8"))
+	else:
+		prompt_bytes = len(prompt_text)
+	estimated_input_tokens = max(1, int((prompt_bytes + 3) / 4))
+	derived_max_tokens = int(estimated_input_tokens * 1.5)
+	if derived_max_tokens < 8192:
+		derived_max_tokens = 8192
+	if derived_max_tokens > 24576:
+		derived_max_tokens = 24576
+	rounding_step = 1024
+	if derived_max_tokens % rounding_step != 0:
+		derived_max_tokens = int(((derived_max_tokens + rounding_step - 1) / rounding_step) * rounding_step)
+	if derived_max_tokens > 24576:
+		derived_max_tokens = 24576
+	return derived_max_tokens, estimated_input_tokens
+
+
 def getAITestModel(engine):
 	mndbg.dbgp(get_current_function_name())
-	if engine == "openai":
+	if engine == "openai" or engine == "openaiagents":
 		return "gpt-5-nano"
 	if engine == "anthropic":
 		return "claude-haiku-4-5"
@@ -5998,6 +6968,90 @@ def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="
 		"CustomAI returned an empty or unexpected response payload",
 		request_id=request_id,
 		body={"raw_response": response_data, "response_field": response_field},
+		error_type="UnexpectedPayloadError"
+	)
+
+
+def checkOpenAIAgentsBridgeHealth(base_url, timeout_seconds=5.0):
+	mndbg.dbgp(get_current_function_name())
+	health_url = _normalizeLocalBridgeUrl(base_url, "/health")
+	request = urllib_Request(
+		health_url,
+		headers={
+			"user-agent": "mona-openaiagents/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_body = response.read()
+			body_text = ensure_text(raw_body.decode("utf-8", "replace")) if isinstance(raw_body, bytes_type) else ensure_text(raw_body)
+			body_data = json.loads(body_text) if body_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except Exception:
+		return False, {}
+	return True, body_data if isinstance(body_data, dict) else {}
+
+
+def submitOpenAIAgentsBridgeRequest(base_url, payload, timeout_seconds=10.0):
+	mndbg.dbgp(get_current_function_name())
+	submit_url = _normalizeLocalBridgeUrl(base_url, "/submit")
+	request_data = json.dumps(payload).encode("utf-8")
+	request = urllib_Request(
+		submit_url,
+		data=request_data,
+		headers={
+			"content-type": "application/json",
+			"user-agent": "mona-openaiagents/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_body = response.read()
+			body_text = ensure_text(raw_body.decode("utf-8", "replace")) if isinstance(raw_body, bytes_type) else ensure_text(raw_body)
+			body_data = json.loads(body_text) if body_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		raise AIProviderError(
+			"OpenAI Agents bridge HTTP error %s" % str(status_code),
+			status_code=status_code,
+			body={"raw_response": raw_body, "request_url": submit_url},
+			error_type="HTTPError"
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach OpenAI Agents bridge: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}, "request_url": submit_url},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"OpenAI Agents bridge request failed: %s" % str(e),
+			body={"error": {"message": str(e)}, "request_url": submit_url},
+			error_type=e.__class__.__name__
+		)
+	if isinstance(body_data, dict) and body_data.get("accepted", False):
+		return body_data
+	raise AIProviderError(
+		"OpenAI Agents bridge returned an unexpected response payload",
+		body={"raw_response": body_data, "request_url": submit_url},
 		error_type="UnexpectedPayloadError"
 	)
 
@@ -24911,7 +25965,11 @@ def procCleanLog(args):
 							matches = True
 						if thisfile_lc.endswith(".old2"):
 							matches = True
+						if "tellme" in thisfile_lc and thisfile_lc.endswith(".json"):
+							matches = True	
 						if "rop" in thisfile_lc and "progress" in thisfile_lc and thisfile_lc.endswith(".log"):
+							matches = True
+						if "bridge" in thisfile_lc and thisfile_lc.endswith(".log"):
 							matches = True
 						if matches:
 							fullpath = os.path.join(root, thisfile)
@@ -26524,12 +27582,23 @@ class MnAI(object):
 		self.timeout_seconds = 300.0
 		self.timeout_source = "default"
 		self.max_request_kb = 0
-		self.max_tokens = 4096
+		self.max_tokens = 8192
 		self.max_tokens_source = "default"
 		self.api_key = ""
 		self.api_url = ""
 		self.response_field = ""
 		self.api_options = {}
+		self.bridge_python_command = getAIBridgePythonCommand(self.mona_config)
+		self.bridge_python = formatAIBridgePythonCommand(self.bridge_python_command)
+		self.reasoning_effort = "high"
+		self.response_verbosity = "low"
+		self.max_turns = 8
+		self.bridge_script_path = ""
+		self.bridge_output_file_path = ""
+		self.bridge_status_file_path = ""
+		self.bridge_log_file_path = ""
+		self.bridge_raw_request_file_path = ""
+		self.bridge_raw_result_file_path = ""
 		self.question_type = ""
 		self.effective_question_type = ""
 		self.target_address = 0
@@ -26579,6 +27648,18 @@ class MnAI(object):
 				{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
 				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
 				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True, "default": "4096"},
+			]
+		if engine == "openaiagents":
+			return [
+				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "url", "required": False, "env": "OPENAIAGENTS_URL", "show_value": True, "default": "http://127.0.0.1:8765"},
+				{"name": "bridge.python", "required": False, "env": "", "show_value": True, "default": formatAIBridgePythonCommand(getAIBridgePythonCommand(self.mona_config))},
+				{"name": "reasoning_effort", "required": False, "env": "OPENAIAGENTS_REASONING_EFFORT", "show_value": True, "default": "high"},
+				{"name": "verbosity", "required": False, "env": "OPENAIAGENTS_VERBOSITY", "show_value": True, "default": "low"},
+				{"name": "max_turns", "required": False, "env": "OPENAIAGENTS_MAX_TURNS", "show_value": True, "default": "8"},
+				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True, "default": "8192"},
 			]
 		if engine == "anthropic":
 			return [
@@ -26727,7 +27808,7 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine_arg_raw = self.args.get("e", "")
 		if type(engine_arg_raw).__name__.lower() == "bool":
-			self.logError("Please specify an engine value with -e <offline|openai|anthropic|ollama|customai>")
+			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|ollama|customai>")
 			return False
 
 		explicit_engine = _normalizeAIEngine(engine_arg_raw)
@@ -26755,9 +27836,11 @@ class MnAI(object):
 		elif self.engine_source == "default":
 			self.logInfo("No default AI engine is configured. Defaulting to offline mode.")
 		self.logInfo("Selected engine: %s" % self.engine)
-
+		if self.engine == "openaiagents":
+			self.logInfoDetail("[+] The OpenAI Agents engine will briefly validate the external Python bridge environment before submission.")
+			self.logInfoDetail("    You'll briefly see a py.exe window, that's perfectly normal. It should close automatically.")
 		if self.engine not in self.available_engines:
-			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, anthropic, ollama, customai" % self.engine)
+			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openaiagents, anthropic, ollama, customai" % self.engine)
 			return False
 		if self.engine != "offline" and self.engine not in self.available_provider_engines:
 			if self.isDefaultEngineSelection():
@@ -26801,7 +27884,7 @@ class MnAI(object):
 		if self.engine == "offline":
 			self.available_model_ids = []
 			return self.available_model_ids
-		if self.engine in ["openai", "anthropic"] and self.api_key == "":
+		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key == "":
 			self.available_model_ids = []
 			return self.available_model_ids
 		if self.engine == "ollama" and self.api_url == "":
@@ -26814,7 +27897,7 @@ class MnAI(object):
 			timeout_seconds = 20.0
 		try:
 			self.available_model_ids = getAvailableAIModels(
-				self.engine,
+				"openai" if self.engine == "openaiagents" else self.engine,
 				api_key=self.api_key,
 				base_url=self.api_url,
 				timeout_seconds=timeout_seconds,
@@ -26850,15 +27933,29 @@ class MnAI(object):
 		if len(models) == 0:
 			log_func("No provider-visible model IDs were returned.")
 			return
+		log_func("")
 		log_func("Available %s models:" % self.engine)
 		for model_id in models:
 			log_func("  %s" % model_id)
+
+	def tryLogAvailableModelsForMissingModel(self):
+		"""Try to show provider-visible model IDs after a missing-model configuration error."""
+		mndbg.dbgp(get_current_function_name())
+		if self.engine not in ["openai", "openaiagents", "anthropic", "ollama"]:
+			return
+		try:
+			models = self.fetchAvailableModels(refresh=True, log_errors=False)
+		except Exception as e:
+			self.logErrorDetail("Unable to retrieve available %s models." % self.engine)
+			self.logErrorDetail(str(e))
+			return
+		self.logAvailableModels(models=models, error_mode=True)
 
 	def maybePrintAvailableModelsWhenIdle(self):
 		"""When no question profile was supplied, print provider models for configured default engines."""
 		mndbg.dbgp(get_current_function_name())
 		has_provider_config = False
-		if self.engine in ["openai", "anthropic"] and self.api_key != "":
+		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key != "":
 			has_provider_config = True
 		if self.engine == "ollama" and self.api_url != "":
 			has_provider_config = True
@@ -27022,6 +28119,12 @@ class MnAI(object):
 			self.api_key, self.model = getAIModelAndKey(self.engine, self.mona_config)
 			self.api_url = getAIUrl(self.engine, self.mona_config)
 			self.response_field = getAIResponseField(self.engine, self.mona_config)
+			if self.engine == "openaiagents":
+				self.bridge_python_command = getAIBridgePythonCommand(self.mona_config)
+				self.bridge_python = formatAIBridgePythonCommand(self.bridge_python_command)
+				self.reasoning_effort = getAIReasoningEffort(self.engine, self.mona_config)
+				self.response_verbosity = getAIVerbosity(self.engine, self.mona_config)
+				self.max_turns = getAIMaxTurns(self.engine, self.mona_config)
 			mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (self.engine, self.model))
 			if self.api_url != "":
 				mndbg.dbgp("tellme: config url for engine '%s' is '%s'" % (self.engine, self.api_url))
@@ -27078,7 +28181,7 @@ class MnAI(object):
 		if self.offline or self.engine == "offline":
 			return True
 
-		if self.engine in ["openai", "anthropic"] and self.api_key == "":
+		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
 					"No API key was found for the default engine '%s'. Falling back to offline mode." % self.engine,
@@ -27099,17 +28202,15 @@ class MnAI(object):
 			self.logError("Missing required configuration for engine '%s'." % self.engine)
 			self.logEngineConfigHelp("url")
 			return False
+		if self.engine == "openaiagents":
+			if not self.validateOpenAIAgentsBridgeDependencies():
+				return False
 		if self.list_models_requested and self.engine == "ollama":
 			return True
 		if self.model == "":
-			if self.isDefaultEngineSelection():
-				self.switchToOfflineEngine(
-					"No model was configured for the default engine '%s'. Falling back to offline mode." % self.engine,
-					"Set it with '%s config -set %s.model <model>'" % (getAliasName(), self.engine)
-				)
-				return True
 			self.logError("Missing required configuration for engine '%s'." % self.engine)
 			self.logEngineConfigHelp("model")
+			self.tryLogAvailableModelsForMissingModel()
 			return False
 		try:
 			available_models = self.fetchAvailableModels(refresh=False, log_errors=False)
@@ -27298,6 +28399,14 @@ class MnAI(object):
 				self.prompt = buildAIPrompt(self.question_type, context, maxsize_kb=self.max_request_kb)
 			prompt_bytes = len(self.prompt.encode("utf-8")) if isinstance(self.prompt, text_type) else len(self.prompt)
 			self.logInfoDetail("Request size: %.2f KB" % (float(prompt_bytes) / 1024.0))
+			if self.engine == "openaiagents" and self.max_tokens_source == "default":
+				derived_max_tokens, estimated_input_tokens = deriveOpenAIAgentsMaxTokensFromPrompt(self.prompt)
+				self.max_tokens = derived_max_tokens
+				self.max_tokens_source = "derived"
+				self.logInfoDetail("Derived max tokens: %d (estimated input tokens: %d)" % (
+					self.max_tokens,
+					estimated_input_tokens
+				))
 			if self.max_request_kb > 0:
 				self.logInfoDetail("Requested max size: %d KB" % self.max_request_kb)
 			return True
@@ -27433,6 +28542,148 @@ class MnAI(object):
 		)
 		return self.raw_response_logfile_path
 
+	def getOpenAIAgentsBridgePaths(self):
+		"""Resolve stable bridge script/log paths plus unique output/status files for the current request."""
+		mndbg.dbgp(get_current_function_name())
+		if self.request_id == "":
+			self.request_id = generateAIRequestId()
+		self.bridge_script_path = getAbsolutePath("mona_openaiagents_bridge.py")
+		self.bridge_log_file_path = getAbsolutePath("tellme_openaiagents_bridge.log")
+		self.bridge_output_file_path = getAbsolutePath("tellme_response_%s.md" % self.request_id)
+		self.bridge_status_file_path = getAbsolutePath("tellme_%s.status.json" % self.request_id)
+		self.bridge_raw_request_file_path = getAbsolutePath("tellme_%s.bridge_request.json" % self.request_id)
+		self.bridge_raw_result_file_path = getAbsolutePath("tellme_%s.bridge_result.json" % self.request_id)
+		return self.bridge_script_path, self.bridge_log_file_path, self.bridge_output_file_path, self.bridge_status_file_path
+
+	def ensureOpenAIAgentsBridgeScript(self):
+		"""Write the OpenAI Agents bridge helper script to disk."""
+		mndbg.dbgp(get_current_function_name())
+		if self.bridge_script_path == "":
+			self.getOpenAIAgentsBridgePaths()
+		script_text = _getOpenAIAgentsBridgeScriptText()
+		with open(self.bridge_script_path, "wb") as fh:
+			fh.write(script_text.encode("utf-8"))
+		return self.bridge_script_path
+
+	def ensureOpenAIAgentsBridgeRunning(self):
+		"""Start the local OpenAI Agents bridge when it is not already listening."""
+		mndbg.dbgp(get_current_function_name())
+		self.ensureOpenAIAgentsBridgeScript()
+		bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
+		if bridge_ok:
+			return True
+		bridge_host, bridge_port = _getLocalBridgeHostPort(self.api_url)
+		self.logInfo("Starting the OpenAI Agents bridge helper outside the debugger.")
+		self.logInfoDetail("Python    : %s" % self.bridge_python)
+		self.logInfoDetail("Script    : %s" % self.bridge_script_path)
+		self.logInfoDetail("Log       : %s" % self.bridge_log_file_path)
+		launch_command = list(self.bridge_python_command) + [
+			"-u",
+			self.bridge_script_path,
+			"--serve",
+			"--host",
+			bridge_host,
+			"--port",
+			str(bridge_port),
+			"--log-file",
+			self.bridge_log_file_path
+		]
+		try:
+			bridge_pid = mndbg.launchDetachedCommand(launch_command, output_path=self.bridge_log_file_path, redirect_output=False)
+			self.logInfoDetail("PID       : %s" % str(bridge_pid))
+		except Exception as e:
+			self.logError("Unable to launch the OpenAI Agents bridge helper.")
+			self.logErrorDetail(str(e))
+			self.logErrorDetail("Log       : %s" % self.bridge_log_file_path)
+			return False
+		for _ in xrange(0, 20):
+			time.sleep(0.25)
+			bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
+			if bridge_ok:
+				return True
+		self.logError("Unable to start the OpenAI Agents bridge helper.")
+		self.logErrorDetail("Check bridge log for bootstrap errors: %s" % self.bridge_log_file_path)
+		return False
+
+	def validateOpenAIAgentsBridgeDependencies(self):
+		"""Verify that the configured bridge Python can import the non-stdlib modules the bridge requires."""
+		mndbg.dbgp(get_current_function_name())
+		import_check_code = (
+			"import agents\n"
+			"from agents import Agent, Runner, ModelSettings, RunConfig\n"
+			"from openai.types.shared import Reasoning\n"
+			"print('OK')\n"
+		)
+		try:
+			process = subprocess.Popen(
+				list(self.bridge_python_command) + ["-c", import_check_code],
+				stdout=subprocess.PIPE,
+				stderr=subprocess.STDOUT
+			)
+			output_data = process.communicate()[0]
+			output_text = ensure_text(output_data)
+			return_code = process.returncode
+		except Exception as e:
+			self.logError("Unable to validate the OpenAI Agents bridge Python environment.")
+			self.logErrorDetail("Python    : %s" % self.bridge_python)
+			self.logErrorDetail(str(e))
+			return False
+		if return_code != 0:
+			self.logError("The configured OpenAI Agents bridge Python environment is missing required libraries.")
+			self.logErrorDetail("Python    : %s" % self.bridge_python)
+			self.logErrorDetail("It must be able to import: agents, Agent/Runner/ModelSettings/RunConfig, and openai.types.shared.Reasoning")
+			for output_line in output_text.split("\n"):
+				output_line = output_line.strip()
+				if output_line != "":
+					self.logErrorDetail(output_line)
+			return False
+		return True
+
+	def submitOpenAIAgentsBridgeJob(self):
+		"""Queue the current request for asynchronous execution via the local OpenAI Agents bridge."""
+		mndbg.dbgp(get_current_function_name())
+		self.getOpenAIAgentsBridgePaths()
+		if not self.ensureOpenAIAgentsBridgeRunning():
+			return self.response
+		bridge_payload = {
+			"request_id": self.request_id,
+			"api_key": self.api_key,
+			"model": self.model,
+			"prompt": self.prompt,
+			"output_file": self.bridge_output_file_path,
+			"status_file": self.bridge_status_file_path,
+			"raw_request_file": self.bridge_raw_request_file_path,
+			"raw_result_file": self.bridge_raw_result_file_path,
+			"question_type": self.question_type,
+			"template_file": self.template_file,
+			"target_address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
+			"target_address_source": self.target_address_source,
+			"reasoning_effort": self.reasoning_effort,
+			"verbosity": self.response_verbosity,
+			"max_turns": self.max_turns,
+			"max_tokens": self.max_tokens
+		}
+		try:
+			bridge_response = submitOpenAIAgentsBridgeRequest(self.api_url, bridge_payload, timeout_seconds=min(self.timeout_seconds, 10.0))
+		except Exception as e:
+			logAIProviderError(self.engine, e)
+			return self.response
+		self.writeRequestLog(request_id=self.request_id)
+		self.response = "The OpenAI Agents bridge accepted the request and will write the result to %s." % self.bridge_output_file_path
+		dbg.log("")
+		self.logInfo("OpenAI Agents bridge request accepted.")
+		self.logInfoDetail("Request id : %s" % self.request_id)
+		self.logInfoDetail("Bridge URL : %s" % self.api_url)
+		self.logInfoDetail("Status     : %s" % ensure_text(bridge_response.get("status", "queued")).strip())
+		self.logInfoDetail("Request    : %s" % self.request_logfile_path)
+		self.logInfoDetail("Output     : %s" % self.bridge_output_file_path)
+		self.logInfoDetail("Status file: %s" % self.bridge_status_file_path)
+		self.logInfoDetail("Raw request: %s" % self.bridge_raw_request_file_path)
+		self.logInfoDetail("Raw result : %s" % self.bridge_raw_result_file_path)
+		self.logInfoDetail("Bridge log : %s" % self.bridge_log_file_path)
+		self.logInfoDetail("The bridge runs outside the debugger and waits for the final result there.")
+		return self.response
+
 	def handleUnexpectedPayloadFallback(self, err):
 		"""Preserve raw provider output when text extraction fails instead of treating it as a hard error."""
 		mndbg.dbgp(get_current_function_name())
@@ -27472,7 +28723,7 @@ class MnAI(object):
 		self.writeRequestLog()
 		if self.submit_requested:
 			self.logInfo("AI submission confirmed via -submit")
-		elif not askForConfirmation("[?] Submit this request to AI using %s model '<b>%s</b>'?" % (self.engine, self.model), default="N"):
+		elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
 			self.response = ""
 			self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
 			if self.request_logfile_path != "":
@@ -27480,6 +28731,11 @@ class MnAI(object):
 			return self.response
 		elif not self.reloadPromptFromRequestLog():
 			return self.response
+
+		if self.engine == "openaiagents":
+			if self.request_id == "":
+				self.request_id = generateAIRequestId()
+			return self.submitOpenAIAgentsBridgeJob()
 
 		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
 		self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
@@ -27494,12 +28750,19 @@ class MnAI(object):
 			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
 
 		max_attempts = 5
+		retry_timeout_increment = min(self.timeout_seconds, 120.0)
 		self.response = ""
 		self.request_id = ""
 		for attempt in xrange(1, max_attempts + 1):
-			attempt_timeout = self.timeout_seconds + ((attempt - 1) * 120.0)
+			attempt_timeout = self.timeout_seconds + ((attempt - 1) * retry_timeout_increment)
+			timeout_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=attempt_timeout)
 			dbg.log("")
-			self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
+			self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs, expires at %s)" % (
+				self.engine,
+				attempt,
+				attempt_timeout,
+				timeout_expires_at.strftime("%Y-%m-%d %H:%M:%S")
+			))
 			try:
 				if self.engine == "openai":
 					if openai_use_http_fallback:
@@ -27549,12 +28812,13 @@ class MnAI(object):
 				logAIProviderError(self.engine, e)
 				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
 					return self.response
-				next_timeout = self.timeout_seconds + (attempt * 120.0)
+				next_timeout = self.timeout_seconds + (attempt * retry_timeout_increment)
 				retry_sleep_seconds = 10
 				self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
 					retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
 				))
 				time.sleep(retry_sleep_seconds)
+				interruptMona()
 
 		if self.request_id:
 			self.logInfoDetail("Request id: %s" % self.request_id)
@@ -35823,6 +37087,7 @@ Optional arguments:
 	Supported engines:
 	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
 	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
+	    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
 	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
     - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; if you provide only a base URL, mona will use the native /api/generate path)
     - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
@@ -35836,6 +37101,15 @@ Configuration:
 	       __LAUNCHCMD__ config -set openai.model gpt-5-mini
 	       __LAUNCHCMD__ config -set openai.timeout 300
 	       __LAUNCHCMD__ config -set openai.max_tokens 4096
+	       __LAUNCHCMD__ config -set mona.ai.engine openaiagents
+	       __LAUNCHCMD__ config -set openaiagents.key <your OpenAI API key>
+	       __LAUNCHCMD__ config -set openaiagents.model gpt-5-mini
+	       __LAUNCHCMD__ config -set openaiagents.url http://127.0.0.1:8765
+	       __LAUNCHCMD__ config -set openaiagents.bridge.python py -3.14
+	       __LAUNCHCMD__ config -set openaiagents.reasoning_effort high
+	       __LAUNCHCMD__ config -set openaiagents.verbosity low
+	       __LAUNCHCMD__ config -set openaiagents.max_turns 8
+	       __LAUNCHCMD__ config -set openaiagents.max_tokens 8192
 	       __LAUNCHCMD__ config -set mona.ai.engine anthropic
        __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
        __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
@@ -35863,6 +37137,10 @@ Configuration:
 	       - OPENAI_MODEL
 	       - OPENAI_TIMEOUT
 	       - OPENAI_MAX_TOKENS
+	       - OPENAIAGENTS_URL
+	       - OPENAIAGENTS_REASONING_EFFORT
+	       - OPENAIAGENTS_VERBOSITY
+	       - OPENAIAGENTS_MAX_TURNS
 	       - ANTHROPIC_API_KEY
        - ANTHROPIC_MODEL
        - ANTHROPIC_TIMEOUT
@@ -35889,13 +37167,18 @@ Precedence:
     -offline still overrules a configured default engine for that one request
 	Default models:
 	    - OpenAI   : gpt-5-mini
+	    - OpenAIAgents: gpt-5-mini
 	    - Anthropic: claude-sonnet-4-6
     - Ollama   : none, must be configured
     - CustomAI : none, must be configured
 
 Default timeout:
-    - 300 seconds per request
-    - Retries add 120 seconds each time
+    - 300 seconds base timeout per request
+    - q3 adds 30 seconds when no explicit timeout override is set
+    - On timeout, tellme retries up to 5 attempts total
+    - Each retry adds 120 seconds to the timeout and waits 10 seconds before retrying
+    - openaiagents derives a default max_tokens budget from request size when no explicit value is set
+      The derived budget uses a floor of 8192 and a cap of 24576
     - For ollama or other local/self-hosted engines, increase the timeout to match the speed of the model and hardware.
       Larger local models often need 300 seconds or more.
 
@@ -35910,19 +37193,25 @@ Official model docs:
     - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
 	Arguments:
-		    -e  <engine> : AI engine to use: offline, openai, anthropic, ollama, or customai.
+		    -e  <engine> : AI engine to use: offline, openai, openaiagents, anthropic, ollama, or customai.
 	                   If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
 	                   and otherwise defaults to offline.
 	                   If the selected default engine has no required configuration or model configured,
 	                   tellme also falls back to offline
 	                   If you omit -q and a provider engine is configured, tellme prints
 	                   the available models visible to that provider configuration instead of submitting a request
+	                   openaiagents briefly validates the external bridge Python environment before submission
+	                   openaiagents launches a persistent localhost bridge outside the debugger and queues the job there
 	                   For ollama/customai, a key is not required; those engines use <engine>.url instead
 	                   Engine-specific request options can be configured generically via <engine>.options.*
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
-	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
+	    -timeout <s> : Optional base timeout in seconds for each provider request attempt
+	                   Use this when larger prompts or slower models time out
+	                   Timeout retries are attempted up to 5 times total
+	                   Each timeout retry adds 120 seconds and waits 10 seconds before resubmitting
 	                   For ollama and other local/self-hosted engines, you may need to increase this in line with
 	                   the performance of the local model and hardware
+	                   For openaiagents response truncation, increase openaiagents.max_tokens or OPENAI_MAX_TOKENS
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
 	                   For ollama/customai response parsing, configure <engine>.response_field if the returned text is nested in JSON
 	    -maxsize <kb>: Optional q1 request-size target in kilobytes. By default, tellme keeps the larger evidence set
@@ -35978,6 +37267,7 @@ Official model docs:
 	    __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
 	    __LAUNCHCMD__ tellme -e customai -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
+	    __LAUNCHCMD__ tellme -e openaiagents -q 1 -submit
 	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
 	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
