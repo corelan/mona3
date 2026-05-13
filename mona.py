@@ -3481,14 +3481,15 @@ def _importOpenAIAgents():
 		import agents as agents_module
 		from agents import Agent as openai_agent_class
 		from agents import Runner as openai_agent_runner_class
+		from agents import RunConfig as openai_agent_run_config_class
 		agents_version = getattr(agents_module, "__version__", "").strip()
 		if agents_version == "":
 			agents_version = "unknown"
 		dbg.log("[+] Loading OpenAI Agents SDK...")
 		dbg.log("    OpenAI Agents SDK version: %s" % agents_version)
-		return openai_agent_class, openai_agent_runner_class, agents_version, ""
+		return openai_agent_class, openai_agent_runner_class, openai_agent_run_config_class, agents_version, ""
 	except Exception:
-		return None, None, "", traceback.format_exc()
+		return None, None, None, "", traceback.format_exc()
 
 
 def getAITimeout(engine, mona_config, args=None):
@@ -5350,7 +5351,7 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		raise RuntimeError("OpenAI returned an empty or unexpected response payload")
 
 
-def callAIOpenAIAgent(agent_class, runner_class, api_key, model, prompt, timeout_seconds=60.0, options=None):
+def callAIOpenAIAgent(agent_class, runner_class, run_config_class, api_key, model, prompt, timeout_seconds=60.0, options=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI Agents SDK model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	previous_api_key = os.environ.get("OPENAI_API_KEY", None)
@@ -5362,7 +5363,16 @@ def callAIOpenAIAgent(agent_class, runner_class, api_key, model, prompt, timeout
 			instructions="You are a helpful exploit development and WinDBG analysis assistant.",
 			model=model
 		)
-		result = runner_class.run_sync(agent, prompt)
+		run_config = None
+		if run_config_class is not None:
+			try:
+				run_config = run_config_class(tracing_disabled=True)
+			except Exception:
+				run_config = None
+		if run_config is None:
+			result = runner_class.run_sync(agent, prompt)
+		else:
+			result = runner_class.run_sync(agent, prompt, run_config=run_config)
 		final_output = getattr(result, "final_output", "")
 		if not isinstance(final_output, text_type):
 			final_output = _coerceAITextValue(final_output)
@@ -26913,7 +26923,7 @@ class MnAI(object):
 			return False
 
 		if self.engine == "openai-agents":
-			openai_agent_class, openai_agent_runner_class, _agents_version, openai_agent_import_error = _importOpenAIAgents()
+			openai_agent_class, openai_agent_runner_class, _openai_agent_run_config_class, _agents_version, openai_agent_import_error = _importOpenAIAgents()
 			if openai_agent_class is None or openai_agent_runner_class is None:
 				if self.isDefaultEngineSelection():
 					self.switchToOfflineEngine(
@@ -27202,14 +27212,15 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		openai_agent_class = None
 		openai_agent_runner_class = None
+		openai_agent_run_config_class = None
 		openai_agent_import_error = ""
 		if self.engine == "openai-agents":
-			openai_agent_class, openai_agent_runner_class, _agents_version, openai_agent_import_error = _importOpenAIAgents()
+			openai_agent_class, openai_agent_runner_class, openai_agent_run_config_class, _agents_version, openai_agent_import_error = _importOpenAIAgents()
 			if openai_agent_class is None or openai_agent_runner_class is None:
 				self.logError("OpenAI Agents SDK import failed.")
 				self.logErrorDetail("Python executable: %s" % sys.executable)
 				self.logErrorDetail("OpenAI Agents import error: %s" % openai_agent_import_error.splitlines()[-1])
-		return openai_agent_class, openai_agent_runner_class
+		return openai_agent_class, openai_agent_runner_class, openai_agent_run_config_class
 
 	def writeRequestLog(self, request_id=""):
 		"""Write the outgoing request to disk and remember the generated file path."""
@@ -27270,9 +27281,10 @@ class MnAI(object):
 			return self.response
 
 		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
-		openai_agent_class, openai_agent_runner_class = self.getOpenAIAgentRequestMode()
+		openai_agent_class, openai_agent_runner_class, openai_agent_run_config_class = self.getOpenAIAgentRequestMode()
 		if self.engine == "openai-agents" and (openai_agent_class is None or openai_agent_runner_class is None):
 			return self.response
+
 		self.logInfo("Asking %s model '%s' using question profile %s" % (self.engine, self.model, self.question_type))
 		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
 		if self.engine in ["ollama", "customai"] and self.api_url != "":
@@ -27307,6 +27319,7 @@ class MnAI(object):
 					self.response, self.request_id = callAIOpenAIAgent(
 						openai_agent_class,
 						openai_agent_runner_class,
+						openai_agent_run_config_class,
 						self.api_key,
 						self.model,
 						self.prompt,
