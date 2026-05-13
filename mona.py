@@ -3700,6 +3700,51 @@ def _logAnthropicError(err):
 	_logProviderErrorDetails("Anthropic", payload)
 
 
+def _logOllamaError(err):
+	mndbg.dbgp(get_current_function_name())
+	payload = _extractProviderErrorPayload(err)
+	message = _getProviderErrorMessage(err)
+	err_cls = err.__class__.__name__
+	status_code = payload.get("status_code", None)
+	err_marker = (err_cls + " " + message).lower()
+
+	if "connection" in err_marker or "unable to reach ollama api" in err_marker or "urlerror" in err_marker:
+		dbg.log("[!] Ollama request failed: connection error", highlight=1)
+		dbg.log("    Check internet access, firewall settings, and whether the Ollama endpoint is reachable.", highlight=1)
+	elif "timeout" in err_marker or "timed out" in err_marker:
+		dbg.log("[!] Ollama request failed: timeout", highlight=1)
+		dbg.log("    The request took too long. Increase -timeout for slower local/self-hosted models.", highlight=1)
+	elif isinstance(status_code, int):
+		dbg.log("[!] Ollama request failed: HTTP %d" % status_code, highlight=1)
+	else:
+		dbg.log("[!] Ollama request failed", highlight=1)
+
+	if message:
+		dbg.log("    Message       : %s" % message, highlight=1)
+	if "body" in payload:
+		body = payload.get("body")
+		if isinstance(body, dict):
+			request_url = ensure_text(body.get("request_url", "")).strip()
+			request_mode = ensure_text(body.get("request_mode", "")).strip()
+			response_field = ensure_text(body.get("response_field", "")).strip()
+			response_keys = body.get("response_keys", [])
+			response_preview = ensure_text(body.get("response_preview", "")).strip()
+			if request_mode != "":
+				dbg.log("    Mode          : %s" % request_mode, highlight=1)
+			if request_url != "":
+				dbg.log("    URL           : %s" % request_url, highlight=1)
+			if response_field != "":
+				dbg.log("    Response path : %s" % response_field, highlight=1)
+			if isinstance(response_keys, list) and len(response_keys) > 0:
+				dbg.log("    Response keys : %s" % ", ".join(response_keys), highlight=1)
+			if response_preview != "":
+				dbg.log("    Response body : %s" % response_preview, highlight=1)
+		else:
+			body_preview = _previewAIResponseBody(body)
+			if body_preview != "":
+				dbg.log("    Response body : %s" % body_preview, highlight=1)
+
+
 def logAIProviderError(engine, err):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: formatting provider error for engine '%s'" % engine)
@@ -3716,6 +3761,13 @@ def logAIProviderError(engine, err):
 			return
 		except Exception:
 			mndbg.dbgp("tellme: Anthropic error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
+
+	if engine == "ollama":
+		try:
+			_logOllamaError(err)
+			return
+		except Exception:
+			mndbg.dbgp("tellme: Ollama error formatter failed:\n%s" % traceback.format_exc(), errormode=False)
 
 	dbg.log("[!] %s request failed" % engine.capitalize(), highlight=1)
 	dbg.log("    Message       : %s" % _getProviderErrorMessage(err), highlight=1)
@@ -3794,12 +3846,68 @@ def _coerceAITextValue(value):
 	return ""
 
 
+def _captureAIRawResponse(value):
+	mndbg.dbgp(get_current_function_name())
+	if isinstance(value, (dict, list)):
+		return value
+	if isinstance(value, text_type):
+		return value
+	if isinstance(value, bytes_type):
+		return ensure_text(value)
+	for attr_name in ["model_dump", "to_dict", "dict"]:
+		try:
+			converter = getattr(value, attr_name, None)
+			if converter is None:
+				continue
+			converted = converter()
+			if isinstance(converted, (dict, list, text_type)):
+				return converted
+		except Exception:
+			pass
+	try:
+		return str(value)
+	except Exception:
+		return "<unprintable>"
+
+
+def _previewAIResponseBody(value, max_len=800):
+	mndbg.dbgp(get_current_function_name())
+	try:
+		if isinstance(value, (dict, list)):
+			text = json.dumps(value, sort_keys=True)
+		else:
+			text = ensure_text(value)
+	except Exception:
+		try:
+			text = str(value)
+		except Exception:
+			text = "<unprintable>"
+	text = text.strip()
+	if len(text) > max_len:
+		return text[:max_len] + "... <truncated>"
+	return text
+
+
 def formatAIResponseLines(answer):
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	for raw_line in answer.splitlines():
 		lines.append(raw_line.replace("\t", "    ").rstrip())
 	return lines
+
+
+def _renderAIRawPayloadText(raw_payload):
+	mndbg.dbgp(get_current_function_name())
+	if isinstance(raw_payload, dict) and "raw_response" in raw_payload and len(raw_payload.keys()) == 1:
+		raw_payload = raw_payload.get("raw_response")
+	if isinstance(raw_payload, (dict, list)):
+		try:
+			return json.dumps(raw_payload, indent=2, sort_keys=True)
+		except Exception:
+			return _previewAIResponseBody(raw_payload, max_len=0x100000)
+	if isinstance(raw_payload, bytes_type):
+		return ensure_text(raw_payload)
+	return ensure_text(raw_payload)
 
 
 def _renderRegistersText():
@@ -4977,6 +5085,30 @@ def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lin
 	return thislog
 
 
+def writeAIRawResponseLog(engine, model, question_type, request_id, raw_payload, template_file="", target_address=0, target_address_source=""):
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: writing raw AI response to tellme_response_raw.md")
+	logfile = MnLog("tellme_response_raw.md")
+	thislog = logfile.reset()
+	logfile.write("AI engine : %s" % engine, thislog)
+	logfile.write("Model     : %s" % model, thislog)
+	logfile.write("Question  : %s" % question_type, thislog)
+	if request_id:
+		logfile.write("Request id: %s" % request_id, thislog)
+	if template_file != "":
+		logfile.write("Template  : %s" % template_file, thislog)
+	if isinstance(target_address, int) and target_address > 0:
+		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
+		if target_address_source != "":
+			logfile.write("Target src: %s" % target_address_source, thislog)
+	logfile.write("", thislog)
+	logfile.write("Raw AI response:", thislog)
+	logfile.write("----------------", thislog)
+	for line in _renderAIRawPayloadText(raw_payload).splitlines():
+		logfile.write(line.replace("\t", "    "), thislog)
+	return thislog
+
+
 def writeAIOfflineLog(engine, model, question_type, prompt, template_file="", target_address=0, target_address_source=""):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: writing offline prompt to tellme_request.txt")
@@ -5055,8 +5187,13 @@ def _fetchOpenAIModelsDirect(api_key, timeout_seconds=20.0):
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
 			raw_response = response.read()
-			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
-			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			if isinstance(raw_response, dict):
+				response_data = raw_response
+			elif isinstance(raw_response, list):
+				response_data = raw_response
+			else:
+				response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
 		finally:
 			try:
 				response.close()
@@ -5131,8 +5268,13 @@ def _fetchAnthropicModelsDirect(api_key, timeout_seconds=20.0):
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
 			raw_response = response.read()
-			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
-			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			if isinstance(raw_response, dict):
+				response_data = raw_response
+			elif isinstance(raw_response, list):
+				response_data = raw_response
+			else:
+				response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
 		finally:
 			try:
 				response.close()
@@ -5302,7 +5444,12 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 	try:
 		return str(response.output[0].content[0].text), request_id
 	except Exception:
-		raise RuntimeError("OpenAI returned an empty or unexpected response payload")
+		raise AIProviderError(
+			"OpenAI returned an empty or unexpected response payload",
+			request_id=request_id,
+			body={"raw_response": _captureAIRawResponse(response)},
+			error_type="UnexpectedPayloadError"
+		)
 
 
 def _extractOpenAIText(response_data):
@@ -5419,7 +5566,12 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 	text = _extractOpenAIText(response_data)
 	if text:
 		return text, request_id
-	raise RuntimeError("OpenAI returned an empty or unexpected response payload")
+	raise AIProviderError(
+		"OpenAI returned an empty or unexpected response payload",
+		request_id=request_id,
+		body={"raw_response": response_data},
+		error_type="UnexpectedPayloadError"
+	)
 
 
 def _anthropic_extract_text(message):
@@ -5545,7 +5697,12 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 	text = _anthropic_extract_text(message)
 	if text:
 		return text, response_id
-	raise RuntimeError("Anthropic returned an empty or unexpected response payload")
+	raise AIProviderError(
+		"Anthropic returned an empty or unexpected response payload",
+		request_id=response_id,
+		body={"raw_response": message},
+		error_type="UnexpectedPayloadError"
+	)
 
 
 def _extractCustomAIText(response_data, response_field=""):
@@ -5617,8 +5774,13 @@ def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
 			raw_response = response.read()
-			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
-			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			if isinstance(raw_response, dict):
+				response_data = raw_response
+			elif isinstance(raw_response, list):
+				response_data = raw_response
+			else:
+				response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
 		finally:
 			try:
 				response.close()
@@ -5666,13 +5828,38 @@ def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="
 	effective_response_field = response_field
 	if not use_native_generate and response_field == "response":
 		effective_response_field = ""
-	text = _extractCustomAIText(response_data, response_field=effective_response_field)
+	if not use_native_generate:
+		if effective_response_field != "":
+			text = _extractCustomAIText(response_data, response_field=effective_response_field)
+		else:
+			text = _extractOpenAIText(response_data)
+			if text == "":
+				text = _extractCustomAIText(response_data, response_field="")
+	else:
+		text = _extractCustomAIText(response_data, response_field=effective_response_field)
 	if text:
 		response_id = ""
 		if isinstance(response_data, dict):
 			response_id = ensure_text(response_data.get("id", "")).strip()
 		return text, response_id
-	raise RuntimeError("Ollama returned an empty or unexpected response payload")
+	response_keys = []
+	if isinstance(response_data, dict):
+		try:
+			response_keys = sorted([ensure_text(k) for k in response_data.keys()])
+		except Exception:
+			response_keys = []
+	raise AIProviderError(
+		"Ollama returned an empty or unexpected response payload",
+		body={
+			"raw_response": response_data,
+			"request_url": request_url,
+			"request_mode": "native_generate" if use_native_generate else "openai_responses",
+			"response_field": effective_response_field,
+			"response_keys": response_keys,
+			"response_preview": _previewAIResponseBody(response_data)
+		},
+		error_type="UnexpectedPayloadError"
+	)
 
 
 def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="", options=None):
@@ -5762,7 +5949,12 @@ def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="
 	text = _extractCustomAIText(response_data, response_field=response_field)
 	if text:
 		return text, request_id
-	raise RuntimeError("CustomAI returned an empty or unexpected response payload")
+	raise AIProviderError(
+		"CustomAI returned an empty or unexpected response payload",
+		request_id=request_id,
+		body={"raw_response": response_data, "response_field": response_field},
+		error_type="UnexpectedPayloadError"
+	)
 
 
 def _ord(x):
@@ -26281,6 +26473,7 @@ class MnAI(object):
 		self.offline = False
 		self.submit_requested = ("submit" in self.args)
 		self.testmode = ("test" in self.args)
+		self.list_models_requested = False
 		self.question_profile_missing = False
 		self.model = getDefaultAIModel("openai")
 		self.timeout_seconds = 60.0
@@ -26311,6 +26504,7 @@ class MnAI(object):
 		self.request_id = ""
 		self.request_logfile_path = ""
 		self.response_logfile_path = ""
+		self.raw_response_logfile_path = ""
 		self.offline_logfile_path = ""
 		self.available_model_ids = []
 
@@ -26635,6 +26829,26 @@ class MnAI(object):
 		self.logInfo("No AI request was submitted.")
 		self.logAvailableModels(models=models, error_mode=False)
 
+	def printAvailableModelsOnDemand(self):
+		"""Print provider models when explicitly requested via a model-list shortcut."""
+		mndbg.dbgp(get_current_function_name())
+		if not self.list_models_requested:
+			return False
+		if self.offline or self.engine == "offline":
+			self.logInfo("No AI request was submitted.")
+			self.logInfoDetail("Model listing is not available in offline mode.")
+			return True
+		try:
+			models = self.fetchAvailableModels(refresh=True, log_errors=False)
+		except Exception as e:
+			self.logError("Unable to retrieve available %s models." % self.engine)
+			self.logErrorDetail(str(e))
+			return True
+		dbg.log("")
+		self.logInfo("No AI request was submitted.")
+		self.logAvailableModels(models=models, error_mode=False)
+		return True
+
 	def validateCpbArgument(self):
 		"""Validate -cpb syntax early so tellme does not continue with a silently ignored badchar filter."""
 		mndbg.dbgp(get_current_function_name())
@@ -26789,8 +27003,10 @@ class MnAI(object):
 
 		if "model" in self.args:
 			if type(self.args["model"]).__name__.lower() == "bool":
-				self.logError("Please specify a model value with -model <id>")
-				return False
+				self.list_models_requested = True
+				self.question_profile_missing = True
+				self.logInfo("No model ID was supplied with -model. Listing available models instead.")
+				return True
 			explicit_model = str(self.args["model"]).strip()
 			if explicit_model != "":
 				self.model = explicit_model
@@ -27130,6 +27346,40 @@ class MnAI(object):
 		)
 		return ai_response_lines, self.response_logfile_path
 
+	def writeRawResponseLog(self, raw_payload):
+		"""Write the unparsed provider payload to disk for later inspection."""
+		mndbg.dbgp(get_current_function_name())
+		self.raw_response_logfile_path = writeAIRawResponseLog(
+			self.engine,
+			self.model,
+			self.question_type,
+			self.request_id,
+			raw_payload,
+			template_file=self.template_file,
+			target_address=self.target_address,
+			target_address_source=self.target_address_source
+		)
+		return self.raw_response_logfile_path
+
+	def handleUnexpectedPayloadFallback(self, err):
+		"""Preserve raw provider output when text extraction fails instead of treating it as a hard error."""
+		mndbg.dbgp(get_current_function_name())
+		if ensure_text(getattr(err, "type", "")).strip() != "UnexpectedPayloadError":
+			return False
+		raw_payload = getattr(err, "body", None)
+		if raw_payload in [None, ""]:
+			raw_payload = {"error": {"message": _getProviderErrorMessage(err)}}
+		if getattr(err, "request_id", ""):
+			self.request_id = err.request_id
+		self.writeRawResponseLog(raw_payload)
+		self.response = (
+			"The provider returned a response in an unexpected format.\n"
+			"The raw response was saved to %s." % self.raw_response_logfile_path
+		)
+		self.logInfo("The provider returned a response, but its format was not recognized.")
+		self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
+		return True
+
 	def request(self, question_type=None, prompt=None):
 		"""Send the prepared request or save it offline, and keep the response text on the instance."""
 		mndbg.dbgp(get_current_function_name())
@@ -27174,8 +27424,10 @@ class MnAI(object):
 		self.request_id = ""
 		for attempt in xrange(1, max_attempts + 1):
 			attempt_timeout = self.timeout_seconds
-			if self.timeout_source == "default":
-				attempt_timeout = self.timeout_seconds + ((attempt - 1) * 10.0)
+			if attempt == 2:
+				attempt_timeout = self.timeout_seconds + 20.0
+			elif attempt >= 3:
+				attempt_timeout = self.timeout_seconds + 30.0
 			dbg.log("")
 			self.logInfoDetail("Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
 			try:
@@ -27222,21 +27474,20 @@ class MnAI(object):
 					max_attempts,
 					traceback.format_exc()
 				), errormode=False)
+				if self.handleUnexpectedPayloadFallback(e):
+					break
 				logAIProviderError(self.engine, e)
 				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
 					return self.response
 				next_timeout = self.timeout_seconds
 				retry_sleep_seconds = 10
-				if self.timeout_source == "default":
-					next_timeout = self.timeout_seconds + (attempt * 10.0)
-					retry_sleep_seconds = attempt * 10
-					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
-						retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
-					))
-				else:
-					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d)" % (
-						retry_sleep_seconds, attempt + 1, max_attempts
-					))
+				if attempt + 1 == 2:
+					next_timeout = self.timeout_seconds + 20.0
+				elif attempt + 1 >= 3:
+					next_timeout = self.timeout_seconds + 30.0
+				self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
+					retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
+				))
 				time.sleep(retry_sleep_seconds)
 
 		if self.request_id:
@@ -27253,6 +27504,8 @@ class MnAI(object):
 			dbg.log("")
 			self.logInfoDetail("Request saved to %s" % self.request_logfile_path)
 			self.logInfoDetail("Response saved to %s" % self.response_logfile_path)
+			if self.raw_response_logfile_path != "":
+				self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
 		return self.response
 
 	def execute(self):
@@ -27265,6 +27518,8 @@ class MnAI(object):
 		if not self.parseRequestSettings():
 			return ""
 		if not self.validateProviderConfiguration():
+			return ""
+		if self.printAvailableModelsOnDemand():
 			return ""
 		if not self.parseQuestionProfile():
 			self.maybePrintAvailableModelsWhenIdle()
@@ -35503,7 +35758,7 @@ Optional arguments:
 	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
 	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
 	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
-    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL/base URL)
+    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; if you provide only a base URL, mona will use the native /api/generate path)
     - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
 
 Configuration:
@@ -35525,6 +35780,9 @@ Configuration:
        __LAUNCHCMD__ config -set ollama.model llama3
        __LAUNCHCMD__ config -set ollama.timeout 90
        __LAUNCHCMD__ config -set ollama.response_field response
+       Use /v1/responses when your Ollama endpoint exposes the OpenAI-style Responses API.
+       Use http://127.0.0.1:11434/api/generate if you want to force the native Ollama generate API.
+       A plain base URL such as http://127.0.0.1:11434 also works and will be treated as native Ollama.
        __LAUNCHCMD__ config -set mona.ai.engine customai
        __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
        __LAUNCHCMD__ config -set customai.model llama3
@@ -35571,6 +35829,8 @@ Precedence:
 
 Default timeout:
     - 60 seconds per request
+    - For ollama or other local/self-hosted engines, increase the timeout to match the speed of the model and hardware.
+      Larger local models often need 90-300 seconds or more.
 
 	Common models:
 	    - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
@@ -35594,6 +35854,8 @@ Official model docs:
 	                   Engine-specific request options can be configured generically via <engine>.options.*
 	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
 	    -timeout <s> : Optional per-request timeout in seconds. Use this when larger prompts or slower models time out
+	                   For ollama and other local/self-hosted engines, you may need to increase this in line with
+	                   the performance of the local model and hardware
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
 	                   For ollama/customai response parsing, configure <engine>.response_field if the returned text is nested in JSON
 	    -maxsize <kb>: Optional q1 request-size target in kilobytes. By default, tellme keeps the larger evidence set
@@ -35641,6 +35903,8 @@ Official model docs:
 	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/v1/responses
 	    __LAUNCHCMD__ config -set ollama.model llama3
 	    __LAUNCHCMD__ tellme -e ollama -q 1
+	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
+	    __LAUNCHCMD__ tellme -e ollama -q 1 -timeout 180
 	    __LAUNCHCMD__ config -set mona.ai.engine customai
 	    __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
 	    __LAUNCHCMD__ config -set customai.model llama3
