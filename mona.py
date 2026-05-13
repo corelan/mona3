@@ -3472,7 +3472,7 @@ def _importOpenAI():
 def getAITimeout(engine, mona_config, args=None):
 	mndbg.dbgp(get_current_function_name())
 	timeout_name = "%s.timeout" % engine
-	timeout = 60.0
+	timeout = 300.0
 	timeout_source = "default"
 	timeout_raw = mona_config.get(timeout_name).strip()
 	if timeout_raw != "":
@@ -4745,9 +4745,9 @@ def _buildRequestPayload(mode, question_type, variables, template_text="", templ
 def _getProfileInstructions(question_type):
 	mndbg.dbgp(get_current_function_name())
 	if question_type == "1":
-		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return """You are an expert in analysing and understanding various memory corruptions (stack and heap) in Windows applications. You are skilled in assembly language, reverse engineering, and analyzing debugger snapshots from mona.py running under WinDBG.
 Focus on crash triage and immediate exploit-relevant observations.
-Use the entries under 'variables' as the debugger context. Ignore low-value variables unless they materially affect the conclusion.
+Use the entries under 'variables' as the debugger context. Prioritize registers, program_counter, pc_disasm, pc_page, pc_module, stack_memory, findmsp, seh_chain, windbg_analyze, instruction_heap_references, heap_details, and heapdynamics. Ignore low-value variables unless they materially affect the conclusion.
 Be concise. Summarize evidence instead of transcribing debugger output, and cite only the registers, instructions, operands, stack entries, chunks, offsets, or log lines that support the conclusion.
 Answer in this order:
 1. most likely crash cause and confidence
@@ -4756,14 +4756,14 @@ Answer in this order:
 4. whether the issue is more consistent with stack corruption, heap corruption, or another bug class; for heap-like cases, name the best-fit heap bug class or say the data is insufficient
 5. exploit-relevant primitives or controls that are present, partial, or absent
 Treat windbg_analyze, windbg_analyze_mini, and windbg_analyze_full as heuristic evidence that must be validated against the raw debugger state.
-Use findmsp and seh_chain together to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, and stack pointers.
+If findmsp output is available, use it directly. Call out the exact offsets, which registers are overwritten or controlled, which registers or pointers land inside the cyclic pattern, what offset ESP points to, and what that implies for saved return pointer control, stack pivot potential, or follow-on exploitability. Use findmsp and seh_chain together to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, and stack pointers.
 For heap-like crashes, inspect the crash operands, instruction_heap_references, heap_details, referenced-register pointer dumps, and heapdynamics or heapdynamics_mini. Use heapdynamics_full only when broader alloc/free context is needed.
 Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis.
 Do not invent facts. Be explicit about uncertainty and keep the answer practical."""
 	if question_type == "2":
-		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on what the function does, not on crash triage.
-Use the entries under 'variables' as the debugger context. Ignore variables that are not useful and briefly say why only when that matters.
+		return """You are an expert in assembly analysis, reverse engineering, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
+Focus on understanding, reconstructing, and explaining what the function does from assembly and debugger evidence, not on crash triage.
+Use the entries under 'variables' as the debugger context. Prioritize function_analyses, analysis_target, registers, modules, architecture, pointer_size, and any supplied additional_context_files or poc_file that clarify the code path. Ignore variables that are not useful and briefly say why only when that matters.
 Be concise. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, or pseudocode fragments that support the conclusion.
 Analyze function_analyses in order. The live %s function is primary. If a second entry sourced from -a is present and not marked as duplicate, analyze that function too.
 For each analyzed function, cover:
@@ -4984,6 +4984,51 @@ def _extractPrebuiltPrompt(template_path):
 			return trimmed
 
 	return ""
+
+
+def _extractPromptBlockFromSavedRequestText(request_text):
+	mndbg.dbgp(get_current_function_name())
+	lines = ensure_text(request_text).splitlines()
+	prompt_begin = -1
+	prompt_end = -1
+	for idx, line in enumerate(lines):
+		if line.strip() == "PROMPT BEGIN":
+			prompt_begin = idx
+		elif line.strip() == "PROMPT END":
+			prompt_end = idx
+			break
+	if prompt_begin > -1 and prompt_end > prompt_begin:
+		start_idx = prompt_begin + 1
+		if start_idx < prompt_end and set(lines[start_idx].strip()) == set("-"):
+			start_idx += 1
+		return "\n".join(lines[start_idx:prompt_end]).strip()
+	return ""
+
+
+def _readPromptFromSavedRequest(request_path):
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: reloading saved request from %s" % request_path)
+	try:
+		with open(request_path, "rb") as fh:
+			request_raw = fh.read()
+	except Exception as e:
+		raise RuntimeError("Unable to read request file '%s': %s" % (request_path, str(e)))
+
+	request_size = len(request_raw)
+	try:
+		request_text = request_raw.decode("latin-1")
+	except Exception as e:
+		raise RuntimeError("Unable to decode request file '%s': %s" % (request_path, str(e)))
+
+	prompt_text = _extractPromptBlockFromSavedRequestText(request_text)
+	if prompt_text != "":
+		return prompt_text, request_size, len(prompt_text.encode("utf-8")), "prompt_block"
+
+	# If the prompt markers were removed during editing, treat the whole file as the prompt.
+	fallback_prompt = request_text.strip()
+	if fallback_prompt == "":
+		raise RuntimeError("Request file '%s' is empty." % request_path)
+	return fallback_prompt, request_size, len(fallback_prompt.encode("utf-8")), "full_file"
 
 
 def buildAIPromptFromTemplateFile(template_path, context, question_type="9"):
@@ -26476,7 +26521,7 @@ class MnAI(object):
 		self.list_models_requested = False
 		self.question_profile_missing = False
 		self.model = getDefaultAIModel("openai")
-		self.timeout_seconds = 60.0
+		self.timeout_seconds = 300.0
 		self.timeout_source = "default"
 		self.max_request_kb = 0
 		self.max_tokens = 4096
@@ -26532,28 +26577,28 @@ class MnAI(object):
 			return [
 				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
 				{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
 				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True, "default": "4096"},
 			]
 		if engine == "anthropic":
 			return [
 				{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
 				{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
 				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "4096"},
 			]
 		if engine == "ollama":
 			return [
 				{"name": "url", "required": True, "env": "OLLAMA_URL", "show_value": True},
 				{"name": "model", "required": True, "env": "OLLAMA_MODEL", "show_value": True},
-				{"name": "timeout", "required": False, "env": "OLLAMA_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "timeout", "required": False, "env": "OLLAMA_TIMEOUT", "show_value": True, "default": "300"},
 				{"name": "response_field", "required": False, "env": "OLLAMA_RESPONSE_FIELD", "show_value": True, "default": "response"},
 			]
 		if engine == "customai":
 			return [
 				{"name": "url", "required": True, "env": "CUSTOMAI_URL", "show_value": True},
 				{"name": "model", "required": True, "env": "CUSTOMAI_MODEL", "show_value": True},
-				{"name": "timeout", "required": False, "env": "CUSTOMAI_TIMEOUT", "show_value": True, "default": "60"},
+				{"name": "timeout", "required": False, "env": "CUSTOMAI_TIMEOUT", "show_value": True, "default": "300"},
 				{"name": "response_field", "required": False, "env": "CUSTOMAI_RESPONSE_FIELD", "show_value": True},
 			]
 		return []
@@ -26657,7 +26702,7 @@ class MnAI(object):
 		self.response_field = ""
 		self.api_options = {}
 		self.model = getDefaultAIModel("openai")
-		self.timeout_seconds = 60.0
+		self.timeout_seconds = 300.0
 		self.timeout_source = "default"
 		self.max_tokens = 4096
 		self.max_tokens_source = "default"
@@ -27330,6 +27375,31 @@ class MnAI(object):
 		)
 		return self.request_logfile_path
 
+	def reloadPromptFromRequestLog(self):
+		"""Reload the prompt from the saved request file so confirmed submissions use the on-disk prompt."""
+		mndbg.dbgp(get_current_function_name())
+		if self.request_logfile_path == "":
+			return False
+		self.logInfo("Reading the saved request again before submission.")
+		self.logInfoDetail("Source  : %s" % self.request_logfile_path)
+		try:
+			reloaded_prompt, request_file_size, prompt_size, reload_mode = _readPromptFromSavedRequest(self.request_logfile_path)
+		except Exception as e:
+			self.logError("Unable to reload the saved request from %s" % self.request_logfile_path)
+			self.logErrorDetail(str(e))
+			return False
+		self.logInfoDetail("File    : %d bytes (%.2f KB)" % (request_file_size, float(request_file_size) / 1024.0))
+		self.logInfoDetail("Prompt  : %d bytes (%.2f KB)" % (prompt_size, float(prompt_size) / 1024.0))
+		if reload_mode == "full_file":
+			self.logInfoDetail("Format  : PROMPT markers not found, using the full file contents as the prompt.")
+		else:
+			self.logInfoDetail("Format  : using the PROMPT BEGIN/PROMPT END block from the saved request.")
+		if reloaded_prompt != self.prompt:
+			self.logInfo("Using the edited request from disk.")
+			self.logInfoDetail("Source  : %s" % self.request_logfile_path)
+		self.prompt = reloaded_prompt
+		return True
+
 	def writeResponseLog(self):
 		"""Write the formatted AI response to disk and remember the generated file path."""
 		mndbg.dbgp(get_current_function_name())
@@ -27406,6 +27476,8 @@ class MnAI(object):
 			if self.request_logfile_path != "":
 				self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
 			return self.response
+		elif not self.reloadPromptFromRequestLog():
+			return self.response
 
 		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
 		self.logInfo("Asking %s model '%s' using question profile %s" % (self.engine, self.model, self.question_type))
@@ -27419,17 +27491,13 @@ class MnAI(object):
 		if self.engine == "anthropic":
 			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
 
-		max_attempts = 3
+		max_attempts = 5
 		self.response = ""
 		self.request_id = ""
 		for attempt in xrange(1, max_attempts + 1):
-			attempt_timeout = self.timeout_seconds
-			if attempt == 2:
-				attempt_timeout = self.timeout_seconds + 20.0
-			elif attempt >= 3:
-				attempt_timeout = self.timeout_seconds + 30.0
+			attempt_timeout = self.timeout_seconds + ((attempt - 1) * 120.0)
 			dbg.log("")
-			self.logInfoDetail("Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
+			self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs)" % (self.engine, attempt, attempt_timeout))
 			try:
 				if self.engine == "openai":
 					if openai_use_http_fallback:
@@ -27479,12 +27547,8 @@ class MnAI(object):
 				logAIProviderError(self.engine, e)
 				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
 					return self.response
-				next_timeout = self.timeout_seconds
+				next_timeout = self.timeout_seconds + (attempt * 120.0)
 				retry_sleep_seconds = 10
-				if attempt + 1 == 2:
-					next_timeout = self.timeout_seconds + 20.0
-				elif attempt + 1 >= 3:
-					next_timeout = self.timeout_seconds + 30.0
 				self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
 					retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
 				))
@@ -35768,17 +35832,17 @@ Configuration:
 	       __LAUNCHCMD__ config -set mona.ai.engine openai
 	       __LAUNCHCMD__ config -set openai.key <your OpenAI API key>
 	       __LAUNCHCMD__ config -set openai.model gpt-5-mini
-	       __LAUNCHCMD__ config -set openai.timeout 90
+	       __LAUNCHCMD__ config -set openai.timeout 300
 	       __LAUNCHCMD__ config -set openai.max_tokens 4096
 	       __LAUNCHCMD__ config -set mona.ai.engine anthropic
        __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
        __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
-       __LAUNCHCMD__ config -set anthropic.timeout 90
+       __LAUNCHCMD__ config -set anthropic.timeout 300
        __LAUNCHCMD__ config -set anthropic.max_tokens 4096
        __LAUNCHCMD__ config -set mona.ai.engine ollama
        __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/v1/responses
        __LAUNCHCMD__ config -set ollama.model llama3
-       __LAUNCHCMD__ config -set ollama.timeout 90
+       __LAUNCHCMD__ config -set ollama.timeout 300
        __LAUNCHCMD__ config -set ollama.response_field response
        Use /v1/responses when your Ollama endpoint exposes the OpenAI-style Responses API.
        Use http://127.0.0.1:11434/api/generate if you want to force the native Ollama generate API.
@@ -35786,7 +35850,7 @@ Configuration:
        __LAUNCHCMD__ config -set mona.ai.engine customai
        __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
        __LAUNCHCMD__ config -set customai.model llama3
-       __LAUNCHCMD__ config -set customai.timeout 90
+       __LAUNCHCMD__ config -set customai.timeout 300
        __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
        __LAUNCHCMD__ config -set ollama.options.num_ctx 256000
        __LAUNCHCMD__ config -set ollama.options.dolphin-llama3.num_ctx 256000
@@ -35828,9 +35892,10 @@ Precedence:
     - CustomAI : none, must be configured
 
 Default timeout:
-    - 60 seconds per request
+    - 300 seconds per request
+    - Retries add 120 seconds each time
     - For ollama or other local/self-hosted engines, increase the timeout to match the speed of the model and hardware.
-      Larger local models often need 90-300 seconds or more.
+      Larger local models often need 300 seconds or more.
 
 	Common models:
 	    - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
@@ -35904,7 +35969,7 @@ Official model docs:
 	    __LAUNCHCMD__ config -set ollama.model llama3
 	    __LAUNCHCMD__ tellme -e ollama -q 1
 	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
-	    __LAUNCHCMD__ tellme -e ollama -q 1 -timeout 180
+	    __LAUNCHCMD__ tellme -e ollama -q 1 -timeout 300
 	    __LAUNCHCMD__ config -set mona.ai.engine customai
 	    __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
 	    __LAUNCHCMD__ config -set customai.model llama3
