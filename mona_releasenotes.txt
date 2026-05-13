@@ -1,3 +1,20 @@
+[mona 3.0.3019]
+- Update revision (mona: 3019, windbglib: 3009) implement openaiagents engine
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/c7da3b8">c7da3b8</link> update use of PROMPT in request templates
+  - <link cmd="https://github.com/corelan/mona3/commit/0e79b3b">0e79b3b</link> implement openaiagents engine with bridge
+  - <link cmd="https://github.com/corelan/mona3/commit/17be2c5">17be2c5</link> output formatting
+  - <link cmd="https://github.com/corelan/mona3/commit/952205e">952205e</link> rewrite intent
+  - <link cmd="https://github.com/corelan/mona3/commit/42dbf9c">42dbf9c</link> improved error logging for ollama requests
+  - <link cmd="https://github.com/corelan/mona3/commit/fac8f50">fac8f50</link> remove openai-agents again and update routine to support ollama
+  - <link cmd="https://github.com/corelan/mona3/commit/a5d787a">a5d787a</link> better error handling
+  - <link cmd="https://github.com/corelan/mona3/commit/fc030b7">fc030b7</link> Update mona.py
+  - <link cmd="https://github.com/corelan/mona3/commit/4314e2e">4314e2e</link> start adding openai-agents support
+
+[windbglib 3.0.3009]
+- Update revision (mona: 3019, windbglib: 3009) implement openaiagents engine
+- No file-specific commits found.
+
 [mona 3.0.3018]
 - Update revision (mona: 3018, windbglib: 3008) bugfixes
 corelanc0d3r:
@@ -160,19 +177,6 @@ corelanc0d3r:
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/a217283">a217283</link> Update revision (mona: 3008) Continued work on AI integration !mona tellme
   - <link cmd="https://github.com/corelan/mona3/commit/ca42e7f">ca42e7f</link> Update revision (mona: 3007, windbglib: 3005) Added AI integration with tellme
-
-[mona 3.0.3008]
-- Update revision (mona: 3008) Continued work on AI integration !mona tellme
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/50787b4">50787b4</link> add more context to q 1
-  - <link cmd="https://github.com/corelan/mona3/commit/d162fb4">d162fb4</link> openai etc can only be loaded once per windbg session on win 7. add more context to AI requests
-  - <link cmd="https://github.com/corelan/mona3/commit/1e43df1">1e43df1</link> hide key contents in mona config -list and set default model to -1
-  - <link cmd="https://github.com/corelan/mona3/commit/9cdfe80">9cdfe80</link> update usage and default models
-  - <link cmd="https://github.com/corelan/mona3/commit/6e920e5">6e920e5</link> Merge branch 'main' of https://github.com/corelan/mona3
-  - <link cmd="https://github.com/corelan/mona3/commit/8c89103">8c89103</link> added mona tellme function
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/ca42e7f">ca42e7f</link> Update revision (mona: 3007, windbglib: 3005) Added AI integration with tellme
-  - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
 
 [windbglib 3.0.3005]
 github-actions[bot]:
