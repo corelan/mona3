@@ -26,9 +26,10 @@
   - [D. Helping Python find its libraries](#d-helping-python-find-its-libraries)
   - [E. Running Mona in Immunity](#e-running-mona-in-immunity)
 - 🧠 [AI integration](#ai-integration)
-  - [Manual request flow](#manual-request-flow)
-  - [Direct API usage and cyber-program verification](#direct-api-usage-and-cyber-program-verification)
-  - [Usage](#usage)
+  - [Manual workflow](#manual-workflow)
+  - [Automated workflow](#automated-workflow)
+  - [Engines](#engines)
+  - [Basic usage](#basic-usage)
 - 📚 [More information](#more-information)
 - 🙏 [Thank you](#thank-you)
 - 🐛 [Found a bug?](#found-a-bug)
@@ -546,40 +547,49 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 <a id="ai-integration"></a>
 # 🧠 AI integration
 
-Mona includes AI-assisted analysis through the `tellme` command. It can inspect the current WinDBG context and send that context to a supported AI provider to help explain what is happening, summarize findings, or assist with next-step analysis.
+Mona includes AI-assisted analysis through the `tellme` command. It can inspect the current WinDBG context, build a structured prompt from that context, and either save that prompt for manual use or submit it directly to a configured AI engine.
 
-At the moment, `mona` supports these AI engines:
+There are two supported ways to use it:
 
-* `openai`
-* `anthropic`
+* **Manual workflow**: `mona` builds the request and saves it to disk. You paste that request into ChatGPT, Claude, Grok, or another AI tool yourself.
+* **Automated workflow**: `mona` builds the request and sends it directly to a configured provider or local endpoint.
 
-To use OpenAI integration, install the OpenAI Python library for every Python version you plan to use with `mona`.
-Anthropic requests use direct HTTP in the current implementation, so no Anthropic Python SDK is required.
+This makes `tellme` useful even if you do not want to install SDKs, configure API keys, or make live requests from inside the debugger host.
 
-For example, if you run `mona` with both Python 3.9 and Python 3.14, then you should install the provider library into both Python environments.
+## Manual workflow
 
-Example OpenAI installs:
+If you use `-offline`, `tellme` will collect debugger context, build the full request, and save it to a file without contacting any provider.
 
-```batch
-py -3.9-32 -m pip install openai
-py -3.9 -m pip install openai
-py -3.14-32 -m pip install openai
-py -3.14 -m pip install openai
+That is the simplest setup and the safest default when you want full control over where the prompt is submitted.
+
+Example:
+
+```python
+!mona tellme -q 1 -offline
 ```
 
-Once the provider is configured, you can set a default engine, default model, timeout, and output token budget via environment variables or `mona` config.
+Typical use cases:
 
-Engine selection works like this when you omit `-e`:
+* You want to inspect the generated request before sending it anywhere
+* You prefer browser-based AI tools over API access
+* You do not want to configure keys, SDKs, or billing
+* You want a workflow that still works when no engine is configured
+
+## Automated workflow
+
+If you want `mona` to submit requests directly, configure a default engine and the settings that engine needs, such as API key, model, URL, timeout, and optional response parsing fields.
+
+When you omit `-e`, engine selection works like this:
 
 1. `mona.ai.engine`
 2. `MONA_AI_ENGINE`
-3. if neither is set, `tellme` announces that fact and switches to offline mode by default
+3. if neither is set, `tellme` switches to offline mode by default
 
-As an extra safety measure, if you do not specify `-e` and there is no default engine configured in either `mona.ai.engine` or `MONA_AI_ENGINE`, `tellme` will announce that at the start of the run and switch to `-offline` behavior by default so you do not accidentally consume API tokens.
+That fallback is intentional so you do not accidentally consume tokens.
 
-The default request timeout is `60` seconds. You only need to set an engine-specific timeout when you want a different default for that provider, or override a single request with `-timeout`. For Anthropic responses, you can also increase the output budget with `anthropic.max_tokens` or `ANTHROPIC_MAX_TOKENS` if replies get truncated.
+Configuration can live in `mona.ini` or in environment variables. If both are present, values from `mona.ini` take precedence.
 
-Examples using `mona` config:
+Example using `mona` config:
 
 ```python
 !mona config -set mona.ai.engine openai
@@ -587,6 +597,7 @@ Examples using `mona` config:
 !mona config -set openai.model gpt-5-mini
 !mona config -set openai.timeout 60
 !mona config -set openai.max_tokens 4096
+
 !mona config -set mona.ai.engine anthropic
 !mona config -set anthropic.key <your Anthropic API key>
 !mona config -set anthropic.model claude-sonnet-4-6
@@ -594,7 +605,7 @@ Examples using `mona` config:
 !mona config -set anthropic.max_tokens 4096
 ```
 
-Examples using environment variables:
+Example using environment variables:
 
 ```batch
 set MONA_AI_ENGINE=openai
@@ -608,47 +619,35 @@ set ANTHROPIC_TIMEOUT=60
 set ANTHROPIC_MAX_TOKENS=4096
 ```
 
-If both are present, values from `mona.ini` take precedence over environment variables. You can also override the model or timeout for a single request with `-model` and `-timeout`.
+For OpenAI direct integration, install the OpenAI Python library for every Python version you use with `mona`. For example, if you run Mona under both Python 3.9 and Python 3.14, install the library into both environments.
 
-When `tellme` is using a live provider, it first queries that provider's models API and checks whether the configured model is available to the current API key. If you run `tellme` without `-q` while a provider engine is configured, `mona` will print the available model IDs it can see for that API key instead of submitting a request.
-
-## Manual request flow
-
-`tellme` can still build and save a request even if you do not have the provider libraries installed and/or you have not configured any API keys. That manual-request flow is fully supported.
-
-If you use `-offline`, `tellme` will build the full request and save it to a file without calling the API. You can then take that saved request and submit it manually to a browser-based AI session such as ChatGPT, Claude, Grok, or another free or paid engine of your choice.
-
-If you just want the analysis and do not care about direct API integration, `-offline` is often the simplest option:
-
-```python
-!mona tellme -q 1 -offline
+```batch
+py -3.9-32 -m pip install openai
+py -3.9 -m pip install openai
+py -3.14-32 -m pip install openai
+py -3.14 -m pip install openai
 ```
 
-That gives you a ready-to-submit request file while avoiding SDK installation, API keys, billing setup, or provider-specific runtime issues inside the debugger host.
+When `tellme` is using a live provider, it checks the selected model where supported. If you run `tellme` without `-q` while a provider-backed engine is configured, Mona will list the available model IDs it can see for that configuration instead of sending a request.
 
-## Direct API usage
+## Engines
 
-If you want `mona` to call the providers directly through their APIs, make sure your account can access the provider and model you configured.
+In Mona, an **engine** is the backend that receives the generated AI request. Some engines are cloud APIs, some are local/self-hosted endpoints, and one is a bridge for the OpenAI Agents SDK.
 
-These are the same links referenced in the `mona.py` source:
+Currently supported engines are:
 
-* Anthropic: https://support.claude.com/en/articles/14604842-real-time-cyber-safeguards-on-claude
+* `offline`: save the request only; do not submit it
+* `openai`: direct OpenAI API integration
+* `openaiagents`: local bridge that uses the OpenAI Agents SDK outside the debugger
+* `anthropic`: direct Anthropic API integration
+* `ollama`: local or remote Ollama endpoint
+* `customai`: generic POST JSON endpoint for other compatible backends
 
-Depending on the provider account, model, and risk controls, verification may be required before you can reliably use exploit-development or crash-triage prompts through the API.
+Use `-e <engine>` to select one explicitly for a single request, or set `mona.ai.engine` to make one the default.
 
-Recent model examples at the time of writing:
+## Basic usage
 
-* OpenAI: `gpt-5.5`, `gpt-5.1`, `gpt-5-mini`, `gpt-5-nano`
-* Anthropic: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`
-
-Official model docs:
-
-* OpenAI: https://developers.openai.com/api/docs/models
-* Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
-
-## Usage
-
-The `tellme` command has three main usage patterns:
+The `tellme` command has three common usage patterns:
 
 * `-q 1`: analyze the current crash context
 * `-q 2`: analyze the current function or code location
@@ -660,6 +659,7 @@ Basic examples:
 !mona tellme -q 1
 !mona tellme -e openai -q 1
 !mona tellme -e anthropic -q 2
+!mona tellme -e ollama -q 1
 !mona tellme -e openai -q 2 -a kernel32!CreateFileW
 !mona tellme -e openai -q 1 -timeout 120
 !mona tellme -e openai -q 1 -submit
@@ -668,7 +668,7 @@ Basic examples:
 
 Useful options:
 
-* `-e <openai|anthropic>`: choose the provider explicitly for this request
+* `-e <engine>`: choose the engine explicitly for this request
 * `-q 1`: use for crash triage
 * `-q 2`: use for function/code analysis
 * `-a <address|register|module!symbol>`:
@@ -686,7 +686,7 @@ Useful options:
 * `-offline`:
   build and save the request without calling the API
 
-If you omit `-q` while a provider-backed engine is selected, `tellme` will list the available models for that API key.
+If you omit `-q` while a provider-backed engine is selected, `tellme` will list the available models for that engine instead of building a request.
 
 How to choose a mode:
 
@@ -694,7 +694,7 @@ How to choose a mode:
 * Use `!mona tellme -q 2` when execution is at a useful code location and you want help understanding the current function.
 * Use `-a` with `-q 2` when the current instruction pointer is no longer trustworthy and you want to analyze a known-good symbol or address instead.
 * Use `-offline` when you want to manually submit the generated request to a browser-based AI session.
-* For direct API use, `tellme` asks for confirmation before sending the request unless you pass `-submit`.
+* For automated submission, `tellme` asks for confirmation before sending the request unless you pass `-submit`.
 
 Template usage:
 
@@ -706,6 +706,8 @@ Template usage:
 If `ai.q1` or `ai.q2` do not exist yet, running `-q 1` or `-q 2` will create them in the configured `workingfolder`, or next to `mona.ini` when no working folder is set.
 
 With `-q 9`, mona collects live debugger context at runtime and replaces recognized placeholders such as `[registers]` and `[pc_disasm]` inline before submitting the prompt. Unrecognized placeholders are reported and left unchanged.
+
+For engine-specific setup, model recommendations, local/self-hosted examples, bridge configuration, advanced options, and troubleshooting, see the [Mona wiki](https://github.com/corelan/mona3/wiki).
 
 
 ---
