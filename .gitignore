@@ -61,6 +61,12 @@ pytest_cache/
 # Logs
 *.log
 
+# Ini
+*.ini
+
+# blog
+blogpost.txt
+
 # IDEs / editors
 .vscode/
 .idea/
