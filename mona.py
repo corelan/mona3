@@ -26709,7 +26709,7 @@ class MnAI(object):
 		self.logInfo(reason)
 		if details:
 			self.logInfoDetail(details)
-		self.logInfoDetail("Selected engine: %s" % self.engine)
+		self.logInfoDetail("Selected engine: <b>%s</b>" % self.engine)
 
 	def getConfiguredDefaultEngine(self):
 		"""Return the configured default engine from mona.ini or the environment."""
@@ -27099,6 +27099,8 @@ class MnAI(object):
 			self.logError("Missing required configuration for engine '%s'." % self.engine)
 			self.logEngineConfigHelp("url")
 			return False
+		if self.list_models_requested and self.engine == "ollama":
+			return True
 		if self.model == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
@@ -27470,7 +27472,7 @@ class MnAI(object):
 		self.writeRequestLog()
 		if self.submit_requested:
 			self.logInfo("AI submission confirmed via -submit")
-		elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
+		elif not askForConfirmation("[?] Submit this request to AI using %s model '<b>%s</b>'?" % (self.engine, self.model), default="N"):
 			self.response = ""
 			self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
 			if self.request_logfile_path != "":
@@ -27480,7 +27482,7 @@ class MnAI(object):
 			return self.response
 
 		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
-		self.logInfo("Asking %s model '%s' using question profile %s" % (self.engine, self.model, self.question_type))
+		self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
 		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
 		if self.engine in ["ollama", "customai"] and self.api_url != "":
 			self.logInfoDetail("URL       : %s" % self.api_url)
