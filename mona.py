@@ -1679,7 +1679,6 @@ def _getInstructionWindow(address, depth_before=10, depth_after=10):
 		op = dbg.disasm(address)
 		result["current"] = _formatContextText(getDisasmInstruction(op))
 	except Exception as e:
-		result["current_error"] = str(e)
 		mndbg.dbgp("tellme: failed to disassemble current instruction at %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 
 	try:
@@ -1701,7 +1700,6 @@ def _getInstructionWindow(address, depth_before=10, depth_after=10):
 				if line != "":
 					result["after"].append(line)
 	except Exception as e:
-		result["after_error"] = str(e)
 		mndbg.dbgp("tellme: forward disasm failed for %s: %s" % (PTR_PRINT % address, str(e)), errormode=False)
 
 	return result
@@ -2922,19 +2920,6 @@ def _collectHeapdynamicsContext(regs, pc, heapdynamics_file=""):
 
 	return info
 
-
-def _buildHeapdynamicsMini(heapdynamics):
-	mndbg.dbgp(get_current_function_name())
-	mini_contexts = []
-	for info in heapdynamics:
-		mini = OrderedDict()
-		for key in ["instruction", "referenced_registers", "file", "matched_registers", "matched_entries"]:
-			if key in info:
-				mini[key] = info[key]
-		mini_contexts.append(mini)
-	return mini_contexts
-
-
 def _readContextFile(file_path, label="context file"):
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
@@ -3290,6 +3275,8 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
 		try:
 			context["findmsp"] = _getFindMspSummary(args=ai_args or {})
+			if context["findmsp"].get("seh", []):
+				context["findseh"] = _getFindSehSummaryFromFindmsp(context["findmsp"], args=ai_args or {})
 		except Exception as e:
 			context["findmsp_error"] = str(e)
 			context["findmsp_error_type"] = e.__class__.__name__
@@ -3320,7 +3307,6 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			if len(heapdynamics) > 0:
 				context["heapdynamics"] = heapdynamics
 				context["heapdynamics_full"] = heapdynamics
-				context["heapdynamics_mini"] = _buildHeapdynamicsMini(heapdynamics)
 		except Exception as e:
 			context["heapdynamics_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
@@ -3356,6 +3342,13 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 		request_variables = _optimizeQ1RequestVariables(context, maxsize_kb=maxsize_kb)
 	else:
 		request_variables = _buildRequestVariables(context)
+
+	if question_type in ["1", "2"]:
+		modules_info = request_variables.get("modules", {})
+		if isinstance(modules_info, dict):
+			for key in ["relevant_module_names", "relevant_module_names_truncated"]:
+				if key in modules_info:
+					del modules_info[key]
 
 	if question_type == "9":
 		raise ValueError("Question type '9' must be built from a template file with -f")
@@ -5193,6 +5186,79 @@ def _getFindMspSummary(args=None):
 	return info
 
 
+def _getFindSehSummaryFromFindmsp(findmsp_summary, args=None):
+	mndbg.dbgp(get_current_function_name())
+	info = OrderedDict()
+	seh_entries = []
+	if isinstance(findmsp_summary, dict):
+		raw_seh = findmsp_summary.get("seh", [])
+		if isinstance(raw_seh, list):
+			seh_entries = raw_seh
+	if len(seh_entries) == 0:
+		return info
+
+	modulecriteria = {
+		"safeseh": False,
+		"rebase": False,
+		"aslr": False,
+		"os": False,
+	}
+	sehcriteria = {}
+	if args and args.get("n", False):
+		sehcriteria["nonull"] = True
+	if args and "cpb" in args and type(args["cpb"]).__name__.lower() != "bool":
+		strb, badcharsok = cpbArgToBytes(args["cpb"])
+		if badcharsok and strb not in [None, b"", ""]:
+			sehcriteria["badchars"] = strb
+
+	for entry in seh_entries:
+		pattern_type = ensure_text(entry.get("pattern_type", "")).lower()
+		if "unicode" in pattern_type:
+			sehcriteria["unicode"] = True
+			if "nonull" in sehcriteria:
+				del sehcriteria["nonull"]
+			break
+
+	global g_silent
+	global g_ptr_to_get
+	global g_ptr_counter
+	old_silent = g_silent
+	old_ptr_to_get = g_ptr_to_get
+	old_ptr_counter = g_ptr_counter
+	try:
+		g_silent = True
+		g_ptr_counter = 0
+		g_ptr_to_get = 1
+		seh_pointers = findSEH(modulecriteria, sehcriteria)
+	finally:
+		g_silent = old_silent
+		g_ptr_to_get = old_ptr_to_get
+		g_ptr_counter = old_ptr_counter
+
+	info["triggered"] = True
+	info["seh_overwrites"] = seh_entries
+	info["search"] = OrderedDict([
+		("module_criteria", modulecriteria),
+		("pointer_criteria", OrderedDict([
+			("unicode", bool(sehcriteria.get("unicode", False))),
+			("nonull", bool(sehcriteria.get("nonull", False))),
+			("badchars", _renderBadchars(sehcriteria.get("badchars", b"")))
+		]))
+	])
+	info["candidates"] = []
+	for instruction in sorted(seh_pointers.keys()):
+		pointers = seh_pointers[instruction]
+		if len(pointers) == 0:
+			continue
+		info["candidates"].append(OrderedDict([
+			("instruction", _formatContextText(instruction, max_len=256)),
+			("address", PTR_PRINT % pointers[0])
+		]))
+	if len(info["candidates"]) == 0:
+		info["no_candidates_found"] = True
+	return info
+
+
 def _getJsonSizeBytes(value):
 	mndbg.dbgp(get_current_function_name())
 	try:
@@ -5273,7 +5339,7 @@ def _extractWindbgAnalyzeSummary(output):
 	return info
 
 
-def _simplifyWindbgAnalyze(analyze_info, call_stack_present=False):
+def _simplifyWindbgAnalyze(analyze_info):
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(analyze_info, dict):
 		return analyze_info
@@ -5288,9 +5354,6 @@ def _simplifyWindbgAnalyze(analyze_info, call_stack_present=False):
 		return simplified
 	for key, value in _extractWindbgAnalyzeSummary(output).items():
 		simplified[key] = value
-	if call_stack_present:
-		simplified["stack_text_omitted"] = True
-		simplified["stack_text_omitted_reason"] = "call_stack already contains kb output"
 	return simplified
 
 
@@ -5377,8 +5440,6 @@ def _compactHeapdynamicsContexts(heapdynamics):
 		mini["instruction"] = info.get("instruction", "")
 		mini["referenced_registers"] = info.get("referenced_registers", [])
 		mini["source_file"] = info.get("file", "")
-		mini["full_log_available"] = True
-		mini["full_log_omitted_reason"] = "too large; focused matches included"
 		mini["matched_registers"] = info.get("matched_registers", [])
 		mini["matched_entries"] = []
 
@@ -5478,16 +5539,6 @@ def _serializeModuleSummaryForTellme(mod):
 	info["cfg"] = mod.isCFG
 	return info
 
-
-def _makeVariableAlias(target_name, note=""):
-	mndbg.dbgp(get_current_function_name())
-	alias = OrderedDict()
-	alias["alias_of"] = target_name
-	if note != "":
-		alias["note"] = note
-	return alias
-
-
 def _collectRelevantModuleAddresses(context):
 	mndbg.dbgp(get_current_function_name())
 	addresses = []
@@ -5533,8 +5584,17 @@ def _buildCompactModulesSummary(context):
 	process_basename = os.path.basename(process_name)
 	executable_module = None
 	pc_module = None
-	relevant_modules = []
+	relevant_module_names = []
 	relevant_seen = set()
+
+	def _add_relevant_module(mod):
+		if mod is None:
+			return
+		module_key = ensure_text(mod.moduleKey).lower()
+		if module_key in relevant_seen:
+			return
+		relevant_seen.add(module_key)
+		relevant_module_names.append(mod.moduleFilename or mod.moduleKey)
 
 	for address in _collectRelevantModuleAddresses(context):
 		mod = mnproc.getModuleForAddress(address)
@@ -5542,9 +5602,7 @@ def _buildCompactModulesSummary(context):
 			continue
 		if pc_module is None and address == getAllRegisters().get(PROGRAM_COUNTER, 0):
 			pc_module = mod
-		if mod.moduleKey.lower() not in relevant_seen:
-			relevant_seen.add(mod.moduleKey.lower())
-			relevant_modules.append(mod)
+		_add_relevant_module(mod)
 
 	for mod in all_modules:
 		if executable_module is None:
@@ -5553,9 +5611,7 @@ def _buildCompactModulesSummary(context):
 			if process_name != "" and (process_name == mod_path or process_basename in mod_names):
 				executable_module = mod
 		if (not mod.isAslr) or (not mod.isSafeSEH) or (not mod.isCFG):
-			if mod.moduleKey.lower() not in relevant_seen:
-				relevant_seen.add(mod.moduleKey.lower())
-				relevant_modules.append(mod)
+			_add_relevant_module(mod)
 
 	if pc_module is None:
 		pc_module = mnproc.getModuleForAddress(getAllRegisters().get(PROGRAM_COUNTER, 0))
@@ -5564,12 +5620,9 @@ def _buildCompactModulesSummary(context):
 	if executable_module is not None:
 		result["executable_module_name"] = executable_module.moduleFilename or executable_module.moduleKey
 
-	result["relevant_module_names"] = []
-	for mod in relevant_modules[:32]:
-		result["relevant_module_names"].append(mod.moduleFilename or mod.moduleKey)
-	if len(relevant_modules) > 32:
+	result["relevant_module_names"] = relevant_module_names[:32]
+	if len(relevant_module_names) > 32:
 		result["relevant_module_names_truncated"] = True
-		result["relevant_module_names_truncated_reason"] = "kept only module names tied to pc/stack handlers/suspicious pointers and protection gaps"
 	return result
 
 
@@ -5578,30 +5631,35 @@ def _optimizeQ1RequestVariables(context, maxsize_kb=0):
 	variables = _buildRequestVariables(context)
 	omitted_sections = []
 
-	call_stack_present = bool(context.get("call_stack", {}).get("output", ""))
 	if "windbg_analyze" in variables:
 		original_analyze = variables.get("windbg_analyze", {})
 		variables["windbg_analyze_full"] = original_analyze
-		variables["windbg_analyze"] = _simplifyWindbgAnalyze(original_analyze, call_stack_present=call_stack_present)
-		variables["windbg_analyze_mini"] = _makeVariableAlias("windbg_analyze", "compact crash summary is already exposed under windbg_analyze")
+		variables["windbg_analyze"] = _simplifyWindbgAnalyze(original_analyze)
+		if "windbg_analyze_mini" in variables:
+			del variables["windbg_analyze_mini"]
 
 	if "modules" in variables:
 		original_modules = variables.get("modules", "")
 		variables["modules_full"] = original_modules
 		variables["modules"] = _buildCompactModulesSummary(context)
-		variables["modules_mini"] = _makeVariableAlias("modules", "compact crash-focused module summary is already exposed under modules")
+		if "modules_mini" in variables:
+			del variables["modules_mini"]
 
 	if "heapdynamics" in variables:
 		heapdynamics = variables.get("heapdynamics", [])
 		mini_contexts, evidence, heap_omissions = _compactHeapdynamicsContexts(heapdynamics)
 		variables["heapdynamics_full"] = heapdynamics
 		variables["heapdynamics"] = mini_contexts
-		variables["heapdynamics_mini"] = _makeVariableAlias("heapdynamics", "focused heapdynamics matches are already exposed under heapdynamics")
+		if "heapdynamics_mini" in variables:
+			del variables["heapdynamics_mini"]
 		variables["evidence"] = evidence
 		omitted_sections.extend(heap_omissions)
-	elif "heapdynamics_mini" not in variables:
-		variables["heapdynamics_mini"] = _makeVariableAlias("heapdynamics", "focused heapdynamics matches are already exposed under heapdynamics")
-		variables["heapdynamics"] = []
+	elif "heapdynamics_mini" in variables:
+		del variables["heapdynamics_mini"]
+
+	for redundant_key in ["modules_mini", "heapdynamics_mini", "windbg_analyze_mini"]:
+		if redundant_key in variables:
+			del variables[redundant_key]
 
 	variables["size_budget"] = OrderedDict([
 		("requested_max_kb", int(maxsize_kb) if isinstance(maxsize_kb, int) and maxsize_kb > 0 else 0),
@@ -5612,9 +5670,9 @@ def _optimizeQ1RequestVariables(context, maxsize_kb=0):
 	if isinstance(maxsize_kb, int) and maxsize_kb > 0:
 		size_budget = maxsize_kb * 1024
 		trim_candidates = [
-			("heapdynamics_full", "full heapdynamics context exceeded the requested -maxsize budget; focused matches were kept under heapdynamics/heapdynamics_mini", "Use the original heapdynamics file path recorded under heapdynamics_mini.source_file"),
-			("modules_full", "full module listing exceeded the requested -maxsize budget; crash-focused module summary was kept under modules/modules_mini", "Run the modules command or use tellme -q 3 for broader module analysis"),
-			("windbg_analyze_full", "full !analyze -v output exceeded the requested -maxsize budget; structured crash fields were kept under windbg_analyze/windbg_analyze_mini", "Run !analyze -v in WinDBG to retrieve the full text"),
+			("heapdynamics_full", "full heapdynamics context exceeded the requested -maxsize budget; focused matches were kept under heapdynamics", "Use the original heapdynamics file path recorded under heapdynamics.source_file"),
+			("modules_full", "full module listing exceeded the requested -maxsize budget; crash-focused module summary was kept under modules", "Run the modules command or use tellme -q 3 for broader module analysis"),
+			("windbg_analyze_full", "full !analyze -v output exceeded the requested -maxsize budget; structured crash fields were kept under windbg_analyze", "Run !analyze -v in WinDBG to retrieve the full text"),
 			("additional_context_files", "additional context file contents exceeded the requested -maxsize budget", "Use the original file(s) supplied with -l"),
 			("poc_file", "PoC file contents exceeded the requested -maxsize budget", "Use the original PoC file supplied with -p"),
 			("heap_details", "heap_details duplicated more focused heap evidence and exceeded the requested -maxsize budget", "Re-run heap commands manually for full heap enumeration"),
@@ -5649,7 +5707,6 @@ def _buildRequestVariables(context):
 		"debugger_flavor",
 		"processname",
 		"modules",
-		"modules_mini",
 		"modules_full",
 		"architecture",
 		"pointer_size",
@@ -5666,14 +5723,13 @@ def _buildRequestVariables(context):
 		"ntglobal_flag",
 		"seh_chain",
 		"findmsp",
+		"findseh",
 		"call_stack",
 		"windbg_analyze",
-		"windbg_analyze_mini",
 		"windbg_analyze_full",
 		"instruction_heap_references",
 		"heap_details",
 		"heapdynamics",
-		"heapdynamics_mini",
 		"heapdynamics_full",
 		"evidence",
 		"size_budget",
@@ -5717,7 +5773,7 @@ def _getProfileInstructions(question_type):
 	if question_type == "1":
 		return """You are an expert in analysing and understanding various memory corruptions (stack and heap) in Windows applications. You are skilled in assembly language, reverse engineering, and analyzing debugger snapshots from mona.py running under WinDBG.
 Focus on crash triage and immediate exploit-relevant observations.
-Use the entries under 'variables' as the debugger context. Prioritize registers, program_counter, pc_disasm, pc_page, pc_module, stack_memory, findmsp, seh_chain, windbg_analyze, instruction_heap_references, heap_details, and heapdynamics. Ignore low-value variables unless they materially affect the conclusion.
+Use the entries under 'variables' as the debugger context. Prioritize registers, program_counter, pc_disasm, pc_page, pc_module, stack_memory, findmsp, findseh, seh_chain, windbg_analyze, instruction_heap_references, heap_details, and heapdynamics. Ignore low-value variables unless they materially affect the conclusion.
 Be concise. Summarize evidence instead of transcribing debugger output, and cite only the registers, instructions, operands, stack entries, chunks, offsets, or log lines that support the conclusion.
 Answer in this order:
 1. most likely crash cause and confidence
@@ -5725,9 +5781,9 @@ Answer in this order:
 3. cyclic-pattern or SEH findings, including what findmsp confirms versus what only looks suggestive
 4. whether the issue is more consistent with stack corruption, heap corruption, or another bug class; for heap-like cases, name the best-fit heap bug class or say the data is insufficient
 5. exploit-relevant primitives or controls that are present, partial, or absent
-Treat windbg_analyze, windbg_analyze_mini, and windbg_analyze_full as heuristic evidence that must be validated against the raw debugger state.
-If findmsp output is available, use it directly. Call out the exact offsets, which registers are overwritten or controlled, which registers or pointers land inside the cyclic pattern, what offset ESP points to, and what that implies for saved return pointer control, stack pivot potential, or follow-on exploitability. Use findmsp and seh_chain together to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, and stack pointers.
-For heap-like crashes, inspect the crash operands, instruction_heap_references, heap_details, referenced-register pointer dumps, and heapdynamics or heapdynamics_mini. Use heapdynamics_full only when broader alloc/free context is needed.
+Treat windbg_analyze and windbg_analyze_full as heuristic evidence that must be validated against the raw debugger state.
+If findmsp output is available, use it directly. Call out the exact offsets, which registers are overwritten or controlled, which registers or pointers land inside the cyclic pattern, what offset ESP points to, and what that implies for saved return pointer control, stack pivot potential, or follow-on exploitability. Use findmsp, findseh, and seh_chain together to correlate saved-register offsets, SEH overwrite offsets, stack-contained patterns, candidate SEH handler pivots, and stack pointers.
+For heap-like crashes, inspect the crash operands, instruction_heap_references, heap_details, referenced-register pointer dumps, and heapdynamics. Use heapdynamics_full only when broader alloc/free context is needed.
 Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis.
 Do not invent facts. Be explicit about uncertainty and keep the answer practical."""
 	if question_type == "2":
@@ -5781,7 +5837,6 @@ def _getProfileTemplateVariables(question_type):
 		"debugger_flavor",
 		"processname",
 		"modules",
-		"modules_mini",
 		"modules_full",
 		"architecture",
 		"pointer_size",
@@ -5798,13 +5853,12 @@ def _getProfileTemplateVariables(question_type):
 		"ntglobal_flag",
 		"seh_chain",
 		"findmsp",
+		"findseh",
 		"call_stack",
 		"windbg_analyze",
-		"windbg_analyze_mini",
 		"windbg_analyze_full",
 		"heap_details",
 		"heapdynamics",
-		"heapdynamics_mini",
 		"heapdynamics_full",
 		"evidence",
 		"size_budget",
@@ -27628,6 +27682,16 @@ class MnAI(object):
 		"""Write an indented error continuation line aligned under the status prefix."""
 		dbg.log("    %s" % message, highlight=True)
 
+	def _getBridgePythonInstallCommands(self):
+		"""Return pip install commands for the configured bridge Python, plus a 32-bit launcher variant when relevant."""
+		commands = ["%s -m pip install openai openai-agents" % self.bridge_python]
+		if arch == 32:
+			python_tokens = list(self.bridge_python_command)
+			if len(python_tokens) >= 2 and python_tokens[0].lower() == "py" and not python_tokens[1].endswith("-32"):
+				python_tokens[1] = "%s-32" % python_tokens[1]
+				commands.append("%s -m pip install openai openai-agents" % formatAIBridgePythonCommand(python_tokens))
+		return commands
+
 	def _getEngineOptionDefinitions(self):
 		"""Return engine-specific configuration option metadata."""
 		mndbg.dbgp(get_current_function_name())
@@ -28620,12 +28684,16 @@ class MnAI(object):
 			return False
 		if return_code != 0:
 			self.logError("The configured OpenAI Agents bridge Python environment is missing required libraries.")
-			self.logErrorDetail("Python    : %s" % self.bridge_python)
-			self.logErrorDetail("It must be able to import: agents, Agent/Runner/ModelSettings/RunConfig, and openai.types.shared.Reasoning")
-			for output_line in output_text.split("\n"):
-				output_line = output_line.strip()
-				if output_line != "":
-					self.logErrorDetail(output_line)
+			self.logInfoDetail("Python    : %s" % self.bridge_python)
+			self.logInfoDetail("It must be able to import: agents, Agent/Runner/ModelSettings/RunConfig, and openai.types.shared.Reasoning")
+			self.logInfoDetail("")
+			self.logErrorDetail("Install the missing libraries with:")
+			for install_command in self._getBridgePythonInstallCommands():
+				self.logErrorDetail(install_command)
+			#for output_line in output_text.split("\n"):
+			#	output_line = output_line.strip()
+			#	if output_line != "":
+			#		self.logErrorDetail(output_line)
 			return False
 		return True
 
@@ -37223,14 +37291,15 @@ Official model docs:
 	                   Any file containing alloc()/free() lines is treated as a heapdynamics log
 	                   Other files are added as supporting context under [additional_context_files]
 	                   If no heapdynamics log is supplied, tellme will still look for c:\\alloc.txt
-	                   For -q 1, focused matches are exposed under [heapdynamics] and [heapdynamics_mini]
+	                   For -q 1, focused matches are exposed under [heapdynamics]
 	                   and the larger raw heapdynamics context remains available under [heapdynamics_full]
 	                   unless you explicitly ask mona to shrink the request with -maxsize
 	    -cpb <bytes> : Optional badchars for pointer filtering, for example '\\x00\\x0a\\x0d'
 	                   With -q 1, and with -q 9 when the template still resolves live [findmsp] context,
 	                   mona will use this list when looking for first trampoline candidates for registers
-	                   that point into the cyclic pattern. This is usually a good idea, otherwise the
-	                   suggested trampoline may contain bytes you already know you cannot use
+	                   that point into the cyclic pattern, and for [findseh] candidates when findmsp
+	                   confirms an SEH overwrite. This is usually a good idea, otherwise the
+	                   suggested trampoline or SEH candidate may contain bytes you already know you cannot use
 	    -d <number>  : With -q 2, optional call/jump follow depth for control_flow_targets.
 	                   Default: 1. Maximum: 3.
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
@@ -37290,23 +37359,22 @@ Official model docs:
 	    [pc_memory]                = raw bytes near the current instruction pointer
 	    [stack_memory]             = raw bytes near the current stack pointer
 	    [modules]                  = crash-focused module summary used by default for -q 1
-	    [modules_mini]             = explicit alias of the compact crash-focused module summary
 	    [modules_full]             = full loaded module listing
 	    [call_stack]               = WinDBG call stack output
 	    [windbg_analyze]           = compact !analyze -v crash summary used by default for -q 1
-	    [windbg_analyze_mini]      = explicit alias of the compact !analyze -v crash summary
 	    [windbg_analyze_full]      = full raw !analyze -v output
 	    [findmsp]                  = cyclic-pattern analysis results
 	                                 For q1, and for q9 templates that still resolve live debugger context,
 	                                 registers that point into the pattern may also include a first
 	                                 trampoline candidate from findJMP(). Consider using -cpb so those
 	                                 candidates are filtered against known badchars
+	    [findseh]                  = automatic findSEH search results when findmsp confirms an SEH overwrite,
+	                                 using the same -cpb badchar filter when supplied
 	    [seh_chain]                = 32-bit SEH chain summary
 	    [instruction_heap_references] = heap and pointer context related to the current instruction
 	    [heap_details]             = heap, segment, VAD, and chunk summary
 	    [heap_analysis_target]     = extra heap-focused target from -a when using -q 1
 	    [heapdynamics]             = focused heapdynamics matches used by default for -q 1
-	    [heapdynamics_mini]        = explicit alias of the focused heapdynamics matches
 	    [heapdynamics_full]        = larger raw heapdynamics context, including file-backed evidence when retained
 	    [evidence]                 = deduplicated shared heap and alloc/free evidence records
 	    [size_budget]              = final q1 request size and optional requested -maxsize target
