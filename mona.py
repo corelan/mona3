@@ -1299,6 +1299,7 @@ def _collectHeapDetails():
 		return result
 
 	for idx, mHeap in all_heaps_sorted:
+		interruptMona()
 		heapbase = getattr(mHeap, "heapbase", 0)
 		if not heapbase:
 			continue
@@ -1338,6 +1339,7 @@ def _collectHeapDetails():
 		heap_entry["largest_chunk_size"] = "0x0"
 		largest_chunk_size = 0
 		for seg in sortedsegments:
+			interruptMona()
 			segstart = segments[seg][0]
 			segend = segments[seg][1]
 			FirstEntry = segments[seg][2]
@@ -1367,6 +1369,7 @@ def _collectHeapDetails():
 			sortedblocks.sort()
 
 			for block in sortedblocks:
+				interruptMona()
 				thischunk = datablocks[block]
 				flagtxt = getHeapFlag(thischunk.flag)
 				blocksize = thischunk.size * HEAPGRANULARITY
@@ -1396,6 +1399,7 @@ def _collectHeapDetails():
 		sorted_va_blocks.sort()
 
 		for block in sorted_va_blocks:
+			interruptMona()
 			vainfo = vachunks[block]
 			vad_entry = OrderedDict()
 			vad_entry["block"] = PTR_PRINT % block
@@ -1843,6 +1847,39 @@ def _getDisasmSummary(address, depth_before=10, depth_after=10):
 	return result
 
 
+def _getControlFlowDisasmSourceForAddress(address):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("address", PTR_PRINT % address),
+		("analysis_scope", ""),
+		("function_start", ""),
+		("disasm_source", ""),
+	])
+	try:
+		ptr = MnPointer(address)
+		function_info = ptr.getContainingFunction()
+		function_start = function_info.get("start", 0)
+		found_function = function_info.get("found", False)
+		if found_function and isinstance(address, int) and address > 0:
+			result["analysis_scope"] = "function"
+			if isinstance(function_start, int) and function_start > 0:
+				result["function_start"] = PTR_PRINT % function_start
+			result["disasm_source"] = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
+			return result
+	except Exception as e:
+		mndbg.dbgp("tellme: full function disasm source lookup failed for %s: %s" % (
+			PTR_PRINT % address, str(e)
+		), errormode=False)
+	try:
+		result["analysis_scope"] = "code_window"
+		result["disasm_source"] = ensure_text(dbg.nativeCommand("u %s L100" % (PTR_PRINT % address))).strip()
+	except Exception as e:
+		mndbg.dbgp("tellme: code window disasm source lookup failed for %s: %s" % (
+			PTR_PRINT % address, str(e)
+		), errormode=False)
+	return result
+
+
 def tellMeHasCurrentInstruction(address):
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(address, int) or address <= 0:
@@ -1882,9 +1919,39 @@ def _resolveFunctionStart(address):
 	return address, "", "fallback", False
 
 
-def collectAICurrentFunctionContext(address, follow_depth=1):
+def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_address=False, context_cache=None, active_keys=None):
 	mndbg.dbgp(get_current_function_name())
-	context = {
+	if context_cache is None:
+		context_cache = {}
+	if active_keys is None:
+		active_keys = set()
+	cache_key = (int(address) if isinstance(address, int) else 0, int(follow_depth) if isinstance(follow_depth, int) else 1, bool(forward_only_from_address))
+	if cache_key in context_cache:
+		mndbg.dbgp("tellme: reusing cached function context for %s depth=%d forward_only=%s" % (
+			PTR_PRINT % cache_key[0] if cache_key[0] > 0 else "0x0",
+			cache_key[1],
+			str(cache_key[2])
+		))
+		return copy.deepcopy(context_cache[cache_key])
+	if cache_key in active_keys:
+		mndbg.dbgp("tellme: detected recursive/in-flight function context request for %s depth=%d forward_only=%s" % (
+			PTR_PRINT % cache_key[0] if cache_key[0] > 0 else "0x0",
+			cache_key[1],
+			str(cache_key[2])
+		))
+		return OrderedDict([
+			("requested_address", PTR_PRINT % address if isinstance(address, int) and address > 0 else "0x0"),
+			("source", ""),
+			("valid_location", False),
+			("valid_location_reason", "Skipped duplicate in-flight function context request"),
+			("analysis_scope", ""),
+			("control_flow_follow_depth", follow_depth if isinstance(follow_depth, int) and follow_depth > 0 else 1),
+			("forward_flow_from_requested_address", bool(forward_only_from_address)),
+			("skipped_duplicate_request", True),
+		])
+	active_keys.add(cache_key)
+	try:
+		context = {
 		"requested_address": PTR_PRINT % address,
 		"source": "",
 		"valid_location": False,
@@ -1899,116 +1966,174 @@ def collectAICurrentFunctionContext(address, follow_depth=1):
 		"code_before": "",
 		"code_after": "",
 		"resolution_method": "",
-	}
-	mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
-	if not isinstance(follow_depth, int) or follow_depth < 1:
-		follow_depth = 1
-	if follow_depth > 3:
-		follow_depth = 3
-	context["control_flow_follow_depth"] = follow_depth
-	has_instr, instr_reason = tellMeHasCurrentInstruction(address)
-	context["valid_location"] = has_instr
-	context["valid_location_reason"] = instr_reason
-	if not has_instr:
-		context["invalid_location"] = True
-		context["function_resolution_note"] = "The requested address is not a valid code location, so no containing function could be analyzed."
-		context["nearest_symbol_output"] = _getNearestSymbolOutput(address)
-		context["module"] = _getModuleSummary(address)
-		context["page"] = _getPageSummary(address)
+		}
+		mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
+		if not isinstance(follow_depth, int) or follow_depth < 1:
+			follow_depth = 1
+		if follow_depth > 4:
+			follow_depth = 4
+		context["control_flow_follow_depth"] = follow_depth
+		context["forward_flow_from_requested_address"] = bool(forward_only_from_address)
+		has_instr, instr_reason = tellMeHasCurrentInstruction(address)
+		context["valid_location"] = has_instr
+		context["valid_location_reason"] = instr_reason
+		if not has_instr:
+			context["invalid_location"] = True
+			context["function_resolution_note"] = "The requested address is not a valid code location, so no containing function could be analyzed."
+			context["nearest_symbol_output"] = _getNearestSymbolOutput(address)
+			context["module"] = _getModuleSummary(address)
+			context["page"] = _getPageSummary(address)
+			context_cache[cache_key] = copy.deepcopy(context)
+			return context
+
+		ptr = MnPointer(address)
+		function_info = ptr.getContainingFunction()
+		resolved_symbol = function_info.get("symbol", "")
+		resolution_method = function_info.get("method", "none")
+		found_function = function_info.get("found", False)
+		function_start = function_info.get("start", 0)
+		context["resolution_method"] = resolution_method
+		if isinstance(function_start, int) and function_start > 0:
+			context["function_start"] = PTR_PRINT % function_start
+		else:
+			function_start = address
+		if isinstance(function_start, int) and function_start > 0 and isinstance(address, int) and address >= function_start:
+			context["offset_from_function_start"] = function_info.get("offset", "0x%x" % (address - function_start))
+
+		try:
+			fname, foffset = getFunctionName(address)
+			context["symbol"] = fname
+			context["symbol_offset"] = foffset
+		except Exception as e:
+			context["symbol_error"] = str(e)
+			mndbg.dbgp("tellme: getFunctionName failed: %s" % str(e), errormode=False)
+
+		try:
+			funcinfo = dbglib.Function(dbg, address)
+			symname = ensure_text(funcinfo.addressToSymbol())
+			if symname != "":
+				context["address_to_symbol"] = symname
+			if context["symbol"] == "" and resolved_symbol != "":
+				context["symbol"] = resolved_symbol
+		except Exception as e:
+			context["address_to_symbol_error"] = str(e)
+			mndbg.dbgp("tellme: addressToSymbol failed: %s" % str(e), errormode=False)
+
+		commands = [("nearest_symbol_output", "ln %s" % (PTR_PRINT % address))]
+		if found_function:
+			commands.append(("uf_output", "uf %s" % (PTR_PRINT % address)))
+			if forward_only_from_address:
+				commands.append(("code_after", "u %s L100" % (PTR_PRINT % address)))
+			context["analysis_scope"] = "function"
+		else:
+			commands.append(("code_before", "ub %s L100" % (PTR_PRINT % address)))
+			commands.append(("code_after", "u %s L100" % (PTR_PRINT % address)))
+			context["analysis_scope"] = "code_window"
+
+		total_commands = len(commands)
+		if total_commands > 0:
+			dbg.log("    Collecting function context using %d debugger quer%s" % (
+				total_commands,
+				"y" if total_commands == 1 else "ies"
+			))
+		startmoment = time.time()
+		next_report_pct = 10
+		done_commands = 0
+		for label, cmd in commands:
+			interruptMona()
+			done_commands += 1
+			try:
+				output = dbg.nativeCommand(cmd)
+				context[label] = ensure_text(output).strip()
+			except Exception as e:
+				context[label + "_error"] = str(e)
+				mndbg.dbgp("tellme: nativeCommand '%s' failed: %s" % (cmd, str(e)), errormode=False)
+			if total_commands > 0:
+				pct_done = (done_commands * 100.0) / total_commands
+				if pct_done >= next_report_pct or done_commands == total_commands:
+					eta = get_eta(startmoment, done_commands, total_commands)
+					dbg.log("      - Function context queries: %d/%d (%.2f%%) - ETA: %s" % (
+						done_commands,
+						total_commands,
+						pct_done,
+						eta
+					))
+					while next_report_pct <= pct_done:
+						next_report_pct += 10
+
+		if not found_function:
+			context["function_resolution_note"] = "Unable to confidently resolve a containing function start. Falling back to code around the requested address."
+		elif context.get("uf_output", "") != "":
+			uf_metadata = _extractFunctionMetadataFromUfOutput(context.get("uf_output", ""))
+			uf_start = uf_metadata.get("function_start", 0)
+			uf_symbol = ensure_text(uf_metadata.get("symbol", "")).strip()
+			if isinstance(uf_start, int) and uf_start > 0:
+				context["function_start"] = PTR_PRINT % uf_start
+				if isinstance(address, int) and address >= uf_start:
+					context["offset_from_function_start"] = "0x%x" % (address - uf_start)
+			if uf_symbol != "":
+				context["uf_symbol"] = uf_symbol
+				if context.get("symbol", "") == "" or context.get("symbol", "") != uf_symbol:
+					context["symbol_from_uf"] = uf_symbol
+
+		disasm_source = ""
+		if found_function and forward_only_from_address and context.get("code_after", "") != "":
+			disasm_source = context.get("code_after", "")
+			context["control_flow_source"] = "forward_from_requested_address"
+		elif context.get("uf_output", "") != "":
+			disasm_source = context.get("uf_output", "")
+			context["control_flow_source"] = "full_function"
+		else:
+			disasm_parts = []
+			if context.get("code_before", "") != "":
+				disasm_parts.append(context.get("code_before", ""))
+			if context.get("code_after", "") != "":
+				disasm_parts.append(context.get("code_after", ""))
+			disasm_source = "\n".join(disasm_parts).strip()
+			context["control_flow_source"] = "code_window"
+		dbg.log("    Function context disassembly source: %s" % context.get("control_flow_source", "unknown"))
+		if disasm_source != "":
+			disasm_entries = _parseDisassemblyTextEntries(disasm_source)
+			dbg.log("    Parsing %d disassembly line%s for control-flow targets" % (
+				len(disasm_entries),
+				"" if len(disasm_entries) == 1 else "s"
+			))
+			context["control_flow_targets"] = _collectDisassemblyTargetContexts(disasm_source, max_depth=follow_depth)
+			dbg.log("    Collected %d top-level control-flow target%s" % (
+				len(context["control_flow_targets"]),
+				"" if len(context["control_flow_targets"]) == 1 else "s"
+			))
+		else:
+			context["control_flow_targets"] = []
+			dbg.log("    No disassembly source was available for control-flow target extraction")
+
+		if (
+			found_function and
+			isinstance(function_start, int) and function_start > 0 and
+			isinstance(address, int) and address >= function_start and
+			(address - function_start) <= 16
+		):
+			try:
+				regs = getAllRegisters()
+			except Exception as e:
+				regs = {}
+				context["near_entry_context_error"] = "Unable to collect registers: %s" % str(e)
+			if regs:
+				entry_context = OrderedDict()
+				entry_context["within_first_bytes_of_function"] = 16
+				entry_context["requested_address_offset"] = "0x%x" % (address - function_start)
+				entry_context["instruction_pointer"] = PTR_PRINT % address
+				sp = regs.get(STACK_POINTER, 0)
+				if isinstance(sp, int) and sp > 0:
+					entry_context["stack_pointer"] = PTR_PRINT % sp
+					entry_context["stack_memory"] = _readMemoryPreview(sp, 0x64, "q2_near_entry_stack_memory")
+				entry_context["registers"] = regs
+				context["near_entry_execution_context"] = entry_context
+
+		context_cache[cache_key] = copy.deepcopy(context)
 		return context
-
-	ptr = MnPointer(address)
-	function_info = ptr.getContainingFunction()
-	resolved_symbol = function_info.get("symbol", "")
-	resolution_method = function_info.get("method", "none")
-	found_function = function_info.get("found", False)
-	function_start = function_info.get("start", 0)
-	context["resolution_method"] = resolution_method
-	if isinstance(function_start, int) and function_start > 0:
-		context["function_start"] = PTR_PRINT % function_start
-	else:
-		function_start = address
-	if isinstance(function_start, int) and function_start > 0 and isinstance(address, int) and address >= function_start:
-		context["offset_from_function_start"] = function_info.get("offset", "0x%x" % (address - function_start))
-
-	try:
-		fname, foffset = getFunctionName(address)
-		context["symbol"] = fname
-		context["symbol_offset"] = foffset
-	except Exception as e:
-		context["symbol_error"] = str(e)
-		mndbg.dbgp("tellme: getFunctionName failed: %s" % str(e), errormode=False)
-
-	try:
-		funcinfo = dbglib.Function(dbg, address)
-		symname = ensure_text(funcinfo.addressToSymbol())
-		if symname != "":
-			context["address_to_symbol"] = symname
-		if context["symbol"] == "" and resolved_symbol != "":
-			context["symbol"] = resolved_symbol
-	except Exception as e:
-		context["address_to_symbol_error"] = str(e)
-		mndbg.dbgp("tellme: addressToSymbol failed: %s" % str(e), errormode=False)
-
-	commands = [("nearest_symbol_output", "ln %s" % (PTR_PRINT % address))]
-	if found_function:
-		commands.append(("uf_output", "uf %s" % (PTR_PRINT % function_start)))
-		context["analysis_scope"] = "function"
-	else:
-		commands.append(("code_before", "ub %s L100" % (PTR_PRINT % address)))
-		commands.append(("code_after", "u %s L100" % (PTR_PRINT % address)))
-		context["analysis_scope"] = "code_window"
-
-	for label, cmd in commands:
-		try:
-			output = dbg.nativeCommand(cmd)
-			context[label] = ensure_text(output).strip()
-		except Exception as e:
-			context[label + "_error"] = str(e)
-			mndbg.dbgp("tellme: nativeCommand '%s' failed: %s" % (cmd, str(e)), errormode=False)
-
-	if not found_function:
-		context["function_resolution_note"] = "Unable to confidently resolve a containing function start. Falling back to code around the requested address."
-
-	disasm_source = ""
-	if context.get("uf_output", "") != "":
-		disasm_source = context.get("uf_output", "")
-	else:
-		disasm_parts = []
-		if context.get("code_before", "") != "":
-			disasm_parts.append(context.get("code_before", ""))
-		if context.get("code_after", "") != "":
-			disasm_parts.append(context.get("code_after", ""))
-		disasm_source = "\n".join(disasm_parts).strip()
-	if disasm_source != "":
-		context["control_flow_targets"] = _collectDisassemblyTargetContexts(disasm_source, max_depth=follow_depth)
-	else:
-		context["control_flow_targets"] = []
-
-	if (
-		found_function and
-		isinstance(function_start, int) and function_start > 0 and
-		isinstance(address, int) and address >= function_start and
-		(address - function_start) <= 16
-	):
-		try:
-			regs = getAllRegisters()
-		except Exception as e:
-			regs = {}
-			context["near_entry_context_error"] = "Unable to collect registers: %s" % str(e)
-		if regs:
-			entry_context = OrderedDict()
-			entry_context["within_first_bytes_of_function"] = 16
-			entry_context["requested_address_offset"] = "0x%x" % (address - function_start)
-			entry_context["instruction_pointer"] = PTR_PRINT % address
-			sp = regs.get(STACK_POINTER, 0)
-			if isinstance(sp, int) and sp > 0:
-				entry_context["stack_pointer"] = PTR_PRINT % sp
-				entry_context["stack_memory"] = _readMemoryPreview(sp, 0x64, "q2_near_entry_stack_memory")
-			entry_context["registers"] = regs
-			context["near_entry_execution_context"] = entry_context
-
-	return context
+	finally:
+		active_keys.discard(cache_key)
 
 
 def _parseDisassemblyTextEntries(disasm_text):
@@ -2052,6 +2177,7 @@ def _normalizeDisassemblyTargetOperand(operand):
 	normalized = ensure_text(operand).strip().lower()
 	if ";" in normalized:
 		normalized = normalized.split(";", 1)[0].strip()
+	normalized = re.sub(r"<[^>]*>", "", normalized).strip()
 	if " (" in normalized:
 		normalized = normalized.split(" (", 1)[0].strip()
 	for prefix in [
@@ -2066,6 +2192,7 @@ def _normalizeDisassemblyTargetOperand(operand):
 	]:
 		while normalized.startswith(prefix):
 			normalized = normalized[len(prefix):].strip()
+	normalized = re.sub(r"\s+", " ", normalized).strip()
 	return normalized
 
 
@@ -2092,7 +2219,30 @@ def _resolveDisassemblyTargetOperand(operand):
 	if normalized.startswith("[") and normalized.endswith("]"):
 		result["indirect"] = True
 
-	target_address, addyok = getAddyArg(normalized)
+	target_address = 0
+	addyok = False
+	operand_text = ensure_text(operand).strip()
+	address_matches = re.findall(r"\(([0-9a-fA-F`]+)\)", operand_text)
+	if len(address_matches) > 0:
+		try:
+			candidate = address_matches[-1].replace("`", "")
+			target_address = int(candidate, 16)
+			addyok = True
+			result["resolution_reason"] = "Resolved from trailing parenthesized address in disassembly output"
+		except Exception:
+			target_address = 0
+			addyok = False
+	if not addyok or target_address <= 0:
+		target_address, addyok = getAddyArg(normalized)
+	if (not addyok or target_address <= 0):
+		hex_matches = re.findall(r"\b([0-9a-fA-F]{6,16})\b", operand_text.replace("`", ""))
+		if len(hex_matches) > 0:
+			try:
+				target_address = int(hex_matches[-1], 16)
+				addyok = True
+				result["resolution_reason"] = "Resolved from trailing hexadecimal token in disassembly output"
+			except Exception:
+				pass
 	if not addyok or target_address <= 0:
 		result["resolution_reason"] = "Unable to resolve target operand to a concrete address"
 		return result
@@ -2103,7 +2253,25 @@ def _resolveDisassemblyTargetOperand(operand):
 	return result
 
 
-def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, current_depth=1, visited_targets=None):
+def _classifyControlFlowInstruction(instruction):
+	mndbg.dbgp(get_current_function_name())
+	instruction = ensure_text(instruction).strip().lower()
+	if instruction == "":
+		return "", ""
+	mnemonic = instruction.split(" ", 1)[0]
+	operand = ""
+	if " " in instruction:
+		operand = instruction.split(" ", 1)[1].strip()
+	if mnemonic == "call":
+		return "call", operand
+	if mnemonic == "jmp":
+		return "jmp", operand
+	if mnemonic.startswith("j") and mnemonic not in ["jmp"]:
+		return "conditional_jmp", operand
+	return "", ""
+
+
+def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, current_depth=1, visited_targets=None, target_context_cache=None, nested_target_cache=None):
 	mndbg.dbgp(get_current_function_name())
 	targets = []
 	entries = _parseDisassemblyTextEntries(disasm_text)
@@ -2111,21 +2279,62 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		return targets
 	if visited_targets is None:
 		visited_targets = set()
+	if target_context_cache is None:
+		target_context_cache = {}
+	if nested_target_cache is None:
+		nested_target_cache = {}
 	if not isinstance(max_depth, int) or max_depth < 1:
 		max_depth = 1
+	if current_depth == 1:
+		dbg.log("    Expanding control-flow targets up to depth %d" % max_depth)
+	else:
+		dbg.log("      - Exploring nested control-flow targets at depth %d/%d" % (current_depth, max_depth))
 
-	cached_target_contexts = {}
+	candidate_count = 0
+	total_entries = len(entries)
+	startmoment = time.time()
+	next_report_pct = 10
+	processed_entries = 0
 	for entry in entries:
+		interruptMona()
+		processed_entries += 1
+		pct_done = 0.0
+		if total_entries > 0:
+			pct_done = (processed_entries * 100.0) / total_entries
 		if len(targets) >= max_targets:
+			if total_entries > 0:
+				eta = get_eta(startmoment, processed_entries, total_entries)
+				dbg.log("      - Control-flow expansion reached max target budget (%d/%d scanned, %.2f%%) - ETA: %s" % (
+					processed_entries,
+					total_entries,
+					pct_done,
+					eta
+				))
 			break
 		instruction = entry.get("instruction", "")
-		if not (instruction.startswith("call ") or instruction.startswith("jmp ")):
+		target_kind, operand = _classifyControlFlowInstruction(instruction)
+		if target_kind == "" or operand == "":
+			if total_entries > 0:
+				if pct_done >= next_report_pct or processed_entries == total_entries:
+					eta = get_eta(startmoment, processed_entries, total_entries)
+					dbg.log("      - Control-flow expansion: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
+						processed_entries,
+						total_entries,
+						pct_done,
+						eta
+					))
+					while next_report_pct <= pct_done:
+						next_report_pct += 10
 			continue
+		candidate_count += 1
+		if candidate_count <= 5:
+			dbg.log("      - Candidate depth %d: %s @ %s -> %s" % (
+				current_depth,
+				target_kind,
+				entry.get("address_text", ""),
+				operand
+			))
 
-		target_kind = "call"
-		if instruction.startswith("jmp "):
-			target_kind = "jmp"
-		operand = instruction.split(" ", 1)[1].strip()
 		target_entry = OrderedDict([
 			("kind", target_kind),
 			("instruction_address", entry.get("address_text", "")),
@@ -2138,45 +2347,74 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			if key not in target_entry:
 				target_entry[key] = value
 		if not resolved.get("resolved", False):
+			if candidate_count <= 5:
+				dbg.log("        unresolved: %s" % ensure_text(target_entry.get("resolution_reason", "")).strip())
 			targets.append(target_entry)
 			continue
 
 		target_address = resolved.get("target_address", 0)
-		if target_address not in cached_target_contexts:
-			cached_target_contexts[target_address] = OrderedDict([
+		if candidate_count <= 5:
+			dbg.log("        resolved target: %s" % (PTR_PRINT % target_address))
+		if target_address not in target_context_cache:
+			flow_disasm = _getControlFlowDisasmSourceForAddress(target_address)
+			target_context_cache[target_address] = OrderedDict([
 				("module", _getModuleSummary(target_address)),
 				("symbol", _getSymbolName(target_address)),
 				("nearest_symbol_output", _getNearestSymbolOutput(target_address)),
-				("disasm", _getDisasmSummary(target_address, depth_before=0, depth_after=10))
+				("disasm", _getDisasmSummary(target_address, depth_before=0, depth_after=10)),
+				("control_flow_disasm", flow_disasm.get("disasm_source", "")),
+				("control_flow_scope", flow_disasm.get("analysis_scope", "")),
+				("control_flow_function_start", flow_disasm.get("function_start", "")),
 			])
-		for key, value in cached_target_contexts[target_address].items():
+		for key, value in target_context_cache[target_address].items():
 			target_entry[key] = value
 		target_entry["follow_depth"] = current_depth
-		target_key = (target_kind, target_address)
-		if current_depth < max_depth and target_key not in visited_targets:
+		target_key = target_address
+		nested_cache_key = (target_address, current_depth + 1, max_depth)
+		if nested_cache_key in nested_target_cache:
+			nested_targets = copy.deepcopy(nested_target_cache[nested_cache_key])
+			if len(nested_targets) > 0:
+				target_entry["nested_control_flow_targets"] = nested_targets
+		elif current_depth < max_depth and target_key not in visited_targets:
 			next_visited = set(visited_targets)
 			next_visited.add(target_key)
-			nested_disasm = cached_target_contexts[target_address].get("disasm", {})
-			disasm_lines = []
-			if isinstance(nested_disasm, dict):
-				current_instr = ensure_text(nested_disasm.get("current", "")).strip()
-				if current_instr != "":
-					disasm_lines.append("%s %s" % (PTR_PRINT % target_address, current_instr))
-				for after_line in nested_disasm.get("after", []):
-					after_line = ensure_text(after_line).strip()
-					if after_line != "":
-						disasm_lines.append(after_line)
-			if len(disasm_lines) > 0:
+			nested_disasm_source = ensure_text(target_context_cache[target_address].get("control_flow_disasm", "")).strip()
+			if nested_disasm_source != "":
+				dbg.log("        descending into %s at depth %d" % (
+					PTR_PRINT % target_address,
+					current_depth + 1
+				))
 				nested_targets = _collectDisassemblyTargetContexts(
-					"\n".join(disasm_lines),
+					nested_disasm_source,
 					max_targets=max_targets,
 					max_depth=max_depth,
 					current_depth=current_depth + 1,
-					visited_targets=next_visited
+					visited_targets=next_visited,
+					target_context_cache=target_context_cache,
+					nested_target_cache=nested_target_cache
 				)
+				nested_target_cache[nested_cache_key] = copy.deepcopy(nested_targets)
 				if len(nested_targets) > 0:
 					target_entry["nested_control_flow_targets"] = nested_targets
 		targets.append(target_entry)
+		if total_entries > 0:
+			pct_done = (processed_entries * 100.0) / total_entries
+			if pct_done >= next_report_pct or processed_entries == total_entries:
+				eta = get_eta(startmoment, processed_entries, total_entries)
+				dbg.log("      - Control-flow expansion: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
+					processed_entries,
+					total_entries,
+					pct_done,
+					eta
+				))
+				while next_report_pct <= pct_done:
+					next_report_pct += 10
+	if candidate_count > 5:
+		dbg.log("      - %d additional control-flow candidate%s omitted from verbose logging at depth %d" % (
+			candidate_count - 5,
+			"" if (candidate_count - 5) == 1 else "s",
+			current_depth
+		))
 	return targets
 
 
@@ -2828,6 +3066,7 @@ def _collectInstructionHeapContext(regs, pc, extra_references=None):
 	exact_match_count = 0
 	heap_hint_count = 0
 	for ref_name, reg_value, ref_source in reference_items:
+		interruptMona()
 		dedup_key = (ref_name.lower(), reg_value)
 		if dedup_key in seen_references:
 			mndbg.dbgp("tellme: skipping duplicate heap reference candidate '%s'=%s" % (
@@ -3244,8 +3483,8 @@ def _collectRopTargetModules(args):
 	modulestosearch = getModulesToQuery(modulecriteria)
 	if len(modulestosearch) == 0:
 		if has_module_scope:
-			raise ValueError("Question profile '-q 3' did not match any modules with the supplied -m/-cm/-cmp filters")
-		raise ValueError("Question profile '-q 3' did not match any non-ASLR, non-rebased modules")
+			raise ValueError("Question profile '-q 8' did not match any modules with the supplied -m/-cm/-cmp filters")
+		raise ValueError("Question profile '-q 8' did not match any non-ASLR, non-rebased modules")
 
 	selection = OrderedDict()
 	selection["architecture"] = OrderedDict([
@@ -3327,10 +3566,10 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 
 	pc = regs.get(PROGRAM_COUNTER, 0)
 	sp = regs.get(STACK_POINTER, 0)
-	if question_type == "1":
+	if question_type in ["1", "3"]:
 		try:
 			extra_references = []
-			if isinstance(heap_target_address, int) and heap_target_address > 0:
+			if question_type == "1" and isinstance(heap_target_address, int) and heap_target_address > 0:
 				extra_references.append({
 					"name": "manual_target",
 					"value": heap_target_address,
@@ -3345,6 +3584,13 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["instruction_heap_references_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
 		try:
+			context["heap_details"] = _collectHeapDetails()
+		except Exception as e:
+			context["heap_details_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect heap_details: %s" % str(e), errormode=False)
+
+	if question_type == "1":
+		try:
 			context["findmsp"] = _getFindMspSummary(args=ai_args or {})
 			if context["findmsp"].get("seh", []):
 				context["findseh"] = _getFindSehSummaryFromFindmsp(context["findmsp"], args=ai_args or {})
@@ -3353,13 +3599,8 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["findmsp_error_type"] = e.__class__.__name__
 			context["findmsp_error_traceback"] = traceback.format_exc()
 			mndbg.dbgp("tellme: failed to collect findmsp context:\n%s" % context["findmsp_error_traceback"], errormode=False)
-		try:
-			context["heap_details"] = _collectHeapDetails()
-		except Exception as e:
-			context["heap_details_error"] = str(e)
-			mndbg.dbgp("tellme: failed to collect heap_details: %s" % str(e), errormode=False)
 
-	if question_type != "3":
+	if question_type != "8":
 		try:
 			context["modules"] = _formatContextText(_renderModulesText(focus_addresses=[pc], max_modules=0), max_len=65535)
 			context["modules_full"] = context["modules"]
@@ -3367,7 +3608,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["modules_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
 
-	if question_type == "1" and isinstance(pc, int) and pc > 0:
+	if question_type in ["1", "3"] and isinstance(pc, int) and pc > 0:
 		context["program_counter"] = PTR_PRINT % pc
 		context["pc_disasm"] = _getDisasmSummary(pc)
 		context["pc_page"] = _getPageSummary(pc)
@@ -3382,7 +3623,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["heapdynamics_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
 
-	if question_type == "1" and isinstance(sp, int) and sp > 0:
+	if question_type in ["1", "3"] and isinstance(sp, int) and sp > 0:
 		context["stack_pointer"] = PTR_PRINT % sp
 		context["stack_page"] = _getPageSummary(sp)
 		context["stack_memory"] = _readMemoryPreview(sp, 0x100, "stack_memory")
@@ -3394,6 +3635,8 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		context["call_stack"] = _getCallStack("kb", max_lines=20)
 		context["windbg_analyze"] = _getWindbgAnalyze("!analyze -v")
 		context["windbg_analyze_full"] = context["windbg_analyze"]
+	if question_type == "3":
+		context["call_stack"] = _getCallStack("kb", max_lines=20)
 	if additional_context_files is None:
 		additional_context_files = []
 	if len(additional_context_files) > 0:
@@ -3411,10 +3654,12 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 	mndbg.dbgp("tellme: building prompt for question type '%s'" % question_type)
 	if question_type == "1":
 		request_variables = _optimizeQ1RequestVariables(context, maxsize_kb=maxsize_kb)
+	elif question_type == "3":
+		request_variables = _optimizeQ3RequestVariables(context, maxsize_kb=maxsize_kb)
 	else:
 		request_variables = _buildRequestVariables(context)
 
-	if question_type in ["1", "2"]:
+	if question_type in ["1", "2", "3"]:
 		modules_info = request_variables.get("modules", {})
 		if isinstance(modules_info, dict):
 			for key in ["relevant_module_names", "relevant_module_names_truncated"]:
@@ -5770,6 +6015,103 @@ def _optimizeQ1RequestVariables(context, maxsize_kb=0):
 	return variables
 
 
+def _safeTextValue(value):
+	mndbg.dbgp(get_current_function_name())
+	if value is None:
+		return ""
+	if isinstance(value, bytes):
+		try:
+			return value.decode("latin-1", "replace")
+		except Exception:
+			return repr(value)
+	try:
+		return str(value)
+	except Exception:
+		return ""
+
+
+def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(target_entries, list):
+		return
+	for target_entry in target_entries:
+		if not isinstance(target_entry, dict):
+			continue
+		control_flow_disasm = _safeTextValue(target_entry.get("control_flow_disasm", "")).strip()
+		disasm_preview = _safeTextValue(target_entry.get("disasm", "")).strip()
+		target_address_text = _safeTextValue(target_entry.get("target_address_text", "")).strip()
+		if control_flow_disasm != "":
+			if disasm_preview != "":
+				target_entry["disasm_preview"] = disasm_preview
+				target_entry["disasm"] = ""
+			if control_flow_disasm in seen_control_flow_disasm:
+				target_entry["control_flow_disasm_ref"] = seen_control_flow_disasm[control_flow_disasm]
+				target_entry["control_flow_disasm"] = ""
+			else:
+				ref_value = target_address_text if target_address_text != "" else _safeTextValue(target_entry.get("symbol", "")).strip()
+				if ref_value != "":
+					seen_control_flow_disasm[control_flow_disasm] = ref_value
+		nested_targets = target_entry.get("nested_control_flow_targets", [])
+		if isinstance(nested_targets, list) and len(nested_targets) > 0:
+			_compactQ3TargetEntries(nested_targets, seen_control_flow_disasm)
+
+
+def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, preserve_full_uf=False):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(function_context, dict):
+		return
+	uf_output = _safeTextValue(function_context.get("uf_output", "")).strip()
+	if preserve_full_uf:
+		if uf_output != "":
+			ref_value = _safeTextValue(function_context.get("requested_address", "")).strip()
+			if ref_value == "":
+				ref_value = _safeTextValue(function_context.get("function_start", "")).strip()
+			if ref_value != "":
+				seen_control_flow_disasm[uf_output] = ref_value
+	else:
+		if uf_output != "":
+			if uf_output in seen_control_flow_disasm:
+				function_context["uf_output_ref"] = seen_control_flow_disasm[uf_output]
+				function_context["uf_output"] = ""
+			else:
+				ref_value = _safeTextValue(function_context.get("requested_address", "")).strip()
+				if ref_value == "":
+					ref_value = _safeTextValue(function_context.get("function_start", "")).strip()
+				if ref_value != "":
+					seen_control_flow_disasm[uf_output] = ref_value
+	if function_context.get("analysis_scope", "") == "function":
+		function_context["code_before"] = ""
+		if not bool(function_context.get("forward_flow_from_requested_address", False)):
+			function_context["code_after"] = ""
+	target_entries = function_context.get("control_flow_targets", [])
+	if isinstance(target_entries, list) and len(target_entries) > 0:
+		_compactQ3TargetEntries(target_entries, seen_control_flow_disasm)
+
+
+def _optimizeQ3RequestVariables(context, maxsize_kb=0):
+	mndbg.dbgp(get_current_function_name())
+	variables = _buildRequestVariables(context)
+	seen_control_flow_disasm = {}
+	if "modules" in variables:
+		original_modules = variables.get("modules", "")
+		variables["modules_full"] = original_modules
+		variables["modules"] = _buildCompactModulesSummary(context)
+	if "current_function" in variables and isinstance(variables.get("current_function"), dict):
+		_compactQ3FunctionContext(variables["current_function"], seen_control_flow_disasm, preserve_full_uf=True)
+	if "target_function" in variables and isinstance(variables.get("target_function"), dict):
+		_compactQ3FunctionContext(variables["target_function"], seen_control_flow_disasm, preserve_full_uf=False)
+	if "caller_function" in variables and isinstance(variables.get("caller_function"), dict):
+		_compactQ3FunctionContext(variables["caller_function"], seen_control_flow_disasm, preserve_full_uf=False)
+	if "caller_chain" in variables and isinstance(variables.get("caller_chain"), list):
+		for frame_entry in variables["caller_chain"]:
+			if not isinstance(frame_entry, dict):
+				continue
+			caller_func = frame_entry.get("caller_function", {})
+			if isinstance(caller_func, dict):
+				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, preserve_full_uf=False)
+	return variables
+
+
 def _buildRequestVariables(context):
 	mndbg.dbgp(get_current_function_name())
 	variables = OrderedDict()
@@ -5957,6 +6299,140 @@ Do not invent facts that are not present in the snapshot.""" % (
 		)
 	if question_type == "3":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+
+Focus on bounded reachability from the current instruction pointer to a supplied target address by changing only the contents of a supplied controlled heap chunk.
+
+Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
+
+Use the entries under 'variables' as the debugger context. Prioritize q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, and additional_context_files.
+
+Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live register values, and disassembly listings over summary-style debugger diagnostics.
+
+Use the supplied architecture and pointer_size fields to interpret registers, pointer-sized values, stack arguments, calling convention patterns, object pointers, and memory operands. Do not assume a 32-bit process, 32-bit registers, 4-byte pointers, or x86 calling conventions unless the request explicitly indicates them.
+
+Modes:
+- targeted mode: reachability_target is present. Determine whether execution can plausibly reach that target address if only bytes inside the controlled chunk are changed.
+- discovery mode: reachability_target is absent. Identify the nearest reachable code paths that are most likely to:
+  1. write to or otherwise modify the controlled chunk
+  2. consume controlled data in a way that could lead to instruction-pointer control, such as vftable use, callback use, indirect call/jmp through controlled memory, indirect branch or call through a pointer-sized register or memory operand loaded from controlled-derived memory, or function-pointer dereference
+
+Allowed path classes:
+1. intra-function path: the current function reaches the target before returning
+2. callee-mediated path: the current function reaches a callee which then reaches the target or a controlled-data sink
+3. return-resume path: the current function returns, execution resumes in the caller, and the caller then reaches the target or a controlled-data sink
+
+Expanded sink-discovery rules:
+- Always identify all strong controllable indirect control transfers (vftable calls, indirect calls, indirect jumps, register-indirect branches, memory-indirect branches, jmp edx/eax/etc. through controlled-derived pointers) that are reachable from the current IP by changing only the controlled chunk.
+- Do not stop at only the two strongest sinks. Present the primary (earliest/shortest) sink, then every other materially distinct sink even if they share a common prefix path.
+- “Materially distinct” includes any different indirect transfer instruction (different offset in a vtable, different register used for the jump, different callee that performs the dispatch, etc.), even if the paths diverge only after several instructions or inside the same callee.
+- Explicitly call out multiple sinks that live on the same initial route.
+
+Rules:
+- Stay bounded to the collected snapshot. Do not assume future heap grooming, additional corruption, or arbitrary execution unless the snapshot already supports it.
+- Use lightweight symbolic reasoning over the collected disassembly, current registers, stack values, and chunk fields when needed to explain which branches can be taken and which values would be required. Do not invent unobserved state.
+- When a path depends on condition flags or bit tests against controlled memory, spell out the predicate exactly in terms of the relevant chunk offsets and bits.
+- Explicitly examine all reachable indirect control transfers, including:
+  - vftable calls
+  - indirect calls
+  - indirect jumps
+  - register-indirect branches
+  - register-indirect calls
+  - memory-indirect branches
+  - memory-indirect calls
+  - call through [reg+offset] or equivalent pointer-sized memory operand
+  - jump through [reg+offset] or equivalent pointer-sized memory operand
+- This requirement applies inside the current function, inside reachable direct callees, and inside caller-side post-return code.
+
+Controlled-object and callee expansion rules:
+- Treat the controlled chunk as a potential object, structure, vtable holder, dispatch holder, callback container, pointer array, or object field container when registers or stack slots reference it.
+- Track controlled-derived pointers through simple register moves, stack pushes, stack argument setup, pointer-sized loads, stores, LEA-style address calculations, and callee setup sequences.
+- When a reachable direct call receives the controlled chunk pointer, or a pointer derived from the controlled chunk, in an argument register, object/this pointer register, general-purpose register, or stack argument, do not treat that callee as opaque.
+- Treat architecture-appropriate argument setup and register/data movement immediately before a call as strong evidence that the callee consumes controlled object state when the source is the controlled chunk or a controlled-derived pointer.
+- This includes, but is not limited to:
+    mov arg_reg, controlled_reg
+    mov general_reg, controlled_reg
+    push controlled_reg
+    push [controlled_reg+offset]
+    lea general_reg, [controlled_reg+offset]
+    mov general_reg, [controlled_reg+offset]
+    mov [stack_arg], controlled_reg
+    mov [stack_arg], [controlled_reg+offset]
+- Interpret arg_reg, general_reg, stack_arg, and pointer-sized memory operands according to the active architecture, calling convention, and pointer size supplied in the request.
+- For each such callee, expand the callee as first-class scope:
+  1. analyze its internal conditional branches
+  2. map memory reads back to controlled chunk offsets where possible
+  3. identify all reads through controlled-derived base registers
+  4. identify all indirect transfers whose source is controlled-derived
+- If the caller moves a controlled chunk pointer, or a controlled-derived pointer, into the callee's object/argument register, then callee reads through that register must be translated back to controlled chunk offsets where possible.
+
+Sink ranking rules:
+- Prefer the earliest reachable indirect control transfer whose target or target source is derived from the controlled chunk.
+- A callee-mediated indirect branch or indirect call sourced from controlled-derived memory should rank above a later parent-function vtable call if the callee path has fewer uncontrolled dependencies.
+- Rank sinks higher when:
+  1. the controlled chunk directly controls the branch predicates needed to reach the sink
+  2. the controlled chunk directly controls the object pointer, vtable pointer, callback pointer, dispatch pointer, or final transfer target
+  3. the sink occurs before returning to the caller
+  4. fewer external/non-controlled conditions are required
+- When multiple sinks exist on the same prefix path, still list them separately as primary + alternatives because they may offer different gadgets or different post-dispatch behavior.
+
+Center the analysis on:
+  1. the chunk dump and pointer-like fields inside the controlled chunk
+  2. stack slots and registers that already reference the chunk
+  3. concrete disassembly listings for the current function, reachable callees, conditional jump targets, unconditional jump targets, parent/caller functions from the call stack, and caller-resume sites
+  4. direct callees reached with controlled-derived register or stack arguments
+  5. indirect control transfers inside those callees
+  6. branch predicates inside callees that read from controlled-derived base registers
+
+Answer in this exact order:
+
+1. reachability verdict
+In targeted mode, state whether reaching the target is CONFIRMED, PLAUSIBLE, or NOT SHOWN.
+In discovery mode, state whether a path to chunk modification or likely instruction-pointer-control consumption is CONFIRMED, PLAUSIBLE, or NOT SHOWN.
+
+2. path class
+Choose exactly one for the primary scenario: intra-function, callee-mediated, or return-resume.
+
+3. primary scenario
+Describe the shortest evidence-backed path from the current instruction pointer to the earliest reachable controlled sink (indirect transfer). Include the exact disassembly snippet that performs the transfer.
+
+4. primary scenario chunk requirements
+List only offsets in the controlled chunk that materially influence the path. For each one, give:
+- chunk offset
+- why that offset matters
+- required value type
+- required value or property when it can be stated concretely
+
+5. alternative scenarios
+List every additional strong controllable indirect transfer reachable from the current IP (even if they share the same initial route as the primary path). For each:
+- short description of the path and the exact indirect transfer instruction
+- whether it is intra-function, callee-mediated, or return-resume
+- how it differs from the primary (different vtable slot, different register used for jmp, different callee, etc.)
+
+6. alternative scenarios chunk requirements
+For each alternative, list the controlled chunk offsets, positions, and required values (same format as primary).
+
+7. blocking conditions
+State which conditions are outside the controlled chunk and therefore would still need to be satisfied.
+
+8. target reachability rationale
+Explain why the identified sinks are reachable, citing branch conditions, indirect calls/jumps, return sites, callee-mediated transfers, etc. Explicitly note when multiple sinks share a common prefix path.
+
+9. minimal next checks
+If the snapshot is insufficient, list the smallest additional debugger checks needed to confirm or reject any of the presented paths.
+
+10. fallback breakpoint candidates
+List the concrete reachable_functions entries that are the best breakpoint candidates for continuing the analysis. Include address, symbol, path class, and one-line reason.
+
+Style rules:
+- Be concise and technical.
+- Use addresses, offsets, register names, and field offsets numerically.
+- Do not transcribe long raw dumps.
+- When discussing control flow, prefer short disassembly-backed path descriptions over high-level summaries.
+- Do not invent hidden fields or object types unless the disassembly strongly supports the inference.
+- Treat caller-side post-return logic as first-class when it is the only plausible route to the target.
+- Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer."""
+	if question_type == "8":
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on ROP primitive quality and feasibility.
 Use 'rop_target_modules' as the primary input and honor the supplied architecture and calling convention.
 Use 'return_windows' as compact gadget-ending candidates. Each entry ends in C3 or C2 <imm16> and provides:
@@ -6041,6 +6517,32 @@ def _getProfileTemplateVariables(question_type):
 			"function_analyses",
 		]
 	if question_type == "3":
+		return q2_common_vars + [
+			"q3_goal",
+			"program_counter",
+			"stack_pointer",
+			"pc_disasm",
+			"pc_page",
+			"pc_module",
+			"pc_memory",
+			"stack_page",
+			"stack_memory",
+			"call_stack",
+			"instruction_heap_references",
+			"heap_details",
+			"reachability_target",
+			"controlled_chunk",
+			"controlled_chunk_references",
+			"current_function",
+			"target_function",
+			"return_context",
+			"caller_function",
+			"caller_chain",
+			"caller_resume_window",
+			"post_return_constraints",
+			"reachable_functions",
+		]
+	if question_type == "8":
 		return [
 			"debugger",
 			"debugger_flavor",
@@ -6065,9 +6567,263 @@ def _buildProfileTemplateText(question_type):
 	return _getProfileInstructions(question_type) + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
 
 
+def _buildControlledChunkContext(address):
+	mndbg.dbgp(get_current_function_name())
+	info = OrderedDict()
+	info["requested_address"] = PTR_PRINT % address
+	info["source"] = "-c"
+	info["heap_reference"] = _buildHeapReferenceEntry("controlled_chunk", address, "q3_-c", "", [])
+	info["heap_metadata"] = _getHeapChunkMetadata(address)
+	info["first_bytes"] = _readFirstBytesPreview(address, size=0x20, label="controlled_chunk_first_bytes")
+	if info["heap_reference"].get("match", "none") == "Chunk":
+		user_ptr = _tryParseAddressToken(info["heap_reference"].get("user_ptr", ""))
+		try:
+			user_size = int(str(info["heap_reference"].get("user_size", "0x0")), 16)
+		except Exception:
+			user_size = 0
+		if user_ptr > 0 and user_size > 0:
+			info["user_memory"] = _readMemoryPreview(user_ptr, min(user_size, 0x100), "controlled_chunk_user_memory")
+			info["pointer_dump"] = _getChunkPointerDump(user_ptr, min(user_size, 0x100), label="controlled_chunk_user")
+	return info
+
+
+def _collectControlledChunkReferences(chunk_info, regs):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("registers_pointing_into_chunk", []),
+		("registers_matching_chunk_base", []),
+		("registers_matching_user_ptr", []),
+		("stack_slots_pointing_into_chunk", []),
+	])
+	if not isinstance(chunk_info, dict):
+		return result
+	heap_ref = chunk_info.get("heap_reference", {})
+	if not isinstance(heap_ref, dict):
+		return result
+	try:
+		chunk_start = _tryParseAddressToken(heap_ref.get("region_start", "")) or _tryParseAddressToken(heap_ref.get("chunk_ptr", ""))
+		chunk_end = _tryParseAddressToken(heap_ref.get("region_end", ""))
+		user_ptr = _tryParseAddressToken(heap_ref.get("user_ptr", ""))
+	except Exception:
+		chunk_start = 0
+		chunk_end = 0
+		user_ptr = 0
+	if chunk_start <= 0 or chunk_end <= chunk_start:
+		return result
+	for reg_name in sorted(regs.keys()):
+		reg_value = regs.get(reg_name)
+		if not isinstance(reg_value, int) or reg_value <= 0:
+			continue
+		if reg_value == chunk_start:
+			result["registers_matching_chunk_base"].append(OrderedDict([
+				("register", str(reg_name).lower()),
+				("value", PTR_PRINT % reg_value),
+			]))
+		if user_ptr > 0 and reg_value == user_ptr:
+			result["registers_matching_user_ptr"].append(OrderedDict([
+				("register", str(reg_name).lower()),
+				("value", PTR_PRINT % reg_value),
+			]))
+		if chunk_start <= reg_value < chunk_end:
+			entry = OrderedDict([
+				("register", str(reg_name).lower()),
+				("value", PTR_PRINT % reg_value),
+				("chunk_offset", "0x%x" % (reg_value - chunk_start)),
+			])
+			if user_ptr > 0 and reg_value >= user_ptr:
+				entry["user_offset"] = "0x%x" % (reg_value - user_ptr)
+			result["registers_pointing_into_chunk"].append(entry)
+
+	stack_pointer = regs.get(STACK_POINTER, 0)
+	if isinstance(stack_pointer, int) and stack_pointer > 0:
+		try:
+			raw_stack = dbg.readMemory(stack_pointer, min(0x80, PTR_SIZE * 16))
+			for slot_index in xrange(0, len(raw_stack), PTR_SIZE):
+				slot_bytes = raw_stack[slot_index:slot_index + PTR_SIZE]
+				if len(slot_bytes) < PTR_SIZE:
+					break
+				slot_value = struct.unpack(PTR_FORMAT, slot_bytes)[0]
+				if chunk_start <= slot_value < chunk_end:
+					entry = OrderedDict([
+						("slot_address", PTR_PRINT % (stack_pointer + slot_index)),
+						("value", PTR_PRINT % slot_value),
+						("chunk_offset", "0x%x" % (slot_value - chunk_start)),
+					])
+					if user_ptr > 0 and slot_value >= user_ptr:
+						entry["user_offset"] = "0x%x" % (slot_value - user_ptr)
+					result["stack_slots_pointing_into_chunk"].append(entry)
+		except Exception as e:
+			result["stack_scan_error"] = str(e)
+	return result
+
+
+def _buildReachabilityTargetContext(address):
+	mndbg.dbgp(get_current_function_name())
+	info = OrderedDict()
+	info["address"] = PTR_PRINT % address
+	info["source"] = "-t"
+	info["module"] = _getModuleSummary(address)
+	info["symbol"] = _getSymbolName(address)
+	info["nearest_symbol_output"] = _getNearestSymbolOutput(address)
+	info["page"] = _getPageSummary(address)
+	info["disasm"] = _getDisasmSummary(address, depth_before=5, depth_after=10)
+	return info
+
+
+def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, function_context_cache=None, function_context_active_keys=None):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("return_context", {}),
+		("caller_function", {}),
+		("caller_resume_window", {}),
+		("post_return_constraints", {}),
+		("caller_chain", []),
+	])
+	if not isinstance(call_stack, dict):
+		return result
+	if not isinstance(max_frames, int) or max_frames < 1:
+		max_frames = 1
+	if not isinstance(follow_depth, int) or follow_depth < 1:
+		follow_depth = 1
+	output = ensure_text(call_stack.get("output", "")).strip()
+	if output == "":
+		return result
+	frame_index = 0
+	for raw_line in output.splitlines():
+		interruptMona()
+		return_pointer = _extractReturnPointerContext(raw_line)
+		if return_pointer is None:
+			continue
+		return_address = _tryParseAddressToken(return_pointer.get("address", ""))
+		if return_address > 0:
+			caller_function = collectAICurrentFunctionContext(
+				return_address,
+				follow_depth=follow_depth,
+				forward_only_from_address=True,
+				context_cache=function_context_cache,
+				active_keys=function_context_active_keys
+			)
+			window = _getInstructionWindow(return_address, depth_before=0, depth_after=12)
+			caller_resume_window = OrderedDict([
+				("address", PTR_PRINT % return_address),
+				("current", window.get("current", "")),
+				("after", window.get("after", [])),
+			])
+			post_constraints = OrderedDict()
+			current_instr = ensure_text(window.get("current", "")).strip().lower()
+			if current_instr != "":
+				post_constraints["first_instruction_after_return"] = current_instr
+			after = window.get("after", [])
+			interesting = []
+			for line in after:
+				line_l = ensure_text(line).strip().lower()
+				if line_l == "":
+					continue
+				if any(token in line_l for token in ["test ", "cmp ", "call ", "jmp ", "mov ", "lea "]):
+					interesting.append(line)
+			if len(interesting) > 0:
+				post_constraints["interesting_following_instructions"] = interesting[:8]
+			frame_entry = OrderedDict([
+				("frame_index", frame_index),
+				("return_context", return_pointer),
+				("caller_function", caller_function),
+				("caller_resume_window", caller_resume_window),
+				("post_return_constraints", post_constraints),
+			])
+			result["caller_chain"].append(frame_entry)
+			if frame_index == 0:
+				result["return_context"] = return_pointer
+				result["caller_function"] = caller_function
+				result["caller_resume_window"] = caller_resume_window
+				result["post_return_constraints"] = post_constraints
+			frame_index += 1
+			if frame_index >= max_frames:
+				break
+	return result
+
+
+def _appendReachableFunctionCandidates(target_entries, destination, source_label, path_class):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(target_entries, list):
+		return
+	for target_entry in target_entries:
+		interruptMona()
+		if not isinstance(target_entry, dict):
+			continue
+		entry = OrderedDict()
+		entry["source"] = source_label
+		entry["path_class"] = path_class
+		entry["kind"] = ensure_text(target_entry.get("kind", "")).strip()
+		entry["instruction_address"] = ensure_text(target_entry.get("instruction_address", "")).strip()
+		entry["instruction"] = ensure_text(target_entry.get("instruction", "")).strip()
+		entry["target_operand"] = ensure_text(target_entry.get("target_operand", "")).strip()
+		entry["resolved"] = bool(target_entry.get("resolved", False))
+		if entry["resolved"]:
+			entry["address"] = ensure_text(target_entry.get("target_address_text", "")).strip()
+			entry["symbol"] = ensure_text(target_entry.get("symbol", "")).strip()
+			module_info = target_entry.get("module", {})
+			if isinstance(module_info, dict):
+				entry["module"] = ensure_text(module_info.get("name", "")).strip()
+			follow_depth = target_entry.get("follow_depth", "")
+			if follow_depth != "":
+				entry["follow_depth"] = follow_depth
+		else:
+			entry["resolution_reason"] = ensure_text(target_entry.get("resolution_reason", "")).strip()
+		destination.append(entry)
+		nested_targets = target_entry.get("nested_control_flow_targets", [])
+		if isinstance(nested_targets, list) and len(nested_targets) > 0:
+			_appendReachableFunctionCandidates(nested_targets, destination, source_label, path_class)
+
+
+def _collectReachableFunctions(current_function, caller_function, caller_chain=None):
+	mndbg.dbgp(get_current_function_name())
+	reachable = []
+	seen = set()
+	_appendReachableFunctionCandidates(
+		current_function.get("control_flow_targets", []) if isinstance(current_function, dict) else [],
+		reachable,
+		"current_function",
+		"intra-function",
+	)
+	_appendReachableFunctionCandidates(
+		caller_function.get("control_flow_targets", []) if isinstance(caller_function, dict) else [],
+		reachable,
+		"caller_function",
+		"return-resume",
+	)
+	if isinstance(caller_chain, list):
+		for frame_entry in caller_chain:
+			interruptMona()
+			if not isinstance(frame_entry, dict):
+				continue
+			caller_func = frame_entry.get("caller_function", {})
+			frame_index = frame_entry.get("frame_index", 0)
+			_appendReachableFunctionCandidates(
+				caller_func.get("control_flow_targets", []) if isinstance(caller_func, dict) else [],
+				reachable,
+				"caller_chain[%d]" % frame_index,
+				"return-resume",
+			)
+	unique = []
+	for entry in reachable:
+		interruptMona()
+		key = (
+			entry.get("source", ""),
+			entry.get("path_class", ""),
+			entry.get("instruction_address", ""),
+			entry.get("address", ""),
+			entry.get("target_operand", ""),
+		)
+		if key in seen:
+			continue
+		seen.add(key)
+		unique.append(entry)
+	return unique
+
+
 def _getDefaultTemplateFilename(question_type):
 	mndbg.dbgp(get_current_function_name())
-	if question_type in ["1", "2"]:
+	if question_type in ["1", "2", "3", "8"]:
 		return "ai.q%s" % question_type
 	return ""
 
@@ -6081,6 +6837,8 @@ def _guessTemplateQuestionType(template_path):
 		return "2"
 	if template_name == "ai.q3":
 		return "3"
+	if template_name == "ai.q8":
+		return "8"
 	return ""
 
 
@@ -10452,7 +11210,32 @@ def readPtrSizeBytes(ptr):
 	fmt = PTR_FMT
 	if not data or len(data) < expected:
 		mndbg.dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
-		return 0
+	return 0
+
+
+def _extractFunctionMetadataFromUfOutput(uf_output):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("function_start", 0),
+		("symbol", ""),
+	])
+	if not uf_output:
+		return result
+	for raw_line in ensure_text(uf_output).splitlines():
+		line = raw_line.strip()
+		if line == "":
+			continue
+		if line.endswith(":") and "!" in line:
+			result["symbol"] = line[:-1].strip()
+			continue
+		parts = line.split()
+		if len(parts) < 2:
+			continue
+		addr = _tryParseAddressToken(parts[0])
+		if addr > 0:
+			result["function_start"] = addr
+			break
+	return result
 	return struct.unpack(fmt, data)[0]
 
 def _parseOsVersion():
@@ -27978,6 +28761,8 @@ class MnAI(object):
 		self.additional_target_address = 0
 		self.q2_follow_depth = 1
 		self.heap_target_address = 0
+		self.controlled_chunk_address = 0
+		self.reachability_target_address = 0
 		self.rop_target_modules = None
 		self.template_file = ""
 		self.prebuilt_prompt = ""
@@ -28247,11 +29032,13 @@ class MnAI(object):
 			self.logInfo("Available questions:")
 			self.logInfoDetail("-q 1 : analyse the crash context")
 			self.logInfoDetail("-q 2 : analyse the current function")
+			self.logInfoDetail("-q 3 : analyse whether a controlled heap chunk can steer execution to a target")
+			self.logInfoDetail("-q 8 : analyse ROP primitive quality and feasibility")
 			self.logInfoDetail("-q 9 : use a request template from -f <file>")
 			return False
 		if type(self.args["q"]).__name__.lower() == "bool":
 			self.question_profile_missing = True
-			self.logError("Please specify a question profile with -q <1|2|9>")
+			self.logError("Please specify a question profile with -q <1|2|3|8|9>")
 			return False
 
 		self.question_type = str(self.args.get("q", "")).strip()
@@ -28416,6 +29203,42 @@ class MnAI(object):
 			mndbg.dbgp("tellme: using additional q2 target %s from -a" % (PTR_PRINT % self.additional_target_address))
 		return True
 
+	def parseQ3ChunkAndTarget(self):
+		"""Resolve q3-specific controlled-chunk and optional reachability target addresses."""
+		mndbg.dbgp(get_current_function_name())
+		self.controlled_chunk_address = 0
+		self.reachability_target_address = 0
+		if self.effective_question_type != "3":
+			return True
+		if "c" not in self.args or type(self.args["c"]).__name__.lower() == "bool":
+			self.logError("Question profile '-q 3' requires -c <controlled chunk address>")
+			return False
+		self.controlled_chunk_address, chunk_ok = getAddyArg(self.args["c"])
+		if not chunk_ok or self.controlled_chunk_address <= 0:
+			self.logError("Please specify a valid controlled chunk address with -c")
+			return False
+		if "t" in self.args:
+			if type(self.args["t"]).__name__.lower() == "bool":
+				self.logError("Please specify a valid target address with -t")
+				return False
+			self.reachability_target_address, target_ok = getAddyArg(self.args["t"])
+			if not target_ok or self.reachability_target_address <= 0:
+				self.logError("Please specify a valid target address with -t")
+				return False
+			self.target_address = self.reachability_target_address
+			self.target_address_source = "-t"
+			mndbg.dbgp("tellme: using controlled chunk %s and reachability target %s for q3" % (
+				PTR_PRINT % self.controlled_chunk_address,
+				PTR_PRINT % self.reachability_target_address,
+			))
+		else:
+			self.target_address = 0
+			self.target_address_source = ""
+			mndbg.dbgp("tellme: using controlled chunk %s for q3 discovery mode (no -t target)" % (
+				PTR_PRINT % self.controlled_chunk_address,
+			))
+		return True
+
 	def parseTemplateSelection(self):
 		"""Load and validate a request template when question profile 9 is selected."""
 		mndbg.dbgp(get_current_function_name())
@@ -28451,9 +29274,9 @@ class MnAI(object):
 		return True
 
 	def ensureDefaultTemplates(self):
-		"""Create built-in template files for q1 and q2 when needed."""
+		"""Create built-in template files for supported built-in question profiles when needed."""
 		mndbg.dbgp(get_current_function_name())
-		if self.question_type not in ["1", "2"]:
+		if self.question_type not in ["1", "2", "3", "8"]:
 			return True
 		default_template_path = _ensureDefaultTemplate(self.question_type, self.mona_config)
 		if default_template_path != "":
@@ -28464,23 +29287,29 @@ class MnAI(object):
 		return True
 
 	def parseQ2FollowDepth(self):
-		"""Parse q2 call/jump follow depth from -d."""
+		"""Parse q2/q3 call/jump follow depth from -d."""
 		mndbg.dbgp(get_current_function_name())
-		self.q2_follow_depth = 1
-		if self.effective_question_type != "2" or "d" not in self.args:
+		self.q2_follow_depth = 2
+		if self.effective_question_type not in ["2", "3"] or "d" not in self.args:
 			return True
 		if type(self.args["d"]).__name__.lower() == "bool":
-			self.logError("Please specify a numeric depth with -d <1-3> for '-q 2'")
+			self.logError("Please specify a numeric depth with -d <1-4> for '-q %s'" % self.effective_question_type)
 			return False
 		follow_depth, depth_ok = getIntArg(self.args["d"])
 		if not depth_ok:
-			self.logError("Invalid -d value '%s' for '-q 2'. Please specify a number between 1 and 3." % self.args["d"])
+			self.logError("Invalid -d value '%s' for '-q %s'. Please specify a number between 1 and 4." % (
+				self.args["d"], self.effective_question_type
+			))
 			return False
-		if follow_depth < 1 or follow_depth > 3:
-			self.logError("Invalid -d value '%s' for '-q 2'. Please specify a number between 1 and 3." % self.args["d"])
+		if follow_depth < 1 or follow_depth > 4:
+			self.logError("Invalid -d value '%s' for '-q %s'. Please specify a number between 1 and 4." % (
+				self.args["d"], self.effective_question_type
+			))
 			return False
 		self.q2_follow_depth = follow_depth
-		mndbg.dbgp("tellme: using q2 control-flow follow depth %d from -d" % self.q2_follow_depth)
+		mndbg.dbgp("tellme: using q%s control-flow follow depth %d from -d" % (
+			self.effective_question_type, self.q2_follow_depth
+		))
 		return True
 
 	def parseRequestSettings(self):
@@ -28516,9 +29345,9 @@ class MnAI(object):
 			except ValueError as e:
 				self.logError(str(e))
 				return False
-			if self.effective_question_type == "3" and self.timeout_source == "default":
+			if self.effective_question_type == "8" and self.timeout_source == "default":
 				self.timeout_seconds += 30.0
-				mndbg.dbgp("tellme: extending default timeout for q3 to %.1fs" % self.timeout_seconds)
+				mndbg.dbgp("tellme: extending default timeout for q8 to %.1fs" % self.timeout_seconds)
 			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
 			mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
 				self.engine, self.timeout_seconds, self.timeout_source
@@ -28661,9 +29490,9 @@ class MnAI(object):
 		return True
 
 	def parseRopModuleSelection(self):
-		"""Resolve q3-specific module, IAT, and section scope information."""
+		"""Resolve q8-specific module, IAT, and section scope information."""
 		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type != "3":
+		if self.effective_question_type != "8":
 			return True
 		try:
 			self.rop_target_modules = _collectRopTargetModules(self.args)
@@ -28671,9 +29500,9 @@ class MnAI(object):
 			self.logError(str(e))
 			return False
 		except Exception:
-			self.logError("Failed to collect module/IAT/section context for '-q 3'")
+			self.logError("Failed to collect module/IAT/section context for '-q 8'")
 			self.logErrorDetail(traceback.format_exc().splitlines()[-1])
-			mndbg.dbgp("tellme: q3 module collection failed:\n%s" % traceback.format_exc(), errormode=False)
+			mndbg.dbgp("tellme: q8 module collection failed:\n%s" % traceback.format_exc(), errormode=False)
 			return False
 		if self.rop_target_modules.get("selection_mode", "") == "default_non_aslr_non_rebase":
 			self.logInfo("No module filter supplied. Defaulting to modules with ASLR=False and Rebase=False")
@@ -28681,17 +29510,18 @@ class MnAI(object):
 		return True
 
 	def validateCurrentInstruction(self):
-		"""Resolve q2 code locations and keep enough state to report invalid locations in the prompt."""
+		"""Resolve q2/q3 code locations and keep enough state to report invalid locations in the prompt."""
 		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type != "2" or self.prebuilt_prompt != "":
+		if self.effective_question_type not in ["2", "3"] or self.prebuilt_prompt != "":
 			return True
 		regs = getAllRegisters()
 		self.current_pc_address = regs.get(PROGRAM_COUNTER, 0)
-		if self.target_address == 0:
+		if self.effective_question_type == "2" and self.target_address == 0:
 			self.target_address = self.current_pc_address
 			self.target_address_source = PROGRAM_COUNTER.upper()
 		has_instr, instr_reason = tellMeHasCurrentInstruction(self.current_pc_address)
-		mndbg.dbgp("tellme: q2 current-instruction check at %s: %s (%s)" % (
+		mndbg.dbgp("tellme: q%s current-instruction check at %s: %s (%s)" % (
+			self.effective_question_type,
 			PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "0x0",
 			str(has_instr),
 			instr_reason
@@ -28725,6 +29555,8 @@ class MnAI(object):
 			return None
 
 		self.logInfo("Collecting context and preparing request...")
+		function_context_cache = {}
+		function_context_active_keys = set()
 		context = collectAIContext(
 			self.effective_question_type,
 			heapdynamics_files=self.heapdynamics_files,
@@ -28733,18 +29565,31 @@ class MnAI(object):
 			heap_target_address=self.heap_target_address,
 			ai_args=self.args
 		)
-		if self.effective_question_type == "3" and self.rop_target_modules is not None:
+		if self.effective_question_type == "8" and self.rop_target_modules is not None:
 			context["rop_target_modules"] = self.rop_target_modules
 		self.logInfoDetail("Done")
 
 		if self.effective_question_type == "2":
+			total_steps = 2 if self.additional_target_address > 0 and self.additional_target_address != self.current_pc_address else 1
+			current_step = 1
+			self.logInfo("[%d/%d] Extending q2 context with function-level code flow analysis..." % (
+				current_step, total_steps
+			))
 			context["analysis_target"] = {
 				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
 				"source": PROGRAM_COUNTER.upper()
 			}
 			context["function_analyses"] = []
 			try:
-				context["current_function"] = collectAICurrentFunctionContext(self.current_pc_address, follow_depth=self.q2_follow_depth)
+				self.logInfoDetail("Step %d/%d: collecting current %s function context" % (
+					current_step, total_steps, PROGRAM_COUNTER.upper()
+				))
+				context["current_function"] = collectAICurrentFunctionContext(
+					self.current_pc_address,
+					follow_depth=self.q2_follow_depth,
+					context_cache=function_context_cache,
+					active_keys=function_context_active_keys
+				)
 				context["current_function"]["source"] = PROGRAM_COUNTER.upper()
 				if "near_entry_execution_context" in context["current_function"]:
 					self.logInfo("Including near-entry execution context for the current %s function analysis." % PROGRAM_COUNTER.upper())
@@ -28764,7 +29609,19 @@ class MnAI(object):
 					context["additional_function_note"] = "The -a address matches the current %s value, so only one function analysis was collected." % PROGRAM_COUNTER.upper()
 				else:
 					try:
-						context["additional_function"] = collectAICurrentFunctionContext(self.additional_target_address, follow_depth=self.q2_follow_depth)
+						current_step = 2
+						self.logInfo("[%d/%d] Collecting additional -a function context..." % (
+							current_step, total_steps
+						))
+						self.logInfoDetail("Step %d/%d: collecting additional -a function context" % (
+							current_step, total_steps
+						))
+						context["additional_function"] = collectAICurrentFunctionContext(
+							self.additional_target_address,
+							follow_depth=self.q2_follow_depth,
+							context_cache=function_context_cache,
+							active_keys=function_context_active_keys
+						)
 						context["additional_function"]["source"] = "-a"
 						if "near_entry_execution_context" in context["additional_function"]:
 							self.logInfo("Including near-entry execution context for the -a function analysis.")
@@ -28779,6 +29636,74 @@ class MnAI(object):
 					except Exception as e:
 						context["additional_function_error"] = str(e)
 						mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
+		if self.effective_question_type == "3":
+			total_steps = 6
+			current_step = 1
+			self.logInfo("[%d/%d] Extending q3 context with chunk, stack, and control-flow analysis..." % (
+				current_step, total_steps
+			))
+			context["q3_goal"] = "targeted_reachability" if self.reachability_target_address > 0 else "discovery_chunk_write_or_control_sink"
+			context["analysis_target"] = {
+				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
+				"source": PROGRAM_COUNTER.upper()
+			}
+			if self.reachability_target_address > 0:
+				self.logInfoDetail("Step 1/%d: collecting target address disassembly and function context" % total_steps)
+				context["reachability_target"] = _buildReachabilityTargetContext(self.reachability_target_address)
+			current_step = 2
+			self.logInfo("[%d/%d] Dumping controlled chunk and matching live references..." % (
+				current_step, total_steps
+			))
+			context["controlled_chunk"] = _buildControlledChunkContext(self.controlled_chunk_address)
+			context["controlled_chunk_references"] = _collectControlledChunkReferences(context["controlled_chunk"], getAllRegisters())
+			current_step = 3
+			self.logInfo("[%d/%d] Collecting current %s function code flow. Hang on, this may take a while" % (
+				current_step, total_steps, PROGRAM_COUNTER.upper()
+			))
+			context["current_function"] = collectAICurrentFunctionContext(
+				self.current_pc_address,
+				follow_depth=self.q2_follow_depth,
+				context_cache=function_context_cache,
+				active_keys=function_context_active_keys
+			)
+			context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+			if self.reachability_target_address > 0:
+				current_step = 4
+				self.logInfo("[%d/%d] Collecting target function context..." % (
+					current_step, total_steps
+				))
+				context["target_function"] = collectAICurrentFunctionContext(
+					self.reachability_target_address,
+					follow_depth=1,
+					context_cache=function_context_cache,
+					active_keys=function_context_active_keys
+				)
+				context["target_function"]["source"] = "-t"
+			current_step = 5
+			self.logInfo("[%d/%d] Walking caller-side resume paths from the call stack..." % (
+				current_step, total_steps
+			))
+			return_resume = _collectReturnResumeContext(
+				context.get("call_stack", {}),
+				max_frames=self.q2_follow_depth,
+				follow_depth=self.q2_follow_depth,
+				function_context_cache=function_context_cache,
+				function_context_active_keys=function_context_active_keys
+			)
+			for key, value in return_resume.items():
+				context[key] = value
+			current_step = 6
+			self.logInfo("[%d/%d] Flattening reachable branch/call/jump candidates..." % (
+				current_step, total_steps
+			))
+			context["reachable_functions"] = _collectReachableFunctions(
+				context.get("current_function", {}),
+				context.get("caller_function", {}),
+				context.get("caller_chain", [])
+			)
+			self.logInfoDetail("Step %d/%d: q3 context enrichment complete" % (
+				current_step, total_steps
+			))
 		return context
 
 	def buildRequestPrompt(self):
@@ -28842,7 +29767,7 @@ class MnAI(object):
 		self.logInfoDetail("Q Type : %s" % self.question_type)
 		if self.template_file != "":
 			self.logInfoDetail("File   : %s" % self.template_file)
-		if self.target_address_source == "-a":
+		if isinstance(self.target_address, int) and self.target_address > 0 and self.target_address_source != "":
 			self.logInfoDetail("Target : %s (%s)" % (PTR_PRINT % self.target_address, self.target_address_source))
 		self.logInfoDetail("Saved  : %s" % self.offline_logfile_path)
 		self.logInfoDetail("Size   : %d bytes (%.2f KB)" % (offline_file_size, float(offline_file_size) / 1024.0))
@@ -29259,7 +30184,11 @@ class MnAI(object):
 			return ""
 		if not self.parseTargetAddress():
 			return ""
+		if not self.parseQ3ChunkAndTarget():
+			return ""
 		if not self.parseTemplateSelection():
+			return ""
+		if not self.parseQ3ChunkAndTarget():
 			return ""
 		if not self.ensureDefaultTemplates():
 			return ""
@@ -37583,7 +38512,7 @@ Precedence:
 
 Default timeout:
     - 300 seconds base timeout per request
-    - q3 adds 30 seconds when no explicit timeout override is set
+    - q8 adds 30 seconds when no explicit timeout override is set
     - On timeout, tellme retries up to 5 attempts total
     - Each retry adds 120 seconds to the timeout and waits 10 seconds before retrying
     - openaiagents derives a default max_tokens budget from request size when no explicit value is set
@@ -37630,14 +38559,22 @@ Official model docs:
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
 	                   2 = analyse the current __PC__ function, plus an optional extra function from -a
+	                   3 = analyse whether a controlled heap chunk can steer execution to a target address
+	                   8 = analyse ROP primitive quality and feasibility
 	                   9 = load a request template from -f <file>
-	                   Running -q 1 or -q 2 also rewrites ai.q1 or ai.q2 in the working folder if set,
+	                   Running -q 1, -q 2, -q 3, or -q 8 also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
 	                   otherwise next to mona.ini
 	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this adds an extra heap target.
 	                   With -q 2, this adds a second function analysis rooted at that location,
 	                   while still keeping the live __PC__ function as the primary context
+	    -c <address> : With -q 3, required controlled heap chunk address.
+	                   This should point at the chunk whose contents you can manipulate.
+	    -t <address> : With -q 3, optional target code address to reach.
+	                   If omitted, q3 switches to discovery mode and looks for reachable paths
+	                   that can modify the controlled chunk or consume controlled data in a way
+	                   that could lead to EIP/RIP control.
 	    -l <files>   : Optional comma-separated context files, for example -l "file1,file2"
 	                   Any file containing alloc()/free() lines is treated as a heapdynamics log
 	                   Other files are added as supporting context under [additional_context_files]
@@ -37651,8 +38588,10 @@ Official model docs:
 	                   that point into the cyclic pattern, and for [findseh] candidates when findmsp
 	                   confirms an SEH overwrite. This is usually a good idea, otherwise the
 	                   suggested trampoline or SEH candidate may contain bytes you already know you cannot use
-	    -d <number>  : With -q 2, optional call/jump follow depth for control_flow_targets.
-	                   Default: 1. Maximum: 3.
+	    -d <number>  : With -q 2 or -q 3, optional call/jump follow depth for control_flow_targets.
+	                   For -q 3, the same depth is also used as the default number of caller frames
+	                   to inspect on the return-resume path.
+	                   Default: 2. Maximum: 4.
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
 	    -f <file>    : Required for -q 9.
 	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
@@ -37677,6 +38616,9 @@ Official model docs:
 	    __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
 	    __LAUNCHCMD__ tellme -e customai -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
+	    __LAUNCHCMD__ tellme -e openai -q 3 -c poi(esp+4) -t kernel32!CreateFileW
+	    __LAUNCHCMD__ tellme -e openai -q 3 -c eax -t kernel32!VirtualProtect -d 2
+	    __LAUNCHCMD__ tellme -e openai -q 3 -c eax
 	    __LAUNCHCMD__ tellme -e openaiagents -q 1 -submit
 	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
@@ -37733,13 +38675,25 @@ Official model docs:
 	    [additional_context_files] = supporting files from -l that are not heapdynamics logs
 	    [poc_file]                 = optional PoC/trigger file contents from -p
 	    [analysis_target]          = live __PC__ address/source used as the primary q2 context
+	    [q3_goal]                  = q3 mode selector: targeted reachability or untargeted discovery
 	    [current_function]         = function context for the live __PC__ location
 	    [additional_function]      = extra q2 function context collected from -a when it differs
 	    [additional_function_note] = note explaining when -a matched the live __PC__ location
 	    [function_analyses]        = ordered list of q2 function analyses, including invalid-location reports
-	    current_function.control_flow_follow_depth = q2 call/jump follow depth used for nested target analysis
+	    [reachability_target]      = q3 target address summary, disassembly, symbol, and page/module details
+	    [controlled_chunk]         = q3 controlled chunk metadata, memory preview, and chunk dump context
+	    [controlled_chunk_references] = q3 registers and stack slots that already point into the controlled chunk
+	    [target_function]          = q3 containing-function context for the target address
+	    [return_context]           = q3 saved return-site context when the current function needs to return first
+	    [caller_function]          = q3 containing-function context for the immediate caller resume site
+	    [caller_chain]             = q3 list of caller resume frames inspected on the return-resume path
+	    [caller_resume_window]     = q3 bounded disassembly window after the saved return address
+	    [post_return_constraints]  = q3 caller-side instructions likely to consume return values or persistent state
+	    [reachable_functions]      = q3 flattened reachable call/jump targets from the current and caller-side code paths
+	    [rop_target_modules]       = q8 module, IAT, and compact return-ending windows for ROP analysis
+	    current_function.control_flow_follow_depth = q2/q3 call/jump follow depth used for nested target analysis
 	    Error variables may also appear when collection fails
-	For -q 1 and -q 2, the final request sent to the AI uses the structured 'variables' object.
+	For -q 1, -q 2, -q 3, and -q 8, the final request sent to the AI uses the structured 'variables' object.
 	For -q 1 specifically, compact variables are used by default, but larger *_full variables are still kept unless
 	you explicitly request shrinking with -maxsize.
 	For -q 9, mona reads the template file and replaces placeholders such as [registers] and [pc_disasm]
@@ -37761,11 +38715,11 @@ Official model docs:
 	    <engine>.options.name values when both are present.
 	    Direct API requests ask for confirmation by default.
 	    Add -submit when you want mona to skip that prompt and send the request immediately.
-	    When you run -q 1 or -q 2, mona also rewrites ai.q1 or ai.q2 in the working folder if set,
+	    When you run -q 1, -q 2, -q 3, or -q 8, mona also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
 	    otherwise in the same folder as mona.ini.
 	    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
-	    They are provided for inspection or reuse and are not applied automatically during -q 1 or -q 2.
-	    To use one of those templates, run -q 9 -f ai.q1 or -q 9 -f ai.q2.
+	    They are provided for inspection or reuse and are not applied automatically during -q 1, -q 2, -q 3, or -q 8.
+	    To use one of those templates, run -q 9 -f ai.q1, ai.q2, ai.q3, or ai.q8.
 	    If the -q 9 file already contains a saved request prompt and no placeholders remain, mona submits that prompt body directly.
 	    With -offline, tellme saves the request file and prints only the saved file path instead of dumping the
 	    full request to the debugger console.
@@ -37773,7 +38727,13 @@ Official model docs:
 	Question notes:
 	    -q 1 focuses on the current crash state, nearby memory, and related heap context.
 	    -q 2 focuses on the function containing the live __PC__ location and optionally a second function from -a.
-	    With -q 2, -d controls how many nested call/jump levels mona will follow when collecting target disassembly.
+	    -q 3 focuses on whether a controlled heap chunk can steer execution from the current snapshot to a target address,
+	    including the case where the current function must return and execution resumes in the caller before the target is reached.
+	    If -t is omitted, q3 switches to discovery mode and instead looks for the most promising reachable
+	    chunk-modification paths or controlled-data consumption paths such as vftable use or indirect call/jmp.
+	    -q 8 focuses on ROP primitive quality and feasibility.
+	    With -q 2 and -q 3, -d controls how many nested call/jump levels mona will follow when collecting target disassembly.
+	    For -q 3, that same depth also controls how many caller frames mona inspects for return-resume analysis.
 	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
 
 	Test model overrides:
