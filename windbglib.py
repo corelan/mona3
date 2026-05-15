@@ -5047,7 +5047,7 @@ class wmodule:
 				# IMAGE_EXPORT_DIRECTORY.AddressOfFunctions[i](DWORD)
 				eatAddress = self.modbase + pykd.ptrDWord(address_of_functions + 4*i)
 				eatlist[eatName] = eatAddress
-				dbgp("Added to EATList: %s!%s at 0x%08x" % (self.modname, eatName, eatAddress))
+				dbgp("Read from OptionalHeader, added to EATList: %s!%s at 0x%08x" % (self.modname, eatName, eatAddress))
 		return eatlist
 	
 

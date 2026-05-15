@@ -17333,6 +17333,7 @@ class MnPointer:
 			memloc = self.belongsTo(modulesOnly=True)
 			if memloc != "":
 				mod = MnModule(memloc)
+				mndbg.dbgp("Determining containing function for %s, belongs to module: %s" % (PTR_PRINT % self.address, memloc))
 				if mod is not None:
 					eatlist = mod.getEAT()
 					if eatlist:
@@ -17357,11 +17358,13 @@ class MnPointer:
 							if self.address >= prev_start:
 								result["offset"] = "0x%x" % (self.address - prev_start)
 							self.functioninfo = result
+							mndbg.dbgp("Containing function found via EAT: %s+%s" % (prev_name, result["offset"]))
 							return result
 		except Exception:
 			pass
 
 		if mndbg.isWinDBG():
+			mndbg.dbgp("Fallback: Determining containing function via uf for %s" % (PTR_PRINT % self.address))
 			try:
 				uf_result = mndbg._functionViaUf(self.address)
 				if uf_result.get("found", False):
@@ -27857,34 +27860,33 @@ def procInfo(args):
 		dbg.log("    %s" % modinfo.__str__(clickable=True))
 		if rva != 0:
 			dbg.log("    Offset from module base: 0x%x" % rva)
-		eatlist = modinfo.getEAT()
-		if address in eatlist:
-			dbg.log("    Address is start of function '%s' in %s" % (eatlist[address],modname))
-		else:
-			iatlist = modinfo.getIAT()
-			if address in iatlist:
-				iatentry = iatlist[address]
-				dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)
-			if function_start > 0:
-				if address == function_start:
-					if function_name != "":
-						dbg.log("    Address is start of function '%s'" % function_name)
-					else:
-						dbg.log("    Address is start of a function at %s" % (PTR_PRINT % function_start))
+		iatlist = modinfo.getIAT()
+		if address in iatlist:
+			iatentry = iatlist[address]
+			dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)
+		if function_start > 0:
+			if address == function_start:
+				if function_name != "":
+					dbg.log("    Address is start of function '%s'" % function_name)
 				else:
-					if function_name != "":
-						dbg.log("    Address is part of function '%s' + %s" % (function_name, function_offset))
-					else:
-						dbg.log("    Address is part of function starting at %s + %s" % ((PTR_PRINT % function_start), function_offset))
-				if function_resolution_method != "":
-					dbg.log("    Function resolution: %s" % function_resolution_method)
-				if mndbg.isWinDBG() and function_name != "":
-					uf_target = function_name
-					if "!" not in uf_target and modname != "":
-						uf_target = "%s!%s" % (modname, function_name)
-					uf_cmd = "uf %s" % uf_target
-					dbg.log("    Disassemble function: %s" % clickWinDBGCmd(uf_cmd, uf_cmd))
-			g_silent = prevsilent
+					dbg.log("    Address is start of a function at %s" % (PTR_PRINT % function_start))
+			else:
+				if function_name != "":
+					dbg.log("    Address is part of function '%s' + %s" % (function_name, function_offset))
+				else:
+					dbg.log("    Address is part of function starting at %s + %s" % ((PTR_PRINT % function_start), function_offset))
+			if function_resolution_method != "":
+				mndbg.dbgp("procInfo: function resolution for %s used method '%s'" % (
+					PTR_PRINT % address,
+					function_resolution_method
+				))
+			if mndbg.isWinDBG() and function_name != "":
+				uf_target = function_name
+				if "!" not in uf_target and modname != "":
+					uf_target = "%s!%s" % (modname, function_name)
+				uf_cmd = "uf %s" % uf_target
+				dbg.log("    Disassemble function: %s" % clickWinDBGCmd(uf_cmd, uf_cmd))
+		g_silent = prevsilent
 
 		# if the module is CFG, check if this address would be a viable target
 		if modinfo.isCFG:
@@ -27911,26 +27913,6 @@ def procInfo(args):
 		strataddress = dbg.readString(address)
 		if len(strataddress) > 0:
 			dbg.log("    String at %s: %s" % (PTR_PRINT % address, strataddress))
-
-	if mndbg.isWinDBG():
-		funcinfo = dbglib.Function(dbg,address)
-		symname = funcinfo.addressToSymbol()
-		if symname != "":
-			dbg.log("")
-			dbg.log("[+] Function found at 0x%08x, Symbol name: %s" % (address, clickDisassemble(symname)))
-		elif function_start > 0:
-			dbg.log("")
-			if function_name != "":
-				dbg.log("[+] Containing function: %s (start: %s, offset: %s)" % (
-					clickDisassemble(function_name),
-					PTR_PRINT % function_start,
-					function_offset if function_offset != "" else "0x0"
-				))
-			else:
-				dbg.log("[+] Containing function start: %s (offset: %s)" % (
-					clickDisassemble(PTR_PRINT % function_start),
-					function_offset if function_offset != "" else "0x0"
-				))
 
 	try:
 		dbg.log("")
