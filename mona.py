@@ -281,6 +281,12 @@ class MnDebugger:
 	def __init__(self):
 		self.dbg = dbglib.Debugger()
 
+	def _integerTypes(self):
+		try:
+			return (int, long)
+		except NameError:
+			return (int,)
+
 	def isWinDBG(self):
 		if __DEBUGGERAPP__ == "WinDBG":
 			return True
@@ -467,8 +473,101 @@ class MnDebugger:
 			except Exception as e:
 				self.dbg.log("[MONA DEBUG - error] %s | %s" % (self.get_current_datetime(), str(e)), highlight=True)
 				pass
-			if (g_dbgp_counter % 500) == 0:
-				interruptMona()
+				if (g_dbgp_counter % 500) == 0:
+					interruptMona()
+
+	def _parseAddressToken(self, token):
+		self.dbgp(get_current_function_name())
+		try:
+			cleaned = ensure_text(token).strip().replace("`", "")
+		except Exception:
+			cleaned = str(token).strip().replace("`", "")
+		if cleaned == "":
+			return 0
+		cleaned = cleaned.rstrip(":,;")
+		cleaned = cleaned.replace("0x", "", 1)
+		if isAddress(cleaned):
+			return hexStrToInt(cleaned)
+		return 0
+
+	def _extractDisassemblyLabel(self, disasm_text):
+		self.dbgp(get_current_function_name())
+		if not disasm_text:
+			return ""
+		for raw_line in ensure_text(disasm_text).splitlines():
+			line = raw_line.strip()
+			if line == "":
+				continue
+			if line.endswith(":"):
+				return line[:-1].strip()
+			break
+		return ""
+
+	def isAddressInOutput(self, output, address):
+		self.dbgp(get_current_function_name())
+		if not isinstance(address, self._integerTypes()) or address <= 0:
+			return False
+		if not output:
+			return False
+		entries = _parseDisassemblyTextEntries(output)
+		if len(entries) == 0:
+			return False
+		for entry in entries:
+			if entry.get("address", 0) == address:
+				return True
+		return False
+
+	def _functionViaUf(self, address):
+		self.dbgp(get_current_function_name())
+		result = {
+			"address": address,
+			"start": 0,
+			"symbol": "",
+			"method": "uf",
+			"offset": "",
+			"found": False,
+			"disasm": "",
+		}
+		if not isinstance(address, self._integerTypes()) or address <= 0:
+			return result
+		if not self.isWinDBG():
+			return result
+		try:
+			output = ensure_text(self.dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
+		except Exception:
+			return result
+		result["disasm"] = output
+		if not self.isAddressInOutput(output, address):
+			return result
+
+		entries = _parseDisassemblyTextEntries(output)
+		function_start = entries[0].get("address", 0)
+		if not isinstance(function_start, self._integerTypes()) or function_start <= 0:
+			return result
+
+		result["found"] = True
+		result["start"] = function_start
+		if address >= function_start:
+			result["offset"] = "0x%x" % (address - function_start)
+
+		try:
+			fname, foffset = getFunctionName(function_start)
+			if fname != "" and (foffset == "" or str(foffset) == "0"):
+				result["symbol"] = fname
+		except Exception:
+			pass
+		if result["symbol"] == "":
+			try:
+				funcinfo = dbglib.Function(dbg, function_start)
+				symname = ensure_text(funcinfo.addressToSymbol()).strip()
+				if symname != "":
+					result["symbol"] = symname
+			except Exception:
+				pass
+		if result["symbol"] == "":
+			result["symbol"] = self._extractDisassemblyLabel(output)
+
+		return result
 
 	def _ensureSymbolCache(self, auto_fix=False):
 		"""Check that WinDBG has a valid local symbol cache configured.
@@ -1768,145 +1867,18 @@ def tellMeHasCurrentInstruction(address):
 
 def _tryParseAddressToken(token):
 	mndbg.dbgp(get_current_function_name())
-	try:
-		cleaned = ensure_text(token).strip().replace("`", "")
-	except Exception:
-		cleaned = str(token).strip().replace("`", "")
-	if cleaned == "":
-		return 0
-	cleaned = cleaned.rstrip(":,;")
-	cleaned = cleaned.replace("0x", "", 1)
-	if isAddress(cleaned):
-		return hexStrToInt(cleaned)
-	return 0
-
-
-def _extractDisassemblyLabel(disasm_text):
-	mndbg.dbgp(get_current_function_name())
-	if not disasm_text:
-		return ""
-	for raw_line in ensure_text(disasm_text).splitlines():
-		line = raw_line.strip()
-		if line == "":
-			continue
-		if line.endswith(":"):
-			return line[:-1].strip()
-		break
-	return ""
-
-
-def _resolveFunctionStartViaUf(address):
-	mndbg.dbgp(get_current_function_name())
-	if not isinstance(address, int) or address <= 0:
-		return 0, "", "", False
-	try:
-		output = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
-	except Exception:
-		return 0, "", "", False
-	if output == "":
-		return 0, "", "", False
-
-	entries = _parseDisassemblyTextEntries(output)
-	if len(entries) == 0:
-		return 0, "", output, False
-
-	address_found = False
-	for entry in entries:
-		if entry.get("address", 0) == address:
-			address_found = True
-			break
-	if not address_found:
-		return 0, "", output, False
-
-	function_start = entries[0].get("address", 0)
-	if not isinstance(function_start, int) or function_start <= 0:
-		return 0, "", output, False
-
-	symbol_name = ""
-	try:
-		fname, foffset = getFunctionName(function_start)
-		if fname != "" and (foffset == "" or str(foffset) == "0"):
-			symbol_name = fname
-	except Exception:
-		pass
-	if symbol_name == "":
-		try:
-			funcinfo = dbglib.Function(dbg, function_start)
-			symname = ensure_text(funcinfo.addressToSymbol()).strip()
-			if symname != "":
-				symbol_name = symname
-		except Exception:
-			pass
-	if symbol_name == "":
-		symbol_name = _extractDisassemblyLabel(output)
-
-	return function_start, symbol_name, output, True
+	return mndbg._parseAddressToken(token)
 
 
 def _resolveFunctionStart(address):
 	mndbg.dbgp(get_current_function_name())
-	if not isinstance(address, int) or address <= 0:
-		return 0, "", "none", False
-
 	try:
-		fname, foffset = getFunctionName(address)
-		if fname != "" and (foffset == "" or str(foffset) == "0"):
-			try:
-				symboladdy = dbg.resolveSymbol(fname)
-				if symboladdy != "":
-					parsed = _tryParseAddressToken(symboladdy)
-					if parsed > 0:
-						return parsed, fname, "symbol", True
-			except Exception:
-				pass
+		ptr = MnPointer(address)
+		function_info = ptr.getContainingFunction()
+		if function_info.get("found", False):
+			return function_info.get("start", 0), function_info.get("symbol", ""), function_info.get("method", ""), True
 	except Exception:
 		pass
-
-	try:
-		output = ensure_text(dbg.nativeCommand("ln %s" % (PTR_PRINT % address))).strip()
-		for line in output.splitlines():
-			if "|" not in line:
-				continue
-			for token in line.split():
-				parsed = _tryParseAddressToken(token)
-				if parsed > 0:
-					return parsed, "", "ln", True
-	except Exception:
-		pass
-
-	try:
-		MnProc.ensure()
-		if mnproc is not None:
-			mod = mnproc.getModuleForAddress(address)
-			if mod is not None:
-				eatlist = mod.getEAT()
-				if eatlist:
-					export_starts = sorted(eatlist.keys())
-					prev_start = 0
-					prev_name = ""
-					next_start = 0
-					for idx, start in enumerate(export_starts):
-						if start <= address:
-							prev_start = start
-							prev_name = eatlist.get(start, "")
-							if idx + 1 < len(export_starts):
-								next_start = export_starts[idx + 1]
-						elif start > address:
-							next_start = start
-							break
-					if prev_start > 0:
-						if next_start == 0 or address < next_start:
-							return prev_start, prev_name, "eat", True
-	except Exception:
-		pass
-
-	try:
-		uf_start, uf_symbol, _uf_output, uf_found = _resolveFunctionStartViaUf(address)
-		if uf_found and uf_start > 0:
-			return uf_start, uf_symbol, "uf", True
-	except Exception:
-		pass
-
 	return address, "", "fallback", False
 
 
@@ -1945,14 +1917,19 @@ def collectAICurrentFunctionContext(address, follow_depth=1):
 		context["page"] = _getPageSummary(address)
 		return context
 
-	function_start, resolved_symbol, resolution_method, found_function = _resolveFunctionStart(address)
+	ptr = MnPointer(address)
+	function_info = ptr.getContainingFunction()
+	resolved_symbol = function_info.get("symbol", "")
+	resolution_method = function_info.get("method", "none")
+	found_function = function_info.get("found", False)
+	function_start = function_info.get("start", 0)
 	context["resolution_method"] = resolution_method
 	if isinstance(function_start, int) and function_start > 0:
 		context["function_start"] = PTR_PRINT % function_start
 	else:
 		function_start = address
 	if isinstance(function_start, int) and function_start > 0 and isinstance(address, int) and address >= function_start:
-		context["offset_from_function_start"] = "0x%x" % (address - function_start)
+		context["offset_from_function_start"] = function_info.get("offset", "0x%x" % (address - function_start))
 
 	try:
 		fname, foffset = getFunctionName(address)
@@ -16698,6 +16675,7 @@ class MnPointer:
 		self.ownerName  = ""
 
 		self.functionname = ""
+		self.functioninfo = None
 
 		# define the characteristics of the pointer
 		byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = (0,)*8
@@ -17333,6 +17311,68 @@ class MnPointer:
 			return "??"
 		return memloc
 
+	def getContainingFunction(self):
+		mndbg.dbgp(get_current_function_name())
+		if self.functioninfo is not None:
+			return self.functioninfo
+
+		result = {
+			"address": self.address,
+			"start": 0,
+			"symbol": "",
+			"method": "none",
+			"offset": "",
+			"found": False,
+			"disasm": "",
+		}
+		if self.address <= 0:
+			self.functioninfo = result
+			return result
+
+		try:
+			memloc = self.belongsTo(modulesOnly=True)
+			if memloc != "":
+				mod = MnModule(memloc)
+				if mod is not None:
+					eatlist = mod.getEAT()
+					if eatlist:
+						export_starts = sorted(eatlist.keys())
+						prev_start = 0
+						prev_name = ""
+						next_start = 0
+						for idx, start in enumerate(export_starts):
+							if start <= self.address:
+								prev_start = start
+								prev_name = eatlist.get(start, "")
+								if idx + 1 < len(export_starts):
+									next_start = export_starts[idx + 1]
+							elif start > self.address:
+								next_start = start
+								break
+						if prev_start > 0 and (next_start == 0 or self.address < next_start):
+							result["start"] = prev_start
+							result["symbol"] = prev_name
+							result["method"] = "eat"
+							result["found"] = True
+							if self.address >= prev_start:
+								result["offset"] = "0x%x" % (self.address - prev_start)
+							self.functioninfo = result
+							return result
+		except Exception:
+			pass
+
+		if mndbg.isWinDBG():
+			try:
+				uf_result = mndbg._functionViaUf(self.address)
+				if uf_result.get("found", False):
+					self.functioninfo = uf_result
+					return uf_result
+			except Exception:
+				pass
+
+		self.functioninfo = result
+		return result
+
 	def getPtrFunction(self):
 		global _funcptr_cache
 		mndbg.dbgp(get_current_function_name())
@@ -17343,19 +17383,22 @@ class MnPointer:
 		else:
 			global g_silent
 			g_silent = True
-			if mndbg.isWinDBG():
-				lncmd = "ln %s" % (PTR_PRINT % self.address)
-				lnoutput = dbg.nativeCommand(lncmd)
-				for line in lnoutput.split("\n"):
-					if line.replace(" ","") != "" and line.find("%08x" % self.address) > -1:
-						lineparts = line.split("|")
-						funcrefparts = lineparts[0].split(")")
-						if len(funcrefparts) > 1:
-							funcinfo = funcrefparts[1].replace(" ","")
-							break
+			funcinfo = ""
+			function_info = self.getContainingFunction()
+			if function_info.get("found", False):
+				func_symbol = function_info.get("symbol", "")
+				func_start = function_info.get("start", 0)
+				func_offset = function_info.get("offset", "")
+				if func_symbol != "":
+					funcinfo = func_symbol
+					if func_offset not in ["", "0x0"]:
+						funcinfo += "+%s" % func_offset
+				elif func_start > 0:
+					funcinfo = PTR_PRINT % func_start
+					if func_offset not in ["", "0x0"]:
+						funcinfo += "+%s" % func_offset
 
-			if self.functionname == "":
-				funcinfo = ""
+			if funcinfo == "":
 				memloc = self.belongsTo()
 				if not memloc == "":
 					mod = MnModule(memloc)
@@ -27760,7 +27803,11 @@ def procInfo(args):
 	function_resolution_method = ""
 	if modinfo:
 		try:
-			function_start, function_name, function_resolution_method, found_function = _resolveFunctionStart(address)
+			function_info = ptr.getContainingFunction()
+			function_start = function_info.get("start", 0)
+			function_name = function_info.get("symbol", "")
+			function_resolution_method = function_info.get("method", "")
+			found_function = function_info.get("found", False)
 			if found_function and isinstance(function_start, int) and function_start > 0 and address >= function_start:
 				function_offset = "0x%x" % (address - function_start)
 				if function_name == "":
@@ -27818,20 +27865,26 @@ def procInfo(args):
 			if address in iatlist:
 				iatentry = iatlist[address]
 				dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)
-		if function_start > 0:
-			if address == function_start:
-				if function_name != "":
-					dbg.log("    Address is start of function '%s'" % function_name)
+			if function_start > 0:
+				if address == function_start:
+					if function_name != "":
+						dbg.log("    Address is start of function '%s'" % function_name)
+					else:
+						dbg.log("    Address is start of a function at %s" % (PTR_PRINT % function_start))
 				else:
-					dbg.log("    Address is start of a function at %s" % (PTR_PRINT % function_start))
-			else:
-				if function_name != "":
-					dbg.log("    Address is part of function '%s' + %s" % (function_name, function_offset))
-				else:
-					dbg.log("    Address is part of function starting at %s + %s" % ((PTR_PRINT % function_start), function_offset))
-			if function_resolution_method != "":
-				dbg.log("    Function resolution: %s" % function_resolution_method)
-		g_silent = prevsilent
+					if function_name != "":
+						dbg.log("    Address is part of function '%s' + %s" % (function_name, function_offset))
+					else:
+						dbg.log("    Address is part of function starting at %s + %s" % ((PTR_PRINT % function_start), function_offset))
+				if function_resolution_method != "":
+					dbg.log("    Function resolution: %s" % function_resolution_method)
+				if mndbg.isWinDBG() and function_name != "":
+					uf_target = function_name
+					if "!" not in uf_target and modname != "":
+						uf_target = "%s!%s" % (modname, function_name)
+					uf_cmd = "uf %s" % uf_target
+					dbg.log("    Disassemble function: %s" % clickWinDBGCmd(uf_cmd, uf_cmd))
+			g_silent = prevsilent
 
 		# if the module is CFG, check if this address would be a viable target
 		if modinfo.isCFG:
