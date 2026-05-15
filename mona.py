@@ -1781,6 +1781,68 @@ def _tryParseAddressToken(token):
 	return 0
 
 
+def _extractDisassemblyLabel(disasm_text):
+	mndbg.dbgp(get_current_function_name())
+	if not disasm_text:
+		return ""
+	for raw_line in ensure_text(disasm_text).splitlines():
+		line = raw_line.strip()
+		if line == "":
+			continue
+		if line.endswith(":"):
+			return line[:-1].strip()
+		break
+	return ""
+
+
+def _resolveFunctionStartViaUf(address):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(address, int) or address <= 0:
+		return 0, "", "", False
+	try:
+		output = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
+	except Exception:
+		return 0, "", "", False
+	if output == "":
+		return 0, "", "", False
+
+	entries = _parseDisassemblyTextEntries(output)
+	if len(entries) == 0:
+		return 0, "", output, False
+
+	address_found = False
+	for entry in entries:
+		if entry.get("address", 0) == address:
+			address_found = True
+			break
+	if not address_found:
+		return 0, "", output, False
+
+	function_start = entries[0].get("address", 0)
+	if not isinstance(function_start, int) or function_start <= 0:
+		return 0, "", output, False
+
+	symbol_name = ""
+	try:
+		fname, foffset = getFunctionName(function_start)
+		if fname != "" and (foffset == "" or str(foffset) == "0"):
+			symbol_name = fname
+	except Exception:
+		pass
+	if symbol_name == "":
+		try:
+			funcinfo = dbglib.Function(dbg, function_start)
+			symname = ensure_text(funcinfo.addressToSymbol()).strip()
+			if symname != "":
+				symbol_name = symname
+		except Exception:
+			pass
+	if symbol_name == "":
+		symbol_name = _extractDisassemblyLabel(output)
+
+	return function_start, symbol_name, output, True
+
+
 def _resolveFunctionStart(address):
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(address, int) or address <= 0:
@@ -1835,6 +1897,13 @@ def _resolveFunctionStart(address):
 					if prev_start > 0:
 						if next_start == 0 or address < next_start:
 							return prev_start, prev_name, "eat", True
+	except Exception:
+		pass
+
+	try:
+		uf_start, uf_symbol, _uf_output, uf_found = _resolveFunctionStartViaUf(address)
+		if uf_found and uf_start > 0:
+			return uf_start, uf_symbol, "uf", True
 	except Exception:
 		pass
 
@@ -12423,7 +12492,8 @@ class MnModule: # TODO: Add getters
 			if not self.moduleKey in mnproc.IATCache:  # if len(self.IAT) == 0:
 				
 				# METHOD 1 - Parse the strings from the IAT.  Fastest way
-				dbg.log("      Enumerating IAT, method 1 (Read IAT from memory)") 
+				if not g_silent:
+					dbg.log("      Enumerating IAT, method 1 (Read IAT from memory)") 
 				# find optional header
 				PEHeader_ref = self.moduleBase + 0x3c
 				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
@@ -12562,7 +12632,8 @@ class MnModule: # TODO: Add getters
 									thunk_index += 1
 
 								desc_index += 1
-				dbg.log("      Extracted %d entries from IAT" % len(IAT))
+				if not g_silent:
+					dbg.log("      Extracted %d entries from IAT" % len(IAT))
 				mndbg.dbgp("      -> We have extracted %d names from the IAT of %s" % (len(IAT), self.moduleKey))
 
 				# METHOD 2 - Fallback in case we did not get a lot of strings.
@@ -12570,13 +12641,15 @@ class MnModule: # TODO: Add getters
 
 				if len(IAT) < 10:
 					before_method2_cnt = len(IAT)
-					dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)") 
+					if not g_silent:
+						dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)") 
 					# this may not work well on Immunity.  Module.getSymbols() may not return anything         
 					try:
 						themod = dbgGetModuleSafe(self.moduleKey)
 						syms = themod.getSymbols()
 						thename = ""
-						dbg.log("      %d symbols found, now filtering relevant entries" % len(syms))
+						if not g_silent:
+							dbg.log("      %d symbols found, now filtering relevant entries" % len(syms))
 						mndbg.dbgp("      %d symbols found for %s" % (len(syms), self.moduleKey))
 						for sym in syms:
 							#dbg.log("   - symbol: %s" % sym)
@@ -12597,7 +12670,8 @@ class MnModule: # TODO: Add getters
 
 				if len(IAT) == 0:
 					# another search method, not accurate, but might find *something*
-					dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
+					if not g_silent:
+						dbg.log("      Enumerating IAT, method 3 (getFunctionCalls)")
 					funccalls = self.getFunctionCalls()
 					_eat_cache = {}
 
@@ -27680,6 +27754,29 @@ def procInfo(args):
 	rva=0
 	if modinfo :
 		rva = address - modinfo.moduleBase
+	function_name = ""
+	function_offset = ""
+	function_start = 0
+	function_resolution_method = ""
+	if modinfo:
+		try:
+			function_start, function_name, function_resolution_method, found_function = _resolveFunctionStart(address)
+			if found_function and isinstance(function_start, int) and function_start > 0 and address >= function_start:
+				function_offset = "0x%x" % (address - function_start)
+				if function_name == "":
+					try:
+						fname, foffset = getFunctionName(address)
+						if fname != "":
+							function_name = fname
+							if foffset != "":
+								function_offset = foffset
+					except Exception:
+						pass
+		except Exception:
+			function_start = 0
+			function_name = ""
+			function_offset = ""
+			function_resolution_method = ""
 	procFlags(args)
 	dbg.log("")			
 	dbg.log("[+] Information about address 0x%s" % toHex(address))
@@ -27706,33 +27803,49 @@ def procInfo(args):
 	
 	
 	if modinfo:
+		global g_silent
+		prevsilent = g_silent
+		g_silent = True
 		dbg.log("    Address is part of a module:")
 		dbg.log("    %s" % modinfo.__str__(clickable=True))
 		if rva != 0:
 			dbg.log("    Offset from module base: 0x%x" % rva)
-			if modinfo:
-				eatlist = modinfo.getEAT()
-				if address in eatlist:
-					dbg.log("    Address is start of function '%s' in %s" % (eatlist[address],modname))
+		eatlist = modinfo.getEAT()
+		if address in eatlist:
+			dbg.log("    Address is start of function '%s' in %s" % (eatlist[address],modname))
+		else:
+			iatlist = modinfo.getIAT()
+			if address in iatlist:
+				iatentry = iatlist[address]
+				dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)
+		if function_start > 0:
+			if address == function_start:
+				if function_name != "":
+					dbg.log("    Address is start of function '%s'" % function_name)
 				else:
-					iatlist = modinfo.getIAT()
-					if address in iatlist:
-						iatentry = iatlist[address]
-						dbg.log("    Address is part of IAT, and contains pointer to '%s'" % iatentry)		
+					dbg.log("    Address is start of a function at %s" % (PTR_PRINT % function_start))
+			else:
+				if function_name != "":
+					dbg.log("    Address is part of function '%s' + %s" % (function_name, function_offset))
+				else:
+					dbg.log("    Address is part of function starting at %s + %s" % ((PTR_PRINT % function_start), function_offset))
+			if function_resolution_method != "":
+				dbg.log("    Function resolution: %s" % function_resolution_method)
+		g_silent = prevsilent
 
-				# if the module is CFG, check if this address would be a viable target
-				if modinfo.isCFG:
-					cfg_compat, reason = modinfo.checkCFGCompatible(address, return_reason=True)
-					if cfg_compat:
-						dbg.log("")
-						dbg.log("    Address %s would likely be a valid CFG Target" % PTR_PRINT % address)
-					else:
-						dbg.log("")
-						dbg.log("    Address %s is not a valid CFG Target" % PTR_PRINT % address)
-					reasonlines = reason.split('\n')
-					for reasonline in reasonlines:
-						dbg.log("    -> %s" % reasonline)
-							
+		# if the module is CFG, check if this address would be a viable target
+		if modinfo.isCFG:
+			cfg_compat, reason = modinfo.checkCFGCompatible(address, return_reason=True)
+			if cfg_compat:
+				dbg.log("")
+				dbg.log("    Address %s would likely be a valid CFG Target" % PTR_PRINT % address)
+			else:
+				dbg.log("")
+				dbg.log("    Address %s is not a valid CFG Target" % PTR_PRINT % address)
+			reasonlines = reason.split('\n')
+			for reasonline in reasonlines:
+				dbg.log("    -> %s" % reasonline)
+								
 	else:
 		output = ""
 		if ptr.isInHeap():
@@ -27752,6 +27865,19 @@ def procInfo(args):
 		if symname != "":
 			dbg.log("")
 			dbg.log("[+] Function found at 0x%08x, Symbol name: %s" % (address, clickDisassemble(symname)))
+		elif function_start > 0:
+			dbg.log("")
+			if function_name != "":
+				dbg.log("[+] Containing function: %s (start: %s, offset: %s)" % (
+					clickDisassemble(function_name),
+					PTR_PRINT % function_start,
+					function_offset if function_offset != "" else "0x0"
+				))
+			else:
+				dbg.log("[+] Containing function start: %s (offset: %s)" % (
+					clickDisassemble(PTR_PRINT % function_start),
+					function_offset if function_offset != "" else "0x0"
+				))
 
 	try:
 		dbg.log("")
