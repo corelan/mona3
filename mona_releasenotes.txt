@@ -1,3 +1,22 @@
+[mona 3.0.3020]
+- Update revision (mona: 3020, windbglib: 3010) implement mona ai -q 3
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/a5ec9f8">a5ec9f8</link> add question profile 3
+  - <link cmd="https://github.com/corelan/mona3/commit/339d58e">339d58e</link> remove duplicate logic
+  - <link cmd="https://github.com/corelan/mona3/commit/2a70dfe">2a70dfe</link> improve address to containing function logic
+  - <link cmd="https://github.com/corelan/mona3/commit/156c9b4">156c9b4</link> improve routine to see if an address is part of a function
+  - <link cmd="https://github.com/corelan/mona3/commit/c41a7ea">c41a7ea</link> remove :
+  - <link cmd="https://github.com/corelan/mona3/commit/ee4a432">ee4a432</link> bugfix
+  - <link cmd="https://github.com/corelan/mona3/commit/b93870d">b93870d</link> oops
+  - <link cmd="https://github.com/corelan/mona3/commit/61ca69f">61ca69f</link> print reminder about mona up
+  - <link cmd="https://github.com/corelan/mona3/commit/6cda492">6cda492</link> improve function analysis in q 2
+  - <link cmd="https://github.com/corelan/mona3/commit/1b5c7d6">1b5c7d6</link> update prompt and context collection for q 2
+
+[windbglib 3.0.3010]
+- Update revision (mona: 3020, windbglib: 3010) implement mona ai -q 3
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/339d58e">339d58e</link> remove duplicate logic
+
 [mona 3.0.3019]
 - Update revision (mona: 3019, windbglib: 3009) implement openaiagents engine
 corelanc0d3r:
@@ -162,19 +181,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/d162fb4">d162fb4</link> openai etc can only be loaded once per windbg session on win 7. add more context to AI requests
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/5cc5ffd">5cc5ffd</link> Update revision (mona: 3009)
-  - <link cmd="https://github.com/corelan/mona3/commit/a217283">a217283</link> Update revision (mona: 3008) Continued work on AI integration !mona tellme
-  - <link cmd="https://github.com/corelan/mona3/commit/ca42e7f">ca42e7f</link> Update revision (mona: 3007, windbglib: 3005) Added AI integration with tellme
-
-[mona 3.0.3009]
-- Update revision (mona: 3009)
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/d1864ab">d1864ab</link> Merge branch 'main' of https://github.com/corelan/mona3
-  - <link cmd="https://github.com/corelan/mona3/commit/c7f81ee">c7f81ee</link> fix bug fetching release notes
-  - <link cmd="https://github.com/corelan/mona3/commit/50787b4">50787b4</link> add more context to q 1
-  - <link cmd="https://github.com/corelan/mona3/commit/d162fb4">d162fb4</link> openai etc can only be loaded once per windbg session on win 7. add more context to AI requests
-  - <link cmd="https://github.com/corelan/mona3/commit/1e43df1">1e43df1</link> hide key contents in mona config -list and set default model to -1
-  - <link cmd="https://github.com/corelan/mona3/commit/9cdfe80">9cdfe80</link> update usage and default models
-github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/a217283">a217283</link> Update revision (mona: 3008) Continued work on AI integration !mona tellme
   - <link cmd="https://github.com/corelan/mona3/commit/ca42e7f">ca42e7f</link> Update revision (mona: 3007, windbglib: 3005) Added AI integration with tellme
 
