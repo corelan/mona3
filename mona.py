@@ -38559,7 +38559,9 @@ Official model docs:
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
 	                   2 = analyse the current __PC__ function, plus an optional extra function from -a
-	                   3 = analyse whether a controlled heap chunk can steer execution to a target address
+	                   3 = analyse whether a controlled heap chunk can steer execution to a target address,
+	                       or, without -t, discover the best reachable chunk-modification paths and
+	                       controlled-data consumption sinks such as vftable use or indirect call/jmp
 	                   8 = analyse ROP primitive quality and feasibility
 	                   9 = load a request template from -f <file>
 	                   Running -q 1, -q 2, -q 3, or -q 8 also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
@@ -38571,10 +38573,14 @@ Official model docs:
 	                   while still keeping the live __PC__ function as the primary context
 	    -c <address> : With -q 3, required controlled heap chunk address.
 	                   This should point at the chunk whose contents you can manipulate.
+	                   q3 treats that chunk as the attacker-controlled input and asks which
+	                   offsets and values would be needed to influence reachable code paths.
 	    -t <address> : With -q 3, optional target code address to reach.
 	                   If omitted, q3 switches to discovery mode and looks for reachable paths
 	                   that can modify the controlled chunk or consume controlled data in a way
 	                   that could lead to EIP/RIP control.
+	                   If supplied, q3 switches to targeted mode and asks whether execution can
+	                   plausibly reach that address by changing only bytes inside the controlled chunk.
 	    -l <files>   : Optional comma-separated context files, for example -l "file1,file2"
 	                   Any file containing alloc()/free() lines is treated as a heapdynamics log
 	                   Other files are added as supporting context under [additional_context_files]
@@ -38591,6 +38597,7 @@ Official model docs:
 	    -d <number>  : With -q 2 or -q 3, optional call/jump follow depth for control_flow_targets.
 	                   For -q 3, the same depth is also used as the default number of caller frames
 	                   to inspect on the return-resume path.
+	                   q3 follows direct branches/calls/jumps, nested callees, and caller-side resume paths.
 	                   Default: 2. Maximum: 4.
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
 	    -f <file>    : Required for -q 9.
@@ -38731,6 +38738,7 @@ Official model docs:
 	    including the case where the current function must return and execution resumes in the caller before the target is reached.
 	    If -t is omitted, q3 switches to discovery mode and instead looks for the most promising reachable
 	    chunk-modification paths or controlled-data consumption paths such as vftable use or indirect call/jmp.
+	    q3 asks the AI to explain the required chunk offsets and values for up to two strong scenarios.
 	    -q 8 focuses on ROP primitive quality and feasibility.
 	    With -q 2 and -q 3, -d controls how many nested call/jump levels mona will follow when collecting target disassembly.
 	    For -q 3, that same depth also controls how many caller frames mona inspects for return-resume analysis.
