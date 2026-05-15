@@ -38053,11 +38053,11 @@ def main(args):
 					dbg.log("[ -- END -- ] The last time you ran !mona up was %s. Please run it more frequently." % last_up_str, highlight=True)
 					dbg.log("[ -- END -- ] Run !mona up now using: %s" % update_cmd, highlight=True)
 				else:
-					dbg.log("[ -- END -- ] Don't forget to check for updates on a regular basis using: %s" % update_cmd, highlight=True)
+					dbg.log("[ -- END -- ] Don't forget to check for updates on a regular basis using %s" % update_cmd, highlight=True)
 			elif upfile_error not in ["mona.up file not found", "mona.up file is empty"]:
 				mndbg.dbgp("Unable to use mona.up timestamp from %s: %s" % (mona_up_file, upfile_error), errormode=False)
 			else:
-				dbg.log("[ -- END -- ] Don't forget to check for updates on a regular basis using: %s" % update_cmd, highlight=True)
+				dbg.log("[ -- END -- ] Don't forget to check for updates on a regular basis using %s" % update_cmd, highlight=True)
 		dbg.setStatusBar("Done")
 		if DEBUG_MODE and mndbg.isWinDBG():
 			dbg.nativeCommand(".logclose")
