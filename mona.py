@@ -38041,15 +38041,15 @@ def main(args):
 		else:
 			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
 		if yesno():
+			if mndbg.isWinDBG():
+				update_cmd = clickWinDBGCmd("%s up" % getAliasName())
+			else:
+				update_cmd = "'%s up'" % getAliasName()
 			mona_up_file, last_up_timestamp, upfile_error = _readMonaUpTimestamp()
 			if last_up_timestamp is not None:
 				now = datetime.datetime.now()
 				if last_up_timestamp <= now and (now - last_up_timestamp).days > 60:
 					last_up_str = last_up_timestamp.strftime("%Y-%m-%d %H:%M:%S")
-					if mndbg.isWinDBG():
-						update_cmd = clickWinDBGCmd("%s up" % getAliasName())
-					else:
-						update_cmd = "'%s up'" % getAliasName()
 					dbg.log("[ -- END -- ] The last time you ran !mona up was %s. Please run it more frequently." % last_up_str, highlight=True)
 					dbg.log("[ -- END -- ] Run !mona up now using: %s" % update_cmd, highlight=True)
 				else:
