@@ -5892,6 +5892,7 @@ Focus on reconstructing what the code does, annotating the important instruction
 Use the entries under 'variables' as the debugger context. Prioritize function_analyses, analysis_target, registers, modules, architecture, pointer_size, and any supplied additional_context_files or poc_file that clarify the code path. Ignore variables that are not useful and briefly say why only when that matters.
 Be concise, but make the analysis strong. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, branch conditions, or pseudocode fragments that support the conclusion.
 Analyze function_analyses in order. The live %s function is primary. If a second entry sourced from -a is present and not marked as duplicate, analyze that function too.
+When linked functions are provided through control_flow_targets or nested_control_flow_targets, analyze the important linked functions as supporting context, especially when they clarify branch decisions, object state, argument preparation, helper behavior, or the meaning of an indirect transfer.
 For each analyzed function, cover:
 1. whether the location is valid and whether full function boundaries were resolved
 2. the most likely function purpose in plain English
@@ -5899,6 +5900,7 @@ For each analyzed function, cover:
 4. annotated decompiled-style pseudocode that captures control flow and important data movement
 5. the meaning of important calls, unconditional jumps, and resolved control_flow_targets when available
 6. a short human explanation of what the function is doing and why
+For linked functions, keep the analysis shorter than for the primary function, but still explain what each linked function appears to do and how it influences the caller.
 If near_entry_execution_context is present, use that live register and stack context explicitly. Explain what code path would most likely be taken from the start of the function given that concrete state, which checks are likely to pass or fail first, and where the execution would likely go next.
 If a location is invalid, say so clearly. If a containing function could not be resolved confidently, fall back to the supplied code window and explain the uncertainty.
 Reason from the start of the containing function, not from the single instruction offset alone. In effect, mentally decompile the routine before explaining the active instruction.
@@ -8501,6 +8503,69 @@ def stripTags(input=""):
 def yesno():
 	"""Return a random boolean, favoring False roughly 3:1."""
 	return random.randint(1, 4) == 4
+
+
+def _getMonaScriptPath():
+	"""Return the absolute path to mona.py when possible."""
+	try:
+		if "__file__" in globals():
+			return os.path.abspath(__file__)
+	except Exception:
+		pass
+	try:
+		return os.path.abspath(inspect.stack()[0][1])
+	except Exception:
+		return ""
+
+
+def _getMonaUpFilePath():
+	"""Return the mona.up file path next to mona.py."""
+	script_path = _getMonaScriptPath()
+	if script_path == "":
+		return ""
+	return os.path.join(os.path.dirname(script_path), "mona.up")
+
+
+def _writeMonaUpTimestamp():
+	"""Persist the last time 'mona up' was run."""
+	upfile = _getMonaUpFilePath()
+	if upfile == "":
+		return False, "Unable to resolve the mona.up file path"
+	timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+	try:
+		with open(upfile, "w") as fh:
+			fh.write(timestamp)
+		return True, timestamp
+	except Exception as e:
+		return False, str(e)
+
+
+def _readMonaUpTimestamp():
+	"""Return the stored mona.up timestamp and parsed datetime when available."""
+	upfile = _getMonaUpFilePath()
+	if upfile == "":
+		return "", None, "Unable to resolve the mona.up file path"
+	if not os.path.isfile(upfile):
+		return upfile, None, "mona.up file not found"
+	try:
+		with open(upfile, "r") as fh:
+			raw = ensure_text(fh.read()).strip()
+	except Exception as e:
+		return upfile, None, str(e)
+	if raw == "":
+		return upfile, None, "mona.up file is empty"
+	for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]:
+		try:
+			return upfile, datetime.datetime.strptime(raw, fmt), ""
+		except Exception:
+			pass
+	stamped_upfile, stamp_result = _writeMonaUpTimestamp()
+	if stamped_upfile:
+		try:
+			return upfile, datetime.datetime.strptime(stamp_result, "%Y-%m-%d %H:%M:%S"), "mona.up timestamp format was unrecognized and has been reset"
+		except Exception:
+			return upfile, None, "mona.up timestamp format was unrecognized and has been reset"
+	return upfile, None, "Unrecognized mona.up timestamp format: %s" % raw
 
 
 def fileToBin(filename):
@@ -30051,6 +30116,12 @@ def procUpdate(args):
 	if force_update and not simulate_only:
 		dbg.log("[+] Force update enabled", highlight=1)
 
+	stamped_upfile, stamp_result = _writeMonaUpTimestamp()
+	if stamped_upfile:
+		mndbg.dbgp("Recorded mona up timestamp %s in %s" % (stamp_result, _getMonaUpFilePath()))
+	else:
+		mndbg.dbgp("Unable to record mona up timestamp: %s" % stamp_result, errormode=False)
+
 	if not _check_connectivity():
 		dbg.log("[-] No internet connectivity detected. Update aborted.", highlight=1)
 		return "Done"
@@ -37970,7 +38041,21 @@ def main(args):
 		else:
 			dbg.log("[ -- END -- ] %s | %s took %s" % (mndbg.get_current_datetime(), getAliasName(), str(delta)))
 		if yesno():
-			dbg.log("[ -- END -- ] Don't forget to check for updates from time to time: %s" % clickWinDBGCmd("%s up" % getAliasName()), highlight=True)
+			mona_up_file, last_up_timestamp, upfile_error = _readMonaUpTimestamp()
+			if last_up_timestamp is not None:
+				now = datetime.datetime.now()
+				if last_up_timestamp <= now and (now - last_up_timestamp).days > 60:
+					last_up_str = last_up_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+					if mndbg.isWinDBG():
+						update_cmd = clickWinDBGCmd("%s up" % getAliasName())
+					else:
+						update_cmd = "'%s up'" % getAliasName()
+					dbg.log("[ -- END -- ] The last time you ran !mona up was %s. Please run it more frequently." % last_up_str, highlight=True)
+					dbg.log("[ -- END -- ] Run !mona up now using: %s" % update_cmd, highlight=True)
+				else:
+					dbg.log("[ -- END -- ] Don't forget to check for updates on a regular basis using: %s" % update_cmd, highlight=True)
+			elif upfile_error not in ["mona.up file not found", "mona.up file is empty"]:
+				mndbg.dbgp("Unable to use mona.up timestamp from %s: %s" % (mona_up_file, upfile_error), errormode=False)
 		dbg.setStatusBar("Done")
 		if DEBUG_MODE and mndbg.isWinDBG():
 			dbg.nativeCommand(".logclose")
