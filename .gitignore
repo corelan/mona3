@@ -64,8 +64,9 @@ pytest_cache/
 # Ini
 *.ini
 
-# blog
+# internal blog & documentation
 blogpost.txt
+prompt*.md
 
 # IDEs / editors
 .vscode/
