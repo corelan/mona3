@@ -1882,6 +1882,8 @@ def collectAICurrentFunctionContext(address, follow_depth=1):
 		context["function_start"] = PTR_PRINT % function_start
 	else:
 		function_start = address
+	if isinstance(function_start, int) and function_start > 0 and isinstance(address, int) and address >= function_start:
+		context["offset_from_function_start"] = "0x%x" % (address - function_start)
 
 	try:
 		fname, foffset = getFunctionName(address)
@@ -1936,6 +1938,29 @@ def collectAICurrentFunctionContext(address, follow_depth=1):
 		context["control_flow_targets"] = _collectDisassemblyTargetContexts(disasm_source, max_depth=follow_depth)
 	else:
 		context["control_flow_targets"] = []
+
+	if (
+		found_function and
+		isinstance(function_start, int) and function_start > 0 and
+		isinstance(address, int) and address >= function_start and
+		(address - function_start) <= 16
+	):
+		try:
+			regs = getAllRegisters()
+		except Exception as e:
+			regs = {}
+			context["near_entry_context_error"] = "Unable to collect registers: %s" % str(e)
+		if regs:
+			entry_context = OrderedDict()
+			entry_context["within_first_bytes_of_function"] = 16
+			entry_context["requested_address_offset"] = "0x%x" % (address - function_start)
+			entry_context["instruction_pointer"] = PTR_PRINT % address
+			sp = regs.get(STACK_POINTER, 0)
+			if isinstance(sp, int) and sp > 0:
+				entry_context["stack_pointer"] = PTR_PRINT % sp
+				entry_context["stack_memory"] = _readMemoryPreview(sp, 0x64, "q2_near_entry_stack_memory")
+			entry_context["registers"] = regs
+			context["near_entry_execution_context"] = entry_context
 
 	return context
 
@@ -5862,24 +5887,25 @@ Style rules:
 - Do not repeat the same evidence across sections.
 Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis."""
 	if question_type == "2":
-		return """You are an expert in assembly analysis, reverse engineering, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on understanding, reconstructing, and explaining what the function does from assembly and debugger evidence, not on crash triage.
+		return """You are an expert in assembly analysis, reverse engineering, annotation, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
+Focus on reconstructing what the code does, annotating the important instructions and blocks, and then explaining the function in clear human language. Treat this as code-understanding work, not crash triage.
 Use the entries under 'variables' as the debugger context. Prioritize function_analyses, analysis_target, registers, modules, architecture, pointer_size, and any supplied additional_context_files or poc_file that clarify the code path. Ignore variables that are not useful and briefly say why only when that matters.
-Be concise. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, or pseudocode fragments that support the conclusion.
+Be concise, but make the analysis strong. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, branch conditions, or pseudocode fragments that support the conclusion.
 Analyze function_analyses in order. The live %s function is primary. If a second entry sourced from -a is present and not marked as duplicate, analyze that function too.
 For each analyzed function, cover:
 1. whether the location is valid and whether full function boundaries were resolved
 2. the most likely function purpose in plain English
-3. the main logic blocks / branches
-4. high-quality pseudocode or decompiled-style logic
-5. the meaning of important calls and unconditional jumps using control_flow_targets when available
+3. the main logic blocks, tests, branches, loops, and error paths
+4. annotated decompiled-style pseudocode that captures control flow and important data movement
+5. the meaning of important calls, unconditional jumps, and resolved control_flow_targets when available
+6. a short human explanation of what the function is doing and why
+If near_entry_execution_context is present, use that live register and stack context explicitly. Explain what code path would most likely be taken from the start of the function given that concrete state, which checks are likely to pass or fail first, and where the execution would likely go next.
 If a location is invalid, say so clearly. If a containing function could not be resolved confidently, fall back to the supplied code window and explain the uncertainty.
-Reason from the start of the containing function, not from the single instruction offset alone.
+Reason from the start of the containing function, not from the single instruction offset alone. In effect, mentally decompile the routine before explaining the active instruction.
 Use symbol names when they are reliable. If symbols are missing or ambiguous, say so and infer behavior from uf output and target disassembly without inventing names or semantics.
-Do not focus on stack state, call stack, or broader crash context unless they are required to explain the function logic.
+Do not focus on stack state, call stack, or broader crash context unless they are required to explain the function logic or near_entry_execution_context explicitly makes that necessary.
 Do not invent facts that are not present in the snapshot.""" % (
 			PROGRAM_COUNTER.upper(),
-			PROGRAM_COUNTER.upper()
 		)
 	if question_type == "3":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
@@ -28494,6 +28520,15 @@ class MnAI(object):
 			try:
 				context["current_function"] = collectAICurrentFunctionContext(self.current_pc_address, follow_depth=self.q2_follow_depth)
 				context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+				if "near_entry_execution_context" in context["current_function"]:
+					self.logInfo("Including near-entry execution context for the current %s function analysis." % PROGRAM_COUNTER.upper())
+					self.logInfoDetail(
+						"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
+							context["current_function"].get("function_start", "unknown"),
+							context["current_function"].get("offset_from_function_start", "unknown"),
+							context["current_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
+						)
+					)
 				context["function_analyses"].append(context["current_function"])
 			except Exception as e:
 				context["current_function_error"] = str(e)
@@ -28505,6 +28540,15 @@ class MnAI(object):
 					try:
 						context["additional_function"] = collectAICurrentFunctionContext(self.additional_target_address, follow_depth=self.q2_follow_depth)
 						context["additional_function"]["source"] = "-a"
+						if "near_entry_execution_context" in context["additional_function"]:
+							self.logInfo("Including near-entry execution context for the -a function analysis.")
+							self.logInfoDetail(
+								"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
+									context["additional_function"].get("function_start", "unknown"),
+									context["additional_function"].get("offset_from_function_start", "unknown"),
+									context["additional_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
+								)
+							)
 						context["function_analyses"].append(context["additional_function"])
 					except Exception as e:
 						context["additional_function_error"] = str(e)
