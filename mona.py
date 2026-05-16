@@ -12217,7 +12217,8 @@ def readPtrSizeBytes(ptr):
 	fmt = PTR_FMT
 	if not data or len(data) < expected:
 		mndbg.dbgp("readPtrSizeBytes(0x%x): readMemory returned %s bytes" % (ptr, len(data) if data else 0))
-	return 0
+		return 0
+	return struct.unpack(fmt, data)[0]
 
 
 def _extractFunctionMetadataFromUfOutput(uf_output):
