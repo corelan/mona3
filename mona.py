@@ -3960,8 +3960,10 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 	if question_type == "9":
 		raise ValueError("Question type '9' must be built from a template file with -f")
 
-	instructions = _getProfileInstructions(question_type)
 	request_variables = _pruneEmptyRequestValues(request_variables)
+	instructions = _getProfileInstructions(question_type, {
+		"has_controlled_object_callees": bool(request_variables.get("controlled_object_callees")),
+	})
 
 	request_payload = _buildRequestPayload("profile", question_type, request_variables)
 	return instructions + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
@@ -6936,10 +6938,31 @@ def _buildRequestPayload(mode, question_type, variables, template_text="", templ
 	return request_payload
 
 
-def _getProfileInstructions(question_type):
+def _getProfileInstructions(question_type, options=None):
 	mndbg.dbgp(get_current_function_name())
+	if options is None:
+		options = {}
+	def _withMarkdownOutput(profile_text):
+		mndbg.dbgp(get_current_function_name())
+		profile_text = ensure_text(profile_text)
+		return """Output format:
+- Produce the final answer in Markdown.
+- Use headings, bullet lists, tables, and code blocks where they improve readability.
+- If the profile below says "Output exactly" or otherwise mandates a strict section order, preserve that structure exactly and render it in Markdown without changing the required content.
+
+""" + profile_text
+	has_controlled_object_callees = bool(options.get("has_controlled_object_callees", False))
+	q3_visible_scope_rule = ""
+	q3_controlled_callee_rule = ""
+	q3b_priority_controlled_callees = ""
+	q3b_controlled_callee_rule = ""
+	if has_controlled_object_callees:
+		q3_visible_scope_rule = '   - If controlled_object_callees is present, treat it as explicit evidence for first-hop direct callees that likely receive CC/CD object pointers.\n'
+		q3_controlled_callee_rule = '   - If controlled_object_callees is present, expand every listed callee before ranking sinks, even when the same callee is also reachable only through control_flow_target_refs.\n'
+		q3b_priority_controlled_callees = ", controlled_object_callees"
+		q3b_controlled_callee_rule = "- If controlled_object_callees is present, treat it as explicit first-hop callee expansion evidence. Do not stop at the call site when a listed callee body is supplied there.\n"
 	if question_type == "1":
-		return """You are an expert in Windows memory corruption analysis: assembly, reverse engineering, WinDBG, mona.py, and exploit development.
+		return _withMarkdownOutput("""You are an expert in Windows memory corruption analysis: assembly, reverse engineering, WinDBG, mona.py, and exploit development.
 Focus on crash triage and immediate exploit-relevant assessment from a single debugger snapshot.
 Use the keys under the 'variables' object as the debugger context. Prioritize registers, program_counter, pc_disasm, pc_page, pc_module, stack_memory, findmsp, findseh, seh_chain, windbg_analyze, instruction_heap_references, heap_details, heapdynamics, evidence.heap_blocks, pc_disasm.after, modules_full, and ntglobal_flag. Ignore low-value variables unless they materially affect the conclusion.
 
@@ -7028,9 +7051,9 @@ Style rules:
 - Cite register values, offsets, chunk sizes, and addresses numerically.
 - Do not invent facts. Mark uncertain inferences clearly.
 - Do not repeat the same evidence across sections.
-Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis."""
+Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis.""")
 	if question_type == "2":
-		return """You are an expert in assembly analysis, reverse engineering, annotation, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return _withMarkdownOutput("""You are an expert in assembly analysis, reverse engineering, annotation, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on reconstructing what the code does, annotating the important instructions and blocks, and then explaining the function in clear human language. Treat this as code-understanding work, not crash triage.
 Use the entries under 'variables' as the debugger context. Prioritize function_analyses, analysis_target, registers, modules, architecture, pointer_size, and any supplied additional_context_files or poc_file that clarify the code path. Ignore variables that are not useful and briefly say why only when that matters.
 Be concise, but make the analysis strong. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, branch conditions, or pseudocode fragments that support the conclusion.
@@ -7051,9 +7074,9 @@ Use symbol names when they are reliable. If symbols are missing or ambiguous, sa
 Do not focus on stack state, call stack, or broader crash context unless they are required to explain the function logic or near_entry_execution_context explicitly makes that necessary.
 Do not invent facts that are not present in the snapshot.""" % (
 			PROGRAM_COUNTER.upper(),
-		)
+		))
 	if question_type == "3":
-		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return _withMarkdownOutput("""You are analyzing a debugger snapshot from mona.py running under WinDBG.
 
 Task:
 Perform bounded, evidence-based path-feasibility analysis from the current instruction pointer.
@@ -7088,8 +7111,7 @@ Mandatory method:
 2. Build visible path scope:
    - Start at program_counter/current_function.
    - Use all relevant supplied disassembly/maps/caller/callee/return-resume/context fields inside variables.
-   - Treat controlled_object_callees as first-class evidence for first-hop direct callees that likely receive CC/CD object pointers.
-   - Resolve control_flow_target_refs and nested_control_flow_target_refs through control_flow_target_map.
+%s   - Resolve control_flow_target_refs and nested_control_flow_target_refs through control_flow_target_map.
    - Do not treat empty target arrays as absence when refs exist.
    - If a referenced target lacks disassembly, mark that edge UNDER-COLLECTED and list the missing command later.
 
@@ -7108,8 +7130,7 @@ Mandatory method:
 
 5. Expand controlled-object callees:
    - If a direct callee receives CC or a CD pointer via this/object/argument/register/stack, and callee disassembly is supplied, inspect it.
-   - If controlled_object_callees is present, expand every listed callee before ranking sinks, even when the same callee is also reachable only through control_flow_target_refs.
-   - Identify CD predicates, CD reads, CD writes/RMW operations, CD indirect transfers, and further callees receiving CC/CD values.
+%s   - Identify CD predicates, CD reads, CD writes/RMW operations, CD indirect transfers, and further callees receiving CC/CD values.
 
 5.5. Indirect transfers in reachable callees:
    - Any indirect control-flow instruction inside a reachable callee must be enumerated as a materially distinct sink.
@@ -7129,7 +7150,13 @@ Mandatory method:
        containing callee, call site into callee, CC/CD argument/register at callee entry,
        indirect transfer instruction, last visible assignment chain,
        CD expression if reconstructable, and missing command if not reconstructable.
-	   
+
+5.6. Controlled writes / memory modifications:
+   - Enumerate every store, RMW, or callee write where the destination address is CD (reg derived from CC at the store instruction).
+   - If destination is [reg+off] and reg is CC-derived at the write site (even if off is unknown), promote to PLAUSIBLE-LOW with blocker "under-collected write destination expression".
+   - If the write is through a CD this/argument in a reachable callee, treat as controlled-derived.
+   - Do not require the written value to be CC-controlled — only the destination.
+
 6. Analyze branch feasibility:
    - Spell out predicates for promoted/plausible paths.
    - Express predicates in terms of CC offsets, CD expressions, live registers, stack slots, or external state.
@@ -7243,21 +7270,24 @@ Style:
 - Do not speculate beyond supplied evidence.
 - Do not omit materially distinct sinks.
 - Classify and rank; do not merely narrate.
-- When evidence is missing, say exactly what is missing."""
+- When evidence is missing, say exactly what is missing.""" % (
+			q3_visible_scope_rule,
+			q3_controlled_callee_rule,
+		))
 	if question_type == "3b":
-		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return _withMarkdownOutput("""You are analyzing a debugger snapshot from mona.py running under WinDBG.
 
 Focus on bounded reachability from the current instruction pointer to a supplied target address, or, in discovery mode, to the nearest controlled-data sink. The only bytes you may assume can change are bytes inside the supplied controlled heap chunk. Even if the chunk is currently free or not visibly populated, assume its contents are fully controllable.
 
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
 
 Use the entries under "variables" as the debugger context. Prioritize:
-q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, controlled_object_callees, return_resume_analysis, control_flow_disasm_map, control_flow_target_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
+q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function%s, return_resume_analysis, control_flow_disasm_map, control_flow_target_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
 
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live registers, and disassembly over summary-style diagnostics.
 
 Use architecture and pointer_size to interpret registers, pointer values, stack arguments, calling conventions, object pointers, and memory operands. Do not assume x86, 32-bit registers, 4-byte pointers, or x86 calling conventions unless explicitly indicated.
-Follow the rules in this prompt with zero summarization or early stopping. 
+Do not summarize away path evidence or stop after the first plausible sink.
 Perform exhaustive enumeration of every sink using the full control_flow_target_map and nested_control_flow_target_refs. 
 Do not omit any materially distinct controlled-write or indirect-call sink.
 
@@ -7282,8 +7312,7 @@ Core rules:
 - When quoting or summarizing disassembly snippets, include the function name and module-relative location when available, not just the raw address. Prefer forms such as MSHTML!CView::AddInvalidationTask+0x1a @ 0x6b5205ab or module!symbol+offset, because raw addresses alone are unstable under ASLR.
 - Treat caller-side post-return logic as first-class.
 - Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
-- Treat controlled_object_callees as mandatory first-hop callee expansion evidence. Do not stop at the call site when a listed callee body is supplied there.
-- Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
+%s - Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
 - Search exhaustively within the collected scope. Do not stop after the earliest, easiest, or first plausible sink. Continue enumerating materially distinct scenarios across intra-function, callee-mediated, and return-resume paths until the supplied disassembly scope is exhausted or blocked.
 - When control_flow_target_refs or nested_control_flow_target_refs are present, resolve them through control_flow_target_map. Do not treat empty control_flow_targets or nested_control_flow_targets arrays as absence if refs are present.
 
@@ -7555,9 +7584,12 @@ Style rules:
 - Use numeric addresses, offsets, register names, and field offsets.
 - Do not transcribe long dumps.
 - Prefer short disassembly-backed path descriptions.
-- Do not invent object types unless strongly supported by disassembly."""
+- Do not invent object types unless strongly supported by disassembly.""" % (
+			q3b_priority_controlled_callees,
+			q3b_controlled_callee_rule,
+		))
 	if question_type == "8":
-		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return _withMarkdownOutput("""You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on ROP primitive quality and feasibility.
 Use 'rop_target_modules' as the primary input and honor the supplied architecture and calling convention.
 Use 'return_windows' as compact gadget-ending candidates. Each entry ends in C3 or C2 <imm16> and provides:
@@ -7576,7 +7608,7 @@ For useful example gadgets, show:
 * notable side effects / clobbers / stack adjustment if implied by the decoded gadget
 * whether it looks clean, fragile, or speculative
 
-Keep the answer concise, evidence-based, architecture-aware, and non-operational."""
+Keep the answer concise, evidence-based, architecture-aware, and non-operational.""")
 	raise ValueError("Unsupported question type '%s'. Customize _getProfileInstructions() to add more profiles." % question_type)
 
 
