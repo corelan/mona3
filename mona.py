@@ -39715,7 +39715,7 @@ Optional arguments:
 	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
 	    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
 	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
-    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; if you provide only a base URL, mona will use the native /api/generate path)
+    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
     - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
 
 Configuration:
@@ -39742,12 +39742,12 @@ Configuration:
        __LAUNCHCMD__ config -set anthropic.timeout 300
        __LAUNCHCMD__ config -set anthropic.max_tokens 4096
        __LAUNCHCMD__ config -set mona.ai.engine ollama
-       __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/v1/responses
+       __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
        __LAUNCHCMD__ config -set ollama.model llama3
        __LAUNCHCMD__ config -set ollama.timeout 300
        __LAUNCHCMD__ config -set ollama.response_field response
-       Use /v1/responses when your Ollama endpoint exposes the OpenAI-style Responses API.
-       Use http://127.0.0.1:11434/api/generate if you want to force the native Ollama generate API.
+       Recommended: use http://127.0.0.1:11434/api/generate for the simplest and most reliable plain-text Ollama response format.
+       Use http://127.0.0.1:11434/v1/responses when you specifically want OpenAI-style Responses API compatibility and have confirmed that the model returns final assistant text there.
        A plain base URL such as http://127.0.0.1:11434 also works and will be treated as native Ollama.
        __LAUNCHCMD__ config -set mona.ai.engine customai
        __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
@@ -39901,10 +39901,10 @@ Official model docs:
 	    __LAUNCHCMD__ config -set mona.ai.engine anthropic
 	    __LAUNCHCMD__ tellme -e anthropic -q 2
 	    __LAUNCHCMD__ config -set mona.ai.engine ollama
-	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/v1/responses
+	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
 	    __LAUNCHCMD__ config -set ollama.model llama3
 	    __LAUNCHCMD__ tellme -e ollama -q 1
-	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
+	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/v1/responses
 	    __LAUNCHCMD__ tellme -e ollama -q 1 -timeout 300
 	    __LAUNCHCMD__ config -set mona.ai.engine customai
 	    __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate

@@ -615,7 +615,7 @@ Example using `mona` config:
 !mona config -set anthropic.max_tokens 4096
 
 !mona config -set mona.ai.engine ollama
-!mona config -set ollama.url http://127.0.0.1:11434/v1/responses
+!mona config -set ollama.url http://127.0.0.1:11434/api/generate
 !mona config -set ollama.model llama3
 !mona config -set ollama.timeout 300
 !mona config -set ollama.response_field response
@@ -643,7 +643,7 @@ set ANTHROPIC_API_KEY=<your Anthropic API key>
 set ANTHROPIC_MODEL=claude-sonnet-4-6
 set ANTHROPIC_TIMEOUT=300
 set ANTHROPIC_MAX_TOKENS=4096
-set OLLAMA_URL=http://127.0.0.1:11434/v1/responses
+set OLLAMA_URL=http://127.0.0.1:11434/api/generate
 set OLLAMA_MODEL=llama3
 set OLLAMA_TIMEOUT=300
 set OLLAMA_RESPONSE_FIELD=response
@@ -701,7 +701,7 @@ Currently supported engines are:
 * `openai`: direct OpenAI API integration
 * `openaiagents`: local bridge that uses the OpenAI Agents SDK and OpenAI Python library outside the debugger
 * `anthropic`: direct Anthropic API integration without an Anthropic SDK dependency
-* `ollama`: local or remote Ollama endpoint; supports either OpenAI-style `/v1/responses` or native `/api/generate`
+* `ollama`: local or remote Ollama endpoint; supports either OpenAI-style `/v1/responses` or native `/api/generate`. Prefer `/api/generate` for the most reliable plain-text `tellme` output; use `/v1/responses` when you specifically want OpenAI-style compatibility and have confirmed the model returns final assistant text there.
 * `customai`: generic POST JSON endpoint that sends `{"model": ..., "prompt": ...}` and can extract nested response text via `response_field`
 
 Use `-e <engine>` to select one explicitly for a single request, or set `mona.ai.engine` to make one the default.
