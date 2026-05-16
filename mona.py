@@ -5247,11 +5247,17 @@ def _logOllamaError(err):
 	if "body" in payload:
 		body = payload.get("body")
 		if isinstance(body, dict):
+			attempt_timeout = body.get("attempt_timeout", None)
+			suggested_timeout = body.get("suggested_timeout", None)
 			request_url = ensure_text(body.get("request_url", "")).strip()
 			request_mode = ensure_text(body.get("request_mode", "")).strip()
 			response_field = ensure_text(body.get("response_field", "")).strip()
 			response_keys = body.get("response_keys", [])
 			response_preview = ensure_text(body.get("response_preview", "")).strip()
+			if isinstance(attempt_timeout, (int, float)):
+				dbg.log("    Attempt timeout: %.1fs" % float(attempt_timeout), highlight=1)
+			if isinstance(suggested_timeout, (int, float)) and float(suggested_timeout) > float(attempt_timeout or 0):
+				dbg.log("    Retry with    : -timeout %.1f or higher" % float(suggested_timeout), highlight=1)
 			if request_mode != "":
 				dbg.log("    Mode          : %s" % request_mode, highlight=1)
 			if request_url != "":
@@ -5409,6 +5415,80 @@ def _previewAIResponseBody(value, max_len=800):
 	if len(text) > max_len:
 		return text[:max_len] + "... <truncated>"
 	return text
+
+
+def _collectOpenAIOutputTexts(response_data):
+	mndbg.dbgp(get_current_function_name())
+	parts = []
+	if not isinstance(response_data, dict):
+		return parts
+	for item in response_data.get("output", []):
+		if not isinstance(item, dict):
+			continue
+		for content_item in item.get("content", []):
+			if not isinstance(content_item, dict):
+				continue
+			text_value = ensure_text(content_item.get("text", "")).strip()
+			if text_value != "":
+				parts.append(text_value)
+	return parts
+
+
+def _describeAIResponseShape(response_data):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(response_data, dict):
+		return ""
+	details = []
+	status_value = ensure_text(response_data.get("status", "")).strip()
+	if status_value != "":
+		details.append("status=%s" % status_value)
+	output_items = response_data.get("output", [])
+	if isinstance(output_items, list) and len(output_items) > 0:
+		item_types = []
+		has_empty_message = False
+		for item in output_items:
+			if not isinstance(item, dict):
+				continue
+			item_type = ensure_text(item.get("type", "")).strip()
+			if item_type != "" and item_type not in item_types:
+				item_types.append(item_type)
+			if item_type == "message":
+				message_texts = []
+				for content_item in item.get("content", []):
+					if not isinstance(content_item, dict):
+						continue
+					text_value = ensure_text(content_item.get("text", "")).strip()
+					if text_value != "":
+						message_texts.append(text_value)
+				if len(message_texts) == 0:
+					has_empty_message = True
+		if len(item_types) > 0:
+			details.append("output_types=%s" % ",".join(item_types))
+		if has_empty_message:
+			details.append("assistant_message_empty=yes")
+	return ", ".join(details)
+
+
+def _summarizeUnexpectedAIResponse(raw_payload):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(raw_payload, dict):
+		return ""
+	raw_response = raw_payload.get("raw_response", raw_payload)
+	if not isinstance(raw_response, dict):
+		return ""
+	request_mode = ensure_text(raw_payload.get("request_mode", "")).strip()
+	request_url = ensure_text(raw_payload.get("request_url", "")).strip()
+	response_shape = _describeAIResponseShape(raw_response)
+	if request_mode == "openai_responses" and _extractOpenAIText(raw_response) == "":
+		lines = ["The provider completed the request but did not return final assistant text."]
+		if response_shape != "":
+			lines.append("Observed response shape: %s." % response_shape)
+		if request_url != "":
+			lines.append("Endpoint: %s." % request_url)
+		lines.append("This usually means the model or endpoint returned internal/reasoning items without a usable final answer for the Responses API.")
+		lines.append("For Ollama, retry with a larger -timeout and prefer `/api/generate` if this model does not emit assistant text on `/v1/responses`.")
+		return "\n".join(lines)
+	return ""
 
 
 def formatAIResponseLines(answer):
@@ -8361,16 +8441,7 @@ def _extractOpenAIText(response_data):
 	output_text = ensure_text(response_data.get("output_text", "")).strip()
 	if output_text:
 		return output_text
-	parts = []
-	for item in response_data.get("output", []):
-		if not isinstance(item, dict):
-			continue
-		for content_item in item.get("content", []):
-			if not isinstance(content_item, dict):
-				continue
-			text_value = content_item.get("text", "")
-			if text_value:
-				parts.append(ensure_text(text_value))
+	parts = _collectOpenAIOutputTexts(response_data)
 	return "\n".join([part for part in parts if part]).strip()
 
 
@@ -12717,7 +12788,7 @@ class MnConfig:
 
 						mndbg.dbgp("Added parameter %s with value %s to display cache" % (thisparam, display_value))
 
-				print_dict_table(display_cache, headers, types, padding="      ", itemsequence=[])
+				print_dict_table(display_cache, headers, types, padding="      ", itemsequence=sorted(display_cache.keys()))
 
 			except Exception as e:
 				mndbg.dbgp("Error processing config file %s: %s" % (self.fullpath, str(e)), errormode=False)
@@ -31005,10 +31076,17 @@ class MnAI(object):
 		if getattr(err, "request_id", ""):
 			self.request_id = err.request_id
 		self.writeRawResponseLog(raw_payload)
-		self.response = (
-			"The provider returned a response in an unexpected format.\n"
-			"The raw response was saved to %s." % self.raw_response_logfile_path
-		)
+		response_summary = _summarizeUnexpectedAIResponse(raw_payload)
+		if response_summary != "":
+			self.response = "%s\nThe raw response was saved to %s." % (
+				response_summary,
+				self.raw_response_logfile_path
+			)
+		else:
+			self.response = (
+				"The provider returned a response in an unexpected format.\n"
+				"The raw response was saved to %s." % self.raw_response_logfile_path
+			)
 		self.logInfo("The provider returned a response, but its format was not recognized.")
 		self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
 		return True
@@ -31117,6 +31195,16 @@ class MnAI(object):
 					max_attempts,
 					traceback.format_exc()
 				), errormode=False)
+				if _isTimeoutError(self.engine, e):
+					try:
+						error_body = getattr(e, "body", None)
+						if not isinstance(error_body, dict):
+							error_body = {}
+						error_body["attempt_timeout"] = attempt_timeout
+						error_body["suggested_timeout"] = attempt_timeout + retry_timeout_increment
+						e.body = error_body
+					except Exception:
+						pass
 				if self.handleUnexpectedPayloadFallback(e):
 					break
 				logAIProviderError(self.engine, e)
