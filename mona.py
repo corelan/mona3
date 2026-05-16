@@ -6707,25 +6707,50 @@ Core rules:
 - Stay bounded to the collected snapshot. Do not assume future heap grooming, additional corruption, or arbitrary execution unless the snapshot supports it.
 - Use lightweight symbolic reasoning over collected disassembly, live registers, stack values, and chunk fields.
 - Do not invent unobserved state.
+- Treat the entire contents of the specified controlled chunk as attacker-controlled input. For every reported scenario, reason from the assumption that any byte inside that chunk may be changed as needed unless the snapshot shows a concrete constraint.
 - When a path depends on flags or bit tests, spell out the exact predicate in terms of relevant offsets and bits.
 - When quoting or summarizing disassembly snippets, include the function name and module-relative location when available, not just the raw address. Prefer forms such as MSHTML!CView::AddInvalidationTask+0x1a @ 0x6b5205ab or module!symbol+offset, because raw addresses alone are unstable under ASLR.
 - Treat caller-side post-return logic as first-class.
 - Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
 - Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
+- Search exhaustively within the collected scope. Do not stop after the earliest, easiest, or first plausible sink. Continue enumerating materially distinct scenarios across intra-function, callee-mediated, and return-resume paths until the supplied disassembly scope is exhausted or blocked.
 
 Evidence thresholds:
 - Do not overpromote. CONFIRMED requires a complete visible path in the supplied snapshot from the current IP (or caller resume site) to the sink/target, with intervening branch predicates, direct call/callee steps, and sink instruction all accounted for from supplied disassembly.
 - Report strong likely paths even when they are not fully proven. Use PLAUSIBLE when the path is strongly supported by visible disassembly and controlled-derived dataflow, but one or more required predicates, intermediate targets, or final effects remain unproven or under-collected.
+- Treat "requires runtime validation" as a confirmation gap, not as a reason to demote a strong path below PLAUSIBLE. If the visible disassembly and derived dataflow strongly support the route, keep it PLAUSIBLE even when final validation is still needed.
 - Use NOT SHOWN only when the request does not show a real evidence-backed route, not merely because the path is incomplete.
 - When using PLAUSIBLE, also assign a plausibility tier:
   - HIGH: the path is strongly supported by visible disassembly and controlled-derived dataflow, and only a small number of concrete conditions remain unproven
   - LOW: the path is real and evidence-backed, but multiple required conditions, branches, or dataflow links remain unproven
+- A path may still be PLAUSIBLE HIGH even when it requires follow-up debugger validation, as long as the remaining uncertainty is narrow and the visible evidence is otherwise strong.
 - For every path you report, explicitly classify each key claim as:
   - OBSERVED: directly shown in the request
   - DERIVED: computed from observed instructions/dataflow
   - UNPROVEN: plausible but not fully established from the supplied snapshot
 - For every path you reject or downgrade, state the first blocker clearly: missing disassembly, unresolved branch predicate, uncontrolled dependency, unresolved indirect target, or missing controlled-derived dataflow proof.
 - Prefer an evidence-backed PLAUSIBLE path over silence. Do not omit a materially strong path merely because it falls short of CONFIRMED.
+- Do not suppress or downgrade a materially strong scenario merely because several other good scenarios were already found. Continue enumerating and preserve strong scenarios at their proper plausibility tier.
+
+Sink enumeration vs sink promotion:
+- Do not require full controlled-derived proof before reporting a sink candidate.
+- First enumerate every materially distinct reachable or plausibly reachable sink instruction visible in the supplied disassembly.
+- Then classify each sink separately by:
+  1. reachability from current IP / return-resume site
+  2. whether the sink is an indirect control transfer, memory write, memory modification, or controlled-object callee
+  3. whether the target/destination source is controlled, controlled-derived, external, unknown, or under-collected
+  4. whether the sink is CONFIRMED, PLAUSIBLE-HIGH, PLAUSIBLE-LOW, or NOT PROMOTED
+- A visible indirect call/jmp must be listed even when the target source is not yet proven controlled-derived, if it is reached on a visible path from the current function, a reachable callee, or a return-resume continuation.
+- Do not omit a sink merely because the final target/destination is external, unknown, or under-collected. Instead, list it and state the first missing dataflow proof.
+- Treat "not proven controlled-derived" as a downgrade reason, not an omission reason.
+- For every visible indirect call/jmp reached after return, include:
+  - symbol/module-qualified location
+  - exact instruction
+  - path class
+  - register/memory expression used as the target source
+  - last visible assignment chain into that register or memory operand
+  - classification of the target source: controlled, controlled-derived, external, unknown, or under-collected
+  - first blocker preventing promotion
 
 Return-resume expansion is mandatory:
 - If the current function can return, treat the concrete caller return address as an in-scope continuation.
@@ -6753,6 +6778,9 @@ Return-resume expansion is mandatory:
 
 Sink discovery:
 Identify every materially distinct reachable controlled sink, not just the first one.
+Do not stop after finding one good scenario. Keep searching for additional materially distinct controlled-write and IP-control scenarios in the supplied scope.
+If a scenario is materially strong but still needs validation, report it explicitly rather than collapsing it into a weaker scenario or omitting it.
+Enumerate visible reachable or plausibly reachable sink candidates first, then promote or downgrade them based on controlled-derived proof.
 
 Controlled sinks include:
 - vftable calls
@@ -6817,8 +6845,10 @@ Derived-sink requirement:
 - This derivation is required even if the JSON only contains raw caller/callee disassembly.
 
 Sink ranking:
-- Prefer the earliest reachable indirect control transfer whose target or target source is derived from the controlled chunk.
-- Rank controlled-derived write/memory-modification sinks as valid discovery-mode sinks, even if they are not immediate IP-control sinks.
+- In discovery mode, rank controlled-derived write/memory-modification sinks above instruction-pointer-control sinks when both are strong, because they more directly demonstrate attacker-directed memory modification.
+- In discovery mode, present controlled-derived write/memory-modification scenarios first in sequence, then present instruction-pointer/control-flow scenarios.
+- Still report every good instruction-pointer-control scenario. Do not dismiss, suppress, or down-rank a strong IP-control path into omission merely because a controlled-write scenario ranks higher.
+- Outside that preference, prefer the earliest reachable strong sink whose target, target source, or write destination is derived from the controlled chunk.
 - Rank sinks higher when:
   1. the controlled chunk directly controls needed branch predicates
   2. the controlled chunk directly controls the object pointer, vtable pointer, callback pointer, dispatch pointer, write destination, or final transfer target
@@ -6837,26 +6867,44 @@ Center the analysis on:
 
 Answer in this exact order:
 
-1. reachability verdict
+1. scenario summary table
+Begin the report with a compact table that lists every materially distinct scenario found in the supplied scope, including the primary and all alternatives.
+Do not prune the table to only the best few scenarios; include every materially distinct strong or plausible scenario found in the collected scope.
+Order the table so controlled-write / memory-modification scenarios appear first, followed by instruction-pointer / control-flow scenarios.
+For each row, include:
+- scenario id
+- verdict
+- plausibility tier when the verdict is PLAUSIBLE
+- promotion status: PROMOTED, DOWNGRADED, or REJECTED
+- path class
+- sink type (controlled write, controlled memory modification, indirect call, indirect jmp, vftable/callback, etc.)
+- symbol/module-qualified sink location when available
+- exact sink instruction
+- controlled-derived target/destination expression
+- target/destination source classification: controlled, controlled-derived, external, unknown, or under-collected
+- short note explaining why the scenario matters
+
+2. reachability verdict
 In targeted mode, state CONFIRMED, PLAUSIBLE, or NOT SHOWN for reaching the target.
 In discovery mode, state CONFIRMED, PLAUSIBLE, or NOT SHOWN for reaching a controlled sink.
 The verdict must account for both likely IP-control consumption and controlled-derived write/memory-modification sinks.
 When the best path is not fully proven but is strongly supported by visible disassembly and derived dataflow, prefer PLAUSIBLE over NOT SHOWN.
 If the verdict is PLAUSIBLE, also state the plausibility tier: HIGH or LOW.
 
-2. path class
+3. path class
 Choose exactly one for the primary scenario:
 intra-function, callee-mediated, or return-resume.
 
-3. primary scenario
+4. primary scenario
 Describe the shortest evidence-backed path from current IP to the earliest reachable controlled sink.
 Include the exact sink instruction.
 When printing disassembly for the path or sink, include symbol/module-qualified location text when available, not just a raw address.
+State explicitly that the entire specified controlled chunk is assumed writable/attacker-controlled for this scenario.
 For write sinks, include the computed write-destination expression.
 For indirect transfers, include the target-source expression.
 For each hop in the path, state whether it is OBSERVED, DERIVED, or UNPROVEN.
 
-4. primary scenario chunk requirements
+5. primary scenario chunk requirements
 List only controlled chunk offsets that materially influence the path.
 For each:
 - chunk offset
@@ -6864,29 +6912,45 @@ For each:
 - required value type
 - required value/property when concrete
 
-5. alternative scenarios
-List every additional materially distinct reachable controlled sink, including:
+6. alternative scenarios
+List every additional materially distinct reachable or plausibly reachable sink candidate, including both:
+- promoted controlled / controlled-derived sinks
+- downgraded sink candidates where reachability is visible but controlled-derived target/destination proof is missing
 - indirect transfers
 - controlled-derived write destinations
 - controlled-derived memory modifications
 - direct callees that modify memory through a controlled-derived this/object pointer
 
+Do not filter alternatives only to fully controlled sinks. Discovery mode must include downgraded indirect calls/jumps and write sites when they are visible on a reachable path.
+Order alternative scenarios so controlled-write / memory-modification cases come first, then instruction-pointer / control-flow cases.
+
 For each:
 - short path description
 - exact sink instruction
 - symbol/module-qualified sink location when available
+- explicit statement that the entire specified controlled chunk is attacker-controlled for this scenario
+- promotion status: PROMOTED, DOWNGRADED, or REJECTED
 - path class
+- target/destination source classification: controlled, controlled-derived, external, unknown, or under-collected
+- last visible assignment chain into the target-source register/memory operand or write-destination base when applicable
 - controlled-derived target/destination expression
 - how it differs from the primary
 
-6. alternative scenarios chunk requirements
+For DOWNGRADED entries, do not just say "unknown". Show the last visible assignment chain and the exact missing link.
+
+7. alternative scenarios chunk requirements
 For each alternative sink, list relevant controlled chunk offsets, derived pointer expressions, and required values.
 For write sinks, compute the destination expression relative to the controlled chunk where possible.
 
-7. blocking conditions
+8. blocking conditions
 List conditions outside the controlled chunk that still need to be satisfied.
+For each blocking condition tied to a pointer, object, buffer, callee argument, or write destination, state:
+- which additional location would need to become controlled
+- whether that location is directly controlled, controlled-derived, externally owned, or unknown
+- how likely it is that control of that location can be reached starting from the initial specified chunk: HIGH, MEDIUM, or LOW
+- the shortest visible path that could propagate control there, if one exists in the supplied snapshot
 
-8. target reachability rationale
+9. target reachability rationale
 Explain why the identified sinks are reachable using branch predicates, return sites, caller-side paths, callee-mediated paths, indirect calls/jumps, and controlled-derived write expressions.
 Explicitly note when multiple sinks share a prefix path.
 For each downgraded or non-primary path, state the first blocker that prevents promotion to CONFIRMED.
@@ -6900,11 +6964,17 @@ Include a subsection named "return-resume route" that:
 - identifies controlled-derived writes reached after return
 - classifies each indirect target/write destination as controlled, controlled-derived, external, or unknown
 
-9. minimal next checks
+10. minimal next checks
 If the snapshot is insufficient, list the smallest debugger checks needed to confirm/reject the presented paths.
 Prefer concrete bp/u/uf/dd/dps commands.
+This section must also function as a validation plan. For each scenario that still requires validation, include:
+- the exact step to validate next
+- what chunk offset, derived pointer, object field, buffer, register, stack slot, or memory location must be under control for the scenario to continue
+- whether that location is already controlled by the initial chunk, likely to become controlled from it, or currently unproven
+- how likely that control is to flow from the initial chunk: HIGH, MEDIUM, or LOW
+- the concrete debugger command(s) or observation(s) that would confirm or reject that control relationship
 
-10. fallback breakpoint candidates
+11. fallback breakpoint candidates
 List concrete reachable_functions / return_resume_analysis / callee entries that are best breakpoint candidates.
 Include address, symbol, path class, and one-line reason.
 
