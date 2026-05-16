@@ -25153,9 +25153,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			targetOS = "(XP/2003 Server only)"
 		if routine == "SetProcessDEPPolicy":
 			targetOS = "(XP SP3/Vista SP1/2008 Server SP1, can be called only once per process)"
-		
 		title = "ROP Chain for %s() [%s] :" % (routine,targetOS)
-		vplogtxt += "````\n"
 		vplogtxt += "\n%s\n" % title
 		vplogtxt += ("-" * len(title)) + "\n\n"
 		vplogtxt += "```ruby\n"
