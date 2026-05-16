@@ -304,6 +304,16 @@ class MnDebugger:
 		if not isinstance(command_array, (list, tuple)) or len(command_array) == 0:
 			raise ValueError("execOSCommand requires a non-empty array with the command and arguments")
 		command_args = [ensure_text(arg) for arg in command_array]
+		popen_kwargs = {}
+		if os.name == "nt":
+			try:
+				startupinfo = subprocess.STARTUPINFO()
+				startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+				popen_kwargs["startupinfo"] = startupinfo
+			except Exception:
+				pass
+			if hasattr(subprocess, "CREATE_NO_WINDOW"):
+				popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 		if nowait:
 			devnull_handle = None
 			try:
@@ -312,18 +322,29 @@ class MnDebugger:
 					command_args,
 					stdout=devnull_handle,
 					stderr=devnull_handle,
-					stdin=devnull_handle
+					stdin=devnull_handle,
+					**popen_kwargs
 				)
 			finally:
 				if devnull_handle is not None:
 					devnull_handle.close()
 			return []
-		process = subprocess.Popen(
-			command_args,
-			stdout=subprocess.PIPE,
-			stderr=subprocess.STDOUT
-		)
-		output_data = process.communicate()[0]
+		devnull_handle = None
+		try:
+			# WinDBG-hosted Python may expose invalid inherited stdin handles.
+			# Provide an explicit benign stdin so child process creation remains stable.
+			devnull_handle = open(os.devnull, "rb")
+			process = subprocess.Popen(
+				command_args,
+				stdout=subprocess.PIPE,
+				stderr=subprocess.STDOUT,
+				stdin=devnull_handle,
+				**popen_kwargs
+			)
+			output_data = process.communicate()[0]
+		finally:
+			if devnull_handle is not None:
+				devnull_handle.close()
 		output_text = ensure_text(output_data)
 		return output_text.split("\n")
 
@@ -337,6 +358,15 @@ class MnDebugger:
 		stdin_target = None
 		log_handle = None
 		popen_kwargs = {}
+		if os.name == "nt":
+			try:
+				startupinfo = subprocess.STARTUPINFO()
+				startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+				popen_kwargs["startupinfo"] = startupinfo
+			except Exception:
+				pass
+			if hasattr(subprocess, "CREATE_NO_WINDOW"):
+				popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 		if redirect_output:
 			if output_path != "":
 				output_dir = os.path.dirname(output_path)
@@ -31996,6 +32026,156 @@ def procUpdate(args):
 			_safe_remove(tempfile_name)
 			return False, str(e)
 
+	def _is_certificate_verify_error(error_text):
+		err = ensure_text(error_text).lower()
+		indicators = [
+			"certificate verify failed",
+			"certificate_verify_failed",
+			"unable to get local issuer certificate",
+			"unable to get issuer certificate",
+			"self signed certificate in certificate chain",
+			"unable to verify the first certificate"
+		]
+		for indicator in indicators:
+			if indicator in err:
+				return True
+		return False
+
+	def _is_legacy_windows_tls_host():
+		try:
+			osver = ensure_text(dbg.getOsVersion()).strip().lower()
+			if osver in ["vista", "win7", "2008server", "6", "7"]:
+				return True
+		except Exception:
+			pass
+		try:
+			osrel = dbg.getOsRelease()
+			if isinstance(osrel, tuple):
+				major = int(osrel[0])
+				minor = int(osrel[1]) if len(osrel) > 1 else 0
+			else:
+				parts = ensure_text(osrel).strip().split(".")
+				major = int(parts[0]) if len(parts) > 0 else 0
+				minor = int(parts[1]) if len(parts) > 1 else 0
+			return (major, minor) <= (6, 1)
+		except Exception:
+			return False
+
+	def _is_windows7_host():
+		try:
+			osver = ensure_text(dbg.getOsVersion()).strip().lower()
+			if osver in ["win7", "7"]:
+				return True
+		except Exception:
+			pass
+		return False
+
+	insecure_legacy_tls_permission = {"asked": False, "allowed": False}
+
+	def _is_known_update_host(url):
+		try:
+			host = ensure_text(urlparse(url).netloc).strip().lower()
+		except Exception:
+			return False
+		return host in ["github.com", "www.corelan.be"]
+
+	def _ask_permission_for_insecure_legacy_tls(url):
+		if insecure_legacy_tls_permission["asked"]:
+			return insecure_legacy_tls_permission["allowed"]
+		insecure_legacy_tls_permission["asked"] = True
+		if not _is_windows7_host():
+			insecure_legacy_tls_permission["allowed"] = False
+			return False
+		if not _is_known_update_host(url):
+			insecure_legacy_tls_permission["allowed"] = False
+			return False
+		dbg.log("[!] Secure download validation failed on this Windows 7 host.", highlight=1)
+		dbg.log("[!] Final fallback can retry without certificate validation for the built-in mona update hosts only.", highlight=1)
+		allowed = askForConfirmation("[?] Allow insecure legacy TLS fallback for this update session?", default="N")
+		insecure_legacy_tls_permission["allowed"] = allowed
+		if allowed:
+			mndbg.dbgp("User approved insecure legacy TLS fallback for this update session")
+		else:
+			mndbg.dbgp("User declined insecure legacy TLS fallback for this update session")
+		return allowed
+
+	def _download_using_certutil(url, destfile, label):
+		tempfile_name = destfile + ".part"
+		_safe_remove(tempfile_name)
+		command_array = ["certutil.exe", "-urlcache", "-split", "-f", url, tempfile_name]
+		last_error = ""
+		try:
+			mndbg.dbgp("Downloading %s from %s via certutil" % (label, url))
+			output_lines = mndbg.execOSCommand(command_array)
+			if os.path.isfile(tempfile_name) and os.path.getsize(tempfile_name) > 0:
+				shutil.move(tempfile_name, destfile)
+				mndbg.dbgp("Saved %s to %s via certutil" % (label, destfile))
+				return True, ""
+			last_error = "certutil completed but did not create %s" % tempfile_name
+			if output_lines:
+				last_error = "%s | output: %s" % (last_error, ensure_text("\n".join(output_lines)).strip())
+		except Exception as e:
+			last_error = str(e)
+			mndbg.dbgp("certutil failed for %s from %s : %s" % (label, url, last_error), errormode=False)
+		_safe_remove(tempfile_name)
+		return False, last_error if last_error != "" else "certutil download failed"
+
+	def _download_using_bitsadmin(url, destfile, label):
+		tempfile_name = destfile + ".part"
+		_safe_remove(tempfile_name)
+		job_name = "mona-up-%s-%s" % (str(os.getpid()), str(int(time.time())))
+		command_array = ["bitsadmin.exe", "/transfer", job_name, "/download", "/priority", "normal", url, tempfile_name]
+		last_error = ""
+		try:
+			mndbg.dbgp("Downloading %s from %s via bitsadmin" % (label, url))
+			output_lines = mndbg.execOSCommand(command_array)
+			if os.path.isfile(tempfile_name) and os.path.getsize(tempfile_name) > 0:
+				shutil.move(tempfile_name, destfile)
+				mndbg.dbgp("Saved %s to %s via bitsadmin" % (label, destfile))
+				return True, ""
+			last_error = "bitsadmin completed but did not create %s" % tempfile_name
+			if output_lines:
+				last_error = "%s | output: %s" % (last_error, ensure_text("\n".join(output_lines)).strip())
+		except Exception as e:
+			last_error = str(e)
+			mndbg.dbgp("bitsadmin failed for %s from %s : %s" % (label, url, last_error), errormode=False)
+		_safe_remove(tempfile_name)
+		return False, last_error if last_error != "" else "bitsadmin download failed"
+
+	def _download_using_insecure_urllib(url, destfile, label):
+		tempfile_name = destfile + ".part"
+		_safe_remove(tempfile_name)
+		try:
+			import ssl
+			context = ssl._create_unverified_context()
+		except Exception as e:
+			return False, "unable to create insecure SSL context: %s" % str(e)
+		try:
+			mndbg.dbgp("Downloading %s from %s via urllib with certificate validation disabled" % (label, url))
+			request = urllib_Request(url, headers={"User-Agent": "mona-updater/3.0"})
+			response = urllib_urlopen(request, timeout=20, context=context)
+			try:
+				with open(tempfile_name, "wb") as fh:
+					while True:
+						chunk = response.read(65536)
+						if not chunk:
+							break
+						fh.write(chunk)
+			finally:
+				try:
+					response.close()
+				except Exception:
+					pass
+			if os.path.isfile(tempfile_name) and os.path.getsize(tempfile_name) > 0:
+				shutil.move(tempfile_name, destfile)
+				mndbg.dbgp("Saved %s to %s via insecure urllib fallback" % (label, destfile))
+				return True, ""
+			_safe_remove(tempfile_name)
+			return False, "insecure urllib completed but did not create %s" % tempfile_name
+		except Exception as e:
+			_safe_remove(tempfile_name)
+			return False, str(e)
+
 	def _download_single_url(url, destfile, label):
 		try:
 			mndbg.dbgp("Downloading %s from %s via urllib.urlretrieve" % (label, url))
@@ -32015,6 +32195,37 @@ def procUpdate(args):
 			return True, "requests", ""
 		mndbg.dbgp("requests fallback failed for %s from %s : %s" % (label, url, requests_error), errormode=False)
 		_safe_remove(destfile)
+
+		if _is_legacy_windows_tls_host() and (
+			_is_certificate_verify_error(urllib_error) or
+			_is_certificate_verify_error(requests_error)
+		):
+			mndbg.dbgp("Legacy Windows TLS fallback enabled for %s after certificate verification failure" % label)
+			ok_certutil, certutil_error = _download_using_certutil(url, destfile, label)
+			if ok_certutil:
+				mndbg.dbgp("Legacy Windows TLS fallback succeeded for %s from %s via certutil" % (label, url))
+				return True, "certutil", ""
+			mndbg.dbgp("certutil legacy TLS fallback failed for %s from %s : %s" % (label, url, certutil_error), errormode=False)
+			ok_bitsadmin, bitsadmin_error = _download_using_bitsadmin(url, destfile, label)
+			if ok_bitsadmin:
+				mndbg.dbgp("Legacy Windows TLS fallback succeeded for %s from %s via bitsadmin" % (label, url))
+				return True, "bitsadmin", ""
+			mndbg.dbgp("bitsadmin legacy TLS fallback failed for %s from %s : %s" % (label, url, bitsadmin_error), errormode=False)
+			insecure_error = "not attempted"
+			if _ask_permission_for_insecure_legacy_tls(url):
+				ok_insecure, insecure_error = _download_using_insecure_urllib(url, destfile, label)
+				if ok_insecure:
+					mndbg.dbgp("Insecure legacy TLS fallback succeeded for %s from %s via urllib without certificate validation" % (label, url))
+					return True, "urllib-insecure", ""
+				mndbg.dbgp("Insecure legacy TLS fallback failed for %s from %s : %s" % (label, url, insecure_error), errormode=False)
+			return False, "", "urllib.urlretrieve failed: %s | requests failed: %s | certutil failed: %s | bitsadmin failed: %s | insecure fallback: %s" % (
+				urllib_error,
+				requests_error,
+				certutil_error,
+				bitsadmin_error,
+				insecure_error
+			)
+
 		return False, "", "urllib.urlretrieve failed: %s | requests failed: %s" % (urllib_error, requests_error)
 
 	def _download_with_fallback(main_url, backup_url, destfile, label, validator=None):
