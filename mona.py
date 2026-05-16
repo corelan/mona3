@@ -6303,34 +6303,115 @@ def _registerQ3ControlFlowDisasm(target_entry, control_flow_disasm, seen_control
 	return ref_value
 
 
-def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm, control_flow_disasm_map):
+def _getUniqueControlFlowTargetRef(base_ref, target_entry, control_flow_target_map):
 	mndbg.dbgp(get_current_function_name())
+	ref_value = _safeTextValue(base_ref).strip()
+	if ref_value == "":
+		ref_value = "control_flow_target"
+	target_signature = json.dumps(target_entry, sort_keys=True)
+	if ref_value not in control_flow_target_map:
+		return ref_value
+	existing_entry = control_flow_target_map.get(ref_value, {})
+	if isinstance(existing_entry, dict):
+		existing_signature = json.dumps(existing_entry, sort_keys=True)
+		if existing_signature == target_signature:
+			return ref_value
+	suffix = 2
+	while True:
+		candidate = "%s#%d" % (ref_value, suffix)
+		if candidate not in control_flow_target_map:
+			return candidate
+		existing_entry = control_flow_target_map.get(candidate, {})
+		if isinstance(existing_entry, dict):
+			existing_signature = json.dumps(existing_entry, sort_keys=True)
+			if existing_signature == target_signature:
+				return candidate
+		suffix += 1
+
+
+def _registerQ3TargetEntry(target_entry, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(target_entry, dict):
+		return ""
+	working_entry = copy.deepcopy(target_entry)
+	nested_targets = working_entry.get("nested_control_flow_targets", [])
+	nested_target_refs = []
+	if isinstance(nested_targets, list) and len(nested_targets) > 0:
+		nested_target_refs = _compactQ3TargetEntries(
+			nested_targets,
+			seen_control_flow_disasm,
+			control_flow_disasm_map,
+			seen_control_flow_targets,
+			control_flow_target_map
+		)
+	control_flow_disasm = _safeTextValue(working_entry.get("control_flow_disasm", "")).strip()
+	disasm_preview = _safeTextValue(working_entry.get("disasm", "")).strip()
+	if control_flow_disasm != "":
+		working_entry["control_flow_disasm_ref"] = _registerQ3ControlFlowDisasm(
+			working_entry,
+			control_flow_disasm,
+			seen_control_flow_disasm,
+			control_flow_disasm_map
+		)
+		working_entry["control_flow_disasm"] = ""
+		working_entry["disasm"] = ""
+		if "disasm_preview" in working_entry:
+			del working_entry["disasm_preview"]
+	elif disasm_preview != "":
+		working_entry["disasm_preview"] = disasm_preview
+	working_entry["nested_control_flow_target_refs"] = nested_target_refs
+	working_entry["nested_control_flow_targets"] = []
+	working_entry["control_flow_full_function_disasm"] = ""
+	target_signature = json.dumps(working_entry, sort_keys=True)
+	if target_signature in seen_control_flow_targets:
+		return seen_control_flow_targets[target_signature]
+	base_ref = _safeTextValue(working_entry.get("instruction_address", "")).strip()
+	if base_ref == "":
+		base_ref = _safeTextValue(working_entry.get("target_address_text", "")).strip()
+	if base_ref == "":
+		base_ref = _safeTextValue(working_entry.get("symbol", "")).strip()
+	ref_value = _getUniqueControlFlowTargetRef(base_ref, working_entry, control_flow_target_map)
+	control_flow_target_map[ref_value] = working_entry
+	seen_control_flow_targets[target_signature] = ref_value
+	return ref_value
+
+
+def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map):
+	mndbg.dbgp(get_current_function_name())
+	target_refs = []
 	if not isinstance(target_entries, list):
-		return
+		return target_refs
 	for target_entry in target_entries:
-		if not isinstance(target_entry, dict):
-			continue
-		control_flow_disasm = _safeTextValue(target_entry.get("control_flow_disasm", "")).strip()
-		disasm_preview = _safeTextValue(target_entry.get("disasm", "")).strip()
-		if control_flow_disasm != "":
-			target_entry["control_flow_disasm_ref"] = _registerQ3ControlFlowDisasm(
-				target_entry,
-				control_flow_disasm,
-				seen_control_flow_disasm,
-				control_flow_disasm_map
-			)
-			target_entry["control_flow_disasm"] = ""
-			target_entry["disasm"] = ""
-			if "disasm_preview" in target_entry:
-				del target_entry["disasm_preview"]
-		elif disasm_preview != "":
-			target_entry["disasm_preview"] = disasm_preview
-		nested_targets = target_entry.get("nested_control_flow_targets", [])
-		if isinstance(nested_targets, list) and len(nested_targets) > 0:
-			_compactQ3TargetEntries(nested_targets, seen_control_flow_disasm, control_flow_disasm_map)
+		target_ref = _registerQ3TargetEntry(
+			target_entry,
+			seen_control_flow_disasm,
+			control_flow_disasm_map,
+			seen_control_flow_targets,
+			control_flow_target_map
+		)
+		if target_ref != "":
+			target_refs.append(target_ref)
+	del target_entries[:]
+	return target_refs
 
 
-def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=False):
+def _compactQ3TargetContainer(container, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(container, dict):
+		return
+	target_entries = container.get("control_flow_targets", [])
+	if isinstance(target_entries, list) and len(target_entries) > 0:
+		container["control_flow_target_refs"] = _compactQ3TargetEntries(
+			target_entries,
+			seen_control_flow_disasm,
+			control_flow_disasm_map,
+			seen_control_flow_targets,
+			control_flow_target_map
+		)
+		container["control_flow_targets"] = []
+
+
+def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=False):
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(function_context, dict):
 		return
@@ -6357,14 +6438,36 @@ def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, contro
 		function_context["code_before"] = ""
 		if not bool(function_context.get("forward_flow_from_requested_address", False)):
 			function_context["code_after"] = ""
-	target_entries = function_context.get("control_flow_targets", [])
+	_compactQ3TargetContainer(
+		function_context,
+		seen_control_flow_disasm,
+		control_flow_disasm_map,
+		seen_control_flow_targets,
+		control_flow_target_map
+	)
+
+
+def _resolveQ3TargetEntries(target_entries, control_flow_target_map=None, target_refs=None):
+	mndbg.dbgp(get_current_function_name())
 	if isinstance(target_entries, list) and len(target_entries) > 0:
-		_compactQ3TargetEntries(target_entries, seen_control_flow_disasm, control_flow_disasm_map)
+		return target_entries
+	resolved = []
+	if not isinstance(target_refs, list) or not isinstance(control_flow_target_map, dict):
+		return resolved
+	for target_ref in target_refs:
+		target_ref = _safeTextValue(target_ref).strip()
+		if target_ref == "":
+			continue
+		target_entry = control_flow_target_map.get(target_ref, {})
+		if isinstance(target_entry, dict) and len(target_entry) > 0:
+			resolved.append(target_entry)
+	return resolved
 
 
-def _summarizeQ3TargetEntries(target_entries, max_entries=12):
+def _summarizeQ3TargetEntries(target_entries, max_entries=12, control_flow_target_map=None, target_refs=None):
 	mndbg.dbgp(get_current_function_name())
 	summaries = []
+	target_entries = _resolveQ3TargetEntries(target_entries, control_flow_target_map=control_flow_target_map, target_refs=target_refs)
 	if not isinstance(target_entries, list):
 		return summaries
 	entry_count = 0
@@ -6389,7 +6492,11 @@ def _summarizeQ3TargetEntries(target_entries, max_entries=12):
 		]:
 			if key in target_entry and target_entry.get(key, "") != "":
 				summary[key] = target_entry.get(key)
-		nested_targets = target_entry.get("nested_control_flow_targets", [])
+		nested_targets = _resolveQ3TargetEntries(
+			target_entry.get("nested_control_flow_targets", []),
+			control_flow_target_map=control_flow_target_map,
+			target_refs=target_entry.get("nested_control_flow_target_refs", [])
+		)
 		if isinstance(nested_targets, list) and len(nested_targets) > 0:
 			summary["nested_target_count"] = len(nested_targets)
 		summaries.append(summary)
@@ -6418,7 +6525,7 @@ def _summarizeCallerFunctionContext(function_context):
 	return summary
 
 
-def _summarizeCallerResumeWindow(window):
+def _summarizeCallerResumeWindow(window, control_flow_target_map=None):
 	mndbg.dbgp(get_current_function_name())
 	summary = OrderedDict()
 	if not isinstance(window, dict):
@@ -6432,17 +6539,30 @@ def _summarizeCallerResumeWindow(window):
 	forward_disasm = ensure_text(window.get("forward_disasm", "")).strip()
 	if forward_disasm != "":
 		summary["forward_disasm_lines"] = len([line for line in forward_disasm.splitlines() if ensure_text(line).strip() != ""])
-	control_flow_targets = window.get("control_flow_targets", [])
+	control_flow_targets = _resolveQ3TargetEntries(
+		window.get("control_flow_targets", []),
+		control_flow_target_map=control_flow_target_map,
+		target_refs=window.get("control_flow_target_refs", [])
+	)
 	if isinstance(control_flow_targets, list) and len(control_flow_targets) > 0:
-		summary["branch_targets"] = _summarizeQ3TargetEntries(control_flow_targets, max_entries=12)
+		summary["branch_targets"] = _summarizeQ3TargetEntries(
+			control_flow_targets,
+			max_entries=12,
+			control_flow_target_map=control_flow_target_map
+		)
 		indirect_transfers = []
-		_collectIndirectTransfersFromTargets(control_flow_targets, indirect_transfers, path_class="return-resume")
+		_collectIndirectTransfersFromTargets(
+			control_flow_targets,
+			indirect_transfers,
+			path_class="return-resume",
+			control_flow_target_map=control_flow_target_map
+		)
 		if len(indirect_transfers) > 0:
 			summary["indirect_transfers"] = indirect_transfers[:12]
 	return summary
 
 
-def _buildCompactReturnResumeAnalysisForRequest(variables):
+def _buildCompactReturnResumeAnalysisForRequest(variables, control_flow_target_map=None):
 	mndbg.dbgp(get_current_function_name())
 	summary = OrderedDict()
 	if not isinstance(variables, dict):
@@ -6461,7 +6581,7 @@ def _buildCompactReturnResumeAnalysisForRequest(variables):
 		summary["caller_function"] = _summarizeCallerFunctionContext(caller_function)
 	caller_resume_window = variables.get("caller_resume_window", {})
 	if isinstance(caller_resume_window, dict) and len(caller_resume_window) > 0:
-		summary["resume_window"] = _summarizeCallerResumeWindow(caller_resume_window)
+		summary["resume_window"] = _summarizeCallerResumeWindow(caller_resume_window, control_flow_target_map=control_flow_target_map)
 	post_constraints = variables.get("post_return_constraints", {})
 	if isinstance(post_constraints, dict) and len(post_constraints) > 0:
 		summary["post_return_constraints"] = post_constraints
@@ -6471,7 +6591,7 @@ def _buildCompactReturnResumeAnalysisForRequest(variables):
 	return summary
 
 
-def _buildCompactCallerChainForRequest(caller_chain):
+def _buildCompactCallerChainForRequest(caller_chain, control_flow_target_map=None):
 	mndbg.dbgp(get_current_function_name())
 	compact_chain = []
 	if not isinstance(caller_chain, list):
@@ -6490,7 +6610,7 @@ def _buildCompactCallerChainForRequest(caller_chain):
 			compact_entry["caller_function"] = _summarizeCallerFunctionContext(caller_function)
 		caller_resume_window = frame_entry.get("caller_resume_window", {})
 		if isinstance(caller_resume_window, dict) and len(caller_resume_window) > 0:
-			compact_entry["caller_resume_window"] = _summarizeCallerResumeWindow(caller_resume_window)
+			compact_entry["caller_resume_window"] = _summarizeCallerResumeWindow(caller_resume_window, control_flow_target_map=control_flow_target_map)
 		post_constraints = frame_entry.get("post_return_constraints", {})
 		if isinstance(post_constraints, dict) and len(post_constraints) > 0:
 			compact_entry["post_return_constraints"] = post_constraints
@@ -6503,28 +6623,33 @@ def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 	variables = _buildRequestVariables(context)
 	seen_control_flow_disasm = {}
 	control_flow_disasm_map = OrderedDict()
-	if "modules" in variables:
-		original_modules = variables.get("modules", "")
-		variables["modules_full"] = original_modules
-		variables["modules"] = _buildCompactModulesSummary(context)
+	seen_control_flow_targets = {}
+	control_flow_target_map = OrderedDict()
 	if "current_function" in variables and isinstance(variables.get("current_function"), dict):
-		_compactQ3FunctionContext(variables["current_function"], seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=True)
+		_compactQ3FunctionContext(variables["current_function"], seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=True)
 	if "target_function" in variables and isinstance(variables.get("target_function"), dict):
-		_compactQ3FunctionContext(variables["target_function"], seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=False)
+		_compactQ3FunctionContext(variables["target_function"], seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=False)
 	if "caller_function" in variables and isinstance(variables.get("caller_function"), dict):
-		_compactQ3FunctionContext(variables["caller_function"], seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=True)
+		_compactQ3FunctionContext(variables["caller_function"], seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=True)
+	if "caller_resume_window" in variables and isinstance(variables.get("caller_resume_window"), dict):
+		_compactQ3TargetContainer(variables["caller_resume_window"], seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map)
 	if "caller_chain" in variables and isinstance(variables.get("caller_chain"), list):
 		for frame_entry in variables["caller_chain"]:
 			if not isinstance(frame_entry, dict):
 				continue
 			caller_func = frame_entry.get("caller_function", {})
 			if isinstance(caller_func, dict):
-				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=False)
-		variables["caller_chain"] = _buildCompactCallerChainForRequest(variables["caller_chain"])
+				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=False)
+			caller_resume_window = frame_entry.get("caller_resume_window", {})
+			if isinstance(caller_resume_window, dict):
+				_compactQ3TargetContainer(caller_resume_window, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map)
+		variables["caller_chain"] = _buildCompactCallerChainForRequest(variables["caller_chain"], control_flow_target_map=control_flow_target_map)
 	if "return_resume_analysis" in variables and isinstance(variables.get("return_resume_analysis"), dict):
-		variables["return_resume_analysis"] = _buildCompactReturnResumeAnalysisForRequest(variables)
+		variables["return_resume_analysis"] = _buildCompactReturnResumeAnalysisForRequest(variables, control_flow_target_map=control_flow_target_map)
 	if len(control_flow_disasm_map) > 0:
 		variables["control_flow_disasm_map"] = control_flow_disasm_map
+	if len(control_flow_target_map) > 0:
+		variables["control_flow_target_map"] = control_flow_target_map
 	return variables
 
 
@@ -6721,7 +6846,7 @@ Focus on bounded reachability from the current instruction pointer to a supplied
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
 
 Use the entries under "variables" as the debugger context. Prioritize:
-q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, control_flow_disasm_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
+q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, control_flow_disasm_map, control_flow_target_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
 
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live registers, and disassembly over summary-style diagnostics.
 
@@ -6750,6 +6875,7 @@ Core rules:
 - Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
 - Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
 - Search exhaustively within the collected scope. Do not stop after the earliest, easiest, or first plausible sink. Continue enumerating materially distinct scenarios across intra-function, callee-mediated, and return-resume paths until the supplied disassembly scope is exhausted or blocked.
+- When control_flow_target_refs or nested_control_flow_target_refs are present, resolve them through control_flow_target_map. Do not treat empty control_flow_targets or nested_control_flow_targets arrays as absence if refs are present.
 
 Evidence thresholds:
 - Do not overpromote. CONFIRMED requires a complete visible path in the supplied snapshot from the current IP (or caller resume site) to the sink/target, with intervening branch predicates, direct call/callee steps, and sink instruction all accounted for from supplied disassembly.
@@ -7127,6 +7253,7 @@ def _getProfileTemplateVariables(question_type):
 			"return_context",
 			"return_resume_analysis",
 			"control_flow_disasm_map",
+			"control_flow_target_map",
 			"caller_function",
 			"caller_chain",
 			"caller_resume_window",
@@ -7429,8 +7556,9 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 	return result
 
 
-def _collectIndirectTransfersFromTargets(target_entries, destination, path_class="", source_label=""):
+def _collectIndirectTransfersFromTargets(target_entries, destination, path_class="", source_label="", control_flow_target_map=None, target_refs=None):
 	mndbg.dbgp(get_current_function_name())
+	target_entries = _resolveQ3TargetEntries(target_entries, control_flow_target_map=control_flow_target_map, target_refs=target_refs)
 	if not isinstance(target_entries, list):
 		return
 	for target_entry in target_entries:
@@ -7459,9 +7587,14 @@ def _collectIndirectTransfersFromTargets(target_entries, destination, path_class
 			if ensure_text(target_entry.get("resolution_reason", "")).strip() != "":
 				transfer_entry["resolution_reason"] = ensure_text(target_entry.get("resolution_reason", "")).strip()
 			destination.append(transfer_entry)
-		nested_targets = target_entry.get("nested_control_flow_targets", [])
-		if isinstance(nested_targets, list) and len(nested_targets) > 0:
-			_collectIndirectTransfersFromTargets(nested_targets, destination, path_class=path_class, source_label=source_label)
+		_collectIndirectTransfersFromTargets(
+			target_entry.get("nested_control_flow_targets", []),
+			destination,
+			path_class=path_class,
+			source_label=source_label,
+			control_flow_target_map=control_flow_target_map,
+			target_refs=target_entry.get("nested_control_flow_target_refs", [])
+		)
 
 
 def _buildReturnResumeAnalysis(return_resume_context):
@@ -7505,8 +7638,9 @@ def _buildReturnResumeAnalysis(return_resume_context):
 	return analysis
 
 
-def _appendReachableFunctionCandidates(target_entries, destination, source_label, path_class):
+def _appendReachableFunctionCandidates(target_entries, destination, source_label, path_class, control_flow_target_map=None, target_refs=None):
 	mndbg.dbgp(get_current_function_name())
+	target_entries = _resolveQ3TargetEntries(target_entries, control_flow_target_map=control_flow_target_map, target_refs=target_refs)
 	if not isinstance(target_entries, list):
 		return
 	for target_entry in target_entries:
@@ -7533,9 +7667,14 @@ def _appendReachableFunctionCandidates(target_entries, destination, source_label
 		else:
 			entry["resolution_reason"] = ensure_text(target_entry.get("resolution_reason", "")).strip()
 		destination.append(entry)
-		nested_targets = target_entry.get("nested_control_flow_targets", [])
-		if isinstance(nested_targets, list) and len(nested_targets) > 0:
-			_appendReachableFunctionCandidates(nested_targets, destination, source_label, path_class)
+		_appendReachableFunctionCandidates(
+			target_entry.get("nested_control_flow_targets", []),
+			destination,
+			source_label,
+			path_class,
+			control_flow_target_map=control_flow_target_map,
+			target_refs=target_entry.get("nested_control_flow_target_refs", [])
+		)
 
 
 def _collectReachableFunctions(current_function, caller_function, caller_chain=None):
@@ -39504,6 +39643,7 @@ Official model docs:
 	    [return_context]           = q3 saved return-site context when the current function needs to return first
 	    [return_resume_analysis]   = q3 caller-resume wrapper with retaddr, caller, resume disassembly, branch targets, and indirect transfers
 	    [control_flow_disasm_map]  = q3 canonical store for deduplicated full control-flow disassembly bodies referenced by control_flow_disasm_ref
+	    [control_flow_target_map]  = q3 canonical store for exhaustive control-flow target nodes referenced by control_flow_target_refs and nested_control_flow_target_refs
 	    [caller_function]          = q3 containing-function context for the immediate caller resume site
 	    [caller_chain]             = q3 list of caller resume frames inspected on the return-resume path
 	    [caller_resume_window]     = q3 bounded disassembly window after the saved return address
