@@ -20990,12 +20990,28 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				md_lines.append("|" + "|".join([" " + ("-" * col_widths[idx]) + " " for idx in range(len(col_widths))]) + "|")
 				for row in markdown_rows:
 					md_lines.append(_format_md_row(row))
-				md_lines.append("")
+				md_lines.append("----------\n\n")
 				module_table_text = "\n".join(md_lines)
 			with open(logfile,"ab") as fh:
 				fh.write(encodeTextForFile(module_table_text, getEffectiveLogEncoding()))
 		except Exception as e:
 			mndbg.dbgp("showModuleTable: write failed: %s" % str(e), errormode=False)
+
+
+def _isMarkdownLogPath(path):
+	return ensure_text(path).lower().endswith(".md")
+
+
+def _writeMarkdownTextFenceStart(logobj, path):
+	if _isMarkdownLogPath(path):
+		logobj.write("", path)
+		logobj.write("```text", path)
+
+
+def _writeMarkdownTextFenceEnd(logobj, path):
+	if _isMarkdownLogPath(path):
+		logobj.write("```", path)
+		logobj.write("", path)
 		
 #-----------------------------------------------------------------------#
 # This is where the action is
@@ -21058,12 +21074,12 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 				dbg.log("")
 				dbg.log("[+] Results: ")
 
-			is_markdown_results = ensure_text(thislog).lower().endswith(".md")
+			is_markdown_results = _isMarkdownLogPath(thislog)
 			if is_markdown_results:
 				logfile.write("", thislog)
 				logfile.write("## Results", thislog)
 				logfile.write("", thislog)
-				logfile.write("```text", thislog)
+				_writeMarkdownTextFenceStart(logfile, thislog)
 
 			messageshown = False
 			display_order = []
@@ -21134,8 +21150,7 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 						messageshown = True
 
 			if is_markdown_results:
-				logfile.write("```", thislog)
-				logfile.write("", thislog)
+				_writeMarkdownTextFenceEnd(logfile, thislog)
 
 			if not g_silent:
 				if g_ptr_to_get > -1:
@@ -21935,8 +21950,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				if suggestedtype.startswith("pop "):		# only write up to 10 pop r32 into suggestions file
 					limitnr = 10
 				gcnt = 0
-
-				suggtowrite += "[%s]\n" % suggestedtype
+				suggtowrite += "\n### [%s]\n" % suggestedtype
+				suggtowrite += "```\n"
 				for suggestedpointer in suggestions[suggestedtype]:
 					if gcnt < limitnr:
 						sptr = MnPointer(suggestedpointer)
@@ -21953,6 +21968,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					else:
 						break
 					gcnt += 1
+				suggtowrite += "```\n"
 			if arch == 32:
 				dbg.log("")
 				dbg.log("[+] Launching ROP generator")
@@ -21995,7 +22011,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	if arch == 32:
 		logfile.write("Non-SafeSEH protected pivots :",thislog)
 		logfile.write("------------------------------",thislog)
-		logfile.write("", thislog)	
+		logfile.write("", thislog)
+	_writeMarkdownTextFenceStart(logfile, thislog)
 	arrtowrite = ""	
 	pivotcount = 0
 	startmoment = time.time()
@@ -22012,10 +22029,11 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(spivot) + " : {pivot " + str(sdist) + " / 0x" + sdisthex + "} : " + schain + "    ** [" + modname + "] **   |  " + ptrx.__str__()+"\n"
 					pivotcount += 1
 					arrtowrite += ptrinfo
-					
+
 			fh.writelines(arrtowrite)
 	except:
 		pass
+	_writeMarkdownTextFenceEnd(logfile, thislog)
 	logfile.write("", thislog)
 	logfile.write("", thislog)
 	if arch == 32:
@@ -22026,7 +22044,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 		logfile.write("", thislog)		
 		logfile.write("SafeSEH protected pivots :",thislog)
 		logfile.write("--------------------------",thislog)	
-		logfile.write("", thislog)	
+		logfile.write("", thislog)
+	_writeMarkdownTextFenceStart(logfile, thislog)
 	arrtowrite = ""	
 	startmoment = time.time()
 	flipover = 0
@@ -22047,7 +22066,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 
 			fh.writelines(arrtowrite)
 	except:
-		pass	
+		pass
+	_writeMarkdownTextFenceEnd(logfile, thislog)
 	dbg.log("    Wrote %d pivots to file " % pivotcount)
 	arrtowrite = ""
 	if mode == "all":
@@ -22061,6 +22081,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			with open(thislog, "a") as fh:
 				fh.writelines(suggtowrite)
 				fh.write("\n")
+			_writeMarkdownTextFenceEnd(logfile, thislog)
 			nrsugg = len(suggtowrite.split("\n"))
 			dbg.log("    Wrote %d suggestions to file" % nrsugg)
 
@@ -22073,6 +22094,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			dbg.log("[+] Writing results to file " + thislog + " (" + str(len(valid_cfg_target_gadgets))+" cfg compatible target gadgets)")
 			logfile.write("CFG Compatible target gadgets",thislog)
 			logfile.write("-----------------------------",thislog)
+			_writeMarkdownTextFenceStart(logfile, thislog)
 			dbg.updateLog()
 			try:
 				with open(thislog, "a") as fh:
@@ -22097,6 +22119,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				dbg.log("    Wrote %d CFG Compatible target gadgets to file" % len(valid_cfg_target_gadgets))
 			except:
 				pass
+			_writeMarkdownTextFenceEnd(logfile, thislog)
 			
 
 		if not split:
@@ -22107,6 +22130,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			dbg.log("[+] Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)")
 			logfile.write("Interesting gadgets",thislog)
 			logfile.write("-------------------",thislog)
+			_writeMarkdownTextFenceStart(logfile, thislog)
 			dbg.updateLog()
 			try:
 				with open(thislog, "a") as fh:
@@ -22151,6 +22175,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				dbg.log("    Wrote %d interesting gadgets to file" % len(interestinggadgets))
 			except:
 				pass
+			_writeMarkdownTextFenceEnd(logfile, thislog)
 			arrtowrite=""
 			if not fast:
 				objprogressfile.write("Enumerating other gadgets (" + str(len(ropgadgets))+")",progressfile)
@@ -22159,6 +22184,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					logfile.write("",thislog)
 					logfile.write("Other gadgets",thislog)
 					logfile.write("-------------",thislog)
+					_writeMarkdownTextFenceStart(logfile, thislog)
 					startmoment = time.time()
 					flipover = 0
 					gcount = 0
@@ -22204,6 +22230,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						fh.writelines(arrtowrite)
 				except:
 					pass
+				_writeMarkdownTextFenceEnd(logfile, thislog)
 			
 		else:
 			dbg.log("[+] Writing results to individual files (grouped by module)")
@@ -22216,6 +22243,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				thislog = logfile.reset()
 				logfile.write("Interesting gadgets",thislog)
 				logfile.write("-------------------",thislog)
+				_writeMarkdownTextFenceStart(logfile, thislog)
 			for gadget in interestinggadgets:
 				ptrx = MnPointer(gadget)
 				modname = ptrx.belongsTo()
@@ -22227,14 +22255,23 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				ptrinfo = "0x" + toHex(gadget) + " : " + interestinggadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 				with open(thislog, "a") as fh:
 					fh.write(ptrinfo)
+			for thismodule in modulestosearch:
+				thismodname = thismodule.replace(" ","_")
+				_m = mnproc.getPEB().getModuleByName(thismodule)
+				thismodversion = _m.moduleVersion if _m else ""
+				logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".md")
+				thislog = logfile.reset(False)
+				_writeMarkdownTextFenceEnd(logfile, thislog)
 			if not fast:
 				for thismodule in modulestosearch:
 					thismodname = thismodule.replace(" ","_")
 					_m = mnproc.getPEB().getModuleByName(thismodule)
 					thismodversion = _m.moduleVersion if _m else ""
 					logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".md")
+					thislog = logfile.reset(False)
 					logfile.write("Other gadgets",thislog)
 					logfile.write("-------------",thislog)
+					_writeMarkdownTextFenceStart(logfile, thislog)
 				for gadget in ropgadgets:
 					ptrx = MnPointer(gadget)
 					modname = ptrx.belongsTo()
@@ -22246,6 +22283,13 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					ptrinfo = "0x" + toHex(gadget) + " : " + ropgadgets[gadget] + "    ** " + modinfo.__str__() + " **   |  " + ptrx.__str__()+"\n"
 					with open(thislog, "a") as fh:
 						fh.write(ptrinfo)
+				for thismodule in modulestosearch:
+					thismodname = thismodule.replace(" ","_")
+					_m = mnproc.getPEB().getModuleByName(thismodule)
+					thismodversion = _m.moduleVersion if _m else ""
+					logfile = MnLog("rop_"+thismodname+"_"+thismodversion+".md")
+					thislog = logfile.reset(False)
+					_writeMarkdownTextFenceEnd(logfile, thislog)
 	thistimestamp=mndbg.get_current_datetime()
 	objprogressfile.write("Done (" + thistimestamp+")",progressfile)
 	dbg.log("Done")
@@ -22413,6 +22457,7 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 	dbg.log("[+] Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)")
 	logfile.write("Interesting gadgets",thislog)
 	logfile.write("-------------------",thislog)
+	_writeMarkdownTextFenceStart(logfile, thislog)
 	dbg.updateLog()
 	arrtowrite = ""
 	try:
@@ -22427,7 +22472,8 @@ def findJOPGADGETS(modulecriteria={},criteria={},depth=6):
 			objprogressfile.write("Writing results to file " + thislog + " (" + str(len(interestinggadgets))+" interesting gadgets)",progressfile)
 			fh.writelines(arrtowrite)
 	except:
-		pass				
+		pass
+	_writeMarkdownTextFenceEnd(logfile, thislog)
 
 	return interestinggadgets,jopgadgets,suggestions,vplogtxt	
 	
@@ -25099,16 +25145,20 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		dbg.log("[+] %s" % updatetxt)
 		objprogressfile.write("- " + updatetxt,progressfile)
 		vplogtxt += "\n"
-		vplogtxt += "#" * 80
-		vplogtxt += "\n\nRegister setup for " + routine + "() :\n" + routinesetup[routine] + "\n\n"
+		vplogtxt += "```\n"
+		vplogtxt += "\n\nRegister setup for " + routine + "() :\n" 
+		vplogtxt += routinesetup[routine] + "\n```\n\n"
 		targetOS = "(XP/2003 Server and up)"
 		if routine == "SetInformationProcess":
 			targetOS = "(XP/2003 Server only)"
 		if routine == "SetProcessDEPPolicy":
 			targetOS = "(XP SP3/Vista SP1/2008 Server SP1, can be called only once per process)"
+		
 		title = "ROP Chain for %s() [%s] :" % (routine,targetOS)
+		vplogtxt += "````\n"
 		vplogtxt += "\n%s\n" % title
 		vplogtxt += ("-" * len(title)) + "\n\n"
+		vplogtxt += "```ruby\n"
 		vplogtxt += "*** [ Ruby ] ***\n\n"
 		vplogtxt += "  def create_rop_chain()\n"
 		vplogtxt += '\n    # rop chain generated with mona.py - www.corelan.be'
@@ -25555,8 +25605,10 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		
 		vplogtxt = vplogtxt.replace("create_rop_chain()","create_rop_chain(" + argtxt + ")")
 		vplogtxt += '\n  ' + calltxt
+		vplogtxt += "```\n"
 		vplogtxt += '\n\n\n'
 		# C
+		vplogtxt += "```c++\n"
 		vplogtxt += "*** [ C ] ***\n\n"
 		vplogtxt += "  #define CREATE_ROP_CHAIN(name, ...) \\\n"
 		vplogtxt += "    int name##_length = create_rop_chain(NULL, ##__VA_ARGS__); \\\n"
@@ -25579,7 +25631,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		vplogtxt += "  // alternatively just allocate a large enough buffer and get the rop chain, i.e.:\n"
 		vplogtxt += "  // unsigned int rop_chain[256];\n"
 		vplogtxt += "  // int rop_chain_length = create_rop_chain(rop_chain, %s);\n\n" % argtxtpy
+		vplogtxt += "```\n"
 		# Python
+		vplogtxt += "```python\n"
 		vplogtxt += "*** [ Python ] ***\n\n"		
 		vplogtxt += "  def create_rop_chain(%s):\n" % argtxt
 		vplogtxt += "\n    # rop chain generated with mona.py - www.corelan.be\n"			
@@ -25589,7 +25643,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		vplogtxt += "    return b''.join(struct.pack('<I', _) for _ in rop_gadgets)\n\n"
 		vplogtxt += vplogtxtpy
 		vplogtxt += "  rop_chain = create_rop_chain(%s)\n\n" % argtxtpy
+		vplogtxt += "```\n"
 		# Javascript
+		vplogtxt += "```javascript\n"
 		vplogtxt += "\n\n*** [ JavaScript ] ***\n\n"
 		vplogtxt += "  //rop chain generated with mona.py - www.corelan.be\n"		
 		if not showrva:
@@ -25632,6 +25688,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			vplogtxt += "  }\n\n"
 			vplogtxt += "%s" % vplogtxtjs
 			vplogtxt += "\n  var rop_chain = gadgets2uni(get_rop_chain(%s));\n\n" % argtxtjs
+			vplogtxt += "```\n"
 		vplogtxt += '\n--------------------------------------------------------------------------------------------------\n\n'
 		
 		# MSF RopDB XML Format - spit out if only one module was selected
