@@ -191,6 +191,8 @@ _invalid_instr_cache = set()
 _invalid_instr_cache_requests = 0
 _invalid_instr_cache_hits = 0
 _invalid_instr_cache_stores = 0
+_q3_control_flow_disasm_cache = {}
+_q3_control_flow_uf_cache = {}
 
 #
 # some global helper vars
@@ -1911,11 +1913,26 @@ def _sliceDisassemblyTextFromAddress(disasm_text, address, max_lines=0, stop_at_
 
 def _getControlFlowDisasmSourceForAddress(address, slice_from_address=False, max_lines=0):
 	mndbg.dbgp(get_current_function_name())
+	global _q3_control_flow_disasm_cache
+	global _q3_control_flow_uf_cache
+	cache_key = (
+		int(address) if isinstance(address, int) else 0,
+		bool(slice_from_address),
+		int(max_lines) if isinstance(max_lines, int) else 0
+	)
+	if cache_key in _q3_control_flow_disasm_cache:
+		mndbg.dbgp("tellme: reusing cached q3 control-flow disasm for %s slice=%s max_lines=%s" % (
+			PTR_PRINT % cache_key[0] if cache_key[0] > 0 else "0x0",
+			str(cache_key[1]),
+			str(cache_key[2])
+		))
+		return copy.deepcopy(_q3_control_flow_disasm_cache[cache_key])
 	result = OrderedDict([
 		("address", PTR_PRINT % address),
 		("analysis_scope", ""),
 		("function_start", ""),
 		("disasm_source", ""),
+		("full_function_disasm", ""),
 	])
 	try:
 		ptr = MnPointer(address)
@@ -1926,12 +1943,23 @@ def _getControlFlowDisasmSourceForAddress(address, slice_from_address=False, max
 			result["analysis_scope"] = "function"
 			if isinstance(function_start, int) and function_start > 0:
 				result["function_start"] = PTR_PRINT % function_start
-			uf_output = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
+			uf_cache_key = int(function_start) if isinstance(function_start, int) and function_start > 0 else int(address)
+			if uf_cache_key in _q3_control_flow_uf_cache:
+				uf_output = _safeTextValue(_q3_control_flow_uf_cache.get(uf_cache_key, "")).strip()
+				mndbg.dbgp("tellme: reusing cached q3 uf output for %s (requested %s)" % (
+					PTR_PRINT % uf_cache_key if uf_cache_key > 0 else "0x0",
+					PTR_PRINT % address
+				))
+			else:
+				uf_output = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
+				_q3_control_flow_uf_cache[uf_cache_key] = uf_output
+			result["full_function_disasm"] = uf_output
 			if slice_from_address:
 				result["analysis_scope"] = "function_from_requested_address"
 				result["disasm_source"] = _sliceDisassemblyTextFromAddress(uf_output, address, max_lines=max_lines)
 			else:
 				result["disasm_source"] = uf_output
+			_q3_control_flow_disasm_cache[cache_key] = copy.deepcopy(result)
 			return result
 	except Exception as e:
 		mndbg.dbgp("tellme: full function disasm source lookup failed for %s: %s" % (
@@ -1946,6 +1974,7 @@ def _getControlFlowDisasmSourceForAddress(address, slice_from_address=False, max
 		mndbg.dbgp("tellme: code window disasm source lookup failed for %s: %s" % (
 			PTR_PRINT % address, str(e)
 		), errormode=False)
+	_q3_control_flow_disasm_cache[cache_key] = copy.deepcopy(result)
 	return result
 
 
@@ -2504,6 +2533,7 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 				("nearest_symbol_output", _getNearestSymbolOutput(target_address)),
 				("disasm", _getDisasmSummary(target_address, depth_before=0, depth_after=20)),
 				("control_flow_disasm", flow_disasm.get("disasm_source", "")),
+				("control_flow_full_function_disasm", flow_disasm.get("full_function_disasm", "")),
 				("control_flow_scope", flow_disasm.get("analysis_scope", "")),
 				("control_flow_function_start", flow_disasm.get("function_start", "")),
 			])
@@ -6244,26 +6274,32 @@ def _registerQ3ControlFlowDisasm(target_entry, control_flow_disasm, seen_control
 	control_flow_disasm = _safeTextValue(control_flow_disasm).strip()
 	if control_flow_disasm == "":
 		return ""
-	if control_flow_disasm in seen_control_flow_disasm:
-		return seen_control_flow_disasm[control_flow_disasm]
+	full_function_disasm = _safeTextValue(target_entry.get("control_flow_full_function_disasm", "")).strip()
+	canonical_disasm = full_function_disasm
+	if canonical_disasm == "":
+		canonical_disasm = control_flow_disasm
+	if canonical_disasm in seen_control_flow_disasm:
+		return seen_control_flow_disasm[canonical_disasm]
 	target_address_text = _safeTextValue(target_entry.get("target_address_text", "")).strip()
 	control_flow_function_start = _safeTextValue(target_entry.get("control_flow_function_start", "")).strip()
 	symbol = _safeTextValue(target_entry.get("symbol", "")).strip()
-	base_ref = target_address_text
+	base_ref = control_flow_function_start
+	if base_ref == "":
+		base_ref = target_address_text
 	if base_ref == "":
 		base_ref = control_flow_function_start
 	if base_ref == "":
 		base_ref = symbol
-	ref_value = _getUniqueControlFlowDisasmRef(base_ref, control_flow_disasm, control_flow_disasm_map)
+	ref_value = _getUniqueControlFlowDisasmRef(base_ref, canonical_disasm, control_flow_disasm_map)
 	control_flow_entry = OrderedDict([
 		("address", ref_value),
 		("symbol", symbol),
-		("scope", _safeTextValue(target_entry.get("control_flow_scope", "")).strip()),
+		("scope", "function" if full_function_disasm != "" else _safeTextValue(target_entry.get("control_flow_scope", "")).strip()),
 		("function_start", control_flow_function_start),
-		("disasm", control_flow_disasm),
+		("disasm", canonical_disasm),
 	])
 	control_flow_disasm_map[ref_value] = control_flow_entry
-	seen_control_flow_disasm[control_flow_disasm] = ref_value
+	seen_control_flow_disasm[canonical_disasm] = ref_value
 	return ref_value
 
 
@@ -30077,6 +30113,7 @@ class MnAI(object):
 				mndbg.dbgp("tellme: extending default timeout for q8 to %.1fs" % self.timeout_seconds)
 			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
 			mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
+				
 				self.engine, self.timeout_seconds, self.timeout_source
 			))
 			mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
@@ -30272,6 +30309,8 @@ class MnAI(object):
 	def getRequestContext(self):
 		"""Collect debugger context and enrich it with function or ROP metadata when needed."""
 		mndbg.dbgp(get_current_function_name())
+		global _q3_control_flow_disasm_cache
+		global _q3_control_flow_uf_cache
 		if self.question_type == "9" and self.prebuilt_prompt != "":
 			return None
 		if mnproc is None:
@@ -30282,6 +30321,9 @@ class MnAI(object):
 			return None
 
 		self.logInfo("Collecting context and preparing request...")
+		if self.effective_question_type == "3":
+			_q3_control_flow_disasm_cache = {}
+			_q3_control_flow_uf_cache = {}
 		function_context_cache = {}
 		function_context_active_keys = set()
 		context = collectAIContext(
