@@ -149,6 +149,41 @@ import pstats
 
 import copy
 
+
+def safeTracebackText(limit=None, chain=True):
+	"""
+	Return the current exception traceback without relying on traceback.format_exc().
+
+	Some embedded Python 3.14 debugger environments raise a secondary TypeError
+	while building TracebackException objects. This fallback keeps error handling
+	from collapsing when that happens.
+	"""
+	try:
+		exc_type, exc_value, exc_tb = sys.exc_info()
+	except Exception:
+		return "Traceback unavailable"
+	if exc_type is None:
+		return ""
+	try:
+		return "".join(traceback.format_exception(exc_type, exc_value, exc_tb, limit=limit, chain=chain))
+	except Exception:
+		lines = ["Traceback (most recent call last):\n"]
+		try:
+			if exc_tb is not None:
+				lines.extend(traceback.format_list(traceback.extract_tb(exc_tb, limit=limit)))
+		except Exception as tb_error:
+			lines.append("  <unable to extract traceback frames: %s>\n" % str(tb_error))
+		try:
+			lines.extend(traceback.format_exception_only(exc_type, exc_value))
+		except Exception:
+			exc_type_name = getattr(exc_type, "__name__", str(exc_type))
+			try:
+				exc_text = str(exc_value)
+			except Exception:
+				exc_text = "<unprintable exception>"
+			lines.append("%s: %s\n" % (exc_type_name, exc_text))
+		return "".join(lines)
+
 DESC = "Corelan Consulting bv exploit development swiss army knife"
 
 #---------------------------------------#
@@ -3842,7 +3877,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		except Exception as e:
 			context["findmsp_error"] = str(e)
 			context["findmsp_error_type"] = e.__class__.__name__
-			context["findmsp_error_traceback"] = traceback.format_exc()
+			context["findmsp_error_traceback"] = safeTracebackText()
 			mndbg.dbgp("tellme: failed to collect findmsp context:\n%s" % context["findmsp_error_traceback"], errormode=False)
 
 	if question_type != "8":
@@ -4324,9 +4359,31 @@ def _extract_fallback_output_from_result(result):
 	return "\n\n".join(filtered)
 
 
+def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_id="", template_file="", target_address=0, target_address_source=""):
+	"""Write the shared AI metadata block used by request/response log files."""
+	logfile.write("", thislog)
+	logfile.write("AI Engine", thislog)
+	logfile.write("---------", thislog)
+	logfile.write("Engine    : %s" % engine, thislog)
+	logfile.write("Model     : %s" % model, thislog)
+	logfile.write("Question  : %s" % question_type, thislog)
+	if request_id:
+		logfile.write("Request id: %s" % request_id, thislog)
+	if template_file != "":
+		logfile.write("Template  : %s" % template_file, thislog)
+	if isinstance(target_address, int) and target_address > 0:
+		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
+		if target_address_source != "":
+			logfile.write("Target src: %s" % target_address_source, thislog)
+	logfile.write("", thislog)
+
+
 def _render_output_text(job, body_text, response_id="", error_text="", troubleshooting_lines=None):
 	lines = []
-	lines.append("AI engine : openaiagents")
+	lines.append("")
+	lines.append("AI Engine")
+	lines.append("---------")
+	lines.append("Engine    : openaiagents")
 	lines.append("Model     : %s" % _ensure_text(job.get("model", "")).strip())
 	lines.append("Question  : %s" % _ensure_text(job.get("question_type", "")).strip())
 	if _ensure_text(job.get("request_id", "")).strip() != "":
@@ -5819,7 +5876,7 @@ def _getFindMspSummary(args=None):
 	except Exception as e:
 		info["error"] = str(e)
 		info["error_type"] = e.__class__.__name__
-		info["error_traceback"] = traceback.format_exc()
+		info["error_traceback"] = safeTracebackText()
 		mndbg.dbgp("tellme: _getFindMspSummary failed:\n%s" % info["error_traceback"], errormode=False)
 	finally:
 		if not osilent is None:
@@ -8019,12 +8076,12 @@ def buildAIPromptFromTemplateFile(template_path, context, question_type="9"):
 	return template_text.strip()
 
 
-def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
-	mndbg.dbgp(get_current_function_name())
-	logfile = MnLog("tellme_request.md")
-	thislog = logfile.reset(showheader=False, skipModuleTable=True)
-	mndbg.dbgp("tellme: writing AI request to %s" % thislog)
-	logfile.write("AI engine : %s" % engine, thislog)
+def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_id="", template_file="", target_address=0, target_address_source=""):
+	"""Write the shared AI metadata block used by request/response log files."""
+	logfile.write("", thislog)
+	logfile.write("AI Engine", thislog)
+	logfile.write("---------", thislog)
+	logfile.write("Engine    : %s" % engine, thislog)
 	logfile.write("Model     : %s" % model, thislog)
 	logfile.write("Question  : %s" % question_type, thislog)
 	if request_id:
@@ -8036,6 +8093,24 @@ def writeAIRequestLog(engine, model, question_type, prompt, request_id="", templ
 		if target_address_source != "":
 			logfile.write("Target src: %s" % target_address_source, thislog)
 	logfile.write("", thislog)
+
+
+def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
+	mndbg.dbgp(get_current_function_name())
+	logfile = MnLog("tellme_request.md")
+	thislog = logfile.reset(showheader=False, skipModuleTable=True)
+	mndbg.dbgp("tellme: writing AI request to %s" % thislog)
+	_writeAILogMetadata(
+		logfile,
+		thislog,
+		engine,
+		model,
+		question_type,
+		request_id=request_id,
+		template_file=template_file,
+		target_address=target_address,
+		target_address_source=target_address_source
+	)
 	logfile.write("PROMPT BEGIN", thislog)
 	logfile.write("------------", thislog)
 	for line in prompt.splitlines():
@@ -8049,18 +8124,17 @@ def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lin
 	mndbg.dbgp("tellme: writing AI response to tellme_response.md")
 	logfile = MnLog("tellme_response.md")
 	thislog = logfile.reset()
-	logfile.write("AI engine : %s" % engine, thislog)
-	logfile.write("Model     : %s" % model, thislog)
-	logfile.write("Question  : %s" % question_type, thislog)
-	if request_id:
-		logfile.write("Request id: %s" % request_id, thislog)
-	if template_file != "":
-		logfile.write("Template  : %s" % template_file, thislog)
-	if isinstance(target_address, int) and target_address > 0:
-		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
-		if target_address_source != "":
-			logfile.write("Target src: %s" % target_address_source, thislog)
-	logfile.write("", thislog)
+	_writeAILogMetadata(
+		logfile,
+		thislog,
+		engine,
+		model,
+		question_type,
+		request_id=request_id,
+		template_file=template_file,
+		target_address=target_address,
+		target_address_source=target_address_source
+	)
 	logfile.write("AI response:", thislog)
 	logfile.write("------------", thislog)
 	for line in ai_response_lines:
@@ -8073,18 +8147,17 @@ def writeAIRawResponseLog(engine, model, question_type, request_id, raw_payload,
 	mndbg.dbgp("tellme: writing raw AI response to tellme_response_raw.md")
 	logfile = MnLog("tellme_response_raw.md")
 	thislog = logfile.reset()
-	logfile.write("AI engine : %s" % engine, thislog)
-	logfile.write("Model     : %s" % model, thislog)
-	logfile.write("Question  : %s" % question_type, thislog)
-	if request_id:
-		logfile.write("Request id: %s" % request_id, thislog)
-	if template_file != "":
-		logfile.write("Template  : %s" % template_file, thislog)
-	if isinstance(target_address, int) and target_address > 0:
-		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
-		if target_address_source != "":
-			logfile.write("Target src: %s" % target_address_source, thislog)
-	logfile.write("", thislog)
+	_writeAILogMetadata(
+		logfile,
+		thislog,
+		engine,
+		model,
+		question_type,
+		request_id=request_id,
+		template_file=template_file,
+		target_address=target_address,
+		target_address_source=target_address_source
+	)
 	logfile.write("Raw AI response:", thislog)
 	logfile.write("----------------", thislog)
 	for line in _renderAIRawPayloadText(raw_payload).splitlines():
@@ -20717,27 +20790,20 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 	show_sym = _symbol_dirs_cache is not None
 
 	linelength = 175
-	total_modules_loaded = len(mnproc.getPEB().getModules())
-	displayed_modules = len(modules)
-	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Module summary\n"
-	thistable += "  - Total nr of modules loaded         : %d\n" % total_modules_loaded
-	thistable += "  - Nr of modules displayed after filters: %d\n" % displayed_modules
-	thistable += "  - PEB order                          : %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.getPEB().getModules()), len(modules))
+	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
+	thistable += " | PEB order: %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
 	if sort_keys:
 		sort_desc = " -> ".join("%s (%s)" % (k, "descending" if r else "ascending") for k, r in sort_keys)
 		thistable += ("-" * linelength) + "\n"
-		thistable += " Sort summary\n"
-		thistable += "  - Sort applied: %s\n" % sort_desc
+		thistable += " Sort applied: %s\n" % sort_desc
 	if filtertext != "":
 		thistable += ("-" * linelength) + "\n"
-		thistable += " Filter summary\n"
-		thistable += "  - Module filter applied: %s\n" % (filtertext)
+		thistable += " Module filter applied: %s\n" % (filtertext)
 	if excluded_by_configtext != "":
 		thistable += ("-" * linelength) + "\n"
-		thistable += " Exclusion summary\n"
-		thistable += "  - %s\n" % excluded_by_configtext.strip()
+		thistable += ("%s\n" % excluded_by_configtext)
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
 		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
@@ -20814,18 +20880,16 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				md_lines.append("")
 				md_lines.append("## Module Table")
 				md_lines.append("")
-				md_lines.append("### Summary")
-				md_lines.append("")
-				md_lines.append("- Total nr of modules loaded: %d" % total_modules_loaded)
-				md_lines.append("- Nr of modules displayed after filters: %d" % displayed_modules)
-				md_lines.append("- PEB order: %s" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order))
+				md_lines.append("Total nr of modules loaded: %d" % len(mnproc.getPEB().getModules()))
+				md_lines.append("Nr of modules displayed after filters: %d" % len(modules))
+				md_lines.append("PEB order: %s" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order))
 				if sort_keys:
 					sort_desc = " -> ".join("%s (%s)" % (k, "descending" if r else "ascending") for k, r in sort_keys)
-					md_lines.append("- Sort applied: %s" % sort_desc)
+					md_lines.append("Sort applied: %s" % sort_desc)
 				if filtertext != "":
-					md_lines.append("- Module filter applied: %s" % filtertext)
+					md_lines.append("Module filter applied: %s" % filtertext)
 				if excluded_by_configtext != "":
-					md_lines.append("- %s" % excluded_by_configtext.strip())
+					md_lines.append(excluded_by_configtext.strip())
 				md_lines.append("")
 				md_lines.append(_format_md_row(md_headers))
 				md_lines.append("|" + "|".join([" " + ("-" * col_widths[idx]) + " " for idx in range(len(col_widths))]) + "|")
@@ -20833,7 +20897,6 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 					md_lines.append(_format_md_row(row))
 				md_lines.append("")
 				module_table_text = "\n".join(md_lines)
-			module_table_text = module_table_text.rstrip("\n") + "\n\n"
 			with open(logfile,"ab") as fh:
 				fh.write(encodeTextForFile(module_table_text, getEffectiveLogEncoding()))
 		except Exception as e:
@@ -30977,7 +31040,7 @@ class MnAI(object):
 			else:
 				self.logError("Failed to build the prompt for question type '%s'" % self.question_type)
 				self.logErrorDetail(str(e))
-			mndbg.dbgp("tellme: prompt generation failed:\n%s" % traceback.format_exc(), errormode=False)
+			mndbg.dbgp("tellme: prompt generation failed:\n%s" % safeTracebackText(), errormode=False)
 			return False
 
 	def writeOfflineRequest(self):
@@ -31475,7 +31538,7 @@ def procTellMe(args):
 		mnai.execute()
 	except Exception as e:
 		dbg.log("[!] tellme failed: %s" % str(e), highlight=True)
-		mndbg.dbgp("tellme: unexpected failure:\n%s" % traceback.format_exc(), errormode=False)
+		mndbg.dbgp("tellme: unexpected failure:\n%s" % safeTracebackText(), errormode=False)
 		return
 
 # ----- dump: Dump some memory to a file ----- #
@@ -39213,7 +39276,7 @@ This will affect clickable links and help output.
 Mandatory argument :  -r <reg>  where reg is a valid register"""
 	
 	ropfuncUsage = """Default module criteria : non aslr, non rebase, non os
-Output will be written to ropfunc.md"""
+Output will be written to ropfunc.txt"""
 	
 	modulesUsage = """Shows information about the loaded modules.
 Check the global options above to filter modules as needed.
@@ -39269,7 +39332,7 @@ Optional parameters :
     -f \"file1,file2,..filen\"    : use mona generated rop files as input instead of searching in memory
     -rva                        : use RVA's in rop chain
     -s <technique>              : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
-    -sort                       : sort the output in rop.md (sort on pointer value)"""
+    -sort                       : sort the output in rop.txt (sort on pointer value)"""
 	
 	jopUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
@@ -39290,7 +39353,7 @@ contain the output of the same mona command.
 Mandatory argument : -f \"file1,file2,...filen\"
 Put all filenames between one set of double quotes, and separate files with comma's.
 You can specify a foldername as well with -f, all files in the root of that folder will be part of the compare.
-Output will be written to filecompare.md and filecompare_not.md (not matching pointers)
+Output will be written to filecompare.txt and filecompare_not.txt (not matching pointers)
 Optional parameters : 
     -contains \"INSTRUCTION\"  (will only list if instruction is found)
     -nostrict (will also list pointer is instructions don't match in all files)
@@ -39298,7 +39361,7 @@ Optional parameters :
                       When using -range, the -contains and -nostrict options will be ignored
     -ptronly : only show matching pointers (slightly faster). Doesn't work when 'range' is used"""
 
-	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.md
+	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.txt
 in ascii, hex and unescape() javascript format
 
 Mandatory argument : size (numberic value)
@@ -39501,7 +39564,7 @@ Optional arguments:
          Example: -s \\x01 -e \\x7f to have all bytes from 0x01 to 0x7f
                   -s \\xff -e \\x7f to have all bytes from 0xff to 0x7f in reverse
     -r : show array backwards (reversed), starting at \\xff
-    Output will be written to bytearray.md (raw bytes + Python 2/3 code),
+    Output will be written to bytearray.txt (raw bytes + Python 2/3 code),
     and binary output will be written to bytearray.bin"""
 	
 	headerUsage = """Convert contents of a binary file to code that can be run to produce the file
@@ -40103,14 +40166,14 @@ Official model docs:
 	    __LAUNCHCMD__ tellme -e openaiagents -q 1 -submit
 	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
-	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.md -p poc.py
+	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
 	    __LAUNCHCMD__ tellme -e openai -model gpt-5-mini -q 1
 	    __LAUNCHCMD__ tellme -e anthropic -model claude-sonnet-4-6 -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 1 -submit
 	    __LAUNCHCMD__ tellme -e openai -q 1 -timeout 120
 	    __LAUNCHCMD__ tellme -e openai -q 1 -maxsize 300
 	    __LAUNCHCMD__ tellme -e openai -q 1 -cpb '\\x00\\x0a\\x0d'
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.md
+	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.txt
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -cpb '\\x00\\x0a\\x0d'
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
@@ -40672,9 +40735,9 @@ def main(args):
 			dbg.getNativeCommandStatistics(minval=2)
 	except:
 		dbg.log("*" * 80,highlight=True)
-		dbg.logLines(traceback.format_exc(),highlight=True)
+		dbg.logLines(safeTracebackText(),highlight=True)
 		dbg.log("*" * 80,highlight=True)
-		dbg.error(traceback.format_exc())
+		dbg.error(safeTracebackText())
 	return ""
 
 
