@@ -29740,6 +29740,7 @@ class MnAI(object):
 		self.list_models_requested = False
 		self.question_profile_missing = False
 		self.model = getDefaultAIModel("openai")
+		self.model_source = "default"
 		self.timeout_seconds = 300.0
 		self.timeout_source = "default"
 		self.max_request_kb = 0
@@ -29747,13 +29748,19 @@ class MnAI(object):
 		self.max_tokens_source = "default"
 		self.api_key = ""
 		self.api_url = ""
+		self.api_url_source = "default"
 		self.response_field = ""
+		self.response_field_source = "default"
 		self.api_options = {}
 		self.bridge_python_command = getAIBridgePythonCommand(self.mona_config)
 		self.bridge_python = formatAIBridgePythonCommand(self.bridge_python_command)
+		self.bridge_python_source = "default"
 		self.reasoning_effort = "high"
+		self.reasoning_effort_source = "default"
 		self.response_verbosity = "low"
+		self.response_verbosity_source = "default"
 		self.max_turns = 8
+		self.max_turns_source = "default"
 		self.bridge_script_path = ""
 		self.bridge_output_file_path = ""
 		self.bridge_status_file_path = ""
@@ -29810,6 +29817,16 @@ class MnAI(object):
 				python_tokens[1] = "%s-32" % python_tokens[1]
 				commands.append("%s -m pip install openai openai-agents" % formatAIBridgePythonCommand(python_tokens))
 		return commands
+
+	def _formatValueSource(self, source_name):
+		"""Normalize internal source labels for user-facing output."""
+		mndbg.dbgp(get_current_function_name())
+		source_name = ensure_text(source_name).strip().lower()
+		if source_name == "environment":
+			return "env"
+		if source_name == "":
+			return "default"
+		return source_name
 
 	def _getEngineOptionDefinitions(self):
 		"""Return engine-specific configuration option metadata."""
@@ -30127,24 +30144,36 @@ class MnAI(object):
 		self.logAvailableModels(models=models, error_mode=True)
 
 	def maybePrintAvailableModelsWhenIdle(self):
-		"""When no question profile was supplied, print provider models for configured default engines."""
+		"""When no question profile was supplied, print the effective default tellme settings."""
 		mndbg.dbgp(get_current_function_name())
-		has_provider_config = False
-		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key != "":
-			has_provider_config = True
-		if self.engine == "ollama" and self.api_url != "":
-			has_provider_config = True
-		if not self.question_profile_missing or self.offline or self.engine == "offline" or not has_provider_config:
-			return
-		try:
-			models = self.fetchAvailableModels(refresh=False, log_errors=False)
-		except Exception as e:
-			self.logInfo("Unable to retrieve available %s models for this idle tellme invocation." % self.engine)
-			self.logInfoDetail(str(e))
+		if not self.question_profile_missing:
 			return
 		dbg.log("")
 		self.logInfo("No AI request was submitted.")
-		self.logAvailableModels(models=models, error_mode=False)
+		self.logInfo("Effective default tellme settings:")
+		self.logInfoDetail("Engine    : %s (%s)" % (self.engine, self._formatValueSource(self.engine_source)))
+		if self.engine != "offline":
+			if self.model != "":
+				self.logInfoDetail("Model     : %s (%s)" % (self.model, self._formatValueSource(self.model_source)))
+			self.logInfoDetail("Timeout   : %.1f seconds (%s)" % (self.timeout_seconds, self._formatValueSource(self.timeout_source)))
+			if self.api_url != "":
+				self.logInfoDetail("URL       : %s (%s)" % (self.api_url, self._formatValueSource(self.api_url_source)))
+			if self.response_field != "":
+				self.logInfoDetail("Response  : %s (%s)" % (self.response_field, self._formatValueSource(self.response_field_source)))
+			if self.engine == "openaiagents":
+				self.logInfoDetail("Bridge    : %s (%s)" % (self.bridge_python, self._formatValueSource(self.bridge_python_source)))
+				self.logInfoDetail("Reasoning : %s (%s)" % (self.reasoning_effort, self._formatValueSource(self.reasoning_effort_source)))
+				self.logInfoDetail("Verbosity : %s (%s)" % (self.response_verbosity, self._formatValueSource(self.response_verbosity_source)))
+				self.logInfoDetail("Max turns : %d (%s)" % (self.max_turns, self._formatValueSource(self.max_turns_source)))
+			if self.max_tokens > 0:
+				self.logInfoDetail("Max tokens: %d (%s)" % (self.max_tokens, self._formatValueSource(self.max_tokens_source)))
+			if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+				self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
+		self.logInfo("Specify a query profile with -q <1|2|3|9>.")
+		self.logInfoDetail("-q 1 : analyse the crash context")
+		self.logInfoDetail("-q 2 : analyse the current function")
+		self.logInfoDetail("-q 3 : analyse whether a controlled heap chunk can steer execution to a target")
+		self.logInfoDetail("-q 9 : use a request template from -f <file>")
 
 	def printAvailableModelsOnDemand(self):
 		"""Print provider models when explicitly requested via a model-list shortcut."""
@@ -30334,14 +30363,27 @@ class MnAI(object):
 
 		if self.engine != "offline":
 			self.api_key, self.model = getAIModelAndKey(self.engine, self.mona_config)
+			model_is_set, model_source_name, _model_source_value = self._getEngineOptionStatus("model")
+			self.model_source = self._formatValueSource(model_source_name if model_is_set else "default")
 			self.api_url = getAIUrl(self.engine, self.mona_config)
+			url_is_set, url_source_name, _url_source_value = self._getEngineOptionStatus("url")
+			self.api_url_source = self._formatValueSource(url_source_name if url_is_set else "default")
 			self.response_field = getAIResponseField(self.engine, self.mona_config)
+			field_is_set, field_source_name, _field_source_value = self._getEngineOptionStatus("response_field")
+			self.response_field_source = self._formatValueSource(field_source_name if field_is_set else "default")
 			if self.engine == "openaiagents":
 				self.bridge_python_command = getAIBridgePythonCommand(self.mona_config)
 				self.bridge_python = formatAIBridgePythonCommand(self.bridge_python_command)
+				self.bridge_python_source = "config" if self.mona_config.get("openaiagents.bridge.python").strip() != "" else "default"
 				self.reasoning_effort = getAIReasoningEffort(self.engine, self.mona_config)
+				effort_is_set, effort_source_name, _effort_source_value = self._getEngineOptionStatus("reasoning_effort")
+				self.reasoning_effort_source = self._formatValueSource(effort_source_name if effort_is_set else "default")
 				self.response_verbosity = getAIVerbosity(self.engine, self.mona_config)
+				verbosity_is_set, verbosity_source_name, _verbosity_source_value = self._getEngineOptionStatus("verbosity")
+				self.response_verbosity_source = self._formatValueSource(verbosity_source_name if verbosity_is_set else "default")
 				self.max_turns = getAIMaxTurns(self.engine, self.mona_config)
+				max_turns_is_set, max_turns_source_name, _max_turns_source_value = self._getEngineOptionStatus("max_turns")
+				self.max_turns_source = self._formatValueSource(max_turns_source_name if max_turns_is_set else "default")
 			mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (self.engine, self.model))
 			if self.api_url != "":
 				mndbg.dbgp("tellme: config url for engine '%s' is '%s'" % (self.engine, self.api_url))
@@ -31245,12 +31287,12 @@ class MnAI(object):
 			return ""
 		if not self.parseRequestSettings():
 			return ""
-		if not self.validateProviderConfiguration():
-			return ""
 		if self.printAvailableModelsOnDemand():
 			return ""
 		if not self.parseQuestionProfile():
 			self.maybePrintAvailableModelsWhenIdle()
+			return ""
+		if not self.validateProviderConfiguration():
 			return ""
 		if not self.parseTargetAddress():
 			return ""
