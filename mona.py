@@ -16292,7 +16292,7 @@ class MnNTHeap(MnHeap):
 		1. looks_like_counters at +0x1e0 (x86) / +0x210 (x64)?
 		      yes → Win8 / 8.1
 		2. looks_like_counters at +0x1f4 (x86) / +0x238 (x64)?
-		      yes → read InternalFlags byte at +0x1f3 (x86) / +0x237 (x64)
+		      yes → read InternalFlags byte at +0x1f3 (x86) / +0x233 (x64)
 		            bit 0 set → Win11, else → Win10
 		            if InternalFlags unreadable, fall back to:
 		            SegmentFlags bit 0x20 at +0x00c (x86) / +0x014 (x64)
@@ -16315,7 +16315,7 @@ class MnNTHeap(MnHeap):
 		_MAX_RESERVE    = 0x40000000                  # 1 GB upper bound
 		_COUNTERS_WIN8  = archValue(0x1e0, 0x210)     # Win8/8.1 Counters offset
 		_COUNTERS_WIN10 = archValue(0x1f4, 0x238)     # Win10/11 Counters offset
-		_INTERNAL_FLAGS = archValue(0x1f3, 0x237)     # byte immediately before Win10/11 Counters
+		_INTERNAL_FLAGS = archValue(0x1f3, 0x233)     # InternalFlags: x86 immediately before Counters, x64 at end of FrontEndHeapStatusBitmap
 		_SEGMENT_FLAGS  = archValue(0x00c, 0x014)     # _HEAP_SEGMENT.SegmentFlags; heap IS first segment
 
 		def _looks_like_counters(counters_offset):
