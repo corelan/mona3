@@ -2015,17 +2015,22 @@ def _getControlFlowDisasmSourceForAddress(address, slice_from_address=False, max
 			result["analysis_scope"] = "function"
 			if isinstance(function_start, int) and function_start > 0:
 				result["function_start"] = PTR_PRINT % function_start
-			uf_cache_key = int(function_start) if isinstance(function_start, int) and function_start > 0 else int(address)
-			if uf_cache_key in _q3_control_flow_uf_cache:
-				uf_output = _safeTextValue(_q3_control_flow_uf_cache.get(uf_cache_key, "")).strip()
-				mndbg.dbgp("tellme: reusing cached q3 uf output for %s (requested %s)" % (
-					PTR_PRINT % uf_cache_key if uf_cache_key > 0 else "0x0",
-					PTR_PRINT % address
+			requested_address_key = int(address)
+			if requested_address_key in _q3_control_flow_uf_cache:
+				uf_output = _safeTextValue(_q3_control_flow_uf_cache.get(requested_address_key, "")).strip()
+				mndbg.dbgp("tellme: reusing cached q3 uf output for requested %s" % (
+					PTR_PRINT % requested_address_key if requested_address_key > 0 else "0x0"
 				))
 			else:
 				uf_output = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
-				_q3_control_flow_uf_cache[uf_cache_key] = uf_output
+				_q3_control_flow_uf_cache[requested_address_key] = uf_output
 			result["full_function_disasm"] = uf_output
+			uf_metadata = _extractFunctionMetadataFromUfOutput(uf_output)
+			uf_function_start = uf_metadata.get("function_start", 0)
+			if isinstance(uf_function_start, int) and uf_function_start > 0:
+				result["function_start"] = PTR_PRINT % uf_function_start
+				if uf_function_start != requested_address_key:
+					_q3_control_flow_uf_cache[uf_function_start] = uf_output
 			if slice_from_address:
 				result["analysis_scope"] = "function_from_requested_address"
 				result["disasm_source"] = _sliceDisassemblyTextFromAddress(uf_output, address, max_lines=max_lines)
@@ -3921,7 +3926,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		context["call_stack"] = _getCallStack("kb", max_lines=20)
 		context["windbg_analyze"] = _getWindbgAnalyze("!analyze -v")
 		context["windbg_analyze_full"] = context["windbg_analyze"]
-	if question_type == "3":
+	if question_type in ["3", "3b"]:
 		context["call_stack"] = _getCallStack("kb", max_lines=20)
 	if additional_context_files is None:
 		additional_context_files = []
@@ -3940,12 +3945,12 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 	mndbg.dbgp("tellme: building prompt for question type '%s'" % question_type)
 	if question_type == "1":
 		request_variables = _optimizeQ1RequestVariables(context, maxsize_kb=maxsize_kb)
-	elif question_type == "3":
+	elif question_type in ["3", "3b"]:
 		request_variables = _optimizeQ3RequestVariables(context, maxsize_kb=maxsize_kb)
 	else:
 		request_variables = _buildRequestVariables(context)
 
-	if question_type in ["1", "2", "3"]:
+	if question_type in ["1", "2", "3", "3b"]:
 		modules_info = request_variables.get("modules", {})
 		if isinstance(modules_info, dict):
 			for key in ["relevant_module_names", "relevant_module_names_truncated"]:
@@ -3956,6 +3961,7 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 		raise ValueError("Question type '9' must be built from a template file with -f")
 
 	instructions = _getProfileInstructions(question_type)
+	request_variables = _pruneEmptyRequestValues(request_variables)
 
 	request_payload = _buildRequestPayload("profile", question_type, request_variables)
 	return instructions + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
@@ -6523,11 +6529,15 @@ def _registerQ3TargetEntry(target_entry, seen_control_flow_disasm, control_flow_
 			control_flow_target_map
 		)
 	control_flow_disasm = _safeTextValue(working_entry.get("control_flow_disasm", "")).strip()
+	full_function_disasm = _safeTextValue(working_entry.get("control_flow_full_function_disasm", "")).strip()
 	disasm_preview = _safeTextValue(working_entry.get("disasm", "")).strip()
-	if control_flow_disasm != "":
+	disasm_for_registration = control_flow_disasm
+	if disasm_for_registration == "" and full_function_disasm != "":
+		disasm_for_registration = full_function_disasm
+	if disasm_for_registration != "":
 		working_entry["control_flow_disasm_ref"] = _registerQ3ControlFlowDisasm(
 			working_entry,
-			control_flow_disasm,
+			disasm_for_registration,
 			seen_control_flow_disasm,
 			control_flow_disasm_map
 		)
@@ -6756,7 +6766,7 @@ def _buildCompactReturnResumeAnalysisForRequest(variables, control_flow_target_m
 		summary["return_context"] = return_context
 	caller_function = variables.get("caller_function", {})
 	if isinstance(caller_function, dict) and len(caller_function) > 0:
-		summary["caller_function"] = _summarizeCallerFunctionContext(caller_function)
+		summary["caller_function"] = caller_function
 	caller_resume_window = variables.get("caller_resume_window", {})
 	if isinstance(caller_resume_window, dict) and len(caller_resume_window) > 0:
 		summary["resume_window"] = _summarizeCallerResumeWindow(caller_resume_window, control_flow_target_map=control_flow_target_map)
@@ -6785,7 +6795,7 @@ def _buildCompactCallerChainForRequest(caller_chain, control_flow_target_map=Non
 			compact_entry["return_context"] = return_context
 		caller_function = frame_entry.get("caller_function", {})
 		if isinstance(caller_function, dict) and len(caller_function) > 0:
-			compact_entry["caller_function"] = _summarizeCallerFunctionContext(caller_function)
+			compact_entry["caller_function"] = caller_function
 		caller_resume_window = frame_entry.get("caller_resume_window", {})
 		if isinstance(caller_resume_window, dict) and len(caller_resume_window) > 0:
 			compact_entry["caller_resume_window"] = _summarizeCallerResumeWindow(caller_resume_window, control_flow_target_map=control_flow_target_map)
@@ -6817,7 +6827,7 @@ def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 				continue
 			caller_func = frame_entry.get("caller_function", {})
 			if isinstance(caller_func, dict):
-				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=False)
+				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=True)
 			caller_resume_window = frame_entry.get("caller_resume_window", {})
 			if isinstance(caller_resume_window, dict):
 				_compactQ3TargetContainer(caller_resume_window, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map)
@@ -6829,6 +6839,31 @@ def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 	if len(control_flow_target_map) > 0:
 		variables["control_flow_target_map"] = control_flow_target_map
 	return variables
+
+
+def _pruneEmptyRequestValues(value):
+	mndbg.dbgp(get_current_function_name())
+	if isinstance(value, dict):
+		pruned = OrderedDict() if isinstance(value, OrderedDict) else {}
+		for key, child_value in value.items():
+			pruned_child = _pruneEmptyRequestValues(child_value)
+			if pruned_child in [None, "", [], {}]:
+				continue
+			if isinstance(pruned_child, OrderedDict) and len(pruned_child) == 0:
+				continue
+			pruned[key] = pruned_child
+		return pruned
+	if isinstance(value, list):
+		pruned_list = []
+		for child_value in value:
+			pruned_child = _pruneEmptyRequestValues(child_value)
+			if pruned_child in [None, "", [], {}]:
+				continue
+			if isinstance(pruned_child, OrderedDict) and len(pruned_child) == 0:
+				continue
+			pruned_list.append(pruned_child)
+		return pruned_list
+	return value
 
 
 def _buildRequestVariables(context):
@@ -6874,6 +6909,7 @@ def _buildRequestVariables(context):
 		"additional_function",
 		"additional_function_note",
 		"function_analyses",
+		"controlled_object_callees",
 		"rop_target_modules",
 	]
 	for key in preferred_keys:
@@ -7019,12 +7055,204 @@ Do not invent facts that are not present in the snapshot.""" % (
 	if question_type == "3":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 
+Task:
+Perform bounded, evidence-based path-feasibility analysis from the current instruction pointer.
+
+Modes:
+- targeted mode: if reachability_target is present, decide whether that target can be reached by changing only controlled_chunk bytes.
+- discovery mode: otherwise, identify, classify, and rank every materially distinct reachable or plausibly reachable controlled sink in scope.
+
+Core rules:
+- This is path-feasibility analysis, not crash triage and not open-ended symbolic execution.
+- Use the supplied variables object as the complete debugger context.
+- Only bytes inside controlled_chunk may be changed.
+- Treat the entire controlled_chunk as attacker-controlled, even if it is free, stale, partially populated, or currently contains unrelated data.
+- Stay bounded to the supplied snapshot. Do not assume future heap grooming, extra corruption, arbitrary writes, new allocations/frees, or arbitrary execution unless shown.
+- Use architecture and pointer_size for register width, pointer width, stack layout, calling convention, object pointers, this/argument registers, and memory operands.
+- Prefer raw disassembly, live registers, stack memory, raw chunk bytes, and pointer-sized chunk fields over summaries.
+
+Definitions:
+- CC = controlled_chunk.
+- CD = controlled-derived: any register, pointer, stack slot, memory expression, object pointer, argument, or target/destination derived from CC bytes or pointer-sized fields inside CC.
+- Path classes: intra-function, callee-mediated, return-resume.
+- Source classes: controlled, controlled-derived, external, unknown, under-collected.
+- Promotion statuses: PROMOTED, DOWNGRADED, REJECTED, NOT PROMOTED.
+
+Mandatory method:
+1. Establish initial CC state:
+   - CC base/size/state if shown.
+   - registers/stack slots pointing to CC or CC-relative memory.
+   - pointer-sized fields inside CC.
+   - live registers equal to, or derived from, CC.
+
+2. Build visible path scope:
+   - Start at program_counter/current_function.
+   - Use all relevant supplied disassembly/maps/caller/callee/return-resume/context fields inside variables.
+   - Treat controlled_object_callees as first-class evidence for first-hop direct callees that likely receive CC/CD object pointers.
+   - Resolve control_flow_target_refs and nested_control_flow_target_refs through control_flow_target_map.
+   - Do not treat empty target arrays as absence when refs exist.
+   - If a referenced target lacks disassembly, mark that edge UNDER-COLLECTED and list the missing command later.
+
+3. Enumerate before ranking:
+   - Enumerate every materially distinct visible or plausibly reachable sink before concluding.
+   - Do not stop after the first good sink.
+   - Do not suppress a scenario because another scenario is stronger.
+   - Do not omit downgraded indirect calls/jumps or write-like instructions when reachability is visible but CD proof is incomplete.
+   - Downgrade uncertain sinks; do not silently discard them.
+
+4. Track CD dataflow manually:
+   - Derive CD sinks from raw disassembly, not only from precomputed summaries.
+   - Track simple propagation through mov, lea, add/sub, stack spills/reloads, push, stack arguments, this/object registers, argument registers, and simple callee register moves.
+   - Treat CC as a possible object, structure, pointer array, vtable holder, callback holder, dispatch holder, or field container whenever code uses it that way.
+   - Translate final write destinations and indirect transfer sources back to CC-relative expressions when possible.
+
+5. Expand controlled-object callees:
+   - If a direct callee receives CC or a CD pointer via this/object/argument/register/stack, and callee disassembly is supplied, inspect it.
+   - If controlled_object_callees is present, expand every listed callee before ranking sinks, even when the same callee is also reachable only through control_flow_target_refs.
+   - Identify CD predicates, CD reads, CD writes/RMW operations, CD indirect transfers, and further callees receiving CC/CD values.
+
+5.5. Indirect transfers in reachable callees:
+   - Any indirect control-flow instruction inside a reachable callee must be enumerated as a materially distinct sink.
+     This includes register-indirect and memory-indirect transfers such as:
+       jmp reg, call reg, call [reg], call [reg+off], call [mem]
+   - If the callee is reached with CC or CD data in this/object/argument/register/stack position, classify the sink as at least a controlled-derived candidate.
+   - Minimum promotion rule:
+       If the indirect transfer is visible but register provenance inside the callee is incomplete, assign:
+         verdict = PLAUSIBLE-LOW
+         source class = controlled-derived
+         first blocker = under-collected callee disassembly for register provenance at indirect edge
+   - Escalation rule:
+       If supplied disassembly shows complete or near-complete dataflow from CC/CD to the indirect transfer register or memory operand, promote independently to PLAUSIBLE-HIGH or CONFIRMED.
+       Do not keep it at PLAUSIBLE-LOW just because the final target address cannot be resolved statically.
+   - Do not treat resolved=false, "Indirect register target", or "Unable to resolve target operand" as a reason to omit or downgrade the sink.
+   - For each such sink, report:
+       containing callee, call site into callee, CC/CD argument/register at callee entry,
+       indirect transfer instruction, last visible assignment chain,
+       CD expression if reconstructable, and missing command if not reconstructable.
+	   
+6. Analyze branch feasibility:
+   - Spell out predicates for promoted/plausible paths.
+   - Express predicates in terms of CC offsets, CD expressions, live registers, stack slots, or external state.
+   - For bit tests, include exact offset/field and mask.
+   - If a predicate depends only on mutable CC bytes, treat it as satisfiable unless it conflicts with another required predicate.
+   - If predicates conflict, reject or split the scenario.
+   - If a predicate depends on non-CC state, label it OBSERVED, DERIVED, or UNPROVEN.
+
+7. Analyze return-resume:
+   - If the current function can return and a concrete RetAddr exists, analyze caller-side continuation.
+   - Use the best supplied caller/return/call-stack evidence to identify the resume site.
+   - Follow visible branches when target disassembly is supplied.
+   - Identify caller-side writes, memory modifications, indirect calls/jumps, direct callees receiving CC/CD data, and propagation of return values.
+   - Stop only at a sink, caller return, missing disassembly, or unresolved external dependency.
+   - If RetAddr exists but caller-side disassembly is absent, mark UNDER-COLLECTED and list exact missing commands.
+   - Caller-side sinks after ret rank equally with intra-function and callee-mediated sinks.
+
+Sink model:
+- Controlled write/memory modification: direct store, structure-field write, write-what-where, RMW op on [reg+off], memcpy/memmove/strcpy-like destination, object/handler/table/callback update, or callee write through controlled/CD this/object/argument.
+- Control-flow sink: indirect call/jmp, register/memory indirect transfer, [reg+off] dispatch, vftable/callback/function-pointer call, or callee dispatch through controlled/CD this/object/argument.
+- Materially distinct means a different sink instruction, slot, register/memory operand, write destination, write operation, callee, branch path, CD expression, or path class.
+
+Evidence labels:
+For every key claim, label it:
+- OBSERVED: directly shown.
+- DERIVED: computed from shown evidence.
+- UNPROVEN: plausible but not established.
+
+Use these labels for reachability, predicates, register provenance, CD propagation, callee argument control, sink target/destination control, return-resume logic, and verdicts.
+
+Verdicts:
+- CONFIRMED: complete visible path to the target/sink, including branches, calls, CD propagation, and final sink.
+- PLAUSIBLE-HIGH: strong visible path and CD dataflow; only narrow validation gaps remain.
+- PLAUSIBLE-LOW: evidence-backed route, but multiple concrete gaps remain.
+- NOT PROMOTED: visible/reachable candidate, but insufficient controlled/CD relationship.
+- NOT SHOWN: no evidence-backed route in the supplied snapshot.
+
+Rules:
+- Prefer evidence-backed PLAUSIBLE over silence.
+- Treat runtime validation as a confirmation gap, not a reason to omit.
+- For every downgraded/rejected/not-promoted path, state the first blocker: missing disassembly, unresolved predicate, uncontrolled dependency, unresolved indirect target, missing CD proof, conflicting predicate, external object dependency, or under-collected callee behavior.
+
+Ranking:
+- In discovery mode, rank controlled/CD writes and memory modifications before IP-control sinks when both are strong.
+- Then rank by verdict strength, fewer external conditions, more direct CC/CD control, shorter path, earlier occurrence, and clearer predicates.
+- Still report every materially distinct IP-control scenario.
+- Do not merge different vtable/callback slots or write operations.
+- If scenarios share a prefix, state the shared prefix once and list the sinks separately.
+
+Targeted mode:
+- If reachability_target exists, give target reachability verdict.
+- Also enumerate controlled sinks encountered on the way.
+- Do not treat nearby sinks as equivalent to the target unless proven.
+
+Discovery mode:
+- If no reachability_target exists, enumerate all reachable/plausibly reachable controlled sinks.
+- Promote/downgrade each independently.
+- Overall verdict is the strongest promoted sink verdict.
+
+Output exactly:
+
+1. Scenario summary table
+One row per materially distinct scenario. Writes/memory modifications first, control-flow second, return-resume/under-collected last.
+Columns:
+id, verdict, status, path class, sink type, symbol+offset @ address, exact sink instruction, CD target/destination expression, source class, first blocker, why it matters.
+
+2. Reachability verdict
+State targeted or discovery verdict, primary scenario id, and tier if plausible.
+
+3. Primary path class
+Choose one: intra-function, callee-mediated, return-resume.
+
+4. Primary scenario
+Shortest evidence-backed path to the highest-ranked sink. Include sink instruction, location, CC-attacker-control statement, computed destination/transfer expression, predicates, CD chain, OBSERVED/DERIVED/UNPROVEN labels, and why it outranks alternatives.
+
+5. Primary chunk requirements
+Only CC offsets that materially affect the primary path:
+offset, role, required type/property, mandatory/optional, conflicts.
+
+6. Alternative scenarios
+Every additional materially distinct sink candidate, including promoted, downgraded, visible indirect calls/jumps, CD writes, controlled-object callees, return-resume candidates, and under-collected candidates.
+For each: id, short path, sink instruction, location, status, path class, source class, last visible assignment chain, CD expression, predicates, first missing link, difference from primary.
+
+7. Alternative chunk requirements
+For each alternative: relevant CC offsets, derived pointer expressions, required properties, CC-relative write destinations where possible, non-CC validity/control requirements, conflicts.
+
+8. Blocking conditions
+For each unresolved condition: scenario id, location needed, source class, likelihood of control/validity from CC as HIGH/MEDIUM/LOW, shortest visible propagation path, first dependency instruction, exact confirming/rejecting check.
+
+9. Reachability rationale
+Explain why reported sinks are reachable/plausible using predicates, callee paths, return-resume paths, indirect transfers, CD writes, and shared prefixes. State first blockers for downgraded paths.
+
+Include subsection:
+return-resume route
+List RetAddr, caller+offset, first resume basic block, visible branches followed, post-return indirect calls/jumps, post-return CD writes, source classifications, and missing commands if under-collected.
+
+10. Minimal next checks
+Smallest debugger checks to confirm/reject unresolved scenarios. Prefer bp, ba, u, uf, dd, dps, poi(...), r, ?, ln, !heap -p -a, !address, and useful !mona commands.
+For each: scenario id, next step, exact location/register/field/offset, current control status, likelihood HIGH/MEDIUM/LOW, command(s), confirming observation, rejecting observation.
+
+11. Fallback breakpoint candidates
+Best breakpoint candidates from reachable functions, callees, return-resume, sink locations, and write locations:
+address, symbol, path class, scenario id(s), one-line reason.
+
+Style:
+- Concise and technical.
+- Use addresses, offsets, registers, fields, and pointer expressions.
+- Use module!symbol+offset @ address.
+- Do not quote long dumps.
+- Do not invent object types unless strongly supported.
+- Do not speculate beyond supplied evidence.
+- Do not omit materially distinct sinks.
+- Classify and rank; do not merely narrate.
+- When evidence is missing, say exactly what is missing."""
+	if question_type == "3b":
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
+
 Focus on bounded reachability from the current instruction pointer to a supplied target address, or, in discovery mode, to the nearest controlled-data sink. The only bytes you may assume can change are bytes inside the supplied controlled heap chunk. Even if the chunk is currently free or not visibly populated, assume its contents are fully controllable.
 
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
 
 Use the entries under "variables" as the debugger context. Prioritize:
-q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, control_flow_disasm_map, control_flow_target_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
+q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, controlled_object_callees, return_resume_analysis, control_flow_disasm_map, control_flow_target_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
 
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live registers, and disassembly over summary-style diagnostics.
 
@@ -7032,7 +7260,6 @@ Use architecture and pointer_size to interpret registers, pointer values, stack 
 Follow the rules in this prompt with zero summarization or early stopping. 
 Perform exhaustive enumeration of every sink using the full control_flow_target_map and nested_control_flow_target_refs. 
 Do not omit any materially distinct controlled-write or indirect-call sink.
-
 
 Modes:
 - targeted mode: reachability_target is present. Decide whether execution can reach that target by changing only the controlled chunk.
@@ -7055,6 +7282,7 @@ Core rules:
 - When quoting or summarizing disassembly snippets, include the function name and module-relative location when available, not just the raw address. Prefer forms such as MSHTML!CView::AddInvalidationTask+0x1a @ 0x6b5205ab or module!symbol+offset, because raw addresses alone are unstable under ASLR.
 - Treat caller-side post-return logic as first-class.
 - Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
+- Treat controlled_object_callees as mandatory first-hop callee expansion evidence. Do not stop at the call site when a listed callee body is supplied there.
 - Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
 - Search exhaustively within the collected scope. Do not stop after the earliest, easiest, or first plausible sink. Continue enumerating materially distinct scenarios across intra-function, callee-mediated, and return-resume paths until the supplied disassembly scope is exhausted or blocked.
 - When control_flow_target_refs or nested_control_flow_target_refs are present, resolve them through control_flow_target_map. Do not treat empty control_flow_targets or nested_control_flow_targets arrays as absence if refs are present.
@@ -7413,7 +7641,7 @@ def _getProfileTemplateVariables(question_type):
 			"additional_function_note",
 			"function_analyses",
 		]
-	if question_type == "3":
+	if question_type in ["3", "3b"]:
 		return q2_common_vars + [
 			"q3_goal",
 			"program_counter",
@@ -7432,6 +7660,7 @@ def _getProfileTemplateVariables(question_type):
 			"controlled_chunk_references",
 			"current_function",
 			"target_function",
+			"controlled_object_callees",
 			"return_context",
 			"return_resume_analysis",
 			"control_flow_disasm_map",
@@ -7602,6 +7831,370 @@ def _collectControlledChunkReferences(chunk_info, regs):
 		except Exception as e:
 			result["stack_scan_error"] = str(e)
 	return result
+
+
+def _splitInstructionMnemonicAndOperands(instruction_text):
+	mndbg.dbgp(get_current_function_name())
+	instruction_text = ensure_text(instruction_text).strip().lower()
+	if instruction_text == "":
+		return "", []
+	parts = instruction_text.split(" ", 1)
+	mnemonic = parts[0].strip()
+	operands = []
+	if len(parts) > 1:
+		operands = [operand.strip() for operand in parts[1].split(",")]
+	return mnemonic, operands
+
+
+def _isWriteLikeInstruction(instruction_text):
+	mndbg.dbgp(get_current_function_name())
+	mnemonic, operands = _splitInstructionMnemonicAndOperands(instruction_text)
+	if mnemonic == "":
+		return False
+	first_operand = operands[0] if len(operands) > 0 else ""
+	has_memory_dest = ("[" in first_operand and "]" in first_operand)
+	if mnemonic in [
+		"mov", "movzx", "movsx", "movsxd", "xchg",
+		"or", "and", "xor", "add", "sub", "adc", "sbb",
+		"inc", "dec", "not", "neg",
+		"shl", "shr", "sar", "sal", "rol", "ror", "rcl", "rcr",
+		"bts", "btr", "btc", "cmpxchg", "xadd"
+	]:
+		return has_memory_dest
+	if mnemonic in ["stosb", "stosw", "stosd", "stosq"]:
+		return True
+	return False
+
+
+def _extractWriteLikeInstructionsFromDisasm(disasm_text, symbol="", limit=16):
+	mndbg.dbgp(get_current_function_name())
+	results = []
+	if not isinstance(limit, int) or limit < 1:
+		limit = 16
+	for entry in _parseDisassemblyTextEntries(disasm_text):
+		interruptMona()
+		instruction = ensure_text(entry.get("instruction", "")).strip()
+		if not _isWriteLikeInstruction(instruction):
+			continue
+		write_entry = OrderedDict([
+			("address", ensure_text(entry.get("address_text", "")).strip()),
+			("instruction", instruction),
+		])
+		if ensure_text(symbol).strip() != "":
+			write_entry["symbol"] = ensure_text(symbol).strip()
+		results.append(write_entry)
+		if len(results) >= limit:
+			break
+	return results
+
+
+def _extractControlledRegistersFromChunkReferences(controlled_chunk_references):
+	mndbg.dbgp(get_current_function_name())
+	controlled_regs = OrderedDict()
+	if not isinstance(controlled_chunk_references, dict):
+		return controlled_regs
+	for key in [
+		"registers_matching_chunk_base",
+		"registers_matching_user_ptr",
+		"registers_pointing_into_chunk"
+	]:
+		entries = controlled_chunk_references.get(key, [])
+		if not isinstance(entries, list):
+			continue
+		for entry in entries:
+			if not isinstance(entry, dict):
+				continue
+			reg_name = ensure_text(entry.get("register", "")).strip().lower()
+			if reg_name == "":
+				continue
+			if reg_name not in controlled_regs:
+				controlled_regs[reg_name] = OrderedDict([
+					("register", reg_name),
+					("source", "controlled_chunk"),
+					("provenance", key),
+					("value", ensure_text(entry.get("value", "")).strip()),
+					("chain", ["%s=%s" % (
+						reg_name,
+						ensure_text(entry.get("value", "")).strip()
+					)]),
+				])
+	return controlled_regs
+
+
+def _extractRegistersFromOperandText(operand_text):
+	mndbg.dbgp(get_current_function_name())
+	registers = []
+	if not operand_text:
+		return registers
+	try:
+		reg_names = sorted([str(reg_name).lower() for reg_name in getAllRegisters().keys()], key=lambda item: (-len(item), item))
+	except Exception:
+		reg_names = []
+	seen = set()
+	operand_text = ensure_text(operand_text).strip().lower()
+	for reg_name in reg_names:
+		if re.search(r"(?<![a-z0-9_])%s(?![a-z0-9_])" % re.escape(reg_name), operand_text):
+			if reg_name not in seen:
+				seen.add(reg_name)
+				registers.append(reg_name)
+	return registers
+
+
+def _summarizeControlledRegisterState(tainted_regs):
+	mndbg.dbgp(get_current_function_name())
+	summary = []
+	if not isinstance(tainted_regs, dict):
+		return summary
+	for reg_name in sorted(tainted_regs.keys()):
+		state = tainted_regs.get(reg_name, {})
+		if not isinstance(state, dict):
+			continue
+		entry = OrderedDict([
+			("register", reg_name),
+			("source", ensure_text(state.get("source", "")).strip()),
+			("provenance", ensure_text(state.get("provenance", "")).strip()),
+		])
+		chain = state.get("chain", [])
+		if isinstance(chain, list) and len(chain) > 0:
+			entry["chain"] = chain[-4:]
+		summary.append(entry)
+	return summary
+
+
+def _collectControlledObjectCalleesFromFunction(function_context, controlled_chunk_references, source_label=""):
+	mndbg.dbgp(get_current_function_name())
+	results = []
+	if not isinstance(function_context, dict):
+		return results
+	uf_output = ensure_text(function_context.get("uf_output", "")).strip()
+	target_entries = function_context.get("control_flow_targets", [])
+	if uf_output == "" or not isinstance(target_entries, list) or len(target_entries) == 0:
+		return results
+	requested_address = _tryParseAddressToken(function_context.get("requested_address", ""))
+	forward_only = bool(function_context.get("forward_flow_from_requested_address", False))
+	current_pc_only = (ensure_text(function_context.get("source", "")).strip().upper() == PROGRAM_COUNTER.upper())
+	entries = _parseDisassemblyTextEntries(uf_output)
+	if len(entries) == 0:
+		return results
+	target_map = {}
+	for target_entry in target_entries:
+		if not isinstance(target_entry, dict):
+			continue
+		instruction_address = ensure_text(target_entry.get("instruction_address", "")).strip()
+		if instruction_address != "":
+			target_map[instruction_address.lower()] = target_entry
+
+	tainted_regs = _extractControlledRegistersFromChunkReferences(controlled_chunk_references)
+	if len(tainted_regs) == 0:
+		return results
+	recent_pushes = []
+	seen = set()
+	for entry in entries:
+		interruptMona()
+		entry_address = entry.get("address", 0)
+		if current_pc_only and not forward_only and isinstance(requested_address, int) and requested_address > 0:
+			if not isinstance(entry_address, int) or entry_address < requested_address:
+				continue
+		instruction = ensure_text(entry.get("instruction", "")).strip().lower()
+		instruction_address = ensure_text(entry.get("address_text", "")).strip().lower()
+		mnemonic, operands = _splitInstructionMnemonicAndOperands(instruction)
+		if mnemonic == "":
+			continue
+
+		if mnemonic == "push":
+			push_operand = operands[0] if len(operands) > 0 else ""
+			push_regs = _extractRegistersFromOperandText(push_operand)
+			push_tainted = []
+			for reg_name in push_regs:
+				if reg_name in tainted_regs:
+					push_tainted.append(copy.deepcopy(tainted_regs[reg_name]))
+			if len(push_tainted) > 0:
+				recent_pushes.append(OrderedDict([
+					("instruction_address", ensure_text(entry.get("address_text", "")).strip()),
+					("instruction", instruction),
+					("registers", push_tainted),
+				]))
+				if len(recent_pushes) > 6:
+					recent_pushes = recent_pushes[-6:]
+		elif mnemonic in ["call", "jmp", "ret", "retn", "retf"]:
+			if mnemonic != "call":
+				recent_pushes = []
+
+		if mnemonic == "mov" and len(operands) >= 2:
+			dst = operands[0]
+			src = operands[1]
+			dst_regs = _extractRegistersFromOperandText(dst)
+			src_regs = _extractRegistersFromOperandText(src)
+			if len(dst_regs) == 1 and "[" not in dst:
+				dst_reg = dst_regs[0]
+				if len(src_regs) == 1 and src_regs[0] in tainted_regs:
+					src_state = copy.deepcopy(tainted_regs[src_regs[0]])
+					src_state["source"] = "controlled-derived"
+					src_state["provenance"] = "mov %s,%s @ %s" % (
+						dst_reg,
+						src_regs[0],
+						ensure_text(entry.get("address_text", "")).strip()
+					)
+					chain = src_state.get("chain", [])
+					if not isinstance(chain, list):
+						chain = []
+					chain.append("%s <- %s @ %s" % (
+						dst_reg,
+						src_regs[0],
+						ensure_text(entry.get("address_text", "")).strip()
+					))
+					src_state["chain"] = chain
+					tainted_regs[dst_reg] = src_state
+				elif dst_reg in tainted_regs and not (len(src_regs) == 1 and src_regs[0] in tainted_regs):
+					del tainted_regs[dst_reg]
+		elif mnemonic == "lea" and len(operands) >= 2:
+			dst = operands[0]
+			src = operands[1]
+			dst_regs = _extractRegistersFromOperandText(dst)
+			src_regs = _extractRegistersFromOperandText(src)
+			if len(dst_regs) == 1 and "[" not in dst:
+				dst_reg = dst_regs[0]
+				tainted_sources = [reg_name for reg_name in src_regs if reg_name in tainted_regs]
+				if len(tainted_sources) > 0:
+					base_reg = tainted_sources[0]
+					src_state = copy.deepcopy(tainted_regs[base_reg])
+					src_state["source"] = "controlled-derived"
+					src_state["provenance"] = "lea %s,%s @ %s" % (
+						dst_reg,
+						src,
+						ensure_text(entry.get("address_text", "")).strip()
+					)
+					chain = src_state.get("chain", [])
+					if not isinstance(chain, list):
+						chain = []
+					chain.append("%s <- %s @ %s" % (
+						dst_reg,
+						src,
+						ensure_text(entry.get("address_text", "")).strip()
+					))
+					src_state["chain"] = chain
+					tainted_regs[dst_reg] = src_state
+				elif dst_reg in tainted_regs:
+					del tainted_regs[dst_reg]
+		elif mnemonic == "xchg" and len(operands) >= 2:
+			left_regs = _extractRegistersFromOperandText(operands[0])
+			right_regs = _extractRegistersFromOperandText(operands[1])
+			if len(left_regs) == 1 and len(right_regs) == 1 and "[" not in operands[0] and "[" not in operands[1]:
+				left_reg = left_regs[0]
+				right_reg = right_regs[0]
+				left_state = copy.deepcopy(tainted_regs.get(left_reg, {}))
+				right_state = copy.deepcopy(tainted_regs.get(right_reg, {}))
+				if isinstance(left_state, dict) and len(left_state) > 0:
+					tainted_regs[right_reg] = left_state
+				elif right_reg in tainted_regs:
+					del tainted_regs[right_reg]
+				if isinstance(right_state, dict) and len(right_state) > 0:
+					tainted_regs[left_reg] = right_state
+				elif left_reg in tainted_regs:
+					del tainted_regs[left_reg]
+		elif mnemonic == "xor" and len(operands) >= 2:
+			left_regs = _extractRegistersFromOperandText(operands[0])
+			right_regs = _extractRegistersFromOperandText(operands[1])
+			if len(left_regs) == 1 and len(right_regs) == 1 and left_regs[0] == right_regs[0]:
+				if left_regs[0] in tainted_regs:
+					del tainted_regs[left_regs[0]]
+		elif mnemonic == "pop" and len(operands) >= 1:
+			pop_regs = _extractRegistersFromOperandText(operands[0])
+			if len(pop_regs) == 1 and pop_regs[0] in tainted_regs:
+				del tainted_regs[pop_regs[0]]
+
+		target_entry = target_map.get(instruction_address, {})
+		if mnemonic != "call" or not isinstance(target_entry, dict) or len(target_entry) == 0:
+			continue
+		if not bool(target_entry.get("resolved", False)):
+			recent_pushes = []
+			continue
+		full_callee_disasm = ensure_text(target_entry.get("control_flow_full_function_disasm", "")).strip()
+		if full_callee_disasm == "":
+			recent_pushes = []
+			continue
+		live_tainted = _summarizeControlledRegisterState(tainted_regs)
+		pushed_tainted = []
+		for push_entry in recent_pushes[-4:]:
+			if not isinstance(push_entry, dict):
+				continue
+			push_regs = push_entry.get("registers", [])
+			if isinstance(push_regs, list):
+				for reg_state in push_regs:
+					if isinstance(reg_state, dict):
+						pushed_tainted.append(reg_state)
+		if len(live_tainted) == 0 and len(pushed_tainted) == 0:
+			recent_pushes = []
+			continue
+		callee_symbol = ensure_text(target_entry.get("symbol", "")).strip()
+		write_like_instructions = _extractWriteLikeInstructionsFromDisasm(full_callee_disasm, symbol=callee_symbol, limit=24)
+		candidate_key = (
+			ensure_text(source_label).strip(),
+			ensure_text(entry.get("address_text", "")).strip(),
+			ensure_text(target_entry.get("target_address_text", "")).strip()
+		)
+		if candidate_key in seen:
+			recent_pushes = []
+			continue
+		seen.add(candidate_key)
+		candidate = OrderedDict([
+			("source", ensure_text(source_label).strip()),
+			("caller_symbol", ensure_text(function_context.get("symbol", "")).strip()),
+			("call_site_address", ensure_text(entry.get("address_text", "")).strip()),
+			("call_site_instruction", instruction),
+			("callee_address", ensure_text(target_entry.get("target_address_text", "")).strip()),
+			("callee_symbol", callee_symbol),
+			("control_flow_function_start", ensure_text(target_entry.get("control_flow_function_start", "")).strip()),
+			("live_controlled_registers", live_tainted),
+			("pushed_controlled_registers", _summarizeControlledRegisterState(OrderedDict([
+				(reg_state.get("register", ""), reg_state) for reg_state in pushed_tainted if isinstance(reg_state, dict) and ensure_text(reg_state.get("register", "")).strip() != ""
+			]))),
+			("write_like_instructions", write_like_instructions),
+			("callee_function", OrderedDict([
+				("requested_address", ensure_text(target_entry.get("target_address_text", "")).strip()),
+				("symbol", callee_symbol),
+				("analysis_scope", "function"),
+				("function_start", ensure_text(target_entry.get("control_flow_function_start", "")).strip()),
+				("uf_output", full_callee_disasm),
+			])),
+		])
+		if len(write_like_instructions) > 0:
+			candidate["primary_write_like_instruction"] = write_like_instructions[0]
+		results.append(candidate)
+		recent_pushes = []
+	return results
+
+
+def _collectControlledObjectCallees(current_function, caller_function, caller_chain, controlled_chunk_references):
+	mndbg.dbgp(get_current_function_name())
+	results = []
+	seen = set()
+	sources = []
+	if isinstance(current_function, dict) and len(current_function) > 0:
+		sources.append(("current_function", current_function))
+	if isinstance(caller_function, dict) and len(caller_function) > 0:
+		sources.append(("caller_function", caller_function))
+	if isinstance(caller_chain, list):
+		for frame_entry in caller_chain:
+			if not isinstance(frame_entry, dict):
+				continue
+			frame_index = frame_entry.get("frame_index", 0)
+			caller_func = frame_entry.get("caller_function", {})
+			if isinstance(caller_func, dict) and len(caller_func) > 0:
+				sources.append(("caller_chain[%d]" % frame_index, caller_func))
+	for source_label, function_context in sources:
+		for callee_entry in _collectControlledObjectCalleesFromFunction(function_context, controlled_chunk_references, source_label=source_label):
+			if not isinstance(callee_entry, dict):
+				continue
+			key = (
+				ensure_text(callee_entry.get("call_site_address", "")).strip(),
+				ensure_text(callee_entry.get("callee_address", "")).strip()
+			)
+			if key in seen:
+				continue
+			seen.add(key)
+			results.append(callee_entry)
+	return results
 
 
 def _buildReachabilityTargetContext(address):
@@ -30740,7 +31333,7 @@ class MnAI(object):
 		"""Parse q2/q3 call/jump follow depth from -d."""
 		mndbg.dbgp(get_current_function_name())
 		self.q2_follow_depth = 2
-		if self.effective_question_type not in ["2", "3"] or "d" not in self.args:
+		if self.effective_question_type not in ["2", "3", "3b"] or "d" not in self.args:
 			return True
 		if type(self.args["d"]).__name__.lower() == "bool":
 			self.logError("Please specify a numeric depth with -d <1-4> for '-q %s'" % self.effective_question_type)
@@ -31021,7 +31614,7 @@ class MnAI(object):
 			return None
 
 		self.logInfo("Collecting context and preparing request...")
-		if self.effective_question_type == "3":
+		if self.effective_question_type in ["3", "3b"]:
 			_q3_control_flow_disasm_cache = {}
 			_q3_control_flow_uf_cache = {}
 		function_context_cache = {}
@@ -31105,8 +31698,8 @@ class MnAI(object):
 					except Exception as e:
 						context["additional_function_error"] = str(e)
 						mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
-		if self.effective_question_type == "3":
-			total_steps = 6
+		if self.effective_question_type in ["3", "3b"]:
+			total_steps = 7
 			q3_startmoment = time.time()
 			def _format_major_step_elapsed(startmoment):
 				try:
@@ -31201,6 +31794,17 @@ class MnAI(object):
 				context[key] = value
 			_log_q3_major_step_complete(current_step, step_label)
 			current_step = 6
+			step_label = "controlled-object callee extraction"
+			_log_q3_step_header(current_step, "Extracting first-hop controlled-object callees and callee-side write sinks...")
+			_log_q3_major_step_start(current_step, step_label)
+			context["controlled_object_callees"] = _collectControlledObjectCallees(
+				context.get("current_function", {}),
+				context.get("caller_function", {}),
+				context.get("caller_chain", []),
+				context.get("controlled_chunk_references", {})
+			)
+			_log_q3_major_step_complete(current_step, step_label)
+			current_step = 7
 			step_label = "reachable candidate flattening"
 			_log_q3_step_header(current_step, "Flattening reachable branch/call/jump candidates...")
 			_log_q3_major_step_start(current_step, step_label)
@@ -40341,7 +40945,7 @@ Official model docs:
 	                   that point into the cyclic pattern, and for [findseh] candidates when findmsp
 	                   confirms an SEH overwrite. This is usually a good idea, otherwise the
 	                   suggested trampoline or SEH candidate may contain bytes you already know you cannot use
-	    -d <number>  : With -q 2 or -q 3, optional call/jump follow depth for control_flow_targets.
+	    -d <number>  : With -q 2, -q 3, or -q 3b, optional call/jump follow depth for control_flow_targets.
 	                   For -q 3, the same depth is also used as the default number of caller frames
 	                   to inspect on the return-resume path.
 	                   q3 follows direct branches/calls/jumps, nested callees, and caller-side resume paths.
@@ -40440,6 +41044,7 @@ Official model docs:
 	    [target_function]          = q3 containing-function context for the target address
 	    [return_context]           = q3 saved return-site context when the current function needs to return first
 	    [return_resume_analysis]   = q3 caller-resume wrapper with retaddr, caller, resume disassembly, branch targets, and indirect transfers
+	    [controlled_object_callees]= q3 first-hop direct callees that likely receive controlled or controlled-derived object pointers, with full callee bodies and write-like instructions
 	    [control_flow_disasm_map]  = q3 canonical store for deduplicated full control-flow disassembly bodies referenced by control_flow_disasm_ref
 	    [control_flow_target_map]  = q3 canonical store for exhaustive control-flow target nodes referenced by control_flow_target_refs and nested_control_flow_target_refs
 	    [caller_function]          = q3 containing-function context for the immediate caller resume site
