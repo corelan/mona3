@@ -1533,13 +1533,18 @@ def _getChunkPointerDump(chunk_address, chunk_size, label="chunk"):
 	result["label"] = label
 	result["address"] = PTR_PRINT % chunk_address
 	result["chunk_size"] = "0x%x" % chunk_size
-	effective_chunk_size = min(int(chunk_size), 0x200)
-	word_expr = "0x%x/%s" % (effective_chunk_size, PTR_SIZE)
+	effective_chunk_size = max(int(chunk_size), 0)
+	word_count = 0
+	if effective_chunk_size > 0:
+		word_count = int((effective_chunk_size + (PTR_SIZE - 1)) / PTR_SIZE)
+	word_expr = "0x%x / %d" % (effective_chunk_size, PTR_SIZE)
 	result["effective_dump_size"] = "0x%x" % effective_chunk_size
+	result["word_count"] = "0x%x" % word_count
 	cmd = "dps %s L %s" % (PTR_PRINT % chunk_address, word_expr)
 	result["command"] = cmd
 	try:
-		result["output"] = _formatContextText(ensure_text(dbg.nativeCommand(cmd)).strip(), max_len=16384)
+		raw_output = ensure_text(dbg.nativeCommand(cmd)).strip()
+		result["output"] = _formatContextText(raw_output, max_len=max(len(raw_output), 16384))
 	except Exception as e:
 		result["error"] = str(e)
 		mndbg.dbgp("tellme: chunk dump failed for %s using '%s': %s" % (PTR_PRINT % chunk_address, cmd, str(e)), errormode=False)
@@ -6299,33 +6304,46 @@ Do not invent facts that are not present in the snapshot.""" % (
 		)
 	if question_type == "3":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
-
 Focus on bounded reachability from the current instruction pointer to a supplied target address by changing only the contents of a supplied controlled heap chunk.
-
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
-
 Use the entries under 'variables' as the debugger context. Prioritize q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, and additional_context_files.
-
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live register values, and disassembly listings over summary-style debugger diagnostics.
-
 Use the supplied architecture and pointer_size fields to interpret registers, pointer-sized values, stack arguments, calling convention patterns, object pointers, and memory operands. Do not assume a 32-bit process, 32-bit registers, 4-byte pointers, or x86 calling conventions unless the request explicitly indicates them.
 
 Modes:
 - targeted mode: reachability_target is present. Determine whether execution can plausibly reach that target address if only bytes inside the controlled chunk are changed.
 - discovery mode: reachability_target is absent. Identify the nearest reachable code paths that are most likely to:
   1. write to or otherwise modify the controlled chunk
-  2. consume controlled data in a way that could lead to instruction-pointer control, such as vftable use, callback use, indirect call/jmp through controlled memory, indirect branch or call through a pointer-sized register or memory operand loaded from controlled-derived memory, or function-pointer dereference
+  2. use a value from the controlled chunk, or a controlled-derived pointer, as the destination of a write or other memory modification elsewhere
+  3. consume controlled data in a way that could lead to instruction-pointer control, such as vftable use, callback use, indirect call/jmp through controlled memory, indirect branch or call through a pointer-sized register or memory operand loaded from controlled-derived memory, or function-pointer dereference
 
 Allowed path classes:
 1. intra-function path: the current function reaches the target before returning
 2. callee-mediated path: the current function reaches a callee which then reaches the target or a controlled-data sink
 3. return-resume path: the current function returns, execution resumes in the caller, and the caller then reaches the target or a controlled-data sink
 
+Return-resume expansion is mandatory:
+- If the current function can return, the analysis MUST inspect the concrete return address from the current stack frame / call stack.
+- Treat the immediate caller resume address as an in-scope continuation, not as optional future work.
+- Even if caller_function, caller_chain, caller_resume_window, or post_return_constraints are missing, use the call_stack RetAddr and stack memory to identify the caller resume site.
+- Disassemble and analyze the caller from the concrete resume address forward until one of these happens:
+  1. a strong controlled-data sink is reached
+  2. an indirect control transfer is reached
+  3. the caller returns
+  4. a clearly unresolved branch or external dependency blocks the path
+- Do not classify return-resume analysis as “missing” merely because structured caller fields are absent if the call stack contains a concrete RetAddr.
+- If the call stack shows a concrete caller resume address, a final answer that says “no reachable controlled sink shown” MUST explicitly explain why the caller resume path from that RetAddr does not reach one.
+
 Expanded sink-discovery rules:
 - Always identify all strong controllable indirect control transfers (vftable calls, indirect calls, indirect jumps, register-indirect branches, memory-indirect branches, jmp edx/eax/etc. through controlled-derived pointers) that are reachable from the current IP by changing only the controlled chunk.
+- Also identify reachable write-what-where style or destination-controlled memory modification sites where the write destination, copy destination, store target, object field target, callback-registration target, or other modified memory location is taken from the controlled chunk or from controlled-derived memory.
 - Do not stop at only the two strongest sinks. Present the primary (earliest/shortest) sink, then every other materially distinct sink even if they share a common prefix path.
 - “Materially distinct” includes any different indirect transfer instruction (different offset in a vtable, different register used for the jump, different callee that performs the dispatch, etc.), even if the paths diverge only after several instructions or inside the same callee.
 - Explicitly call out multiple sinks that live on the same initial route.
+Caller-side sinks have equal priority:
+- A controlled or controlled-derived indirect call/jmp reached after returning to the caller is a valid primary sink.
+- Do not rank caller-side sinks lower merely because they occur after a ret.
+- If the current function has no intra-function or callee-mediated indirect sink, the best return-resume sink SHOULD become the primary scenario.
 
 Rules:
 - Stay bounded to the collected snapshot. Do not assume future heap grooming, additional corruption, or arbitrary execution unless the snapshot already supports it.
@@ -6341,6 +6359,7 @@ Rules:
   - memory-indirect calls
   - call through [reg+offset] or equivalent pointer-sized memory operand
   - jump through [reg+offset] or equivalent pointer-sized memory operand
+- Explicitly examine reachable memory-modification operations where the destination is controlled-derived, including direct stores, structure-field writes, memcpy/memmove/strcpy-style destination pointers, object-field initialization, callback/handler registration, pointer-table updates, and any callee that writes through a controlled-derived pointer.
 - This requirement applies inside the current function, inside reachable direct callees, and inside caller-side post-return code.
 
 Controlled-object and callee expansion rules:
@@ -6348,6 +6367,7 @@ Controlled-object and callee expansion rules:
 - Track controlled-derived pointers through simple register moves, stack pushes, stack argument setup, pointer-sized loads, stores, LEA-style address calculations, and callee setup sequences.
 - When a reachable direct call receives the controlled chunk pointer, or a pointer derived from the controlled chunk, in an argument register, object/this pointer register, general-purpose register, or stack argument, do not treat that callee as opaque.
 - Treat architecture-appropriate argument setup and register/data movement immediately before a call as strong evidence that the callee consumes controlled object state when the source is the controlled chunk or a controlled-derived pointer.
+- Treat a controlled-derived pointer passed as a destination buffer, object base, output parameter, write target, or registration target as first-class evidence of a reachable memory-modification scenario, even when the path does not immediately end in an indirect control transfer.
 - This includes, but is not limited to:
     mov arg_reg, controlled_reg
     mov general_reg, controlled_reg
@@ -6362,7 +6382,8 @@ Controlled-object and callee expansion rules:
   1. analyze its internal conditional branches
   2. map memory reads back to controlled chunk offsets where possible
   3. identify all reads through controlled-derived base registers
-  4. identify all indirect transfers whose source is controlled-derived
+  4. identify all writes or memory modifications whose destination is controlled-derived
+  5. identify all indirect transfers whose source is controlled-derived
 - If the caller moves a controlled chunk pointer, or a controlled-derived pointer, into the callee's object/argument register, then callee reads through that register must be translated back to controlled chunk offsets where possible.
 
 Sink ranking rules:
@@ -6388,6 +6409,7 @@ Answer in this exact order:
 1. reachability verdict
 In targeted mode, state whether reaching the target is CONFIRMED, PLAUSIBLE, or NOT SHOWN.
 In discovery mode, state whether a path to chunk modification or likely instruction-pointer-control consumption is CONFIRMED, PLAUSIBLE, or NOT SHOWN.
+In discovery mode, this verdict must also account for controlled-derived destination/write-target scenarios.
 
 2. path class
 Choose exactly one for the primary scenario: intra-function, callee-mediated, or return-resume.
@@ -6416,6 +6438,15 @@ State which conditions are outside the controlled chunk and therefore would stil
 
 8. target reachability rationale
 Explain why the identified sinks are reachable, citing branch conditions, indirect calls/jumps, return sites, callee-mediated transfers, etc. Explicitly note when multiple sinks share a common prefix path.
+In the target reachability rationale, include a dedicated subsection named "return-resume route".
+This subsection must:
+- list the current frame return address
+- identify the caller function and offset
+- show the first basic block at the caller resume site
+- follow all visible branches from that resume site that are present in the collected disassembly
+- identify any indirect call/jmp reached after return
+- explain whether the indirect target source is controlled, controlled-derived, external, or unknown
+
 
 9. minimal next checks
 If the snapshot is insufficient, list the smallest additional debugger checks needed to confirm or reject any of the presented paths.
@@ -6576,14 +6607,30 @@ def _buildControlledChunkContext(address):
 	info["heap_metadata"] = _getHeapChunkMetadata(address)
 	info["first_bytes"] = _readFirstBytesPreview(address, size=0x20, label="controlled_chunk_first_bytes")
 	if info["heap_reference"].get("match", "none") == "Chunk":
+		chunk_ptr = _tryParseAddressToken(info["heap_reference"].get("chunk_ptr", ""))
 		user_ptr = _tryParseAddressToken(info["heap_reference"].get("user_ptr", ""))
 		try:
 			user_size = int(str(info["heap_reference"].get("user_size", "0x0")), 16)
 		except Exception:
 			user_size = 0
+		try:
+			chunk_size = int(str(info["heap_reference"].get("chunk_size", "0x0")), 16)
+		except Exception:
+			chunk_size = 0
 		if user_ptr > 0 and user_size > 0:
 			info["user_memory"] = _readMemoryPreview(user_ptr, min(user_size, 0x100), "controlled_chunk_user_memory")
-			info["pointer_dump"] = _getChunkPointerDump(user_ptr, min(user_size, 0x100), label="controlled_chunk_user")
+		dump_address = 0
+		dump_size = 0
+		dump_label = "controlled_chunk_user"
+		if chunk_ptr > 0 and chunk_size > 0:
+			dump_address = chunk_ptr
+			dump_size = chunk_size
+			dump_label = "controlled_chunk"
+		elif user_ptr > 0 and user_size > 0:
+			dump_address = user_ptr
+			dump_size = user_size
+		if dump_address > 0 and dump_size > 0:
+			info["pointer_dump"] = _getChunkPointerDump(dump_address, dump_size, label=dump_label)
 	return info
 
 
@@ -6600,19 +6647,50 @@ def _collectControlledChunkReferences(chunk_info, regs):
 	heap_ref = chunk_info.get("heap_reference", {})
 	if not isinstance(heap_ref, dict):
 		return result
+	normalized_regs = {}
+	for reg_name, reg_value in regs.items():
+		reg_name_text = str(reg_name).lower()
+		try:
+			if isinstance(reg_value, int):
+				normalized_regs[reg_name_text] = reg_value
+			else:
+				normalized_regs[reg_name_text] = int(reg_value)
+		except Exception:
+			continue
 	try:
 		chunk_start = _tryParseAddressToken(heap_ref.get("region_start", "")) or _tryParseAddressToken(heap_ref.get("chunk_ptr", ""))
 		chunk_end = _tryParseAddressToken(heap_ref.get("region_end", ""))
 		user_ptr = _tryParseAddressToken(heap_ref.get("user_ptr", ""))
+		chunk_ptr = _tryParseAddressToken(heap_ref.get("chunk_ptr", ""))
+		chunk_size = int(str(heap_ref.get("chunk_size", "0x0")), 16)
+		user_size = int(str(heap_ref.get("user_size", "0x0")), 16)
 	except Exception:
 		chunk_start = 0
 		chunk_end = 0
 		user_ptr = 0
+		chunk_ptr = 0
+		chunk_size = 0
+		user_size = 0
+	if chunk_start <= 0 and chunk_ptr > 0:
+		chunk_start = chunk_ptr
+	if chunk_end <= chunk_start:
+		if chunk_start > 0 and chunk_size > 0:
+			chunk_end = chunk_start + chunk_size
+		elif user_ptr > 0 and user_size > 0:
+			chunk_start = user_ptr
+			chunk_end = user_ptr + user_size
 	if chunk_start <= 0 or chunk_end <= chunk_start:
+		mndbg.dbgp("tellme: controlled_chunk_references could not derive valid chunk bounds from heap_reference")
 		return result
-	for reg_name in sorted(regs.keys()):
-		reg_value = regs.get(reg_name)
-		if not isinstance(reg_value, int) or reg_value <= 0:
+	mndbg.dbgp("tellme: controlled_chunk_references scanning %d registers for chunk [%s - %s], user_ptr=%s" % (
+		len(normalized_regs),
+		PTR_PRINT % chunk_start,
+		PTR_PRINT % chunk_end,
+		(PTR_PRINT % user_ptr) if user_ptr > 0 else "<none>"
+	))
+	for reg_name in sorted(normalized_regs.keys()):
+		reg_value = normalized_regs.get(reg_name, 0)
+		if reg_value <= 0:
 			continue
 		if reg_value == chunk_start:
 			result["registers_matching_chunk_base"].append(OrderedDict([
@@ -6634,7 +6712,7 @@ def _collectControlledChunkReferences(chunk_info, regs):
 				entry["user_offset"] = "0x%x" % (reg_value - user_ptr)
 			result["registers_pointing_into_chunk"].append(entry)
 
-	stack_pointer = regs.get(STACK_POINTER, 0)
+	stack_pointer = normalized_regs.get(STACK_POINTER, 0)
 	if isinstance(stack_pointer, int) and stack_pointer > 0:
 		try:
 			raw_stack = dbg.readMemory(stack_pointer, min(0x80, PTR_SIZE * 16))
@@ -6642,7 +6720,7 @@ def _collectControlledChunkReferences(chunk_info, regs):
 				slot_bytes = raw_stack[slot_index:slot_index + PTR_SIZE]
 				if len(slot_bytes) < PTR_SIZE:
 					break
-				slot_value = struct.unpack(PTR_FORMAT, slot_bytes)[0]
+				slot_value = struct.unpack(PTR_FMT, slot_bytes)[0]
 				if chunk_start <= slot_value < chunk_end:
 					entry = OrderedDict([
 						("slot_address", PTR_PRINT % (stack_pointer + slot_index)),
@@ -38577,8 +38655,9 @@ Official model docs:
 	                   offsets and values would be needed to influence reachable code paths.
 	    -t <address> : With -q 3, optional target code address to reach.
 	                   If omitted, q3 switches to discovery mode and looks for reachable paths
-	                   that can modify the controlled chunk or consume controlled data in a way
-	                   that could lead to EIP/RIP control.
+	                   that can modify the controlled chunk, use controlled-derived values as
+	                   write destinations or memory-modification targets elsewhere, or consume
+	                   controlled data in a way that could lead to EIP/RIP control.
 	                   If supplied, q3 switches to targeted mode and asks whether execution can
 	                   plausibly reach that address by changing only bytes inside the controlled chunk.
 	    -l <files>   : Optional comma-separated context files, for example -l "file1,file2"
@@ -38737,7 +38816,8 @@ Official model docs:
 	    -q 3 focuses on whether a controlled heap chunk can steer execution from the current snapshot to a target address,
 	    including the case where the current function must return and execution resumes in the caller before the target is reached.
 	    If -t is omitted, q3 switches to discovery mode and instead looks for the most promising reachable
-	    chunk-modification paths or controlled-data consumption paths such as vftable use or indirect call/jmp.
+	    chunk-modification paths, controlled-derived destination/write-target paths, or controlled-data
+	    consumption paths such as vftable use or indirect call/jmp.
 	    q3 asks the AI to explain the required chunk offsets and values for up to two strong scenarios.
 	    -q 8 focuses on ROP primitive quality and feasibility.
 	    With -q 2 and -q 3, -d controls how many nested call/jump levels mona will follow when collecting target disassembly.
