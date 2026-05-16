@@ -560,7 +560,7 @@ This makes `tellme` useful even if you do not want to install SDKs, configure AP
 
 If you use `-offline`, `tellme` will collect debugger context, build the full request, and save it to a file without contacting any provider.
 
-That is the simplest setup and the safest default when you want full control over where the prompt is submitted.
+That is the simplest setup and the default fallback when no provider-backed engine is configured correctly.
 
 Example:
 
@@ -595,14 +595,36 @@ Example using `mona` config:
 !mona config -set mona.ai.engine openai
 !mona config -set openai.key <your OpenAI API key>
 !mona config -set openai.model gpt-5-mini
-!mona config -set openai.timeout 60
+!mona config -set openai.timeout 300
 !mona config -set openai.max_tokens 4096
+
+!mona config -set mona.ai.engine openaiagents
+!mona config -set openaiagents.key <your OpenAI API key>
+!mona config -set openaiagents.model gpt-5-mini
+!mona config -set openaiagents.url http://127.0.0.1:8765
+!mona config -set openaiagents.bridge.python py -3.14
+!mona config -set openaiagents.reasoning_effort high
+!mona config -set openaiagents.verbosity low
+!mona config -set openaiagents.max_turns 8
+!mona config -set openaiagents.max_tokens 8192
 
 !mona config -set mona.ai.engine anthropic
 !mona config -set anthropic.key <your Anthropic API key>
 !mona config -set anthropic.model claude-sonnet-4-6
-!mona config -set anthropic.timeout 60
+!mona config -set anthropic.timeout 300
 !mona config -set anthropic.max_tokens 4096
+
+!mona config -set mona.ai.engine ollama
+!mona config -set ollama.url http://127.0.0.1:11434/v1/responses
+!mona config -set ollama.model llama3
+!mona config -set ollama.timeout 300
+!mona config -set ollama.response_field response
+
+!mona config -set mona.ai.engine customai
+!mona config -set customai.url http://127.0.0.1:8080/api/generate
+!mona config -set customai.model llama3
+!mona config -set customai.timeout 300
+!mona config -set customai.response_field choices.0.message.content
 ```
 
 Example using environment variables:
@@ -611,12 +633,24 @@ Example using environment variables:
 set MONA_AI_ENGINE=openai
 set OPENAI_API_KEY=<your OpenAI API key>
 set OPENAI_MODEL=gpt-5-mini
-set OPENAI_TIMEOUT=60
+set OPENAI_TIMEOUT=300
 set OPENAI_MAX_TOKENS=4096
+set OPENAIAGENTS_URL=http://127.0.0.1:8765
+set OPENAIAGENTS_REASONING_EFFORT=high
+set OPENAIAGENTS_VERBOSITY=low
+set OPENAIAGENTS_MAX_TURNS=8
 set ANTHROPIC_API_KEY=<your Anthropic API key>
 set ANTHROPIC_MODEL=claude-sonnet-4-6
-set ANTHROPIC_TIMEOUT=60
+set ANTHROPIC_TIMEOUT=300
 set ANTHROPIC_MAX_TOKENS=4096
+set OLLAMA_URL=http://127.0.0.1:11434/v1/responses
+set OLLAMA_MODEL=llama3
+set OLLAMA_TIMEOUT=300
+set OLLAMA_RESPONSE_FIELD=response
+set CUSTOMAI_URL=http://127.0.0.1:8080/api/generate
+set CUSTOMAI_MODEL=llama3
+set CUSTOMAI_TIMEOUT=300
+set CUSTOMAI_RESPONSE_FIELD=choices.0.message.content
 ```
 
 For `openai` direct integration, install the OpenAI Python library for every Python version you use with `mona`. For example, if you run Mona under both Python 3.9 and Python 3.14, install the library into both environments.
@@ -655,7 +689,7 @@ At runtime, Mona validates that the configured `openaiagents.bridge.python` envi
 
 Make sure you install those libraries into the Python environment used by `openaiagents.bridge.python`, not just the Python environment used inside WinDBG.
 
-When `tellme` is using a live provider, it checks the selected model where supported. If you run `tellme` without `-q` while a provider-backed engine is configured, Mona will list the available model IDs it can see for that configuration instead of sending a request.
+When `tellme` is using a live provider, it performs a model-availability preflight check where supported. If you run `tellme` without `-q` while a provider-backed engine is configured, Mona lists the available model IDs it can see for that configuration instead of sending a request.
 
 ## Engines
 
@@ -666,19 +700,21 @@ Currently supported engines are:
 * `offline`: save the request only; do not submit it
 * `openai`: direct OpenAI API integration
 * `openaiagents`: local bridge that uses the OpenAI Agents SDK and OpenAI Python library outside the debugger
-* `anthropic`: direct Anthropic API integration
-* `ollama`: local or remote Ollama endpoint
-* `customai`: generic POST JSON endpoint for other compatible backends
+* `anthropic`: direct Anthropic API integration without an Anthropic SDK dependency
+* `ollama`: local or remote Ollama endpoint; supports either OpenAI-style `/v1/responses` or native `/api/generate`
+* `customai`: generic POST JSON endpoint that sends `{"model": ..., "prompt": ...}` and can extract nested response text via `response_field`
 
 Use `-e <engine>` to select one explicitly for a single request, or set `mona.ai.engine` to make one the default.
 
 ## Basic usage
 
-The `tellme` command has three common usage patterns:
+The current `tellme` question profiles are:
 
 * `-q 1`: analyze the current crash context
-* `-q 2`: analyze the current function or code location
-* `-q 9 -f <file>`: use a saved request template
+* `-q 2`: analyze the current function at the live instruction pointer, optionally plus a second location from `-a`
+* `-q 3`: analyze whether a controlled heap chunk can steer execution to a target, or discover promising chunk-driven paths when `-t` is omitted
+* `-q 8`: analyze ROP primitive quality and feasibility
+* `-q 9 -f <file>`: use a saved request template or a previously built prompt file
 
 Basic examples:
 
@@ -688,7 +724,10 @@ Basic examples:
 !mona tellme -e anthropic -q 2
 !mona tellme -e ollama -q 1
 !mona tellme -e openai -q 2 -a kernel32!CreateFileW
-!mona tellme -e openai -q 1 -timeout 120
+!mona tellme -e openai -q 3 -c poi(esp+4) -t kernel32!CreateFileW
+!mona tellme -e openai -q 3 -c eax
+!mona tellme -e openai -q 8
+!mona tellme -e openai -q 1 -timeout 300
 !mona tellme -e openai -q 1 -submit
 !mona tellme -e openai -q 1 -offline
 ```
@@ -698,20 +737,35 @@ Useful options:
 * `-e <engine>`: choose the engine explicitly for this request
 * `-q 1`: use for crash triage
 * `-q 2`: use for function/code analysis
+* `-q 3`: use for controlled heap-chunk reachability or discovery analysis
+* `-q 8`: use for ROP analysis
+* `-q 9 -f <file>`: use a reusable template or an already-built request prompt
 * `-a <address|register|module!symbol>`:
-  use an explicit target address
+  add an extra target for `-q 1`, or a second function target for `-q 2`
+* `-c <address>`:
+  with `-q 3`, specify the controlled heap chunk address
+* `-t <address>`:
+  with `-q 3`, specify the target code address; omit it to switch q3 into discovery mode
+* `-d <1-4>`:
+  with `-q 2` or `-q 3`, control call/jump follow depth
 * `-l <file1,file2>`:
-  add extra context files
+  add extra context files; heapdynamics-style logs are recognized automatically
 * `-p <file>`:
   attach a PoC or trigger file
 * `-model <id>`:
   override the configured model for one request
 * `-timeout <seconds>`:
-  override the configured timeout for one request
+  override the base timeout for one request
+* `-maxsize <kb>`:
+  with `-q 1`, try to keep the request under a target size by trimming lower-priority evidence
+* `-cpb <bytes>`:
+  provide badchars such as `'\x00\x0a\x0d'` so q1/findmsp/findseh-related pointer suggestions can be filtered
 * `-submit`:
   skip the confirmation prompt and submit the AI request immediately
 * `-offline`:
   build and save the request without calling the API
+* `-test`:
+  override the configured model with the engine's cheaper test model
 
 If you omit `-q` while a provider-backed engine is selected, `tellme` will list the available models for that engine instead of building a request.
 
@@ -719,7 +773,9 @@ How to choose a mode:
 
 * Use `!mona tellme -q 1` when you want help triaging the current crash.
 * Use `!mona tellme -q 2` when execution is at a useful code location and you want help understanding the current function.
-* Use `-a` with `-q 2` when the current instruction pointer is no longer trustworthy and you want to analyze a known-good symbol or address instead.
+* Use `!mona tellme -q 3 -c <chunk>` when you already control a heap chunk and want Mona to reason about reachable targets or controlled-data sinks.
+* Use `!mona tellme -q 8` when you want a ROP-focused assessment.
+* Use `-a` with `-q 2` when you want to add a second known-good symbol or address to the function analysis.
 * Use `-offline` when you want to manually submit the generated request to a browser-based AI session.
 * For automated submission, `tellme` asks for confirmation before sending the request unless you pass `-submit`.
 
@@ -728,11 +784,24 @@ Template usage:
 ```python
 !mona tellme -e openai -q 9 -f ai.q1
 !mona tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
+!mona tellme -e openai -q 9 -f ai.q3
 ```
 
-If `ai.q1` or `ai.q2` do not exist yet, running `-q 1` or `-q 2` will create them in the configured `workingfolder`, or next to `mona.ini` when no working folder is set.
+If `ai.q1`, `ai.q2`, `ai.q3`, or `ai.q8` do not exist yet, running the corresponding `-q 1`, `-q 2`, `-q 3`, or `-q 8` command will create them in the configured `workingfolder`, or next to `mona.ini` when no working folder is set.
 
-With `-q 9`, mona collects live debugger context at runtime and replaces recognized placeholders such as `[registers]` and `[pc_disasm]` inline before submitting the prompt. Unrecognized placeholders are reported and left unchanged.
+With `-q 9`, Mona supports two template styles:
+
+* a reusable template with placeholders such as `[registers]` and `[pc_disasm]`, which are resolved against the live debugger context at runtime
+* a previously built prompt file, which Mona reuses directly if no unresolved placeholders remain
+
+Unknown placeholders are reported and left unchanged instead of aborting prompt generation.
+
+Additional notes:
+
+* Default timeout is now `300` seconds per request attempt.
+* On timeout, Mona retries up to 5 attempts total, adding 120 seconds to each retry and waiting 10 seconds before resubmitting.
+* `-q 8` gets an extra 30 seconds on the default timeout when you did not override `-timeout`.
+* For slower local models, especially `ollama` or other self-hosted backends, you will often want a larger timeout.
 
 For engine-specific setup, model recommendations, local/self-hosted examples, bridge configuration, advanced options, and troubleshooting, see the [Mona wiki](https://github.com/corelan/mona3/wiki).
 

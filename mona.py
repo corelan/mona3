@@ -6851,6 +6851,10 @@ q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, cur
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live registers, and disassembly over summary-style diagnostics.
 
 Use architecture and pointer_size to interpret registers, pointer values, stack arguments, calling conventions, object pointers, and memory operands. Do not assume x86, 32-bit registers, 4-byte pointers, or x86 calling conventions unless explicitly indicated.
+Follow the rules in this prompt with zero summarization or early stopping. 
+Perform exhaustive enumeration of every sink using the full control_flow_target_map and nested_control_flow_target_refs. 
+Do not omit any materially distinct controlled-write or indirect-call sink.
+
 
 Modes:
 - targeted mode: reachability_target is present. Decide whether execution can reach that target by changing only the controlled chunk.
