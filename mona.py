@@ -75,6 +75,7 @@ except ImportError:
 if PY3:
 	text_type = str
 	bytes_type = bytes
+	long = int
 else:
 	text_type = unicode
 	bytes_type = str
@@ -1851,6 +1852,11 @@ def _getInstructionWindow(address, depth_before=10, depth_after=10):
 	result["before"] = []
 	result["after"] = []
 
+	has_instruction, reason = tellMeHasCurrentInstruction(address)
+	if not has_instruction:
+		mndbg.dbgp("tellme: instruction window unavailable at %s: %s" % (PTR_PRINT % address, reason), errormode=False)
+		return result
+
 	try:
 		op = dbg.disasm(address)
 		result["current"] = _formatContextText(getDisasmInstruction(op))
@@ -3256,18 +3262,18 @@ def _collectInstructionHeapContext(regs, pc, extra_references=None):
 		extra_references = []
 	dbg.log("[+] Collecting heap/segment/VAD context for all registers")
 	instruction_text = ""
-	if not isinstance(pc, int) or pc <= 0:
-		info["instruction_error"] = "Program counter is not a valid address"
-		mndbg.dbgp("tellme: heap/register context will continue without instruction disassembly because PC is invalid")
-	try:
-		if isinstance(pc, int) and pc > 0:
+	has_instruction, reason = tellMeHasCurrentInstruction(pc)
+	if not has_instruction:
+		mndbg.dbgp("tellme: heap/register context will continue without instruction disassembly: %s" % reason)
+	else:
+		try:
 			op = dbg.disasm(pc)
 			instruction_text = _formatContextText(getDisasmInstruction(op))
 			info["instruction"] = instruction_text
-	except Exception as e:
-		info["instruction_error"] = str(e)
-		mndbg.dbgp("tellme: unable to disassemble current instruction for heap context: %s" % str(e), errormode=False)
-		mndbg.dbgp("tellme: heap/register context will continue with full-register analysis despite disassembly failure")
+		except Exception as e:
+			info["instruction_error"] = str(e)
+			mndbg.dbgp("tellme: unable to disassemble current instruction for heap context: %s" % str(e), errormode=False)
+			mndbg.dbgp("tellme: heap/register context will continue with full-register analysis despite disassembly failure")
 
 	referenced_registers = _extractInstructionRegisters(instruction_text, regs)
 	info["referenced_registers"] = referenced_registers
@@ -5720,8 +5726,12 @@ def _getSehChainSummary():
 				entry["next_seh"] = "0x%08x" % nsehvalue
 				entry["handler"] = PTR_PRINT % sehandler if isinstance(sehandler, int) and sehandler > 0 else "0x00000000"
 				try:
-					ptr = MnPointer(sehandler)
-					entry["function"] = _formatContextText(ptr.getPtrFunction(), max_len=512)
+					function_name = ""
+					if isinstance(sehandler, int) and sehandler > 0:
+						function_name = _getSymbolName(sehandler)
+						if function_name == "":
+							function_name = _getNearestSymbolOutput(sehandler)
+					entry["function"] = _formatContextText(function_name, max_len=512)
 				except Exception as e:
 					entry["function_error"] = str(e)
 					entry["function"] = ""
@@ -18601,7 +18611,7 @@ class MnPointer:
 	def __init__(self,address):
 
 		# check that the address is an integer
-		if not type(address) == int and not type(address) == long:
+		if not isinstance(address, (int, long)):
 			raise Exception("address should be an integer or long")
 	
 		self.address = address
@@ -19791,6 +19801,90 @@ def containsBadChars(address, badchars=b"\x0a\x0d"):
 	return any(b in badset for b in addrbytes)
 
 
+def _addressMeetsCriteria(address, criteria):
+	"""
+	Check pointer-style criteria directly against an integer address.
+
+	This avoids constructing MnPointer instances on hot search paths such as
+	searchInRange(), which can fail in some WinDBG/Python environments.
+	"""
+	if not isinstance(address, (int, long)):
+		return False
+
+	NullRange = MnPointer._NullRange
+	AsciiRange = MnPointer._AsciiRange
+	AsciiPrintRange = MnPointer._AsciiPrintRange
+	AsciiUppercaseRange = MnPointer._AsciiUpperRange
+	AsciiLowercaseRange = MnPointer._AsciiLowerRange
+	AsciiAlphaRange = MnPointer._AsciiAlphaRange
+	AsciiNumericRange = MnPointer._AsciiNumericRange
+	AsciiSpaceRange = MnPointer._AsciiSpaceRange
+
+	if arch == 32:
+		byte1, byte2, byte3, byte4 = splitAddress(address)
+		byte_values = [byte1, byte2, byte3, byte4]
+	else:
+		byte1, byte2, byte3, byte4, byte5, byte6, byte7, byte8 = splitAddress(address)
+		byte_values = [byte1, byte2, byte3, byte4, byte5, byte6, byte7, byte8]
+
+	hasNulls = 0 in byte_values
+	startsWithNull = byte_values[0] == 0
+	isUnicode = (byte1 == 0) and (byte3 == 0)
+	isUnicodeRev = (byte2 == 0) and (byte4 == 0)
+	if arch == 64:
+		isUnicode = isUnicode and (byte5 == 0) and (byte7 == 0)
+		isUnicodeRev = isUnicodeRev and (byte6 == 0) and (byte8 == 0)
+
+	unicodeTransform = UnicodeTransformInfo(toHex(address))
+
+	if not isUnicode and not isUnicodeRev:
+		isAscii = bytesInRange(address, AsciiRange)
+		isAsciiPrintable = bytesInRange(address, AsciiPrintRange)
+		isUppercase = bytesInRange(address, AsciiUppercaseRange)
+		isLowercase = bytesInRange(address, AsciiLowercaseRange)
+		isNumeric = bytesInRange(address, AsciiNumericRange)
+		isAlphaNumeric = bytesInRange(address, AsciiAlphaRange + AsciiNumericRange + AsciiSpaceRange)
+		isUpperNum = bytesInRange(address, AsciiUppercaseRange + AsciiNumericRange)
+		isLowerNum = bytesInRange(address, AsciiLowercaseRange + AsciiNumericRange)
+	else:
+		isAscii = bytesInRange(address, NullRange + AsciiRange)
+		isAsciiPrintable = bytesInRange(address, NullRange + AsciiPrintRange)
+		isUppercase = bytesInRange(address, NullRange + AsciiUppercaseRange)
+		isLowercase = bytesInRange(address, NullRange + AsciiLowercaseRange)
+		isNumeric = bytesInRange(address, NullRange + AsciiNumericRange)
+		isAlphaNumeric = bytesInRange(address, NullRange + AsciiAlphaRange + AsciiNumericRange + AsciiSpaceRange)
+		isUpperNum = bytesInRange(address, NullRange + AsciiUppercaseRange + AsciiNumericRange)
+		isLowerNum = bytesInRange(address, NullRange + AsciiLowercaseRange + AsciiNumericRange)
+
+	if "unicode" in criteria and not (isUnicode or unicodeTransform != ""):
+		return False
+	if "unicoderev" in criteria and not isUnicodeRev:
+		return False
+	if "ascii" in criteria and not isAscii:
+		return False
+	if "asciiprint" in criteria and not isAsciiPrintable:
+		return False
+	if "upper" in criteria and not isUppercase:
+		return False
+	if "lower" in criteria and not isLowercase:
+		return False
+	if "uppernum" in criteria and not isUpperNum:
+		return False
+	if "lowernum" in criteria and not isLowerNum:
+		return False
+	if "numeric" in criteria and not isNumeric:
+		return False
+	if "alphanum" in criteria and not isAlphaNumeric:
+		return False
+	if "badchars" in criteria and containsBadChars(address, criteria["badchars"]):
+		return False
+	if "nonull" in criteria and hasNulls:
+		return False
+	if "startswithnull" in criteria and not startsWithNull:
+		return False
+	return True
+
+
 def meetsCriteria(pointer,criteria):
 	"""
 	checks if an address meets the listed criteria
@@ -19802,6 +19896,8 @@ def meetsCriteria(pointer,criteria):
 	Return:
 	Boolean - True if all the conditions are met
 	"""
+	if isinstance(pointer, (int, long)):
+		return _addressMeetsCriteria(pointer, criteria)
 	#if DEBUG_MODE:
 	#	mndbg.dbgp(get_current_function_name())
 	# Unicode
@@ -20169,7 +20265,6 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 					for i in recur_find:
 						if (i >= start and i <= end):
 							ptr = MnPointer(i)
-
 							# check if pointer meets criteria
 							if not meetsCriteria(ptr, criteria):
 								continue
@@ -27354,16 +27449,21 @@ def goFindMSP(distance=0, args=None):
 				for ptr in pointers[ptrtypes]:
 					# get size
 
-					thisptr = MnPointer(ptr)
+					thisptr = None
+					try:
+						thisptr = MnPointer(ptr)
+					except Exception as e:
+						mndbg.dbgp("goFindMSP: pointer classification unavailable for %s: %s" % (PTR_PRINT % ptr, str(e)), errormode=False)
 					ptrinfo = ""
-					if thisptr.isOnStack():
-						ptrinfo = "[<b>Stack</b>]"
-					else:
-						try:
-							if thisptr.isInHeap():
-								ptrinfo = "[<b>Heap</b>]"
-						except Exception as e:
-							mndbg.dbgp("goFindMSP: heap classification failed for %s: %s" % (PTR_PRINT % ptr, str(e)))
+					if thisptr is not None:
+						if thisptr.isOnStack():
+							ptrinfo = "[<b>Stack</b>]"
+						else:
+							try:
+								if thisptr.isInHeap():
+									ptrinfo = "[<b>Heap</b>]"
+							except Exception as e:
+								mndbg.dbgp("goFindMSP: heap classification failed for %s: %s" % (PTR_PRINT % ptr, str(e)))
 					thissize = getPatternLength(ptr, pattype, args)
 					if thissize > 0:
 						if not g_silent:
@@ -27375,7 +27475,7 @@ def goFindMSP(distance=0, args=None):
 					# get distance from SP
 					if STACK_POINTER in regs:
 						thissp = regs[STACK_POINTER]
-						if thisptr.isOnStack():
+						if thisptr is not None and thisptr.isOnStack():
 							if ptr > thissp:
 								if not g_silent:
 									dbg.log("    \\_ Add between %d & %d bytes to %s in order to land in this pattern" % (ptr - thissp, ptr - thissp + thissize, STACK_POINTER))
