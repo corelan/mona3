@@ -2397,18 +2397,11 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		max_depth = 1
 	log_indent = "      " + ("  " * max(current_depth - 1, 0))
 	if current_depth == 1:
-		dbg.log("    Expanding control-flow targets up to depth %d" % max_depth)
+		dbg.log("<b>    Expanding control-flow targets up to depth %d</b>" % max_depth)
 	else:
 		dbg.log("%s- Depth %d/%d" % (log_indent, current_depth, max_depth))
 	progress_label = "Scan" if current_depth == 1 else "Drilldown"
 	budget_label = "Sweep reached max target budget" if current_depth == 1 else "Expansion reached max target budget"
-
-	def _get_progress_eta(processed, total):
-		if current_depth == 1:
-			return get_eta(startmoment, processed, total)
-		exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
-		eta_startmoment = time.time() - exclusive_elapsed
-		return get_eta(eta_startmoment, processed, total)
 
 	candidate_count = 0
 	total_entries = len(entries)
@@ -2424,41 +2417,63 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			pct_done = (processed_entries * 100.0) / total_entries
 		if len(targets) >= max_targets:
 			if total_entries > 0:
-				eta = _get_progress_eta(processed_entries, total_entries)
-				dbg.log("%s- %s (%d/%d scanned, %.2f%%) - ETA: %s" % (
-					log_indent,
-					budget_label,
-					processed_entries,
-					total_entries,
-					pct_done,
-					eta
-				))
+				if current_depth == 1:
+					dbg.log("<b>%s- %s (%d/%d scanned, %.2f%%)</b>" % (
+						log_indent,
+						budget_label,
+						processed_entries,
+						total_entries,
+						pct_done
+					))
+				else:
+					dbg.log("%s- %s (%d/%d scanned, %.2f%%)" % (
+						log_indent,
+						budget_label,
+						processed_entries,
+						total_entries,
+						pct_done
+					))
 			break
 		instruction = entry.get("instruction", "")
 		target_kind, operand = _classifyControlFlowInstruction(instruction)
 		if target_kind == "" or operand == "":
 			if total_entries > 0:
 				if pct_done >= next_report_pct or processed_entries == total_entries:
-					eta = _get_progress_eta(processed_entries, total_entries)
-					dbg.log("%s- %s: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
-						log_indent,
-						progress_label,
-						processed_entries,
-						total_entries,
-						pct_done,
-						eta
-					))
+					if current_depth == 1:
+						dbg.log("<b>%s- %s: %d/%d lines scanned (%.2f%%)</b>" % (
+							log_indent,
+							progress_label,
+							processed_entries,
+							total_entries,
+							pct_done
+						))
+					else:
+						dbg.log("%s- %s: %d/%d lines scanned (%.2f%%)" % (
+							log_indent,
+							progress_label,
+							processed_entries,
+							total_entries,
+							pct_done
+						))
 					while next_report_pct <= pct_done:
 						next_report_pct += 10
 			continue
 		candidate_count += 1
 		if candidate_count <= 5:
-			dbg.log("%s- %s @ %s -> %s" % (
-				log_indent,
-				target_kind,
-				entry.get("address_text", ""),
-				operand
-			))
+			if current_depth == 1:
+				dbg.log("<b>%s- %s @ %s -> %s</b>" % (
+					log_indent,
+					target_kind,
+					entry.get("address_text", ""),
+					operand
+				))
+			else:
+				dbg.log("%s- %s @ %s -> %s" % (
+					log_indent,
+					target_kind,
+					entry.get("address_text", ""),
+					operand
+				))
 
 		target_entry = OrderedDict([
 			("kind", target_kind),
@@ -2473,7 +2488,10 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 				target_entry[key] = value
 		if not resolved.get("resolved", False):
 			if candidate_count <= 5:
-				dbg.log("        unresolved: %s" % ensure_text(target_entry.get("resolution_reason", "")).strip())
+				if current_depth == 1:
+					dbg.log("<b>           unresolved: %s</b>" % ensure_text(target_entry.get("resolution_reason", "")).strip())
+				else:
+					dbg.log("           unresolved: %s" % ensure_text(target_entry.get("resolution_reason", "")).strip())
 			targets.append(target_entry)
 			continue
 
@@ -2484,7 +2502,7 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 				("module", _getModuleSummary(target_address)),
 				("symbol", _getSymbolName(target_address)),
 				("nearest_symbol_output", _getNearestSymbolOutput(target_address)),
-				("disasm", _getDisasmSummary(target_address, depth_before=0, depth_after=10)),
+				("disasm", _getDisasmSummary(target_address, depth_before=0, depth_after=20)),
 				("control_flow_disasm", flow_disasm.get("disasm_source", "")),
 				("control_flow_scope", flow_disasm.get("analysis_scope", "")),
 				("control_flow_function_start", flow_disasm.get("function_start", "")),
@@ -2505,16 +2523,29 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			if nested_disasm_source != "":
 				target_symbol = ensure_text(target_context_cache[target_address].get("symbol", "")).strip()
 				if target_symbol != "":
-					dbg.log("%s  > descend into %s (%s)" % (
-						log_indent,
-						PTR_PRINT % target_address,
-						target_symbol
-					))
+					if current_depth == 1:
+						dbg.log("<b>%s  > descend into %s (%s)</b>" % (
+							log_indent,
+							PTR_PRINT % target_address,
+							target_symbol
+						))
+					else:
+						dbg.log("%s  > descend into %s (%s)" % (
+							log_indent,
+							PTR_PRINT % target_address,
+							target_symbol
+						))
 				else:
-					dbg.log("%s  > descend into %s" % (
-						log_indent,
-						PTR_PRINT % target_address
-					))
+					if current_depth == 1:
+						dbg.log("<b>%s  > descend into %s</b>" % (
+							log_indent,
+							PTR_PRINT % target_address
+						))
+					else:
+						dbg.log("%s  > descend into %s" % (
+							log_indent,
+							PTR_PRINT % target_address
+						))
 				nested_startmoment = time.time()
 				nested_targets = _collectDisassemblyTargetContexts(
 					nested_disasm_source,
@@ -2535,24 +2566,39 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		if total_entries > 0:
 			pct_done = (processed_entries * 100.0) / total_entries
 			if pct_done >= next_report_pct or processed_entries == total_entries:
-				eta = _get_progress_eta(processed_entries, total_entries)
-				dbg.log("%s- %s: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
-					log_indent,
-					progress_label,
-					processed_entries,
-					total_entries,
-					pct_done,
-					eta
-				))
+				if current_depth == 1:
+					dbg.log("<b>%s- %s: %d/%d lines scanned (%.2f%%)</b>" % (
+						log_indent,
+						progress_label,
+						processed_entries,
+						total_entries,
+						pct_done
+					))
+				else:
+					dbg.log("%s- %s: %d/%d lines scanned (%.2f%%)" % (
+						log_indent,
+						progress_label,
+						processed_entries,
+						total_entries,
+						pct_done
+					))
 				while next_report_pct <= pct_done:
 					next_report_pct += 10
 	if candidate_count > 5:
-		dbg.log("%s- %d additional control-flow candidate%s omitted at depth %d" % (
-			log_indent,
-			candidate_count - 5,
-			"" if (candidate_count - 5) == 1 else "s",
-			current_depth
-		))
+		if current_depth == 1:
+			dbg.log("<b>%s- %d additional control-flow candidate%s omitted at depth %d</b>" % (
+				log_indent,
+				candidate_count - 5,
+				"" if (candidate_count - 5) == 1 else "s",
+				current_depth
+			))
+		else:
+			dbg.log("%s- %d additional control-flow candidate%s omitted at depth %d" % (
+				log_indent,
+				candidate_count - 5,
+				"" if (candidate_count - 5) == 1 else "s",
+				current_depth
+			))
 	return targets
 
 
@@ -6168,7 +6214,60 @@ def _safeTextValue(value):
 		return ""
 
 
-def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm):
+def _getUniqueControlFlowDisasmRef(base_ref, control_flow_disasm, control_flow_disasm_map):
+	mndbg.dbgp(get_current_function_name())
+	ref_value = _safeTextValue(base_ref).strip()
+	if ref_value == "":
+		ref_value = "control_flow_disasm"
+	if ref_value not in control_flow_disasm_map:
+		return ref_value
+	existing_entry = control_flow_disasm_map.get(ref_value, {})
+	if isinstance(existing_entry, dict):
+		existing_disasm = _safeTextValue(existing_entry.get("disasm", "")).strip()
+		if existing_disasm == control_flow_disasm:
+			return ref_value
+	suffix = 2
+	while True:
+		candidate = "%s#%d" % (ref_value, suffix)
+		if candidate not in control_flow_disasm_map:
+			return candidate
+		existing_entry = control_flow_disasm_map.get(candidate, {})
+		if isinstance(existing_entry, dict):
+			existing_disasm = _safeTextValue(existing_entry.get("disasm", "")).strip()
+			if existing_disasm == control_flow_disasm:
+				return candidate
+		suffix += 1
+
+
+def _registerQ3ControlFlowDisasm(target_entry, control_flow_disasm, seen_control_flow_disasm, control_flow_disasm_map):
+	mndbg.dbgp(get_current_function_name())
+	control_flow_disasm = _safeTextValue(control_flow_disasm).strip()
+	if control_flow_disasm == "":
+		return ""
+	if control_flow_disasm in seen_control_flow_disasm:
+		return seen_control_flow_disasm[control_flow_disasm]
+	target_address_text = _safeTextValue(target_entry.get("target_address_text", "")).strip()
+	control_flow_function_start = _safeTextValue(target_entry.get("control_flow_function_start", "")).strip()
+	symbol = _safeTextValue(target_entry.get("symbol", "")).strip()
+	base_ref = target_address_text
+	if base_ref == "":
+		base_ref = control_flow_function_start
+	if base_ref == "":
+		base_ref = symbol
+	ref_value = _getUniqueControlFlowDisasmRef(base_ref, control_flow_disasm, control_flow_disasm_map)
+	control_flow_entry = OrderedDict([
+		("address", ref_value),
+		("symbol", symbol),
+		("scope", _safeTextValue(target_entry.get("control_flow_scope", "")).strip()),
+		("function_start", control_flow_function_start),
+		("disasm", control_flow_disasm),
+	])
+	control_flow_disasm_map[ref_value] = control_flow_entry
+	seen_control_flow_disasm[control_flow_disasm] = ref_value
+	return ref_value
+
+
+def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm, control_flow_disasm_map):
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(target_entries, list):
 		return
@@ -6177,24 +6276,25 @@ def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm):
 			continue
 		control_flow_disasm = _safeTextValue(target_entry.get("control_flow_disasm", "")).strip()
 		disasm_preview = _safeTextValue(target_entry.get("disasm", "")).strip()
-		target_address_text = _safeTextValue(target_entry.get("target_address_text", "")).strip()
 		if control_flow_disasm != "":
-			if disasm_preview != "":
-				target_entry["disasm_preview"] = disasm_preview
-				target_entry["disasm"] = ""
-			if control_flow_disasm in seen_control_flow_disasm:
-				target_entry["control_flow_disasm_ref"] = seen_control_flow_disasm[control_flow_disasm]
-				target_entry["control_flow_disasm"] = ""
-			else:
-				ref_value = target_address_text if target_address_text != "" else _safeTextValue(target_entry.get("symbol", "")).strip()
-				if ref_value != "":
-					seen_control_flow_disasm[control_flow_disasm] = ref_value
+			target_entry["control_flow_disasm_ref"] = _registerQ3ControlFlowDisasm(
+				target_entry,
+				control_flow_disasm,
+				seen_control_flow_disasm,
+				control_flow_disasm_map
+			)
+			target_entry["control_flow_disasm"] = ""
+			target_entry["disasm"] = ""
+			if "disasm_preview" in target_entry:
+				del target_entry["disasm_preview"]
+		elif disasm_preview != "":
+			target_entry["disasm_preview"] = disasm_preview
 		nested_targets = target_entry.get("nested_control_flow_targets", [])
 		if isinstance(nested_targets, list) and len(nested_targets) > 0:
-			_compactQ3TargetEntries(nested_targets, seen_control_flow_disasm)
+			_compactQ3TargetEntries(nested_targets, seen_control_flow_disasm, control_flow_disasm_map)
 
 
-def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, preserve_full_uf=False):
+def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=False):
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(function_context, dict):
 		return
@@ -6223,7 +6323,7 @@ def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, preser
 			function_context["code_after"] = ""
 	target_entries = function_context.get("control_flow_targets", [])
 	if isinstance(target_entries, list) and len(target_entries) > 0:
-		_compactQ3TargetEntries(target_entries, seen_control_flow_disasm)
+		_compactQ3TargetEntries(target_entries, seen_control_flow_disasm, control_flow_disasm_map)
 
 
 def _summarizeQ3TargetEntries(target_entries, max_entries=12):
@@ -6366,26 +6466,29 @@ def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 	mndbg.dbgp(get_current_function_name())
 	variables = _buildRequestVariables(context)
 	seen_control_flow_disasm = {}
+	control_flow_disasm_map = OrderedDict()
 	if "modules" in variables:
 		original_modules = variables.get("modules", "")
 		variables["modules_full"] = original_modules
 		variables["modules"] = _buildCompactModulesSummary(context)
 	if "current_function" in variables and isinstance(variables.get("current_function"), dict):
-		_compactQ3FunctionContext(variables["current_function"], seen_control_flow_disasm, preserve_full_uf=True)
+		_compactQ3FunctionContext(variables["current_function"], seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=True)
 	if "target_function" in variables and isinstance(variables.get("target_function"), dict):
-		_compactQ3FunctionContext(variables["target_function"], seen_control_flow_disasm, preserve_full_uf=False)
+		_compactQ3FunctionContext(variables["target_function"], seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=False)
 	if "caller_function" in variables and isinstance(variables.get("caller_function"), dict):
-		_compactQ3FunctionContext(variables["caller_function"], seen_control_flow_disasm, preserve_full_uf=True)
+		_compactQ3FunctionContext(variables["caller_function"], seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=True)
 	if "caller_chain" in variables and isinstance(variables.get("caller_chain"), list):
 		for frame_entry in variables["caller_chain"]:
 			if not isinstance(frame_entry, dict):
 				continue
 			caller_func = frame_entry.get("caller_function", {})
 			if isinstance(caller_func, dict):
-				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, preserve_full_uf=False)
+				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, control_flow_disasm_map, preserve_full_uf=False)
 		variables["caller_chain"] = _buildCompactCallerChainForRequest(variables["caller_chain"])
 	if "return_resume_analysis" in variables and isinstance(variables.get("return_resume_analysis"), dict):
 		variables["return_resume_analysis"] = _buildCompactReturnResumeAnalysisForRequest(variables)
+	if len(control_flow_disasm_map) > 0:
+		variables["control_flow_disasm_map"] = control_flow_disasm_map
 	return variables
 
 
@@ -6582,7 +6685,7 @@ Focus on bounded reachability from the current instruction pointer to a supplied
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
 
 Use the entries under "variables" as the debugger context. Prioritize:
-q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
+q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, control_flow_disasm_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
 
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live registers, and disassembly over summary-style diagnostics.
 
@@ -6608,6 +6711,20 @@ Core rules:
 - Treat caller-side post-return logic as first-class.
 - Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
 - Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
+
+Evidence thresholds:
+- Do not overpromote. CONFIRMED requires a complete visible path in the supplied snapshot from the current IP (or caller resume site) to the sink/target, with intervening branch predicates, direct call/callee steps, and sink instruction all accounted for from supplied disassembly.
+- Report strong likely paths even when they are not fully proven. Use PLAUSIBLE when the path is strongly supported by visible disassembly and controlled-derived dataflow, but one or more required predicates, intermediate targets, or final effects remain unproven or under-collected.
+- Use NOT SHOWN only when the request does not show a real evidence-backed route, not merely because the path is incomplete.
+- When using PLAUSIBLE, also assign a plausibility tier:
+  - HIGH: the path is strongly supported by visible disassembly and controlled-derived dataflow, and only a small number of concrete conditions remain unproven
+  - LOW: the path is real and evidence-backed, but multiple required conditions, branches, or dataflow links remain unproven
+- For every path you report, explicitly classify each key claim as:
+  - OBSERVED: directly shown in the request
+  - DERIVED: computed from observed instructions/dataflow
+  - UNPROVEN: plausible but not fully established from the supplied snapshot
+- For every path you reject or downgrade, state the first blocker clearly: missing disassembly, unresolved branch predicate, uncontrolled dependency, unresolved indirect target, or missing controlled-derived dataflow proof.
+- Prefer an evidence-backed PLAUSIBLE path over silence. Do not omit a materially strong path merely because it falls short of CONFIRMED.
 
 Return-resume expansion is mandatory:
 - If the current function can return, treat the concrete caller return address as an in-scope continuation.
@@ -6723,6 +6840,8 @@ Answer in this exact order:
 In targeted mode, state CONFIRMED, PLAUSIBLE, or NOT SHOWN for reaching the target.
 In discovery mode, state CONFIRMED, PLAUSIBLE, or NOT SHOWN for reaching a controlled sink.
 The verdict must account for both likely IP-control consumption and controlled-derived write/memory-modification sinks.
+When the best path is not fully proven but is strongly supported by visible disassembly and derived dataflow, prefer PLAUSIBLE over NOT SHOWN.
+If the verdict is PLAUSIBLE, also state the plausibility tier: HIGH or LOW.
 
 2. path class
 Choose exactly one for the primary scenario:
@@ -6733,6 +6852,7 @@ Describe the shortest evidence-backed path from current IP to the earliest reach
 Include the exact sink instruction.
 For write sinks, include the computed write-destination expression.
 For indirect transfers, include the target-source expression.
+For each hop in the path, state whether it is OBSERVED, DERIVED, or UNPROVEN.
 
 4. primary scenario chunk requirements
 List only controlled chunk offsets that materially influence the path.
@@ -6766,6 +6886,7 @@ List conditions outside the controlled chunk that still need to be satisfied.
 8. target reachability rationale
 Explain why the identified sinks are reachable using branch predicates, return sites, caller-side paths, callee-mediated paths, indirect calls/jumps, and controlled-derived write expressions.
 Explicitly note when multiple sinks share a prefix path.
+For each downgraded or non-primary path, state the first blocker that prevents promotion to CONFIRMED.
 
 Include a subsection named "return-resume route" that:
 - lists the current frame return address
@@ -6896,6 +7017,7 @@ def _getProfileTemplateVariables(question_type):
 			"target_function",
 			"return_context",
 			"return_resume_analysis",
+			"control_flow_disasm_map",
 			"caller_function",
 			"caller_chain",
 			"caller_resume_window",
@@ -30177,10 +30299,18 @@ class MnAI(object):
 				except Exception:
 					elapsed_seconds = 0
 				return str(datetime.timedelta(seconds=elapsed_seconds))
+			def _log_q3_step_header(step_number, title_text, first_step=False):
+				if not first_step:
+					dbg.log("")
+				self.logInfo("<b>[%d/%d] %s</b>" % (
+					step_number,
+					total_steps,
+					title_text
+				))
 			def _log_q3_major_step_start(step_number, label):
 				completed_steps = max(0, step_number - 1)
 				eta = get_eta(q3_startmoment, completed_steps, total_steps) if completed_steps > 0 else "calculating eta..."
-				self.logInfoDetail("Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s" % (
+				self.logInfoDetail("<b>Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
 					step_number,
 					total_steps,
 					label,
@@ -30189,7 +30319,7 @@ class MnAI(object):
 				))
 			def _log_q3_major_step_complete(step_number, label):
 				eta = get_eta(q3_startmoment, step_number, total_steps) if step_number < total_steps else "complete"
-				self.logInfoDetail("Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s" % (
+				self.logInfoDetail("<b>Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
 					step_number,
 					total_steps,
 					label,
@@ -30198,9 +30328,7 @@ class MnAI(object):
 				))
 			current_step = 1
 			step_label = "reachability target setup" if self.reachability_target_address > 0 else "q3 goal setup"
-			self.logInfo("[%d/%d] Extending q3 context with chunk, stack, and control-flow analysis..." % (
-				current_step, total_steps
-			))
+			_log_q3_step_header(current_step, "Extending q3 context with chunk, stack, and control-flow analysis...", first_step=True)
 			_log_q3_major_step_start(current_step, step_label)
 			context["q3_goal"] = "targeted_reachability" if self.reachability_target_address > 0 else "discovery_chunk_write_or_control_sink"
 			context["analysis_target"] = {
@@ -30213,18 +30341,14 @@ class MnAI(object):
 			_log_q3_major_step_complete(current_step, step_label)
 			current_step = 2
 			step_label = "controlled chunk dump and reference matching"
-			self.logInfo("[%d/%d] Dumping controlled chunk and matching live references..." % (
-				current_step, total_steps
-			))
+			_log_q3_step_header(current_step, "Dumping controlled chunk and matching live references...")
 			_log_q3_major_step_start(current_step, step_label)
 			context["controlled_chunk"] = _buildControlledChunkContext(self.controlled_chunk_address)
 			context["controlled_chunk_references"] = _collectControlledChunkReferences(context["controlled_chunk"], getAllRegisters())
 			_log_q3_major_step_complete(current_step, step_label)
 			current_step = 3
 			step_label = "current function control-flow collection"
-			self.logInfo("[%d/%d] Collecting current %s function code flow. Hang on, this may take a while" % (
-				current_step, total_steps, PROGRAM_COUNTER.upper()
-			))
+			_log_q3_step_header(current_step, "Collecting current %s function code flow. Hang on, this may take a while" % PROGRAM_COUNTER.upper())
 			_log_q3_major_step_start(current_step, step_label)
 			context["current_function"] = collectAICurrentFunctionContext(
 				self.current_pc_address,
@@ -30237,9 +30361,7 @@ class MnAI(object):
 			if self.reachability_target_address > 0:
 				current_step = 4
 				step_label = "target function context collection"
-				self.logInfo("[%d/%d] Collecting target function context..." % (
-					current_step, total_steps
-				))
+				_log_q3_step_header(current_step, "Collecting target function context...")
 				_log_q3_major_step_start(current_step, step_label)
 				context["target_function"] = collectAICurrentFunctionContext(
 					self.reachability_target_address,
@@ -30251,9 +30373,7 @@ class MnAI(object):
 				_log_q3_major_step_complete(current_step, step_label)
 			current_step = 5
 			step_label = "caller-side resume path analysis"
-			self.logInfo("[%d/%d] Walking caller-side resume paths from the call stack..." % (
-				current_step, total_steps
-			))
+			_log_q3_step_header(current_step, "Walking caller-side resume paths from the call stack...")
 			_log_q3_major_step_start(current_step, step_label)
 			return_resume = _collectReturnResumeContext(
 				context.get("call_stack", {}),
@@ -30267,9 +30387,7 @@ class MnAI(object):
 			_log_q3_major_step_complete(current_step, step_label)
 			current_step = 6
 			step_label = "reachable candidate flattening"
-			self.logInfo("[%d/%d] Flattening reachable branch/call/jump candidates..." % (
-				current_step, total_steps
-			))
+			_log_q3_step_header(current_step, "Flattening reachable branch/call/jump candidates...")
 			_log_q3_major_step_start(current_step, step_label)
 			context["reachable_functions"] = _collectReachableFunctions(
 				context.get("current_function", {}),
@@ -39270,6 +39388,7 @@ Official model docs:
 	    [target_function]          = q3 containing-function context for the target address
 	    [return_context]           = q3 saved return-site context when the current function needs to return first
 	    [return_resume_analysis]   = q3 caller-resume wrapper with retaddr, caller, resume disassembly, branch targets, and indirect transfers
+	    [control_flow_disasm_map]  = q3 canonical store for deduplicated full control-flow disassembly bodies referenced by control_flow_disasm_ref
 	    [caller_function]          = q3 containing-function context for the immediate caller resume site
 	    [caller_chain]             = q3 list of caller resume frames inspected on the return-resume path
 	    [caller_resume_window]     = q3 bounded disassembly window after the saved return address
