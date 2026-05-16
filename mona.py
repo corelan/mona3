@@ -2403,6 +2403,13 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 	progress_label = "Scan" if current_depth == 1 else "Drilldown"
 	budget_label = "Sweep reached max target budget" if current_depth == 1 else "Expansion reached max target budget"
 
+	def _get_progress_eta(processed, total):
+		if current_depth == 1:
+			return get_eta(startmoment, processed, total)
+		exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
+		eta_startmoment = time.time() - exclusive_elapsed
+		return get_eta(eta_startmoment, processed, total)
+
 	candidate_count = 0
 	total_entries = len(entries)
 	startmoment = time.time()
@@ -2417,9 +2424,7 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			pct_done = (processed_entries * 100.0) / total_entries
 		if len(targets) >= max_targets:
 			if total_entries > 0:
-				exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
-				eta_startmoment = time.time() - exclusive_elapsed
-				eta = get_eta(eta_startmoment, processed_entries, total_entries)
+				eta = _get_progress_eta(processed_entries, total_entries)
 				dbg.log("%s- %s (%d/%d scanned, %.2f%%) - ETA: %s" % (
 					log_indent,
 					budget_label,
@@ -2434,9 +2439,7 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		if target_kind == "" or operand == "":
 			if total_entries > 0:
 				if pct_done >= next_report_pct or processed_entries == total_entries:
-					exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
-					eta_startmoment = time.time() - exclusive_elapsed
-					eta = get_eta(eta_startmoment, processed_entries, total_entries)
+					eta = _get_progress_eta(processed_entries, total_entries)
 					dbg.log("%s- %s: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
 						log_indent,
 						progress_label,
@@ -2532,9 +2535,7 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		if total_entries > 0:
 			pct_done = (processed_entries * 100.0) / total_entries
 			if pct_done >= next_report_pct or processed_entries == total_entries:
-				exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
-				eta_startmoment = time.time() - exclusive_elapsed
-				eta = get_eta(eta_startmoment, processed_entries, total_entries)
+				eta = _get_progress_eta(processed_entries, total_entries)
 				dbg.log("%s- %s: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
 					log_indent,
 					progress_label,
@@ -6225,6 +6226,142 @@ def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, preser
 		_compactQ3TargetEntries(target_entries, seen_control_flow_disasm)
 
 
+def _summarizeQ3TargetEntries(target_entries, max_entries=12):
+	mndbg.dbgp(get_current_function_name())
+	summaries = []
+	if not isinstance(target_entries, list):
+		return summaries
+	entry_count = 0
+	for target_entry in target_entries:
+		interruptMona()
+		if not isinstance(target_entry, dict):
+			continue
+		entry_count += 1
+		if entry_count > max_entries:
+			break
+		summary = OrderedDict()
+		for key in [
+			"kind",
+			"instruction_address",
+			"instruction",
+			"target_operand",
+			"resolved",
+			"target_address_text",
+			"symbol",
+			"follow_depth",
+			"resolution_reason"
+		]:
+			if key in target_entry and target_entry.get(key, "") != "":
+				summary[key] = target_entry.get(key)
+		nested_targets = target_entry.get("nested_control_flow_targets", [])
+		if isinstance(nested_targets, list) and len(nested_targets) > 0:
+			summary["nested_target_count"] = len(nested_targets)
+		summaries.append(summary)
+	return summaries
+
+
+def _summarizeCallerFunctionContext(function_context):
+	mndbg.dbgp(get_current_function_name())
+	summary = OrderedDict()
+	if not isinstance(function_context, dict):
+		return summary
+	for key in [
+		"requested_address",
+		"symbol",
+		"analysis_scope",
+		"function_start",
+		"offset_from_function_start",
+		"control_flow_follow_depth",
+		"uf_output_ref"
+	]:
+		if key in function_context and function_context.get(key, "") != "":
+			summary[key] = function_context.get(key)
+	uf_output = ensure_text(function_context.get("uf_output", "")).strip()
+	if uf_output != "":
+		summary["uf_output_lines"] = len([line for line in uf_output.splitlines() if ensure_text(line).strip() != ""])
+	return summary
+
+
+def _summarizeCallerResumeWindow(window):
+	mndbg.dbgp(get_current_function_name())
+	summary = OrderedDict()
+	if not isinstance(window, dict):
+		return summary
+	for key in ["address", "current"]:
+		if key in window and window.get(key, "") != "":
+			summary[key] = window.get(key)
+	after = window.get("after", [])
+	if isinstance(after, list) and len(after) > 0:
+		summary["after_preview"] = after[:8]
+	forward_disasm = ensure_text(window.get("forward_disasm", "")).strip()
+	if forward_disasm != "":
+		summary["forward_disasm_lines"] = len([line for line in forward_disasm.splitlines() if ensure_text(line).strip() != ""])
+	control_flow_targets = window.get("control_flow_targets", [])
+	if isinstance(control_flow_targets, list) and len(control_flow_targets) > 0:
+		summary["branch_targets"] = _summarizeQ3TargetEntries(control_flow_targets, max_entries=12)
+		indirect_transfers = []
+		_collectIndirectTransfersFromTargets(control_flow_targets, indirect_transfers, path_class="return-resume")
+		if len(indirect_transfers) > 0:
+			summary["indirect_transfers"] = indirect_transfers[:12]
+	return summary
+
+
+def _buildCompactReturnResumeAnalysisForRequest(variables):
+	mndbg.dbgp(get_current_function_name())
+	summary = OrderedDict()
+	if not isinstance(variables, dict):
+		return summary
+	return_resume_analysis = variables.get("return_resume_analysis", {})
+	if not isinstance(return_resume_analysis, dict):
+		return summary
+	for key in ["retaddr", "caller"]:
+		if key in return_resume_analysis and return_resume_analysis.get(key, "") != "":
+			summary[key] = return_resume_analysis.get(key)
+	return_context = variables.get("return_context", {})
+	if isinstance(return_context, dict) and len(return_context) > 0:
+		summary["return_context"] = return_context
+	caller_function = variables.get("caller_function", {})
+	if isinstance(caller_function, dict) and len(caller_function) > 0:
+		summary["caller_function"] = _summarizeCallerFunctionContext(caller_function)
+	caller_resume_window = variables.get("caller_resume_window", {})
+	if isinstance(caller_resume_window, dict) and len(caller_resume_window) > 0:
+		summary["resume_window"] = _summarizeCallerResumeWindow(caller_resume_window)
+	post_constraints = variables.get("post_return_constraints", {})
+	if isinstance(post_constraints, dict) and len(post_constraints) > 0:
+		summary["post_return_constraints"] = post_constraints
+	caller_chain = variables.get("caller_chain", [])
+	if isinstance(caller_chain, list) and len(caller_chain) > 0:
+		summary["caller_chain_frame_count"] = len(caller_chain)
+	return summary
+
+
+def _buildCompactCallerChainForRequest(caller_chain):
+	mndbg.dbgp(get_current_function_name())
+	compact_chain = []
+	if not isinstance(caller_chain, list):
+		return compact_chain
+	for frame_entry in caller_chain:
+		interruptMona()
+		if not isinstance(frame_entry, dict):
+			continue
+		compact_entry = OrderedDict()
+		compact_entry["frame_index"] = frame_entry.get("frame_index", "")
+		return_context = frame_entry.get("return_context", {})
+		if isinstance(return_context, dict) and len(return_context) > 0:
+			compact_entry["return_context"] = return_context
+		caller_function = frame_entry.get("caller_function", {})
+		if isinstance(caller_function, dict) and len(caller_function) > 0:
+			compact_entry["caller_function"] = _summarizeCallerFunctionContext(caller_function)
+		caller_resume_window = frame_entry.get("caller_resume_window", {})
+		if isinstance(caller_resume_window, dict) and len(caller_resume_window) > 0:
+			compact_entry["caller_resume_window"] = _summarizeCallerResumeWindow(caller_resume_window)
+		post_constraints = frame_entry.get("post_return_constraints", {})
+		if isinstance(post_constraints, dict) and len(post_constraints) > 0:
+			compact_entry["post_return_constraints"] = post_constraints
+		compact_chain.append(compact_entry)
+	return compact_chain
+
+
 def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 	mndbg.dbgp(get_current_function_name())
 	variables = _buildRequestVariables(context)
@@ -6246,6 +6383,9 @@ def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 			caller_func = frame_entry.get("caller_function", {})
 			if isinstance(caller_func, dict):
 				_compactQ3FunctionContext(caller_func, seen_control_flow_disasm, preserve_full_uf=False)
+		variables["caller_chain"] = _buildCompactCallerChainForRequest(variables["caller_chain"])
+	if "return_resume_analysis" in variables and isinstance(variables.get("return_resume_analysis"), dict):
+		variables["return_resume_analysis"] = _buildCompactReturnResumeAnalysisForRequest(variables)
 	return variables
 
 
@@ -6436,178 +6576,220 @@ Do not invent facts that are not present in the snapshot.""" % (
 		)
 	if question_type == "3":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on bounded reachability from the current instruction pointer to a supplied target address by changing only the contents of a supplied controlled heap chunk.
+
+Focus on bounded reachability from the current instruction pointer to a supplied target address, or, in discovery mode, to the nearest controlled-data sink. The only bytes you may assume can change are bytes inside the supplied controlled heap chunk. Even if the chunk is currently free or not visibly populated, assume its contents are fully controllable.
+
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
-Use the entries under 'variables' as the debugger context. Prioritize q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, and additional_context_files.
-Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live register values, and disassembly listings over summary-style debugger diagnostics.
-Use the supplied architecture and pointer_size fields to interpret registers, pointer-sized values, stack arguments, calling convention patterns, object pointers, and memory operands. Do not assume a 32-bit process, 32-bit registers, 4-byte pointers, or x86 calling conventions unless the request explicitly indicates them.
+
+Use the entries under "variables" as the debugger context. Prioritize:
+q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
+
+Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live registers, and disassembly over summary-style diagnostics.
+
+Use architecture and pointer_size to interpret registers, pointer values, stack arguments, calling conventions, object pointers, and memory operands. Do not assume x86, 32-bit registers, 4-byte pointers, or x86 calling conventions unless explicitly indicated.
 
 Modes:
-- targeted mode: reachability_target is present. Determine whether execution can plausibly reach that target address if only bytes inside the controlled chunk are changed.
-- discovery mode: reachability_target is absent. Identify the nearest reachable code paths that are most likely to:
-  1. write to or otherwise modify the controlled chunk
-  2. use a value from the controlled chunk, or a controlled-derived pointer, as the destination of a write or other memory modification elsewhere
-  3. consume controlled data in a way that could lead to instruction-pointer control, such as vftable use, callback use, indirect call/jmp through controlled memory, indirect branch or call through a pointer-sized register or memory operand loaded from controlled-derived memory, or function-pointer dereference
+- targeted mode: reachability_target is present. Decide whether execution can reach that target by changing only the controlled chunk.
+- discovery mode: reachability_target is absent. Identify reachable paths that:
+  1. modify the controlled chunk
+  2. use controlled data or a controlled-derived pointer as a write/memory-modification destination
+  3. consume controlled data in a way that may lead to instruction-pointer control, such as vftable use, callback use, function-pointer use, indirect call/jmp, or branch/call through a pointer-sized register or memory operand loaded from controlled-derived memory
 
 Allowed path classes:
-1. intra-function path: the current function reaches the target before returning
-2. callee-mediated path: the current function reaches a callee which then reaches the target or a controlled-data sink
-3. return-resume path: the current function returns, execution resumes in the caller, and the caller then reaches the target or a controlled-data sink
+1. intra-function: the current function reaches the target/sink before returning
+2. callee-mediated: the current function reaches a callee which reaches the target/sink
+3. return-resume: the current function returns, execution resumes in the caller, and the caller reaches the target/sink
+
+Core rules:
+- Stay bounded to the collected snapshot. Do not assume future heap grooming, additional corruption, or arbitrary execution unless the snapshot supports it.
+- Use lightweight symbolic reasoning over collected disassembly, live registers, stack values, and chunk fields.
+- Do not invent unobserved state.
+- When a path depends on flags or bit tests, spell out the exact predicate in terms of relevant offsets and bits.
+- Treat caller-side post-return logic as first-class.
+- Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
+- Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
 
 Return-resume expansion is mandatory:
-- If the current function can return, the analysis MUST treat the concrete caller return address as an in-scope continuation.
+- If the current function can return, treat the concrete caller return address as an in-scope continuation.
 - Identify the caller resume site from the best available evidence, in this order:
   1. return_context / caller_resume_window / caller_function
   2. call_stack RetAddr for the current frame
   3. pointer-sized value at the current stack pointer when it matches an executable module address
-  4. stack_memory entries that match the current frame's return address
-- Do not treat missing caller_function, caller_chain, caller_resume_window, or post_return_constraints as a reason to skip return-resume analysis when a concrete RetAddr is available.
-- Starting at the concrete caller resume address, analyze the supplied caller-side disassembly forward as first-class scope.
-- Follow visible conditional and unconditional branches from the caller resume site when their target disassembly is present in the request.
-- Continue the caller-side analysis until one of these happens:
-  1. a strong controlled-data sink is reached
-  2. a controlled-derived write destination / memory-modification site is reached
-  3. an indirect call or indirect jump is reached
-  4. the caller returns
-  5. execution reaches code whose disassembly is not present in the request
-  6. an unresolved branch or external dependency blocks the path
-- If the caller resume address is concrete but the request does not contain disassembly for that address, classify the return-resume route as UNDER-COLLECTED, not as absent.
-- When the route is UNDER-COLLECTED, list the exact missing collection targets, including:
-  - uf <caller function>, when the caller symbol is known
+  4. stack_memory entries that match the current frame return address
+- Missing caller_function, caller_chain, caller_resume_window, or post_return_constraints is not a reason to skip return-resume analysis when a concrete RetAddr is available.
+- Starting at the caller resume address, analyze supplied caller-side disassembly as first-class scope.
+- Follow visible conditional/unconditional branches when their target disassembly is present.
+- Stop return-resume analysis only when:
+  1. a controlled sink is reached
+  2. the caller returns
+  3. execution reaches code whose disassembly is not present
+  4. an unresolved branch/external dependency blocks the path
+- If a concrete RetAddr exists but caller-side disassembly is absent, classify the route as UNDER-COLLECTED, not absent.
+- If UNDER-COLLECTED, list exact missing collection targets:
+  - uf <caller function>, when known
   - u <RetAddr> L120
-  - branch-target disassembly for visible branches reached from <RetAddr>
-  - any indirect call/jmp sites reached from those branch targets
+  - branch-target disassembly reached from <RetAddr>
+  - indirect call/jmp sites reached from those branch targets
 - If caller-side disassembly is present in return_resume_analysis, additional_context_files, reachable_functions, caller_function, caller_resume_window, or any other supplied field, use it as first-class evidence.
-- If the call stack shows a concrete caller resume address, a final answer that says "no reachable controlled sink shown" MUST explicitly include a return-resume subsection explaining why the path from that RetAddr does not reach a controlled sink, or state UNDER-COLLECTED with the missing disassembly.
+- A caller-side controlled or controlled-derived indirect call/jmp is a valid primary sink. Do not rank it lower merely because it occurs after a ret.
 
-Expanded sink-discovery rules:
-- Always identify all strong controllable indirect control transfers (vftable calls, indirect calls, indirect jumps, register-indirect branches, memory-indirect branches, jmp edx/eax/etc. through controlled-derived pointers) that are reachable from the current IP by changing only the controlled chunk.
-- Also identify reachable write-what-where style or destination-controlled memory modification sites where the write destination, copy destination, store target, object field target, callback-registration target, or other modified memory location is taken from the controlled chunk or from controlled-derived memory.
-- Do not stop at only the two strongest sinks. Present the primary (earliest/shortest) sink, then every other materially distinct sink even if they share a common prefix path.
-- “Materially distinct” includes any different indirect transfer instruction (different offset in a vtable, different register used for the jump, different callee that performs the dispatch, etc.), even if the paths diverge only after several instructions or inside the same callee.
-- Explicitly call out multiple sinks that live on the same initial route.
-Caller-side sinks have equal priority:
-- A controlled or controlled-derived indirect call/jmp reached after returning to the caller is a valid primary sink.
-- Do not rank caller-side sinks lower merely because they occur after a ret.
-- If the current function has no intra-function or callee-mediated indirect sink, the best return-resume sink SHOULD become the primary scenario.
+Sink discovery:
+Identify every materially distinct reachable controlled sink, not just the first one.
 
-Rules:
-- Stay bounded to the collected snapshot. Do not assume future heap grooming, additional corruption, or arbitrary execution unless the snapshot already supports it.
-- Use lightweight symbolic reasoning over the collected disassembly, current registers, stack values, and chunk fields when needed to explain which branches can be taken and which values would be required. Do not invent unobserved state.
-- When a path depends on condition flags or bit tests against controlled memory, spell out the predicate exactly in terms of the relevant chunk offsets and bits.
-- Explicitly examine all reachable indirect control transfers, including:
-  - vftable calls
-  - indirect calls
-  - indirect jumps
-  - register-indirect branches
-  - register-indirect calls
-  - memory-indirect branches
-  - memory-indirect calls
-  - call through [reg+offset] or equivalent pointer-sized memory operand
-  - jump through [reg+offset] or equivalent pointer-sized memory operand
-- Explicitly examine reachable memory-modification operations where the destination is controlled-derived, including direct stores, structure-field writes, memcpy/memmove/strcpy-style destination pointers, object-field initialization, callback/handler registration, pointer-table updates, and any callee that writes through a controlled-derived pointer.
-- This requirement applies inside the current function, inside reachable direct callees, and inside caller-side post-return code.
+Controlled sinks include:
+- vftable calls
+- callback/function-pointer calls
+- indirect calls/jumps
+- register-indirect calls/jumps
+- memory-indirect calls/jumps
+- call/jmp through [reg+offset] or equivalent pointer-sized memory operand
+- write-what-where style sites
+- direct stores where the destination is controlled-derived
+- structure-field writes where the base is controlled-derived
+- inc/dec/or/and/xor/add/sub/xchg on [reg+offset] when reg is controlled-derived
+- memcpy/memmove/strcpy-like calls when the destination argument is controlled-derived
+- object-field initialization, callback registration, pointer-table updates, or handler registration through controlled-derived memory
+- direct callees that write through a controlled-derived this/object pointer or argument
 
-Controlled-object and callee expansion rules:
-- Treat the controlled chunk as a potential object, structure, vtable holder, dispatch holder, callback container, pointer array, or object field container when registers or stack slots reference it.
-- Track controlled-derived pointers through simple register moves, stack pushes, stack argument setup, pointer-sized loads, stores, LEA-style address calculations, and callee setup sequences.
-- When a reachable direct call receives the controlled chunk pointer, or a pointer derived from the controlled chunk, in an argument register, object/this pointer register, general-purpose register, or stack argument, do not treat that callee as opaque.
-- Treat architecture-appropriate argument setup and register/data movement immediately before a call as strong evidence that the callee consumes controlled object state when the source is the controlled chunk or a controlled-derived pointer.
-- Treat a controlled-derived pointer passed as a destination buffer, object base, output parameter, write target, or registration target as first-class evidence of a reachable memory-modification scenario, even when the path does not immediately end in an indirect control transfer.
-- This includes, but is not limited to:
-    mov arg_reg, controlled_reg
-    mov general_reg, controlled_reg
-    push controlled_reg
-    push [controlled_reg+offset]
-    lea general_reg, [controlled_reg+offset]
-    mov general_reg, [controlled_reg+offset]
-    mov [stack_arg], controlled_reg
-    mov [stack_arg], [controlled_reg+offset]
-- Interpret arg_reg, general_reg, stack_arg, and pointer-sized memory operands according to the active architecture, calling convention, and pointer size supplied in the request.
-- For each such callee, expand the callee as first-class scope:
-  1. analyze its internal conditional branches
-  2. map memory reads back to controlled chunk offsets where possible
-  3. identify all reads through controlled-derived base registers
-  4. identify all writes or memory modifications whose destination is controlled-derived
-  5. identify all indirect transfers whose source is controlled-derived
-- If the caller moves a controlled chunk pointer, or a controlled-derived pointer, into the callee's object/argument register, then callee reads through that register must be translated back to controlled chunk offsets where possible.
+"Materially distinct" includes:
+- a different indirect transfer instruction
+- a different vtable/callback slot
+- a different register or memory operand used for the transfer
+- a different callee that performs the dispatch/write
+- a different controlled-derived write destination
+- a different write operation, even if it shares the same prefix path
 
-Sink ranking rules:
+Controlled-derived tracking:
+- Treat the controlled chunk as a potential object, structure, vtable holder, dispatch holder, callback container, pointer array, or object-field container when registers or stack slots reference it.
+- Track controlled-derived pointers through:
+  - mov reg, controlled_reg
+  - mov reg, [controlled_reg+offset]
+  - lea reg, [controlled_reg+offset]
+  - add/sub reg, constant
+  - push controlled_reg
+  - push [controlled_reg+offset]
+  - mov [stack_arg], controlled_reg
+  - mov [stack_arg], [controlled_reg+offset]
+  - simple register-to-register moves inside callees, such as mov edi,ecx or mov esi,ecx
+- Interpret argument registers, this/object registers, stack arguments, and pointer-sized memory operands according to the active architecture and calling convention.
+- When a reachable direct call receives the controlled chunk or a controlled-derived pointer in an object/this register, argument register, general-purpose register, or stack argument, do not treat the callee as opaque.
+- Expand that callee and identify:
+  1. branch predicates using controlled-derived memory
+  2. reads through controlled-derived base registers
+  3. writes/memory modifications whose destination is controlled-derived
+  4. indirect transfers whose source is controlled-derived
+- Translate callee reads/writes back to controlled chunk offsets or controlled-derived expressions when possible.
+
+Derived-sink requirement:
+- If raw disassembly is present, derive controlled-derived sinks yourself even when the JSON does not contain precomputed controlled_derived_writes, controlled_derived_callees, or sink summaries.
+- Example:
+    caller:
+      mov ecx, [controlled+0x0c]
+      add ecx, 0x630
+      call Callee
+
+    callee:
+      mov edi, ecx
+      inc dword ptr [edi+0x248]
+
+  must be reported as:
+    sink = inc dword ptr [edi+0x248]
+    destination = [controlled+0x0c] + 0x630 + 0x248
+                = [controlled+0x0c] + 0x878
+- This derivation is required even if the JSON only contains raw caller/callee disassembly.
+
+Sink ranking:
 - Prefer the earliest reachable indirect control transfer whose target or target source is derived from the controlled chunk.
-- A callee-mediated indirect branch or indirect call sourced from controlled-derived memory should rank above a later parent-function vtable call if the callee path has fewer uncontrolled dependencies.
+- Rank controlled-derived write/memory-modification sinks as valid discovery-mode sinks, even if they are not immediate IP-control sinks.
 - Rank sinks higher when:
-  1. the controlled chunk directly controls the branch predicates needed to reach the sink
-  2. the controlled chunk directly controls the object pointer, vtable pointer, callback pointer, dispatch pointer, or final transfer target
+  1. the controlled chunk directly controls needed branch predicates
+  2. the controlled chunk directly controls the object pointer, vtable pointer, callback pointer, dispatch pointer, write destination, or final transfer target
   3. the sink occurs before returning to the caller
   4. fewer external/non-controlled conditions are required
-- When multiple sinks exist on the same prefix path, still list them separately as primary + alternatives because they may offer different gadgets or different post-dispatch behavior.
+- When multiple sinks share a common prefix path, still list them separately as primary + alternatives.
 
 Center the analysis on:
-  1. the chunk dump and pointer-like fields inside the controlled chunk
-  2. stack slots and registers that already reference the chunk
-  3. concrete disassembly listings for the current function, reachable callees, conditional jump targets, unconditional jump targets, parent/caller functions from the call stack, and caller-resume sites
-  4. direct callees reached with controlled-derived register or stack arguments
-  5. indirect control transfers inside those callees
-  6. branch predicates inside callees that read from controlled-derived base registers
+1. chunk bytes and pointer-like fields inside the controlled chunk
+2. registers and stack slots that reference the chunk
+3. current function, reachable callees, branch targets, caller functions, and caller-resume sites
+4. direct callees reached with controlled-derived registers or stack arguments
+5. indirect transfers inside those callees
+6. memory writes inside those callees whose destination is controlled-derived
+7. branch predicates that read from controlled-derived base registers
 
 Answer in this exact order:
 
 1. reachability verdict
-In targeted mode, state whether reaching the target is CONFIRMED, PLAUSIBLE, or NOT SHOWN.
-In discovery mode, state whether a path to chunk modification or likely instruction-pointer-control consumption is CONFIRMED, PLAUSIBLE, or NOT SHOWN.
-In discovery mode, this verdict must also account for controlled-derived destination/write-target scenarios.
+In targeted mode, state CONFIRMED, PLAUSIBLE, or NOT SHOWN for reaching the target.
+In discovery mode, state CONFIRMED, PLAUSIBLE, or NOT SHOWN for reaching a controlled sink.
+The verdict must account for both likely IP-control consumption and controlled-derived write/memory-modification sinks.
 
 2. path class
-Choose exactly one for the primary scenario: intra-function, callee-mediated, or return-resume.
+Choose exactly one for the primary scenario:
+intra-function, callee-mediated, or return-resume.
 
 3. primary scenario
-Describe the shortest evidence-backed path from the current instruction pointer to the earliest reachable controlled sink (indirect transfer). Include the exact disassembly snippet that performs the transfer.
+Describe the shortest evidence-backed path from current IP to the earliest reachable controlled sink.
+Include the exact sink instruction.
+For write sinks, include the computed write-destination expression.
+For indirect transfers, include the target-source expression.
 
 4. primary scenario chunk requirements
-List only offsets in the controlled chunk that materially influence the path. For each one, give:
+List only controlled chunk offsets that materially influence the path.
+For each:
 - chunk offset
-- why that offset matters
+- why it matters
 - required value type
-- required value or property when it can be stated concretely
+- required value/property when concrete
 
 5. alternative scenarios
-List every additional strong controllable indirect transfer reachable from the current IP (even if they share the same initial route as the primary path). For each:
-- short description of the path and the exact indirect transfer instruction
-- whether it is intra-function, callee-mediated, or return-resume
-- how it differs from the primary (different vtable slot, different register used for jmp, different callee, etc.)
+List every additional materially distinct reachable controlled sink, including:
+- indirect transfers
+- controlled-derived write destinations
+- controlled-derived memory modifications
+- direct callees that modify memory through a controlled-derived this/object pointer
+
+For each:
+- short path description
+- exact sink instruction
+- path class
+- controlled-derived target/destination expression
+- how it differs from the primary
 
 6. alternative scenarios chunk requirements
-For each alternative, list the controlled chunk offsets, positions, and required values (same format as primary).
+For each alternative sink, list relevant controlled chunk offsets, derived pointer expressions, and required values.
+For write sinks, compute the destination expression relative to the controlled chunk where possible.
 
 7. blocking conditions
-State which conditions are outside the controlled chunk and therefore would still need to be satisfied.
+List conditions outside the controlled chunk that still need to be satisfied.
 
 8. target reachability rationale
-Explain why the identified sinks are reachable, citing branch conditions, indirect calls/jumps, return sites, callee-mediated transfers, etc. Explicitly note when multiple sinks share a common prefix path.
-In the target reachability rationale, include a dedicated subsection named "return-resume route".
-This subsection must:
-- list the current frame return address
-- identify the caller function and offset
-- show the first basic block at the caller resume site
-- follow all visible branches from that resume site that are present in the collected disassembly
-- identify any indirect call/jmp reached after return
-- explain whether the indirect target source is controlled, controlled-derived, external, or unknown
+Explain why the identified sinks are reachable using branch predicates, return sites, caller-side paths, callee-mediated paths, indirect calls/jumps, and controlled-derived write expressions.
+Explicitly note when multiple sinks share a prefix path.
 
+Include a subsection named "return-resume route" that:
+- lists the current frame return address
+- identifies the caller function and offset
+- shows the first basic block at the caller resume site
+- follows visible branches from that resume site when their target disassembly is present
+- identifies indirect calls/jumps reached after return
+- identifies controlled-derived writes reached after return
+- classifies each indirect target/write destination as controlled, controlled-derived, external, or unknown
 
 9. minimal next checks
-If the snapshot is insufficient, list the smallest additional debugger checks needed to confirm or reject any of the presented paths.
+If the snapshot is insufficient, list the smallest debugger checks needed to confirm/reject the presented paths.
+Prefer concrete bp/u/uf/dd/dps commands.
 
 10. fallback breakpoint candidates
-List the concrete reachable_functions entries that are the best breakpoint candidates for continuing the analysis. Include address, symbol, path class, and one-line reason.
+List concrete reachable_functions / return_resume_analysis / callee entries that are best breakpoint candidates.
+Include address, symbol, path class, and one-line reason.
 
 Style rules:
 - Be concise and technical.
-- Use addresses, offsets, register names, and field offsets numerically.
-- Do not transcribe long raw dumps.
-- When discussing control flow, prefer short disassembly-backed path descriptions over high-level summaries.
-- Do not invent hidden fields or object types unless the disassembly strongly supports the inference.
-- Treat caller-side post-return logic as first-class when it is the only plausible route to the target.
-- Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer."""
+- Use numeric addresses, offsets, register names, and field offsets.
+- Do not transcribe long dumps.
+- Prefer short disassembly-backed path descriptions.
+- Do not invent object types unless strongly supported by disassembly."""
 	if question_type == "8":
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on ROP primitive quality and feasibility.
@@ -29383,7 +29565,7 @@ class MnAI(object):
 			self.logInfoDetail("-q 1 : analyse the crash context")
 			self.logInfoDetail("-q 2 : analyse the current function")
 			self.logInfoDetail("-q 3 : analyse whether a controlled heap chunk can steer execution to a target")
-			self.logInfoDetail("-q 8 : analyse ROP primitive quality and feasibility")
+			#self.logInfoDetail("-q 8 : analyse ROP primitive quality and feasibility")
 			self.logInfoDetail("-q 9 : use a request template from -f <file>")
 			return False
 		if type(self.args["q"]).__name__.lower() == "bool":
