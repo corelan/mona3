@@ -1815,15 +1815,31 @@ def _getInstructionWindow(address, depth_before=10, depth_after=10):
 
 def _extractReturnPointerContext(raw_line):
 	mndbg.dbgp(get_current_function_name())
-	match = re.search(r"\bfrom\s+([0-9a-fA-F]+)\b", raw_line)
-	if not match:
+	line_text = ensure_text(raw_line).strip()
+	if line_text == "":
 		return None
-	try:
-		return_address = int(match.group(1), 16)
-	except Exception:
+	line_lower = line_text.lower()
+	if "retaddr" in line_lower or line_lower.startswith("child") or line_lower.startswith("frame"):
+		return None
+	return_address = 0
+	match = re.search(r"\bfrom\s+([0-9a-fA-F`]+)\b", line_text)
+	if match:
+		try:
+			return_address = int(match.group(1).replace("`", ""), 16)
+		except Exception:
+			return_address = 0
+	if return_address <= 0:
+		address_tokens = re.findall(r"\b[0-9a-fA-F`]{7,20}\b", line_text)
+		if len(address_tokens) >= 2:
+			try:
+				return_address = int(address_tokens[1].replace("`", ""), 16)
+			except Exception:
+				return_address = 0
+	if return_address <= 0:
 		return None
 	context = OrderedDict()
 	context["address"] = PTR_PRINT % return_address
+	context["raw_line"] = line_text
 	symbol_name = _getSymbolName(return_address)
 	if symbol_name != "":
 		context["symbol"] = symbol_name
@@ -6106,7 +6122,7 @@ def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 	if "target_function" in variables and isinstance(variables.get("target_function"), dict):
 		_compactQ3FunctionContext(variables["target_function"], seen_control_flow_disasm, preserve_full_uf=False)
 	if "caller_function" in variables and isinstance(variables.get("caller_function"), dict):
-		_compactQ3FunctionContext(variables["caller_function"], seen_control_flow_disasm, preserve_full_uf=False)
+		_compactQ3FunctionContext(variables["caller_function"], seen_control_flow_disasm, preserve_full_uf=True)
 	if "caller_chain" in variables and isinstance(variables.get("caller_chain"), list):
 		for frame_entry in variables["caller_chain"]:
 			if not isinstance(frame_entry, dict):
@@ -6323,16 +6339,30 @@ Allowed path classes:
 3. return-resume path: the current function returns, execution resumes in the caller, and the caller then reaches the target or a controlled-data sink
 
 Return-resume expansion is mandatory:
-- If the current function can return, the analysis MUST inspect the concrete return address from the current stack frame / call stack.
-- Treat the immediate caller resume address as an in-scope continuation, not as optional future work.
-- Even if caller_function, caller_chain, caller_resume_window, or post_return_constraints are missing, use the call_stack RetAddr and stack memory to identify the caller resume site.
-- Disassemble and analyze the caller from the concrete resume address forward until one of these happens:
+- If the current function can return, the analysis MUST treat the concrete caller return address as an in-scope continuation.
+- Identify the caller resume site from the best available evidence, in this order:
+  1. return_context / caller_resume_window / caller_function
+  2. call_stack RetAddr for the current frame
+  3. pointer-sized value at the current stack pointer when it matches an executable module address
+  4. stack_memory entries that match the current frame's return address
+- Do not treat missing caller_function, caller_chain, caller_resume_window, or post_return_constraints as a reason to skip return-resume analysis when a concrete RetAddr is available.
+- Starting at the concrete caller resume address, analyze the supplied caller-side disassembly forward as first-class scope.
+- Follow visible conditional and unconditional branches from the caller resume site when their target disassembly is present in the request.
+- Continue the caller-side analysis until one of these happens:
   1. a strong controlled-data sink is reached
-  2. an indirect control transfer is reached
-  3. the caller returns
-  4. a clearly unresolved branch or external dependency blocks the path
-- Do not classify return-resume analysis as “missing” merely because structured caller fields are absent if the call stack contains a concrete RetAddr.
-- If the call stack shows a concrete caller resume address, a final answer that says “no reachable controlled sink shown” MUST explicitly explain why the caller resume path from that RetAddr does not reach one.
+  2. a controlled-derived write destination / memory-modification site is reached
+  3. an indirect call or indirect jump is reached
+  4. the caller returns
+  5. execution reaches code whose disassembly is not present in the request
+  6. an unresolved branch or external dependency blocks the path
+- If the caller resume address is concrete but the request does not contain disassembly for that address, classify the return-resume route as UNDER-COLLECTED, not as absent.
+- When the route is UNDER-COLLECTED, list the exact missing collection targets, including:
+  - uf <caller function>, when the caller symbol is known
+  - u <RetAddr> L120
+  - branch-target disassembly for visible branches reached from <RetAddr>
+  - any indirect call/jmp sites reached from those branch targets
+- If caller-side disassembly is present in additional_context_files, reachable_functions, caller_function, caller_resume_window, or any other supplied field, use it as first-class evidence.
+- If the call stack shows a concrete caller resume address, a final answer that says "no reachable controlled sink shown" MUST explicitly include a return-resume subsection explaining why the path from that RetAddr does not reach a controlled sink, or state UNDER-COLLECTED with the missing disassembly.
 
 Expanded sink-discovery rules:
 - Always identify all strong controllable indirect control transfers (vftable calls, indirect calls, indirect jumps, register-indirect branches, memory-indirect branches, jmp edx/eax/etc. through controlled-derived pointers) that are reachable from the current IP by changing only the controlled chunk.
@@ -6782,11 +6812,25 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 				active_keys=function_context_active_keys
 			)
 			window = _getInstructionWindow(return_address, depth_before=0, depth_after=12)
+			resume_forward_disasm = ""
+			try:
+				resume_forward_disasm = ensure_text(dbg.nativeCommand("u %s L100" % (PTR_PRINT % return_address))).strip()
+			except Exception as e:
+				mndbg.dbgp("tellme: resume-site forward disasm failed for %s: %s" % (
+					PTR_PRINT % return_address,
+					str(e)
+				), errormode=False)
 			caller_resume_window = OrderedDict([
 				("address", PTR_PRINT % return_address),
 				("current", window.get("current", "")),
 				("after", window.get("after", [])),
 			])
+			if resume_forward_disasm != "":
+				caller_resume_window["forward_disasm"] = resume_forward_disasm
+				caller_resume_window["control_flow_targets"] = _collectDisassemblyTargetContexts(
+					resume_forward_disasm,
+					max_depth=follow_depth
+				)
 			post_constraints = OrderedDict()
 			current_instr = ensure_text(window.get("current", "")).strip().lower()
 			if current_instr != "":
