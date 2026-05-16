@@ -35057,7 +35057,7 @@ def procHeap(args):
 
 	heapbase = 0
 	searchtype = ""
-	searchtypes = ["lal","lfh","all","segments", "chunks", "layout", "fea", "bea"]
+	searchtypes = ["lal","lfh","all","segments", "chunks", "layout", "fea", "bea", "ucr"]
 	error = False
 	filterafter = ""
 	
@@ -35794,6 +35794,55 @@ def procHeap(args):
 										pass
 									dbg.log("")
 								dbg.log("")
+
+			if searchtype == "ucr":
+				hline = "UCR information for heap %s%s:" % (PTR_PRINT % heapbase, heapbase_extra)
+				dbg.log("")
+				dbg.log(hline)
+				dbg.log("-" * len(hline))
+				try:
+					_nt_heap = mnproc.getPEB().getHeapObject(heapbase)
+
+					heap_ucrs = _nt_heap.getUCRDescriptors()
+					dbg.log("  Heap-wide UCRList (%d entr%s, size-sorted):" % (
+						len(heap_ucrs), "y" if len(heap_ucrs) == 1 else "ies"))
+					if heap_ucrs:
+						for i, ucr in enumerate(heap_ucrs):
+							dbg.log("    [%d] %s - %s  size: %s  (%d page%s)" % (
+								i,
+								PTR_PRINT % ucr.address,
+								PTR_PRINT % ucr.end,
+								PTR_PRINT % ucr.size,
+								ucr.size >> 12,
+								"" if (ucr.size >> 12) == 1 else "s",
+							))
+					else:
+						dbg.log("    (none)")
+
+					dbg.log("")
+					for seg_obj in _nt_heap.getSegments():
+						seg_end  = seg_obj.BaseAddress + seg_obj.NumberOfPages * 0x1000
+						seg_ucrs = seg_obj.getUCRDescriptors()
+						dbg.log("  Segment %s - %s (%d UCR%s):" % (
+							PTR_PRINT % seg_obj.BaseAddress,
+							PTR_PRINT % seg_end,
+							len(seg_ucrs),
+							"" if len(seg_ucrs) == 1 else "s",
+						))
+						if seg_ucrs:
+							for i, ucr in enumerate(seg_ucrs):
+								dbg.log("    [%d] %s - %s  size: %s  (%d page%s)" % (
+									i,
+									PTR_PRINT % ucr.address,
+									PTR_PRINT % ucr.end,
+									PTR_PRINT % ucr.size,
+									ucr.size >> 12,
+									"" if (ucr.size >> 12) == 1 else "s",
+								))
+						else:
+							dbg.log("    (no UCRs)")
+				except Exception as e:
+					dbg.log("  [-] Failed to enumerate UCRs: %s" % str(e))
 
 
 		if "stat" in args and len(statinfo) > 0:
@@ -40110,6 +40159,7 @@ Mandatory arguments (heap-level queries):
                 'lal' (force display of LAL FEA, only on XP/2003),
                 'lfh' (force display of LFH FEA (Vista/Win7/...)),
                 'bea' (backend allocator, mona will automatically determine what it is),
+                'ucr' (show uncommitted ranges per segment and heap-wide UCRList),
                 'all' (show all information)
     Note: 'layout' will show all heap chunks and their vtables & strings. Use on WinDBG for maximum results.
 
