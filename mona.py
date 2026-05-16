@@ -22767,7 +22767,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	pivotdistance - minimum distance a stackpivot needs to be
 	fast - Boolean indicating if you want to process less obvious gadgets as well
 	mode - internal use only
-	sortedprint - sort pointers before printing output to rop.txt
+	sortedprint - sort pointers before printing output to rop.md
 	technique - create all chains if empty. otherwise, create virtualalloc or virtualprotect chain (based on what is specified)
 	
 	Return:
@@ -40697,7 +40697,7 @@ This will affect clickable links and help output.
 Mandatory argument :  -r <reg>  where reg is a valid register"""
 	
 	ropfuncUsage = """Default module criteria : non aslr, non rebase, non os
-Output will be written to ropfunc.txt"""
+Output will be written to ropfunc.md"""
 	
 	modulesUsage = """Shows information about the loaded modules.
 Check the global options above to filter modules as needed.
@@ -40753,7 +40753,7 @@ Optional parameters :
     -f \"file1,file2,..filen\"    : use mona generated rop files as input instead of searching in memory
     -rva                        : use RVA's in rop chain
     -s <technique>              : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
-    -sort                       : sort the output in rop.txt (sort on pointer value)"""
+    -sort                       : sort the output in rop.md (sort on pointer value)"""
 	
 	jopUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
@@ -40774,7 +40774,7 @@ contain the output of the same mona command.
 Mandatory argument : -f \"file1,file2,...filen\"
 Put all filenames between one set of double quotes, and separate files with comma's.
 You can specify a foldername as well with -f, all files in the root of that folder will be part of the compare.
-Output will be written to filecompare.txt and filecompare_not.txt (not matching pointers)
+Output will be written to filecompare.md and filecompare_not.md (not matching pointers)
 Optional parameters : 
     -contains \"INSTRUCTION\"  (will only list if instruction is found)
     -nostrict (will also list pointer is instructions don't match in all files)
@@ -40782,7 +40782,7 @@ Optional parameters :
                       When using -range, the -contains and -nostrict options will be ignored
     -ptronly : only show matching pointers (slightly faster). Doesn't work when 'range' is used"""
 
-	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.txt
+	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.md
 in ascii, hex and unescape() javascript format
 
 Mandatory argument : size (numberic value)
@@ -40985,7 +40985,7 @@ Optional arguments:
          Example: -s \\x01 -e \\x7f to have all bytes from 0x01 to 0x7f
                   -s \\xff -e \\x7f to have all bytes from 0xff to 0x7f in reverse
     -r : show array backwards (reversed), starting at \\xff
-    Output will be written to bytearray.txt (raw bytes + Python 2/3 code),
+    Output will be written to bytearray.md (raw bytes + Python 2/3 code),
     and binary output will be written to bytearray.bin"""
 	
 	headerUsage = """Convert contents of a binary file to code that can be run to produce the file
@@ -41607,7 +41607,7 @@ Official model docs:
 	    __LAUNCHCMD__ tellme -e openai -q 1 -timeout 120
 	    __LAUNCHCMD__ tellme -e openai -q 1 -maxsize 300
 	    __LAUNCHCMD__ tellme -e openai -q 1 -cpb '\\x00\\x0a\\x0d'
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.txt
+	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.md
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -cpb '\\x00\\x0a\\x0d'
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
