@@ -25060,7 +25060,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	
 	modulestosearch = getModulesToQuery(modulecriteria)
 	
-	routinesetup["VirtualProtect"] = """--------------------------------------------
+	routinesetup["VirtualProtect"] = """```
  eax = NOP (0x90909090)
  ecx = lpOldProtect (ptr to W address)
  edx = NewProtect (0x40)
@@ -25079,10 +25079,10 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
  esi = ptr to JMP [EAX]
  edi = ROP NOP (RETN)
  + place ptr to "jmp esp" on stack, below pushad
---------------------------------------------"""
+```"""
 
 
-	routinesetup["VirtualAlloc"] = """--------------------------------------------
+	routinesetup["VirtualAlloc"] = """```
  eax = NOP (0x90909090)
  ecx = flProtect (0x40)
  edx = flAllocationType (0x1000)
@@ -25101,9 +25101,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
  esi = ptr to JMP [EAX]
  edi = ROP NOP (RETN)
  + place ptr to "jmp esp" on stack, below PUSHAD
---------------------------------------------"""
+```"""
 
-	routinesetup["SetInformationProcess"] = """--------------------------------------------
+	routinesetup["SetInformationProcess"] = """```
  eax = SizeOf(ExecuteFlags) (0x4)
  ecx = &ExecuteFlags (ptr to 0x00000002)
  edx = ProcessExecuteFlags (0x22)
@@ -25112,9 +25112,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
  ebp = ptr to NtSetInformationProcess()
  esi = <not used>
  edi = ROP NOP (4 byte stackpivot)
---------------------------------------------"""
+```"""
 
-	routinesetup["SetProcessDEPPolicy"] = """--------------------------------------------
+	routinesetup["SetProcessDEPPolicy"] = """```
  eax = <not used>
  ecx = <not used>
  edx = <not used>
@@ -25123,7 +25123,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
  ebp = ptr to SetProcessDEPPolicy()
  esi = <not used>
  edi = ROP NOP (4 byte stackpivot)
---------------------------------------------"""
+```"""
 
 	updatetxt = ""
     
@@ -25145,15 +25145,14 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		dbg.log("[+] %s" % updatetxt)
 		objprogressfile.write("- " + updatetxt,progressfile)
 		vplogtxt += "\n"
-		vplogtxt += "```\n"
-		vplogtxt += "\n\nRegister setup for " + routine + "() :\n" 
-		vplogtxt += routinesetup[routine] + "\n```\n\n"
+		vplogtxt += "\n\n### Register setup for " + routine + "() :\n" 
+		vplogtxt += routinesetup[routine] + "\n\n"
 		targetOS = "(XP/2003 Server and up)"
 		if routine == "SetInformationProcess":
 			targetOS = "(XP/2003 Server only)"
 		if routine == "SetProcessDEPPolicy":
 			targetOS = "(XP SP3/Vista SP1/2008 Server SP1, can be called only once per process)"
-		title = "ROP Chain for %s() [%s] :" % (routine,targetOS)
+		title = "## ROP Chain for %s() [%s] :" % (routine,targetOS)
 		vplogtxt += "\n%s\n" % title
 		vplogtxt += ("-" * len(title)) + "\n\n"
 		vplogtxt += "```ruby\n"
@@ -25604,9 +25603,9 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		vplogtxt = vplogtxt.replace("create_rop_chain()","create_rop_chain(" + argtxt + ")")
 		vplogtxt += '\n  ' + calltxt
 		vplogtxt += "```\n"
-		vplogtxt += '\n\n\n'
+		vplogtxt += '\n\n'
 		# C
-		vplogtxt += "```c++\n"
+		vplogtxt += "\n```c++\n"
 		vplogtxt += "*** [ C ] ***\n\n"
 		vplogtxt += "  #define CREATE_ROP_CHAIN(name, ...) \\\n"
 		vplogtxt += "    int name##_length = create_rop_chain(NULL, ##__VA_ARGS__); \\\n"
@@ -25631,7 +25630,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		vplogtxt += "  // int rop_chain_length = create_rop_chain(rop_chain, %s);\n\n" % argtxtpy
 		vplogtxt += "```\n"
 		# Python
-		vplogtxt += "```python\n"
+		vplogtxt += "\n```python\n"
 		vplogtxt += "*** [ Python ] ***\n\n"		
 		vplogtxt += "  def create_rop_chain(%s):\n" % argtxt
 		vplogtxt += "\n    # rop chain generated with mona.py - www.corelan.be\n"			
@@ -25643,8 +25642,8 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		vplogtxt += "  rop_chain = create_rop_chain(%s)\n\n" % argtxtpy
 		vplogtxt += "```\n"
 		# Javascript
-		vplogtxt += "```javascript\n"
-		vplogtxt += "\n\n*** [ JavaScript ] ***\n\n"
+		vplogtxt += "\n```javascript\n"
+		vplogtxt += "*** [ JavaScript ] ***\n\n"
 		vplogtxt += "  //rop chain generated with mona.py - www.corelan.be\n"		
 		if not showrva:
 			vplogtxt += "  rop_gadgets = unescape(\n"
@@ -25686,7 +25685,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 			vplogtxt += "  }\n\n"
 			vplogtxt += "%s" % vplogtxtjs
 			vplogtxt += "\n  var rop_chain = gadgets2uni(get_rop_chain(%s));\n\n" % argtxtjs
-			vplogtxt += "```\n"
+		vplogtxt += "```\n"
 		vplogtxt += '\n--------------------------------------------------------------------------------------------------\n\n'
 		
 		# MSF RopDB XML Format - spit out if only one module was selected
