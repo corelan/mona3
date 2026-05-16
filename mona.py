@@ -16612,6 +16612,21 @@ class MnNTHeap(MnHeap):
 		mndbg.dbgp("getVirtualAllocdBlocks: found %d blocks" % len(self.VirtualAllocdBlocks))
 		return self.VirtualAllocdBlocks
 
+	def getUCRDescriptors(self):
+		"""Walk the heap-wide UCRList and return all UCR descriptors, size-sorted.
+
+		Walks _HEAP.UCRList; each list entry lands on _HEAP_UCR_DESCRIPTOR.ListEntry.
+
+		Return: list of MnUCRDescriptor, ordered as stored (ascending by size).
+		"""
+		head = MnListEntry(self.heapbase + self._offset("UCRList"))
+		result = []
+		for entry in head.walk():
+			ucr = MnUCRDescriptor.fromListEntry(entry)
+			if ucr.size:
+				result.append(ucr)
+		return result
+
 	def getLFHAddress(self):
 		"""Retrieve the address of the Low Fragmentation Heap structure.
 
@@ -17224,6 +17239,81 @@ class MnVirtualAllocdBlocks:
 		self.BusyBlock   = entry_addr + self._offsets["BusyBlock"][MnPEB.getArch()]
 
 
+class MnUCRDescriptor:
+	"""Represents a _HEAP_UCR_DESCRIPTOR — an uncommitted range within a heap segment.
+
+	The descriptor body layout (Vista through Win11, unchanged):
+	  x86: +0x000 ListEntry (8b), +0x008 SegmentEntry (8b), +0x010 Address, +0x014 Size
+	  x64: +0x000 ListEntry (16b), +0x010 SegmentEntry (16b), +0x020 Address, +0x028 Size
+
+	The body is preceded by a _HEAP_ENTRY header (8 bytes x86 / 16 bytes x64) with
+	Flags=BUSY(1) and UnusedBytes=3 (internal sentinel, not a user allocation).
+
+	All offsets are measured from the descriptor body base (= ListEntry address).
+
+	Two factory methods reflect the two list memberships of the same physical descriptor:
+	  fromSegmentEntry — built from a UCRSegmentList walker entry (-> SegmentEntry field)
+	  fromListEntry    — built from a UCRList walker entry       (-> ListEntry field)
+	"""
+
+	_offsets = {
+		"ListEntry":    (0x000, 0x000),
+		"SegmentEntry": (0x008, 0x010),
+		"Address":      (0x010, 0x020),
+		"Size":         (0x014, 0x028),
+	}
+
+	def __init__(self, address, size):
+		self.address = address
+		self.size    = size
+
+	@classmethod
+	def fromListEntry(cls, entry_ptr):
+		"""Construct from a ListEntry pointer (UCRList walker).
+
+		The UCRList walker lands directly on ListEntry, which is the descriptor
+		body base, so offsets apply without adjustment.
+		"""
+		ai = MnPEB.getArch()
+		return cls(
+			readPtrSizeBytes(entry_ptr + cls._offsets["Address"][ai]),
+			readPtrSizeBytes(entry_ptr + cls._offsets["Size"][ai]),
+		)
+
+	@classmethod
+	def fromSegmentEntry(cls, entry_ptr):
+		"""Construct from a SegmentEntry pointer (UCRSegmentList walker).
+
+		The UCRSegmentList walker lands on SegmentEntry, so subtract its offset
+		to recover the descriptor body base before reading Address and Size.
+		"""
+		ai   = MnPEB.getArch()
+		body = entry_ptr - cls._offsets["SegmentEntry"][ai]
+		return cls(
+			readPtrSizeBytes(body + cls._offsets["Address"][ai]),
+			readPtrSizeBytes(body + cls._offsets["Size"][ai]),
+		)
+
+	@property
+	def end(self):
+		return self.address + self.size
+
+	def contains(self, addr):
+		"""Return True if addr falls within this uncommitted range."""
+		return self.address <= addr < self.end
+
+	def containsPage(self, addr):
+		"""Return True if the 4 KB page containing addr falls within this range."""
+		return self.address <= (addr & ~0xFFF) < self.end
+
+	def pages(self):
+		"""Yield the start address of each 4 KB page covered by this range."""
+		page = self.address
+		while page < self.end:
+			yield page
+			page += 0x1000
+
+
 class MnNTSegmentBase:
 	"""Base for MnNTVistaSegment and derived segment classes.
 
@@ -17405,24 +17495,32 @@ class MnNTVistaSegment(MnNTSegmentBase):
 		"UCRSegmentList":                  (0x038, 0x060),
 	}
 
-	def _last_committed_entry(self):
-		"""Walk UCRSegmentList to find the start of the first uncommitted range.
+	def getUCRDescriptors(self):
+		"""Walk the per-segment UCRSegmentList and return all UCR descriptors.
 
-		_HEAP_UCR_DESCRIPTOR layout:
-		  x86: +0x000 ListEntry (8 bytes), +0x008 Address, +0x00c Size
-		  x64: +0x000 ListEntry (16 bytes), +0x010 Address, +0x018 Size
+		Walks _HEAP_SEGMENT.UCRSegmentList; each list entry lands on
+		_HEAP_UCR_DESCRIPTOR.SegmentEntry.
+
+		Return: list of MnUCRDescriptor.
 		"""
-		ucr_list = MnListEntry(self.address + self._offsets["UCRSegmentList"][MnPEB.getArch()])
-		addr_off = archValue(0x08, 0x10)
-		result   = self.LastValidEntry
-		try:
-			for entry in ucr_list.walk():
-				ucr_start = readPtrSizeBytes(entry + addr_off)
-				if ucr_start < result:
-					result = ucr_start
-		except Exception:
-			pass
+		head = MnListEntry(self.address + self._offsets["UCRSegmentList"][MnPEB.getArch()])
+		result = []
+		for entry in head.walk():
+			ucr = MnUCRDescriptor.fromSegmentEntry(entry)
+			if ucr.size:
+				result.append(ucr)
 		return result
+
+	def _last_committed_entry(self):
+		"""Return the address where committed data ends in this segment.
+
+		Uses UCR descriptors to find the lowest uncommitted range start,
+		falling back to LastValidEntry when no UCRs are present.
+		"""
+		ucrs = self.getUCRDescriptors()
+		if not ucrs:
+			return self.LastValidEntry
+		return min(ucr.address for ucr in ucrs)
 
 	def __init__(self, segaddr, encoding_key=0):
 		self.address       = segaddr
