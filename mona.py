@@ -9397,13 +9397,14 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None, mdstyle=False):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
 	padding : string to prepend to every printed line
 	logobj  : optional MnLog object for file output
 	logfile : optional filename (used with logobj.write())
+	mdstyle : when True, render as an aligned markdown pipe table
 	"""
 
 	if itemsequence is None:
@@ -9496,6 +9497,20 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 			return "<b>%s</b>" % formatted
 		return formatted
 
+	def _plain_cell_text(v):
+		return stripTags(_ensure_text(v))
+
+	def _escape_md_cell_text(v):
+		txt = _plain_cell_text(v)
+		txt = txt.replace("|", " / ")
+		txt = txt.replace("\\", "\\\\")
+		txt = txt.replace("`", "\\`")
+		txt = txt.replace("*", "\\*")
+		txt = txt.replace("_", "\\_")
+		txt = txt.replace("[", "\\[")
+		txt = txt.replace("]", "\\]")
+		return txt
+
 	def _normalize_row(key, value):
 		if isinstance(value, (list, tuple)):
 			return [key] + list(value)
@@ -9503,6 +9518,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 
 	raw_rows = []
 	formatted_rows = []
+	file_formatted_rows = []
 	expected_cols = len(headers)
 
 	if len(printsequence) == 0:
@@ -9524,66 +9540,95 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 			formatted_rows.append([
 				_format_cell(row[i], types[i], i) for i in range(expected_cols)
 			])
+			file_formatted_rows.append([
+				_format_value(row[i], types[i]) for i in range(expected_cols)
+			])
 		else:
 			dbg.log("key %s not present" % key)
 			dbg.log("%s" % data)
 	col_widths = []
 
 	def _display_len(v):
-		txt = _ensure_text(v)
-		if txt.startswith("<b>") and txt.endswith("</b>"):
-			txt = txt[3:-4]
-		if "link cmd" in txt:
-			start = txt.find(">")
-			if start != -1:
-				end = txt.find("</cmd>", start + 1)
-				if end == -1:
-					end = txt.find("</link>", start + 1)
-				if end != -1:
-					return len(txt[start + 1:end])
-		return len(txt)
+		return len(_plain_cell_text(v))
 
+	screen_col_widths = []
+	file_col_widths = []
 	for i in range(expected_cols):
-		max_value_width = 0
+		max_screen_value_width = 0
+		max_file_value_width = 0
 		for row in formatted_rows:
-			max_value_width = max(max_value_width, _display_len(row[i]))
+			max_screen_value_width = max(max_screen_value_width, _display_len(row[i]))
+		for row in file_formatted_rows:
+			file_value = _plain_cell_text(row[i])
+			if mdstyle:
+				file_value = _escape_md_cell_text(file_value)
+			max_file_value_width = max(max_file_value_width, len(file_value))
 		header_width = len(_ensure_text(headers[i]))
-		col_widths.append(max(max_value_width, header_width + 1))
+		screen_col_widths.append(max(max_screen_value_width, header_width + 1))
+		file_col_widths.append(max(max_file_value_width, header_width))
 
-	def _pad_cell(v, width, align_right=False):
-		txt = _ensure_text(v)
-		padding = " " * max(0, width - _display_len(txt))
+	def _pad_cell(v, width, align_right=False, file_mode=False, use_mdstyle=False):
+		if file_mode:
+			txt = _plain_cell_text(v)
+			if use_mdstyle:
+				txt = _escape_md_cell_text(txt)
+			current_len = len(txt)
+		else:
+			txt = _ensure_text(v)
+			current_len = _display_len(txt)
+		padding = " " * max(0, width - current_len)
 		if align_right:
 			return padding + txt
 		return txt + padding
 
-	def _render_row(values, align_right_cols=None):
+	def _render_row(values, align_right_cols=None, use_mdstyle=False, file_mode=False):
 		if align_right_cols is None:
 			align_right_cols = set()
-		return "   ".join([
-			_pad_cell(values[i], col_widths[i], i in align_right_cols) for i in range(expected_cols)
-		])
+		widths = file_col_widths if file_mode else screen_col_widths
+		rendered_cells = [
+			_pad_cell(values[i], widths[i], i in align_right_cols, file_mode=file_mode, use_mdstyle=use_mdstyle) for i in range(expected_cols)
+		]
+		if use_mdstyle:
+			return "| " + " | ".join(rendered_cells) + " |"
+		return "   ".join(rendered_cells)
 
 	right_align_cols = set([i for i in range(expected_cols) if types[i].lower() == "size"])
 
-	def _p(line):
+	def _p(line, file_line=None):
 		dbg.log("%s%s" % (padding, line))
 		if logobj is not None and logfile is not None:
-			logobj.write("%s%s" % (padding, stripTags(line)), logfile)
+			if file_line is None:
+				file_line = line
+			file_padding = ""
+			if not mdstyle:
+				file_padding = padding
+			logobj.write("%s%s" % (file_padding, stripTags(file_line)), logfile)
 
-	_p(_render_row([_ensure_text(h) for h in headers]))
-	_p(_render_row([("-" * w) for w in col_widths]))
+	if logobj is not None and logfile is not None:
+		logobj.write("", logfile)
+		logobj.write("", logfile)
 
-	for raw_row, row in zip(raw_rows, formatted_rows):
-		line = _render_row([_ensure_text(c) for c in row], align_right_cols=right_align_cols)
+	header_line = _render_row([_ensure_text(h) for h in headers], use_mdstyle=False)
+	header_file_line = _render_row([_ensure_text(h) for h in headers], use_mdstyle=mdstyle, file_mode=True)
+	sep_line = _render_row([("-" * w) for w in screen_col_widths], use_mdstyle=False)
+	sep_file_line = _render_row([("-" * w) for w in file_col_widths], use_mdstyle=mdstyle, file_mode=True)
+	_p(header_line, header_file_line)
+	_p(sep_line, sep_file_line)
+
+	for raw_row, row, file_row in zip(raw_rows, formatted_rows, file_formatted_rows):
+		line = _render_row([_ensure_text(c) for c in row], align_right_cols=right_align_cols, use_mdstyle=False)
+		file_line = _render_row(file_row, align_right_cols=right_align_cols, use_mdstyle=mdstyle, file_mode=True)
 		if len(types) > 0 and types[0].lower() == "pointer" and not __DEBUGGERAPP__ == "WinDBG":
 			addr_val = _pointer_to_int(raw_row[0])
 			if addr_val is not None:
 				dbg.log("%s%s" % (padding, line), address=addr_val)
 				if logobj is not None and logfile is not None:
-					logobj.write("%s%s" % (padding, stripTags(line)), logfile)
+					file_padding = ""
+					if not mdstyle:
+						file_padding = padding
+					logobj.write("%s%s" % (file_padding, stripTags(file_line)), logfile)
 				continue
-		_p(line)
+		_p(line, file_line)
 
 
 
@@ -34400,7 +34445,7 @@ def procLayout(args):
 
 	headers = ["Start", "End", "Size", "Type", "Description"]
 	types   = ["pointer", "pointer", "Size", "string", "string"]
-	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts)
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts, mdstyle=True)
 
 	dbg.log("")
 	dbg.log("    Total: %d entities" % len(table_seq))
