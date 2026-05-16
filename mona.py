@@ -1868,7 +1868,48 @@ def _getDisasmSummary(address, depth_before=10, depth_after=10):
 	return result
 
 
-def _getControlFlowDisasmSourceForAddress(address):
+def _isReturnInstructionText(instruction_text):
+	mndbg.dbgp(get_current_function_name())
+	instruction = ensure_text(instruction_text).strip().lower()
+	if instruction == "":
+		return False
+	mnemonic = instruction.split(" ", 1)[0]
+	return mnemonic in ["ret", "retn", "retf"]
+
+
+def _sliceDisassemblyTextFromAddress(disasm_text, address, max_lines=0, stop_at_return=False):
+	mndbg.dbgp(get_current_function_name())
+	if not disasm_text:
+		return ""
+	entries = _parseDisassemblyTextEntries(disasm_text)
+	if len(entries) == 0:
+		return ensure_text(disasm_text).strip()
+	start_idx = 0
+	if isinstance(address, int) and address > 0:
+		found_idx = -1
+		for idx, entry in enumerate(entries):
+			entry_address = entry.get("address", 0)
+			if isinstance(entry_address, int) and entry_address >= address:
+				found_idx = idx
+				break
+		if found_idx >= 0:
+			start_idx = found_idx
+	sliced_entries = entries[start_idx:]
+	if isinstance(max_lines, int) and max_lines > 0:
+		sliced_entries = sliced_entries[:max_lines]
+	sliced_lines = []
+	for entry in sliced_entries:
+		raw_line = ensure_text(entry.get("raw_line", "")).rstrip()
+		if raw_line != "":
+			sliced_lines.append(raw_line)
+		if stop_at_return and _isReturnInstructionText(entry.get("instruction", "")):
+			break
+	if len(sliced_lines) == 0:
+		return ""
+	return "\n".join(sliced_lines).strip()
+
+
+def _getControlFlowDisasmSourceForAddress(address, slice_from_address=False, max_lines=0):
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("address", PTR_PRINT % address),
@@ -1885,7 +1926,12 @@ def _getControlFlowDisasmSourceForAddress(address):
 			result["analysis_scope"] = "function"
 			if isinstance(function_start, int) and function_start > 0:
 				result["function_start"] = PTR_PRINT % function_start
-			result["disasm_source"] = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
+			uf_output = ensure_text(dbg.nativeCommand("uf %s" % (PTR_PRINT % address))).strip()
+			if slice_from_address:
+				result["analysis_scope"] = "function_from_requested_address"
+				result["disasm_source"] = _sliceDisassemblyTextFromAddress(uf_output, address, max_lines=max_lines)
+			else:
+				result["disasm_source"] = uf_output
 			return result
 	except Exception as e:
 		mndbg.dbgp("tellme: full function disasm source lookup failed for %s: %s" % (
@@ -1893,7 +1939,9 @@ def _getControlFlowDisasmSourceForAddress(address):
 		), errormode=False)
 	try:
 		result["analysis_scope"] = "code_window"
-		result["disasm_source"] = ensure_text(dbg.nativeCommand("u %s L100" % (PTR_PRINT % address))).strip()
+		if not isinstance(max_lines, int) or max_lines < 1:
+			max_lines = 100
+		result["disasm_source"] = ensure_text(dbg.nativeCommand("u %s L%d" % (PTR_PRINT % address, max_lines))).strip()
 	except Exception as e:
 		mndbg.dbgp("tellme: code window disasm source lookup failed for %s: %s" % (
 			PTR_PRINT % address, str(e)
@@ -1940,13 +1988,18 @@ def _resolveFunctionStart(address):
 	return address, "", "fallback", False
 
 
-def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_address=False, context_cache=None, active_keys=None):
+def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_address=False, forward_line_count=100, context_cache=None, active_keys=None):
 	mndbg.dbgp(get_current_function_name())
 	if context_cache is None:
 		context_cache = {}
 	if active_keys is None:
 		active_keys = set()
-	cache_key = (int(address) if isinstance(address, int) else 0, int(follow_depth) if isinstance(follow_depth, int) else 1, bool(forward_only_from_address))
+	cache_key = (
+		int(address) if isinstance(address, int) else 0,
+		int(follow_depth) if isinstance(follow_depth, int) else 1,
+		bool(forward_only_from_address),
+		int(forward_line_count) if isinstance(forward_line_count, int) and forward_line_count > 0 else 100
+	)
 	if cache_key in context_cache:
 		mndbg.dbgp("tellme: reusing cached function context for %s depth=%d forward_only=%s" % (
 			PTR_PRINT % cache_key[0] if cache_key[0] > 0 else "0x0",
@@ -1993,6 +2046,8 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 			follow_depth = 1
 		if follow_depth > 4:
 			follow_depth = 4
+		if not isinstance(forward_line_count, int) or forward_line_count < 1:
+			forward_line_count = 100
 		context["control_flow_follow_depth"] = follow_depth
 		context["forward_flow_from_requested_address"] = bool(forward_only_from_address)
 		has_instr, instr_reason = tellMeHasCurrentInstruction(address)
@@ -2043,12 +2098,10 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 		commands = [("nearest_symbol_output", "ln %s" % (PTR_PRINT % address))]
 		if found_function:
 			commands.append(("uf_output", "uf %s" % (PTR_PRINT % address)))
-			if forward_only_from_address:
-				commands.append(("code_after", "u %s L100" % (PTR_PRINT % address)))
 			context["analysis_scope"] = "function"
 		else:
 			commands.append(("code_before", "ub %s L100" % (PTR_PRINT % address)))
-			commands.append(("code_after", "u %s L100" % (PTR_PRINT % address)))
+			commands.append(("code_after", "u %s L%d" % (PTR_PRINT % address, forward_line_count)))
 			context["analysis_scope"] = "code_window"
 
 		total_commands = len(commands)
@@ -2098,20 +2151,42 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 					context["symbol_from_uf"] = uf_symbol
 
 		disasm_source = ""
-		if found_function and forward_only_from_address and context.get("code_after", "") != "":
-			disasm_source = context.get("code_after", "")
-			context["control_flow_source"] = "forward_from_requested_address"
-		elif context.get("uf_output", "") != "":
-			disasm_source = context.get("uf_output", "")
-			context["control_flow_source"] = "full_function"
-		else:
+		if context.get("uf_output", "") != "":
+			if found_function and forward_only_from_address:
+				disasm_source = _sliceDisassemblyTextFromAddress(
+					context.get("uf_output", ""),
+					address,
+					max_lines=forward_line_count
+				)
+				context["control_flow_source"] = "function_from_requested_address"
+				if disasm_source == "":
+					disasm_source = context.get("uf_output", "")
+					context["control_flow_source"] = "full_function"
+			else:
+				disasm_source = context.get("uf_output", "")
+				context["control_flow_source"] = "full_function"
+		if disasm_source == "":
+			if found_function and forward_only_from_address:
+				try:
+					context["code_after"] = ensure_text(dbg.nativeCommand("u %s L%d" % (
+						PTR_PRINT % address,
+						forward_line_count
+					))).strip()
+				except Exception as e:
+					context["code_after_error"] = str(e)
+					mndbg.dbgp("tellme: nativeCommand fallback 'u %s L%d' failed: %s" % (
+						PTR_PRINT % address,
+						forward_line_count,
+						str(e)
+					), errormode=False)
 			disasm_parts = []
 			if context.get("code_before", "") != "":
 				disasm_parts.append(context.get("code_before", ""))
 			if context.get("code_after", "") != "":
 				disasm_parts.append(context.get("code_after", ""))
 			disasm_source = "\n".join(disasm_parts).strip()
-			context["control_flow_source"] = "code_window"
+			if context.get("control_flow_source", "") == "":
+				context["control_flow_source"] = "code_window"
 		dbg.log("    Function context disassembly source: %s" % context.get("control_flow_source", "unknown"))
 		if disasm_source != "":
 			disasm_entries = _parseDisassemblyTextEntries(disasm_source)
@@ -2217,7 +2292,7 @@ def _normalizeDisassemblyTargetOperand(operand):
 	return normalized
 
 
-def _resolveDisassemblyTargetOperand(operand):
+def _resolveDisassemblyTargetOperand(operand, reg_names=None):
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("operand", ensure_text(operand).strip()),
@@ -2231,8 +2306,9 @@ def _resolveDisassemblyTargetOperand(operand):
 		result["resolution_reason"] = "Empty target operand"
 		return result
 
-	regs = getAllRegisters()
-	reg_names = set([str(reg_name).lower() for reg_name in regs.keys()])
+	if reg_names is None:
+		regs = getAllRegisters()
+		reg_names = set([str(reg_name).lower() for reg_name in regs.keys()])
 	if normalized in reg_names:
 		result["resolution_reason"] = "Indirect register target; cannot resolve statically from function disassembly alone"
 		return result
@@ -2292,10 +2368,18 @@ def _classifyControlFlowInstruction(instruction):
 	return "", ""
 
 
-def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, current_depth=1, visited_targets=None, target_context_cache=None, nested_target_cache=None):
+def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, current_depth=1, visited_targets=None, target_context_cache=None, nested_target_cache=None, reg_names=None, disasm_entries_cache=None):
 	mndbg.dbgp(get_current_function_name())
 	targets = []
-	entries = _parseDisassemblyTextEntries(disasm_text)
+	disasm_text = ensure_text(disasm_text)
+	if disasm_entries_cache is None:
+		disasm_entries_cache = {}
+	cache_key = disasm_text
+	if cache_key in disasm_entries_cache:
+		entries = disasm_entries_cache[cache_key]
+	else:
+		entries = _parseDisassemblyTextEntries(disasm_text)
+		disasm_entries_cache[cache_key] = entries
 	if len(entries) == 0:
 		return targets
 	if visited_targets is None:
@@ -2304,16 +2388,25 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		target_context_cache = {}
 	if nested_target_cache is None:
 		nested_target_cache = {}
+	if reg_names is None:
+		try:
+			reg_names = set([str(reg_name).lower() for reg_name in getAllRegisters().keys()])
+		except Exception:
+			reg_names = set()
 	if not isinstance(max_depth, int) or max_depth < 1:
 		max_depth = 1
+	log_indent = "      " + ("  " * max(current_depth - 1, 0))
 	if current_depth == 1:
 		dbg.log("    Expanding control-flow targets up to depth %d" % max_depth)
 	else:
-		dbg.log("      - Exploring nested control-flow targets at depth %d/%d" % (current_depth, max_depth))
+		dbg.log("%s- Depth %d/%d" % (log_indent, current_depth, max_depth))
+	progress_label = "Scan" if current_depth == 1 else "Drilldown"
+	budget_label = "Sweep reached max target budget" if current_depth == 1 else "Expansion reached max target budget"
 
 	candidate_count = 0
 	total_entries = len(entries)
 	startmoment = time.time()
+	nested_elapsed_total = 0.0
 	next_report_pct = 10
 	processed_entries = 0
 	for entry in entries:
@@ -2324,8 +2417,12 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			pct_done = (processed_entries * 100.0) / total_entries
 		if len(targets) >= max_targets:
 			if total_entries > 0:
-				eta = get_eta(startmoment, processed_entries, total_entries)
-				dbg.log("      - Control-flow expansion reached max target budget (%d/%d scanned, %.2f%%) - ETA: %s" % (
+				exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
+				eta_startmoment = time.time() - exclusive_elapsed
+				eta = get_eta(eta_startmoment, processed_entries, total_entries)
+				dbg.log("%s- %s (%d/%d scanned, %.2f%%) - ETA: %s" % (
+					log_indent,
+					budget_label,
 					processed_entries,
 					total_entries,
 					pct_done,
@@ -2337,8 +2434,12 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		if target_kind == "" or operand == "":
 			if total_entries > 0:
 				if pct_done >= next_report_pct or processed_entries == total_entries:
-					eta = get_eta(startmoment, processed_entries, total_entries)
-					dbg.log("      - Control-flow expansion: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
+					exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
+					eta_startmoment = time.time() - exclusive_elapsed
+					eta = get_eta(eta_startmoment, processed_entries, total_entries)
+					dbg.log("%s- %s: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
+						log_indent,
+						progress_label,
 						processed_entries,
 						total_entries,
 						pct_done,
@@ -2349,8 +2450,8 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			continue
 		candidate_count += 1
 		if candidate_count <= 5:
-			dbg.log("      - Candidate depth %d: %s @ %s -> %s" % (
-				current_depth,
+			dbg.log("%s- %s @ %s -> %s" % (
+				log_indent,
 				target_kind,
 				entry.get("address_text", ""),
 				operand
@@ -2363,7 +2464,7 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			("target_operand", operand)
 		])
 
-		resolved = _resolveDisassemblyTargetOperand(operand)
+		resolved = _resolveDisassemblyTargetOperand(operand, reg_names=reg_names)
 		for key, value in resolved.items():
 			if key not in target_entry:
 				target_entry[key] = value
@@ -2374,10 +2475,8 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			continue
 
 		target_address = resolved.get("target_address", 0)
-		if candidate_count <= 5:
-			dbg.log("        resolved target: %s" % (PTR_PRINT % target_address))
 		if target_address not in target_context_cache:
-			flow_disasm = _getControlFlowDisasmSourceForAddress(target_address)
+			flow_disasm = _getControlFlowDisasmSourceForAddress(target_address, slice_from_address=True)
 			target_context_cache[target_address] = OrderedDict([
 				("module", _getModuleSummary(target_address)),
 				("symbol", _getSymbolName(target_address)),
@@ -2401,10 +2500,19 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 			next_visited.add(target_key)
 			nested_disasm_source = ensure_text(target_context_cache[target_address].get("control_flow_disasm", "")).strip()
 			if nested_disasm_source != "":
-				dbg.log("        descending into %s at depth %d" % (
-					PTR_PRINT % target_address,
-					current_depth + 1
-				))
+				target_symbol = ensure_text(target_context_cache[target_address].get("symbol", "")).strip()
+				if target_symbol != "":
+					dbg.log("%s  > descend into %s (%s)" % (
+						log_indent,
+						PTR_PRINT % target_address,
+						target_symbol
+					))
+				else:
+					dbg.log("%s  > descend into %s" % (
+						log_indent,
+						PTR_PRINT % target_address
+					))
+				nested_startmoment = time.time()
 				nested_targets = _collectDisassemblyTargetContexts(
 					nested_disasm_source,
 					max_targets=max_targets,
@@ -2412,8 +2520,11 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 					current_depth=current_depth + 1,
 					visited_targets=next_visited,
 					target_context_cache=target_context_cache,
-					nested_target_cache=nested_target_cache
+					nested_target_cache=nested_target_cache,
+					reg_names=reg_names,
+					disasm_entries_cache=disasm_entries_cache
 				)
+				nested_elapsed_total += (time.time() - nested_startmoment)
 				nested_target_cache[nested_cache_key] = copy.deepcopy(nested_targets)
 				if len(nested_targets) > 0:
 					target_entry["nested_control_flow_targets"] = nested_targets
@@ -2421,8 +2532,12 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 		if total_entries > 0:
 			pct_done = (processed_entries * 100.0) / total_entries
 			if pct_done >= next_report_pct or processed_entries == total_entries:
-				eta = get_eta(startmoment, processed_entries, total_entries)
-				dbg.log("      - Control-flow expansion: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
+				exclusive_elapsed = max(0.0, time.time() - startmoment - nested_elapsed_total)
+				eta_startmoment = time.time() - exclusive_elapsed
+				eta = get_eta(eta_startmoment, processed_entries, total_entries)
+				dbg.log("%s- %s: %d/%d lines scanned (%.2f%%) - ETA: %s" % (
+					log_indent,
+					progress_label,
 					processed_entries,
 					total_entries,
 					pct_done,
@@ -2431,7 +2546,8 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 				while next_report_pct <= pct_done:
 					next_report_pct += 10
 	if candidate_count > 5:
-		dbg.log("      - %d additional control-flow candidate%s omitted from verbose logging at depth %d" % (
+		dbg.log("%s- %d additional control-flow candidate%s omitted at depth %d" % (
+			log_indent,
 			candidate_count - 5,
 			"" if (candidate_count - 5) == 1 else "s",
 			current_depth
@@ -6322,7 +6438,7 @@ Do not invent facts that are not present in the snapshot.""" % (
 		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on bounded reachability from the current instruction pointer to a supplied target address by changing only the contents of a supplied controlled heap chunk.
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
-Use the entries under 'variables' as the debugger context. Prioritize q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, and additional_context_files.
+Use the entries under 'variables' as the debugger context. Prioritize q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, return_resume_analysis, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, and additional_context_files.
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live register values, and disassembly listings over summary-style debugger diagnostics.
 Use the supplied architecture and pointer_size fields to interpret registers, pointer-sized values, stack arguments, calling convention patterns, object pointers, and memory operands. Do not assume a 32-bit process, 32-bit registers, 4-byte pointers, or x86 calling conventions unless the request explicitly indicates them.
 
@@ -6361,7 +6477,7 @@ Return-resume expansion is mandatory:
   - u <RetAddr> L120
   - branch-target disassembly for visible branches reached from <RetAddr>
   - any indirect call/jmp sites reached from those branch targets
-- If caller-side disassembly is present in additional_context_files, reachable_functions, caller_function, caller_resume_window, or any other supplied field, use it as first-class evidence.
+- If caller-side disassembly is present in return_resume_analysis, additional_context_files, reachable_functions, caller_function, caller_resume_window, or any other supplied field, use it as first-class evidence.
 - If the call stack shows a concrete caller resume address, a final answer that says "no reachable controlled sink shown" MUST explicitly include a return-resume subsection explaining why the path from that RetAddr does not reach a controlled sink, or state UNDER-COLLECTED with the missing disassembly.
 
 Expanded sink-discovery rules:
@@ -6597,6 +6713,7 @@ def _getProfileTemplateVariables(question_type):
 			"current_function",
 			"target_function",
 			"return_context",
+			"return_resume_analysis",
 			"caller_function",
 			"caller_chain",
 			"caller_resume_window",
@@ -6786,6 +6903,7 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 		("caller_resume_window", {}),
 		("post_return_constraints", {}),
 		("caller_chain", []),
+		("return_resume_analysis", {}),
 	])
 	if not isinstance(call_stack, dict):
 		return result
@@ -6808,18 +6926,50 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 				return_address,
 				follow_depth=follow_depth,
 				forward_only_from_address=True,
+				forward_line_count=30,
 				context_cache=function_context_cache,
 				active_keys=function_context_active_keys
 			)
+			uf_output = ensure_text(caller_function.get("uf_output", "")).strip()
+			uf_line_count = len([line for line in uf_output.splitlines() if ensure_text(line).strip() != ""]) if uf_output != "" else 0
+			dbg.log("    Resume-site function lookup for %s" % (PTR_PRINT % return_address))
+			dbg.log("      - Function resolution: %s" % (
+				"found" if ensure_text(caller_function.get("analysis_scope", "")).strip() == "function" else "fallback/windowed"
+			))
+			if ensure_text(caller_function.get("function_start", "")).strip() != "":
+				dbg.log("      - Function start: %s" % ensure_text(caller_function.get("function_start", "")).strip())
+			if ensure_text(caller_function.get("symbol", "")).strip() != "":
+				dbg.log("      - Symbol: %s" % ensure_text(caller_function.get("symbol", "")).strip())
+			dbg.log("      - UF output lines: %d" % uf_line_count)
 			window = _getInstructionWindow(return_address, depth_before=0, depth_after=12)
-			resume_forward_disasm = ""
-			try:
-				resume_forward_disasm = ensure_text(dbg.nativeCommand("u %s L100" % (PTR_PRINT % return_address))).strip()
-			except Exception as e:
-				mndbg.dbgp("tellme: resume-site forward disasm failed for %s: %s" % (
-					PTR_PRINT % return_address,
-					str(e)
-				), errormode=False)
+			resume_forward_disasm = _sliceDisassemblyTextFromAddress(
+				uf_output,
+				return_address,
+				max_lines=0,
+				stop_at_return=False
+			)
+			resume_slice_line_count = len([line for line in resume_forward_disasm.splitlines() if ensure_text(line).strip() != ""]) if resume_forward_disasm != "" else 0
+			dbg.log("      - Resume UF slice lines: %d (rest of function)" % resume_slice_line_count)
+			fallback_used = False
+			if resume_forward_disasm == "":
+				try:
+					fallback_used = True
+					resume_forward_disasm = ensure_text(dbg.nativeCommand("u %s L30" % (PTR_PRINT % return_address))).strip()
+				except Exception as e:
+					mndbg.dbgp("tellme: resume-site forward disasm failed for %s: %s" % (
+						PTR_PRINT % return_address,
+						str(e)
+					), errormode=False)
+			if resume_forward_disasm != "":
+				resume_forward_disasm = _sliceDisassemblyTextFromAddress(
+					resume_forward_disasm,
+					return_address,
+					max_lines=30 if fallback_used else 0,
+					stop_at_return=fallback_used
+				)
+			final_resume_line_count = len([line for line in resume_forward_disasm.splitlines() if ensure_text(line).strip() != ""]) if resume_forward_disasm != "" else 0
+			dbg.log("      - Resume disasm source: %s" % ("fallback u L30" if fallback_used else "uf slice"))
+			dbg.log("      - Resume disasm lines kept: %d" % final_resume_line_count)
 			caller_resume_window = OrderedDict([
 				("address", PTR_PRINT % return_address),
 				("current", window.get("current", "")),
@@ -6829,6 +6979,7 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 				caller_resume_window["forward_disasm"] = resume_forward_disasm
 				caller_resume_window["control_flow_targets"] = _collectDisassemblyTargetContexts(
 					resume_forward_disasm,
+					max_targets=16,
 					max_depth=follow_depth
 				)
 			post_constraints = OrderedDict()
@@ -6861,7 +7012,84 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 			frame_index += 1
 			if frame_index >= max_frames:
 				break
+	result["return_resume_analysis"] = _buildReturnResumeAnalysis(result)
 	return result
+
+
+def _collectIndirectTransfersFromTargets(target_entries, destination, path_class="", source_label=""):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(target_entries, list):
+		return
+	for target_entry in target_entries:
+		interruptMona()
+		if not isinstance(target_entry, dict):
+			continue
+		instruction = ensure_text(target_entry.get("instruction", "")).strip()
+		instruction_l = instruction.lower()
+		is_indirect_call = instruction_l.startswith("call ") and "[" in instruction_l
+		is_indirect_jmp = instruction_l.startswith("jmp ") and "[" in instruction_l
+		if is_indirect_call or is_indirect_jmp:
+			transfer_entry = OrderedDict()
+			transfer_entry["address"] = ensure_text(target_entry.get("instruction_address", "")).strip()
+			transfer_entry["instruction"] = instruction
+			transfer_entry["kind"] = ensure_text(target_entry.get("kind", "")).strip()
+			transfer_entry["operand"] = ensure_text(target_entry.get("target_operand", "")).strip()
+			transfer_entry["resolved"] = bool(target_entry.get("resolved", False))
+			if path_class != "":
+				transfer_entry["path_class"] = path_class
+			if source_label != "":
+				transfer_entry["source"] = source_label
+			if ensure_text(target_entry.get("symbol", "")).strip() != "":
+				transfer_entry["symbol"] = ensure_text(target_entry.get("symbol", "")).strip()
+			if ensure_text(target_entry.get("target_address_text", "")).strip() != "":
+				transfer_entry["target_address"] = ensure_text(target_entry.get("target_address_text", "")).strip()
+			if ensure_text(target_entry.get("resolution_reason", "")).strip() != "":
+				transfer_entry["resolution_reason"] = ensure_text(target_entry.get("resolution_reason", "")).strip()
+			destination.append(transfer_entry)
+		nested_targets = target_entry.get("nested_control_flow_targets", [])
+		if isinstance(nested_targets, list) and len(nested_targets) > 0:
+			_collectIndirectTransfersFromTargets(nested_targets, destination, path_class=path_class, source_label=source_label)
+
+
+def _buildReturnResumeAnalysis(return_resume_context):
+	mndbg.dbgp(get_current_function_name())
+	analysis = OrderedDict()
+	if not isinstance(return_resume_context, dict):
+		return analysis
+	return_context = return_resume_context.get("return_context", {})
+	caller_function = return_resume_context.get("caller_function", {})
+	caller_resume_window = return_resume_context.get("caller_resume_window", {})
+	post_constraints = return_resume_context.get("post_return_constraints", {})
+	caller_chain = return_resume_context.get("caller_chain", [])
+	if isinstance(return_context, dict) and len(return_context) > 0:
+		analysis["retaddr"] = ensure_text(return_context.get("address", "")).strip()
+		analysis["return_context"] = return_context
+	if isinstance(caller_function, dict) and len(caller_function) > 0:
+		analysis["caller"] = ensure_text(caller_function.get("symbol", "")).strip()
+		if analysis["caller"] == "":
+			analysis["caller"] = ensure_text(caller_function.get("requested_address", "")).strip()
+		analysis["caller_function"] = caller_function
+	if isinstance(caller_resume_window, dict) and len(caller_resume_window) > 0:
+		if ensure_text(caller_resume_window.get("forward_disasm", "")).strip() != "":
+			analysis["resume_disasm"] = ensure_text(caller_resume_window.get("forward_disasm", "")).strip()
+		branch_targets = caller_resume_window.get("control_flow_targets", [])
+		if isinstance(branch_targets, list) and len(branch_targets) > 0:
+			analysis["branch_targets"] = branch_targets
+			indirect_transfers = []
+			_collectIndirectTransfersFromTargets(
+				branch_targets,
+				indirect_transfers,
+				path_class="return-resume",
+				source_label="caller_resume_window"
+			)
+			if len(indirect_transfers) > 0:
+				analysis["indirect_transfers"] = indirect_transfers
+		analysis["caller_resume_window"] = caller_resume_window
+	if isinstance(post_constraints, dict) and len(post_constraints) > 0:
+		analysis["post_return_constraints"] = post_constraints
+	if isinstance(caller_chain, list) and len(caller_chain) > 0:
+		analysis["caller_chain"] = caller_chain
+	return analysis
 
 
 def _appendReachableFunctionCandidates(target_entries, destination, source_label, path_class):
@@ -29760,10 +29988,38 @@ class MnAI(object):
 						mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
 		if self.effective_question_type == "3":
 			total_steps = 6
+			q3_startmoment = time.time()
+			def _format_major_step_elapsed(startmoment):
+				try:
+					elapsed_seconds = max(0, int(round(time.time() - startmoment)))
+				except Exception:
+					elapsed_seconds = 0
+				return str(datetime.timedelta(seconds=elapsed_seconds))
+			def _log_q3_major_step_start(step_number, label):
+				completed_steps = max(0, step_number - 1)
+				eta = get_eta(q3_startmoment, completed_steps, total_steps) if completed_steps > 0 else "calculating eta..."
+				self.logInfoDetail("Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s" % (
+					step_number,
+					total_steps,
+					label,
+					_format_major_step_elapsed(q3_startmoment),
+					eta
+				))
+			def _log_q3_major_step_complete(step_number, label):
+				eta = get_eta(q3_startmoment, step_number, total_steps) if step_number < total_steps else "complete"
+				self.logInfoDetail("Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s" % (
+					step_number,
+					total_steps,
+					label,
+					_format_major_step_elapsed(q3_startmoment),
+					eta
+				))
 			current_step = 1
+			step_label = "reachability target setup" if self.reachability_target_address > 0 else "q3 goal setup"
 			self.logInfo("[%d/%d] Extending q3 context with chunk, stack, and control-flow analysis..." % (
 				current_step, total_steps
 			))
+			_log_q3_major_step_start(current_step, step_label)
 			context["q3_goal"] = "targeted_reachability" if self.reachability_target_address > 0 else "discovery_chunk_write_or_control_sink"
 			context["analysis_target"] = {
 				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
@@ -29772,16 +30028,22 @@ class MnAI(object):
 			if self.reachability_target_address > 0:
 				self.logInfoDetail("Step 1/%d: collecting target address disassembly and function context" % total_steps)
 				context["reachability_target"] = _buildReachabilityTargetContext(self.reachability_target_address)
+			_log_q3_major_step_complete(current_step, step_label)
 			current_step = 2
+			step_label = "controlled chunk dump and reference matching"
 			self.logInfo("[%d/%d] Dumping controlled chunk and matching live references..." % (
 				current_step, total_steps
 			))
+			_log_q3_major_step_start(current_step, step_label)
 			context["controlled_chunk"] = _buildControlledChunkContext(self.controlled_chunk_address)
 			context["controlled_chunk_references"] = _collectControlledChunkReferences(context["controlled_chunk"], getAllRegisters())
+			_log_q3_major_step_complete(current_step, step_label)
 			current_step = 3
+			step_label = "current function control-flow collection"
 			self.logInfo("[%d/%d] Collecting current %s function code flow. Hang on, this may take a while" % (
 				current_step, total_steps, PROGRAM_COUNTER.upper()
 			))
+			_log_q3_major_step_start(current_step, step_label)
 			context["current_function"] = collectAICurrentFunctionContext(
 				self.current_pc_address,
 				follow_depth=self.q2_follow_depth,
@@ -29789,11 +30051,14 @@ class MnAI(object):
 				active_keys=function_context_active_keys
 			)
 			context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+			_log_q3_major_step_complete(current_step, step_label)
 			if self.reachability_target_address > 0:
 				current_step = 4
+				step_label = "target function context collection"
 				self.logInfo("[%d/%d] Collecting target function context..." % (
 					current_step, total_steps
 				))
+				_log_q3_major_step_start(current_step, step_label)
 				context["target_function"] = collectAICurrentFunctionContext(
 					self.reachability_target_address,
 					follow_depth=1,
@@ -29801,10 +30066,13 @@ class MnAI(object):
 					active_keys=function_context_active_keys
 				)
 				context["target_function"]["source"] = "-t"
+				_log_q3_major_step_complete(current_step, step_label)
 			current_step = 5
+			step_label = "caller-side resume path analysis"
 			self.logInfo("[%d/%d] Walking caller-side resume paths from the call stack..." % (
 				current_step, total_steps
 			))
+			_log_q3_major_step_start(current_step, step_label)
 			return_resume = _collectReturnResumeContext(
 				context.get("call_stack", {}),
 				max_frames=self.q2_follow_depth,
@@ -29814,15 +30082,19 @@ class MnAI(object):
 			)
 			for key, value in return_resume.items():
 				context[key] = value
+			_log_q3_major_step_complete(current_step, step_label)
 			current_step = 6
+			step_label = "reachable candidate flattening"
 			self.logInfo("[%d/%d] Flattening reachable branch/call/jump candidates..." % (
 				current_step, total_steps
 			))
+			_log_q3_major_step_start(current_step, step_label)
 			context["reachable_functions"] = _collectReachableFunctions(
 				context.get("current_function", {}),
 				context.get("caller_function", {}),
 				context.get("caller_chain", [])
 			)
+			_log_q3_major_step_complete(current_step, step_label)
 			self.logInfoDetail("Step %d/%d: q3 context enrichment complete" % (
 				current_step, total_steps
 			))
@@ -38815,6 +39087,7 @@ Official model docs:
 	    [controlled_chunk_references] = q3 registers and stack slots that already point into the controlled chunk
 	    [target_function]          = q3 containing-function context for the target address
 	    [return_context]           = q3 saved return-site context when the current function needs to return first
+	    [return_resume_analysis]   = q3 caller-resume wrapper with retaddr, caller, resume disassembly, branch targets, and indirect transfers
 	    [caller_function]          = q3 containing-function context for the immediate caller resume site
 	    [caller_chain]             = q3 list of caller resume frames inspected on the return-resume path
 	    [caller_resume_window]     = q3 bounded disassembly window after the saved return address
