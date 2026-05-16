@@ -32095,8 +32095,10 @@ def procUpdate(args):
 		insecure_legacy_tls_permission["allowed"] = allowed
 		if allowed:
 			mndbg.dbgp("User approved insecure legacy TLS fallback for this update session")
+			dbg.log("[+] Insecure legacy TLS fallback approved for this update session", highlight=1)
 		else:
 			mndbg.dbgp("User declined insecure legacy TLS fallback for this update session")
+			dbg.log("[+] Insecure legacy TLS fallback declined. Only secure download methods will be used.", highlight=1)
 		return allowed
 
 	def _download_using_certutil(url, destfile, label):
@@ -32176,6 +32178,17 @@ def procUpdate(args):
 			_safe_remove(tempfile_name)
 			return False, str(e)
 
+	def _secure_failures_may_need_insecure_legacy_tls(error_text):
+		err = ensure_text(error_text)
+		return (
+			_is_legacy_windows_tls_host() and
+			(
+				_is_certificate_verify_error(err) or
+				"certutil failed:" in err or
+				"bitsadmin failed:" in err
+			)
+		)
+
 	def _download_single_url(url, destfile, label):
 		try:
 			mndbg.dbgp("Downloading %s from %s via urllib.urlretrieve" % (label, url))
@@ -32211,30 +32224,24 @@ def procUpdate(args):
 				mndbg.dbgp("Legacy Windows TLS fallback succeeded for %s from %s via bitsadmin" % (label, url))
 				return True, "bitsadmin", ""
 			mndbg.dbgp("bitsadmin legacy TLS fallback failed for %s from %s : %s" % (label, url, bitsadmin_error), errormode=False)
-			insecure_error = "not attempted"
-			if _ask_permission_for_insecure_legacy_tls(url):
-				ok_insecure, insecure_error = _download_using_insecure_urllib(url, destfile, label)
-				if ok_insecure:
-					mndbg.dbgp("Insecure legacy TLS fallback succeeded for %s from %s via urllib without certificate validation" % (label, url))
-					return True, "urllib-insecure", ""
-				mndbg.dbgp("Insecure legacy TLS fallback failed for %s from %s : %s" % (label, url, insecure_error), errormode=False)
-			return False, "", "urllib.urlretrieve failed: %s | requests failed: %s | certutil failed: %s | bitsadmin failed: %s | insecure fallback: %s" % (
+			return False, "", "urllib.urlretrieve failed: %s | requests failed: %s | certutil failed: %s | bitsadmin failed: %s" % (
 				urllib_error,
 				requests_error,
 				certutil_error,
-				bitsadmin_error,
-				insecure_error
+				bitsadmin_error
 			)
 
 		return False, "", "urllib.urlretrieve failed: %s | requests failed: %s" % (urllib_error, requests_error)
 
 	def _download_with_fallback(main_url, backup_url, destfile, label, validator=None):
 		last_error = ""
+		secure_failures = []
 		for urltype, url in [("main", main_url), ("backup", backup_url)]:
 			mndbg.dbgp("[+] Downloading %s from %s URL" % (label, urltype))
 			ok_download, method_used, error_msg = _download_single_url(url, destfile, label)
 			if not ok_download:
 				last_error = error_msg
+				secure_failures.append((urltype, url, error_msg))
 				mndbg.dbgp("Download failed for %s from %s : %s" % (label, url, error_msg), errormode=False)
 				_safe_remove(destfile)
 				continue
@@ -32251,6 +32258,36 @@ def procUpdate(args):
 
 			mndbg.dbgp("%s downloaded from %s URL via %s" % (label, urltype, method_used))
 			return True, url
+
+		if len(secure_failures) > 0:
+			need_insecure_prompt = False
+			for urltype, url, error_msg in secure_failures:
+				if _is_known_update_host(url) and _secure_failures_may_need_insecure_legacy_tls(error_msg):
+					need_insecure_prompt = True
+					break
+			if need_insecure_prompt and _ask_permission_for_insecure_legacy_tls(main_url):
+				for urltype, url, error_msg in secure_failures:
+					mndbg.dbgp("[+] Retrying %s from %s URL via insecure legacy TLS fallback" % (label, urltype))
+					ok_insecure, insecure_error = _download_using_insecure_urllib(url, destfile, label)
+					if not ok_insecure:
+						last_error = "%s | insecure fallback failed: %s" % (error_msg, insecure_error)
+						mndbg.dbgp("Insecure legacy TLS fallback failed for %s from %s : %s" % (label, url, insecure_error), errormode=False)
+						_safe_remove(destfile)
+						continue
+					if validator is not None:
+						is_valid, validation_msg = validator(destfile)
+						if is_valid:
+							mndbg.dbgp("%s downloaded from %s URL passed validation via urllib-insecure" % (label, urltype))
+							return True, url
+						last_error = "%s | insecure fallback validation failed: %s" % (error_msg, validation_msg)
+						mndbg.dbgp("%s downloaded from %s URL failed validation via urllib-insecure: %s" % (label, urltype, validation_msg))
+						_safe_remove(destfile)
+						continue
+					mndbg.dbgp("%s downloaded from %s URL via urllib-insecure" % (label, urltype))
+					return True, url
+			elif need_insecure_prompt:
+				last_error = "%s | insecure fallback: user declined" % last_error
+				mndbg.dbgp("Insecure legacy TLS fallback skipped for %s because the user declined permission" % label)
 
 		if last_error != "":
 			mndbg.dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
