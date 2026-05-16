@@ -21058,6 +21058,13 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 				dbg.log("")
 				dbg.log("[+] Results: ")
 
+			is_markdown_results = ensure_text(thislog).lower().endswith(".md")
+			if is_markdown_results:
+				logfile.write("", thislog)
+				logfile.write("## Results", thislog)
+				logfile.write("", thislog)
+				logfile.write("```text", thislog)
+
 			messageshown = False
 			display_order = []
 
@@ -21125,6 +21132,10 @@ def processResults(all_opcodes,logfile,thislog,specialcases = {},ptronly = False
 						dbg.log("    Please wait while I'm processing all remaining results and writing everything to file...")
 						dbg.log("")
 						messageshown = True
+
+			if is_markdown_results:
+				logfile.write("```", thislog)
+				logfile.write("", thislog)
 
 			if not g_silent:
 				if g_ptr_to_get > -1:
