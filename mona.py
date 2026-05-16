@@ -6708,6 +6708,7 @@ Core rules:
 - Use lightweight symbolic reasoning over collected disassembly, live registers, stack values, and chunk fields.
 - Do not invent unobserved state.
 - When a path depends on flags or bit tests, spell out the exact predicate in terms of relevant offsets and bits.
+- When quoting or summarizing disassembly snippets, include the function name and module-relative location when available, not just the raw address. Prefer forms such as MSHTML!CView::AddInvalidationTask+0x1a @ 0x6b5205ab or module!symbol+offset, because raw addresses alone are unstable under ASLR.
 - Treat caller-side post-return logic as first-class.
 - Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
 - Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
@@ -6850,6 +6851,7 @@ intra-function, callee-mediated, or return-resume.
 3. primary scenario
 Describe the shortest evidence-backed path from current IP to the earliest reachable controlled sink.
 Include the exact sink instruction.
+When printing disassembly for the path or sink, include symbol/module-qualified location text when available, not just a raw address.
 For write sinks, include the computed write-destination expression.
 For indirect transfers, include the target-source expression.
 For each hop in the path, state whether it is OBSERVED, DERIVED, or UNPROVEN.
@@ -6872,6 +6874,7 @@ List every additional materially distinct reachable controlled sink, including:
 For each:
 - short path description
 - exact sink instruction
+- symbol/module-qualified sink location when available
 - path class
 - controlled-derived target/destination expression
 - how it differs from the primary
