@@ -133,6 +133,7 @@ import itertools
 import traceback
 import json
 import textwrap
+import os.path
 from collections import OrderedDict
 import bisect
 import math
@@ -384,6 +385,33 @@ class MnDebugger:
 				devnull_handle.close()
 		output_text = ensure_text(output_data)
 		return output_text.split("\n")
+
+	def validateCpbArgument(self, args, log_error=None, log_error_detail=None, debug_label=""):
+		"""Validate -cpb syntax early so callers do not continue with a silently ignored badchar filter."""
+		mndbg.dbgp(get_current_function_name())
+		if "cpb" not in args:
+			return True
+		if type(args["cpb"]).__name__.lower() == "bool":
+			if callable(log_error):
+				log_error("Please specify badchars with -cpb <bytes>")
+			if callable(log_error_detail):
+				log_error_detail("Example: -cpb '\\x00\\x0a\\x0d'")
+			return False
+		strb, badcharsok = cpbArgToBytes(args["cpb"])
+		if not badcharsok:
+			if callable(log_error):
+				log_error("Unable to parse -cpb value '%s'" % args["cpb"])
+			if callable(log_error_detail):
+				log_error_detail("Use \\xNN byte syntax, for example: -cpb '\\x00\\x20\\x0a\\x0d\\x3f'")
+				log_error_detail("Ranges are also supported, for example: -cpb '\\x00..\\x05\\x20\\x3f'")
+			return False
+		debug_prefix = ensure_text(debug_label).strip() or "cpb"
+		mndbg.dbgp("%s: validated -cpb value '%s' -> %s" % (
+			debug_prefix,
+			args["cpb"],
+			_renderBadchars(strb)
+		))
+		return True
 
 	def launchDetachedCommand(self, command_array, output_path="", redirect_output=True):
 		"""Launch a detached OS command and optionally redirect stdout/stderr to a log file."""
@@ -3819,9 +3847,11 @@ def _collectRopTargetModules(args):
 	return selection
 
 
-def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0, ai_args=None):
+def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0, ai_args=None, collection_plan=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
+	if collection_plan is None:
+		collection_plan = _buildAIContextCollectionPlan(question_type)
 	context = {
 		"debugger": __DEBUGGERAPP__,
 		"debugger_flavor": g_windbg_pretty_name,
@@ -3829,6 +3859,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		"modules": "",
 		"architecture": arch,
 		"pointer_size": PTR_SIZE,
+		"python_version": sys.version.split("\n")[0].strip(),
 		"timestamp": mndbg.get_current_datetime(),
 		"registers": {},
 	}
@@ -3857,30 +3888,32 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 
 	pc = regs.get(PROGRAM_COUNTER, 0)
 	sp = regs.get(STACK_POINTER, 0)
-	if question_type in ["1", "3"]:
+	if collection_plan.get("include_instruction_heap_context", False) or collection_plan.get("include_heap_details", False):
 		try:
 			extra_references = []
-			if question_type == "1" and isinstance(heap_target_address, int) and heap_target_address > 0:
+			if isinstance(heap_target_address, int) and heap_target_address > 0:
 				extra_references.append({
 					"name": "manual_target",
 					"value": heap_target_address,
-					"source": "q1_-a"
+					"source": "manual_target"
 				})
 				context["heap_analysis_target"] = {
 					"address": PTR_PRINT % heap_target_address,
 					"source": "-a"
 				}
-			context["instruction_heap_references"] = _collectInstructionHeapContext(regs, pc, extra_references=extra_references)
+			if collection_plan.get("include_instruction_heap_context", False):
+				context["instruction_heap_references"] = _collectInstructionHeapContext(regs, pc, extra_references=extra_references)
 		except Exception as e:
 			context["instruction_heap_references_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
 		try:
-			context["heap_details"] = _collectHeapDetails()
+			if collection_plan.get("include_heap_details", False):
+				context["heap_details"] = _collectHeapDetails()
 		except Exception as e:
 			context["heap_details_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heap_details: %s" % str(e), errormode=False)
 
-	if question_type == "1":
+	if collection_plan.get("include_findmsp", False):
 		try:
 			context["findmsp"] = _getFindMspSummary(args=ai_args or {})
 			if context["findmsp"].get("seh", []):
@@ -3891,7 +3924,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["findmsp_error_traceback"] = safeTracebackText()
 			mndbg.dbgp("tellme: failed to collect findmsp context:\n%s" % context["findmsp_error_traceback"], errormode=False)
 
-	if question_type != "8":
+	if collection_plan.get("include_modules", False):
 		try:
 			context["modules"] = _formatContextText(_renderModulesText(focus_addresses=[pc], max_modules=0), max_len=65535)
 			context["modules_full"] = context["modules"]
@@ -3899,12 +3932,13 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["modules_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
 
-	if question_type in ["1", "3"] and isinstance(pc, int) and pc > 0:
+	if collection_plan.get("include_pc_context", False) and isinstance(pc, int) and pc > 0:
 		context["program_counter"] = PTR_PRINT % pc
 		context["pc_disasm"] = _getDisasmSummary(pc)
 		context["pc_page"] = _getPageSummary(pc)
 		context["pc_module"] = _getModuleSummary(pc)
 		context["pc_memory"] = _readMemoryPreview(pc, 0x40, "pc_memory")
+	if collection_plan.get("include_heapdynamics", False) and isinstance(pc, int) and pc > 0:
 		try:
 			heapdynamics = _collectHeapdynamicsContexts(regs, pc, heapdynamics_files)
 			if len(heapdynamics) > 0:
@@ -3914,20 +3948,20 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["heapdynamics_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
 
-	if question_type in ["1", "3"] and isinstance(sp, int) and sp > 0:
+	if collection_plan.get("include_stack_context", False) and isinstance(sp, int) and sp > 0:
 		context["stack_pointer"] = PTR_PRINT % sp
 		context["stack_page"] = _getPageSummary(sp)
 		context["stack_memory"] = _readMemoryPreview(sp, 0x100, "stack_memory")
 
-	if question_type == "1":
+	if collection_plan.get("include_ntglobal_flag", False):
 		context["ntglobal_flag"] = _getNtGlobalFlagSummary()
-		if arch == 32:
+	if collection_plan.get("include_seh_chain", False) and arch == 32:
 			context["seh_chain"] = _getSehChainSummary()
+	if collection_plan.get("include_call_stack", False):
 		context["call_stack"] = _getCallStack("kb", max_lines=20)
+	if collection_plan.get("include_windbg_analyze", False):
 		context["windbg_analyze"] = _getWindbgAnalyze("!analyze -v")
 		context["windbg_analyze_full"] = context["windbg_analyze"]
-	if question_type in ["3", "3b"]:
-		context["call_stack"] = _getCallStack("kb", max_lines=20)
 	if additional_context_files is None:
 		additional_context_files = []
 	if len(additional_context_files) > 0:
@@ -6092,8 +6126,7 @@ def _summarizeHeapCommandOutput(heap_info):
 		if line == "":
 			continue
 		line_l = line.lower()
-		if len(summary_lines) < 6:
-			summary_lines.append(_formatContextText(line, max_len=256))
+		summary_lines.append(line)
 		for marker in ["busy", "free", "lfh", "virtalloc", "virtualalloc"]:
 			if marker in line_l and marker not in state_matches:
 				state_matches.append(marker)
@@ -6113,6 +6146,7 @@ def _summarizeHeapCommandOutput(heap_info):
 		summary["state"] = ",".join(state_matches)
 	if len(summary_lines) > 0:
 		summary["summary_lines"] = summary_lines
+		summary["output"] = output
 	return summary
 
 
@@ -6236,6 +6270,157 @@ def _compactHeapdynamicsContexts(heapdynamics):
 		mini_contexts.append(mini)
 
 	return mini_contexts, evidence, omitted_sections
+
+
+_TEMPLATE_CRASH_PLACEHOLDERS = set([
+	"analysis_target",
+	"call_stack",
+	"evidence",
+	"findmsp",
+	"findseh",
+	"heap_analysis_target",
+	"heap_details",
+	"heapdynamics",
+	"heapdynamics_full",
+	"heapdynamics_mini",
+	"instruction_heap_references",
+	"modules",
+	"modules_full",
+	"modules_mini",
+	"ntglobal_flag",
+	"omitted_sections",
+	"pc_disasm",
+	"pc_memory",
+	"pc_module",
+	"pc_page",
+	"seh_chain",
+	"size_budget",
+	"stack_memory",
+	"stack_page",
+	"stack_pointer",
+	"windbg_analyze",
+	"windbg_analyze_full",
+	"windbg_analyze_mini",
+])
+
+_TEMPLATE_FUNCTION_PLACEHOLDERS = set([
+	"additional_function",
+	"additional_function_note",
+	"analysis_target",
+	"current_function",
+	"function_analyses",
+])
+
+_TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS = set([
+	"caller_chain",
+	"caller_function",
+	"caller_resume_window",
+	"control_flow_disasm_map",
+	"control_flow_target_map",
+	"controlled_chunk",
+	"controlled_chunk_references",
+	"controlled_object_callees",
+	"current_function",
+	"post_return_constraints",
+	"q3_goal",
+	"reachable_functions",
+	"reachability_target",
+	"return_context",
+	"return_resume_analysis",
+	"target_function",
+])
+
+_TEMPLATE_ROP_PLACEHOLDERS = set([
+	"rop_target_modules",
+])
+
+
+def _extractTemplatePlaceholderNames(text_value):
+	mndbg.dbgp(get_current_function_name())
+	placeholder_names = set()
+	for placeholder_name in re.findall(r"\[([A-Za-z0-9_]+)\]", ensure_text(text_value or "")):
+		placeholder_names.add(placeholder_name.lower())
+	return placeholder_names
+
+
+def _loadTemplatePlaceholderNames(template_path):
+	mndbg.dbgp(get_current_function_name())
+	try:
+		with open(template_path, "rb") as fh:
+			template_text = fh.read().decode("latin-1")
+	except Exception as e:
+		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
+	prompt_block_text = _extractPromptBlockFromSavedRequestText(template_text)
+	if prompt_block_text != "":
+		template_text = prompt_block_text
+	return _extractTemplatePlaceholderNames(template_text)
+
+
+def _buildAIContextCollectionPlan(question_type="", requested_placeholders=None):
+	mndbg.dbgp(get_current_function_name())
+	placeholder_names = set([ensure_text(name).strip().lower() for name in (requested_placeholders or set()) if ensure_text(name).strip() != ""])
+	plan = OrderedDict([
+		("include_instruction_heap_context", False),
+		("include_heap_details", False),
+		("include_findmsp", False),
+		("include_modules", False),
+		("include_pc_context", False),
+		("include_heapdynamics", False),
+		("include_stack_context", False),
+		("include_ntglobal_flag", False),
+		("include_seh_chain", False),
+		("include_call_stack", False),
+		("include_windbg_analyze", False),
+	])
+
+	if question_type == "1":
+		for key in plan:
+			plan[key] = True
+	elif question_type == "2":
+		plan["include_modules"] = True
+	elif question_type in ["3", "3b"]:
+		for key in [
+			"include_instruction_heap_context",
+			"include_heap_details",
+			"include_modules",
+			"include_pc_context",
+			"include_heapdynamics",
+			"include_stack_context",
+			"include_call_stack",
+		]:
+			plan[key] = True
+	elif question_type == "8":
+		plan["include_modules"] = False
+
+	if len(placeholder_names & _TEMPLATE_CRASH_PLACEHOLDERS) > 0:
+		for key in [
+			"include_instruction_heap_context",
+			"include_heap_details",
+			"include_findmsp",
+			"include_modules",
+			"include_pc_context",
+			"include_heapdynamics",
+			"include_stack_context",
+			"include_ntglobal_flag",
+			"include_seh_chain",
+			"include_call_stack",
+			"include_windbg_analyze",
+		]:
+			plan[key] = True
+	if len(placeholder_names & _TEMPLATE_FUNCTION_PLACEHOLDERS) > 0:
+		plan["include_modules"] = True
+	if len(placeholder_names & _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS) > 0:
+		for key in [
+			"include_instruction_heap_context",
+			"include_heap_details",
+			"include_modules",
+			"include_pc_context",
+			"include_heapdynamics",
+			"include_stack_context",
+			"include_call_stack",
+		]:
+			plan[key] = True
+	return plan
 
 
 def _serializeModuleSummaryForTellme(mod):
@@ -6876,9 +7061,11 @@ def _buildRequestVariables(context):
 		"debugger_flavor",
 		"processname",
 		"modules",
+		"modules_mini",
 		"modules_full",
 		"architecture",
 		"pointer_size",
+		"python_version",
 		"timestamp",
 		"registers",
 		"program_counter",
@@ -6895,10 +7082,12 @@ def _buildRequestVariables(context):
 		"findseh",
 		"call_stack",
 		"windbg_analyze",
+		"windbg_analyze_mini",
 		"windbg_analyze_full",
 		"instruction_heap_references",
 		"heap_details",
 		"heapdynamics",
+		"heapdynamics_mini",
 		"heapdynamics_full",
 		"evidence",
 		"size_budget",
@@ -6911,7 +7100,21 @@ def _buildRequestVariables(context):
 		"additional_function",
 		"additional_function_note",
 		"function_analyses",
+		"q3_goal",
+		"reachability_target",
+		"controlled_chunk",
+		"controlled_chunk_references",
+		"target_function",
+		"return_context",
+		"return_resume_analysis",
 		"controlled_object_callees",
+		"control_flow_disasm_map",
+		"control_flow_target_map",
+		"caller_function",
+		"caller_chain",
+		"caller_resume_window",
+		"post_return_constraints",
+		"reachable_functions",
 		"rop_target_modules",
 	]
 	for key in preferred_keys:
@@ -6923,6 +7126,44 @@ def _buildRequestVariables(context):
 		if key not in variables:
 			variables[key] = context[key]
 	return variables
+
+
+def _buildTemplateRequestVariables(context, requested_placeholders=None, question_type="", maxsize_kb=0):
+	mndbg.dbgp(get_current_function_name())
+	placeholder_names = set([ensure_text(name).strip().lower() for name in (requested_placeholders or set()) if ensure_text(name).strip() != ""])
+	variables = _buildRequestVariables(context)
+	crash_view_placeholders = set([
+		"evidence",
+		"findmsp",
+		"findseh",
+		"heap_analysis_target",
+		"heap_details",
+		"heapdynamics",
+		"heapdynamics_full",
+		"heapdynamics_mini",
+		"instruction_heap_references",
+		"modules_mini",
+		"ntglobal_flag",
+		"omitted_sections",
+		"seh_chain",
+		"size_budget",
+		"windbg_analyze",
+		"windbg_analyze_full",
+		"windbg_analyze_mini",
+	])
+	include_crash_view = question_type == "1" or len(placeholder_names & crash_view_placeholders) > 0
+	include_controlled_data_view = question_type in ["3", "3b"] or len(placeholder_names & _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS) > 0
+	if include_crash_view:
+		variables.update(_optimizeQ1RequestVariables(context, maxsize_kb=maxsize_kb))
+		if "modules" in variables and "modules_mini" not in variables:
+			variables["modules_mini"] = variables["modules"]
+		if "windbg_analyze" in variables and "windbg_analyze_mini" not in variables:
+			variables["windbg_analyze_mini"] = variables["windbg_analyze"]
+		if "heapdynamics" in variables and "heapdynamics_mini" not in variables:
+			variables["heapdynamics_mini"] = variables["heapdynamics"]
+	if include_controlled_data_view:
+		variables.update(_optimizeQ3RequestVariables(context, maxsize_kb=maxsize_kb))
+	return _pruneEmptyRequestValues(variables)
 
 
 def _buildRequestPayload(mode, question_type, variables, template_text="", template_file=""):
@@ -7622,6 +7863,7 @@ def _getProfileTemplateVariables(question_type):
 		"modules_full",
 		"architecture",
 		"pointer_size",
+		"python_version",
 		"timestamp",
 		"registers",
 		"program_counter",
@@ -7655,6 +7897,7 @@ def _getProfileTemplateVariables(question_type):
 		"modules",
 		"architecture",
 		"pointer_size",
+		"python_version",
 		"timestamp",
 		"registers",
 		"additional_context_files",
@@ -7710,6 +7953,7 @@ def _getProfileTemplateVariables(question_type):
 			"processname",
 			"architecture",
 			"pointer_size",
+			"python_version",
 			"timestamp",
 			"rop_target_modules",
 		]
@@ -8657,7 +8901,7 @@ def _readPromptFromSavedRequest(request_path):
 	return fallback_prompt, request_size, len(fallback_prompt.encode("utf-8")), "full_file"
 
 
-def buildAIPromptFromTemplateFile(template_path, context, question_type="9"):
+def buildAIPromptFromTemplateFile(template_path, context, question_type="9", maxsize_kb=0):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: building prompt from template file %s" % template_path)
 	try:
@@ -8670,7 +8914,13 @@ def buildAIPromptFromTemplateFile(template_path, context, question_type="9"):
 		mndbg.dbgp("tellme: using PROMPT BEGIN/PROMPT END block from template %s" % template_path)
 		template_text = prompt_block_text
 
-	available_variables = _buildRequestVariables(context)
+	requested_placeholders = _extractTemplatePlaceholderNames(template_text)
+	available_variables = _buildTemplateRequestVariables(
+		context,
+		requested_placeholders=requested_placeholders,
+		question_type=question_type,
+		maxsize_kb=maxsize_kb
+	)
 	used_variables = OrderedDict()
 	unknown_placeholders = []
 	empty_placeholders = []
@@ -9139,6 +9389,76 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 			"OpenAI returned an empty or unexpected response payload",
 			request_id=request_id,
 			body={"raw_response": _captureAIRawResponse(response)},
+			error_type="UnexpectedPayloadError"
+		)
+
+
+def _buildOpenAIUploadInstruction(primary_request_name, supporting_names):
+	"""Build the small inline instruction used when tellme uploads the request as files."""
+	mndbg.dbgp(get_current_function_name())
+	primary_request_name = ensure_text(primary_request_name).strip() or "request.txt"
+	lines = [
+		"The authoritative tellme request is attached in the file '%s'." % primary_request_name,
+		"Treat that file as the primary instruction source.",
+		"If that file contains a PROMPT BEGIN/PROMPT END block, use only the text inside that block as the primary request body.",
+		"If no PROMPT BEGIN/PROMPT END block is present, use the full request file contents as the primary request body.",
+	]
+	if len(supporting_names) > 0:
+		lines.append("Use the other attached file(s) as supporting evidence only: %s." % ", ".join(supporting_names))
+		lines.append("If supporting files conflict with the primary request file, follow the primary request file and mention the conflict briefly.")
+	lines.append("Return the final answer only.")
+	return "\n".join(lines)
+
+
+def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None):
+	"""Upload local files to OpenAI and submit a Responses API request that references those file IDs."""
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling OpenAI upload mode with %d file(s) and timeout %.1fs" % (len(file_paths), timeout_seconds))
+	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+	uploaded_files = []
+	content_items = []
+	for file_path in file_paths:
+		with open(file_path, "rb") as file_handle:
+			uploaded_file = client.files.create(file=file_handle, purpose="user_data")
+		uploaded_files.append({
+			"id": getattr(uploaded_file, "id", ""),
+			"path": file_path,
+			"name": os.path.basename(file_path)
+		})
+		content_items.append({
+			"type": "input_file",
+			"file_id": getattr(uploaded_file, "id", "")
+		})
+	content_items.append({
+		"type": "input_text",
+		"text": instruction_text
+	})
+	request_kwargs = {
+		"model": model,
+		"input": [{
+			"role": "user",
+			"content": content_items
+		}]
+	}
+	if isinstance(options, dict) and len(options) > 0:
+		request_kwargs["extra_body"] = {"options": options}
+	response = client.responses.create(**request_kwargs)
+	request_id = getattr(response, "_request_id", "")
+	if request_id:
+		mndbg.dbgp("tellme: OpenAI upload-mode request id: %s" % request_id)
+	output_text = getattr(response, "output_text", "")
+	if output_text:
+		return output_text, request_id, uploaded_files
+	try:
+		return str(response.output[0].content[0].text), request_id, uploaded_files
+	except Exception:
+		raise AIProviderError(
+			"OpenAI returned an empty or unexpected response payload",
+			request_id=request_id,
+			body={
+				"uploaded_files": uploaded_files,
+				"raw_response": _captureAIRawResponse(response)
+			},
 			error_type="UnexpectedPayloadError"
 		)
 
@@ -31332,6 +31652,7 @@ class MnAI(object):
 		self.reachability_target_address = 0
 		self.rop_target_modules = None
 		self.template_file = ""
+		self.template_placeholders = set()
 		self.prebuilt_prompt = ""
 		self.heapdynamics_files = []
 		self.additional_context_files = []
@@ -31344,6 +31665,9 @@ class MnAI(object):
 		self.raw_response_logfile_path = ""
 		self.offline_logfile_path = ""
 		self.available_model_ids = []
+		self.openai_upload_requested = False
+		self.openai_uploaded_files = []
+		self.last_request_context = None
 
 	def logInfo(self, message):
 		"""Write a top-level informational message using the standard AI output prefix."""
@@ -31380,6 +31704,108 @@ class MnAI(object):
 		if source_name == "":
 			return "default"
 		return source_name
+
+	def getRequestedTemplatePlaceholders(self):
+		"""Return normalized placeholder names requested by the active q9 template."""
+		mndbg.dbgp(get_current_function_name())
+		if self.question_type != "9" or self.prebuilt_prompt != "":
+			return set()
+		return set(self.template_placeholders)
+
+	def buildContextCollectionPlan(self):
+		"""Return a generic collection plan for the active profile or q9 template."""
+		mndbg.dbgp(get_current_function_name())
+		return _buildAIContextCollectionPlan(
+			self.effective_question_type,
+			requested_placeholders=self.getRequestedTemplatePlaceholders()
+		)
+
+	def needsFunctionContext(self):
+		"""Return True when function-level code context should be collected."""
+		mndbg.dbgp(get_current_function_name())
+		if self.effective_question_type in ["2", "3", "3b"]:
+			return True
+		return len(self.getRequestedTemplatePlaceholders() & (_TEMPLATE_FUNCTION_PLACEHOLDERS | _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS)) > 0
+
+	def needsControlledDataContext(self):
+		"""Return True when controlled-chunk reachability context should be collected."""
+		mndbg.dbgp(get_current_function_name())
+		if self.effective_question_type in ["3", "3b"]:
+			return True
+		return len(self.getRequestedTemplatePlaceholders() & _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS) > 0
+
+	def needsRopModuleContext(self):
+		"""Return True when q8-style ROP module scope data should be collected."""
+		mndbg.dbgp(get_current_function_name())
+		if self.effective_question_type == "8":
+			return True
+		return len(self.getRequestedTemplatePlaceholders() & _TEMPLATE_ROP_PLACEHOLDERS) > 0
+
+	def usesHeapAnalysisTarget(self):
+		"""Return True when -a should also feed heap-analysis target context."""
+		mndbg.dbgp(get_current_function_name())
+		if self.effective_question_type == "1":
+			return True
+		return "heap_analysis_target" in self.getRequestedTemplatePlaceholders()
+
+	def usesAdditionalCodeTarget(self):
+		"""Return True when -a should be treated as an additional code/function target."""
+		mndbg.dbgp(get_current_function_name())
+		if self.effective_question_type == "2":
+			return True
+		requested_placeholders = self.getRequestedTemplatePlaceholders()
+		return len(requested_placeholders & (_TEMPLATE_FUNCTION_PLACEHOLDERS | set(["analysis_target", "additional_function", "additional_function_note", "function_analyses"]))) > 0
+
+	def parseControlledChunkInputs(self):
+		"""Resolve controlled-chunk and optional target inputs when the request needs them."""
+		mndbg.dbgp(get_current_function_name())
+		self.controlled_chunk_address = 0
+		self.reachability_target_address = 0
+		if not self.needsControlledDataContext():
+			return True
+		if "c" not in self.args or type(self.args["c"]).__name__.lower() == "bool":
+			self.logError("This request requires -c <controlled chunk address>")
+			return False
+		self.controlled_chunk_address, chunk_ok = getAddyArg(self.args["c"])
+		if not chunk_ok or self.controlled_chunk_address <= 0:
+			self.logError("Please specify a valid controlled chunk address with -c")
+			return False
+		if "t" in self.args:
+			if type(self.args["t"]).__name__.lower() == "bool":
+				self.logError("Please specify a valid target address with -t")
+				return False
+			self.reachability_target_address, target_ok = getAddyArg(self.args["t"])
+			if not target_ok or self.reachability_target_address <= 0:
+				self.logError("Please specify a valid target address with -t")
+				return False
+			self.target_address = self.reachability_target_address
+			self.target_address_source = "-t"
+			mndbg.dbgp("tellme: using controlled chunk %s and reachability target %s" % (
+				PTR_PRINT % self.controlled_chunk_address,
+				PTR_PRINT % self.reachability_target_address,
+			))
+		else:
+			mndbg.dbgp("tellme: using controlled chunk %s in discovery mode (no -t target)" % (
+				PTR_PRINT % self.controlled_chunk_address,
+			))
+		return True
+
+	def parseControlFlowFollowDepth(self):
+		"""Parse generic control-flow follow depth from -d for code-flow aware requests."""
+		mndbg.dbgp(get_current_function_name())
+		self.q2_follow_depth = 2
+		if not self.needsFunctionContext() or "d" not in self.args:
+			return True
+		if type(self.args["d"]).__name__.lower() == "bool":
+			self.logError("Please specify a numeric depth with -d <1-4>")
+			return False
+		follow_depth, depth_ok = getIntArg(self.args["d"])
+		if not depth_ok or follow_depth < 1 or follow_depth > 4:
+			self.logError("Invalid -d value '%s'. Please specify a number between 1 and 4." % self.args["d"])
+			return False
+		self.q2_follow_depth = follow_depth
+		mndbg.dbgp("tellme: using control-flow follow depth %d from -d" % self.q2_follow_depth)
+		return True
 
 	def _getEngineOptionDefinitions(self):
 		"""Return engine-specific configuration option metadata."""
@@ -31748,27 +32174,6 @@ class MnAI(object):
 		self.logAvailableModels(models=models, error_mode=False)
 		return True
 
-	def validateCpbArgument(self):
-		"""Validate -cpb syntax early so tellme does not continue with a silently ignored badchar filter."""
-		mndbg.dbgp(get_current_function_name())
-		if "cpb" not in self.args:
-			return True
-		if type(self.args["cpb"]).__name__.lower() == "bool":
-			self.logError("Please specify badchars with -cpb <bytes>")
-			self.logErrorDetail("Example: -cpb '\\x00\\x0a\\x0d'")
-			return False
-		strb, badcharsok = cpbArgToBytes(self.args["cpb"])
-		if not badcharsok:
-			self.logError("Unable to parse -cpb value '%s'" % self.args["cpb"])
-			self.logErrorDetail("Use \\xNN byte syntax, for example: -cpb '\\x00\\x20\\x0a\\x0d\\x3f'")
-			self.logErrorDetail("Ranges are also supported, for example: -cpb '\\x00..\\x05\\x20\\x3f'")
-			return False
-		mndbg.dbgp("tellme: validated -cpb value '%s' -> %s" % (
-			self.args["cpb"],
-			_renderBadchars(strb)
-		))
-		return True
-
 	def parseTargetAddress(self):
 		"""Resolve an optional analysis target address from -a and map it to the active question profile."""
 		mndbg.dbgp(get_current_function_name())
@@ -31784,49 +32189,17 @@ class MnAI(object):
 			return False
 
 		self.target_address_source = "-a"
-		if self.effective_question_type == "1":
+		if self.usesHeapAnalysisTarget():
 			self.heap_target_address = self.target_address
-			mndbg.dbgp("tellme: using heap analysis target %s from -a for q1" % (PTR_PRINT % self.heap_target_address))
-		else:
+			mndbg.dbgp("tellme: using heap analysis target %s from -a" % (PTR_PRINT % self.heap_target_address))
+		if self.usesAdditionalCodeTarget():
 			self.additional_target_address = self.target_address
-			mndbg.dbgp("tellme: using additional q2 target %s from -a" % (PTR_PRINT % self.additional_target_address))
+			mndbg.dbgp("tellme: using additional code target %s from -a" % (PTR_PRINT % self.additional_target_address))
 		return True
 
 	def parseQ3ChunkAndTarget(self):
 		"""Resolve q3-specific controlled-chunk and optional reachability target addresses."""
-		mndbg.dbgp(get_current_function_name())
-		self.controlled_chunk_address = 0
-		self.reachability_target_address = 0
-		if self.effective_question_type != "3":
-			return True
-		if "c" not in self.args or type(self.args["c"]).__name__.lower() == "bool":
-			self.logError("Question profile '-q 3' requires -c <controlled chunk address>")
-			return False
-		self.controlled_chunk_address, chunk_ok = getAddyArg(self.args["c"])
-		if not chunk_ok or self.controlled_chunk_address <= 0:
-			self.logError("Please specify a valid controlled chunk address with -c")
-			return False
-		if "t" in self.args:
-			if type(self.args["t"]).__name__.lower() == "bool":
-				self.logError("Please specify a valid target address with -t")
-				return False
-			self.reachability_target_address, target_ok = getAddyArg(self.args["t"])
-			if not target_ok or self.reachability_target_address <= 0:
-				self.logError("Please specify a valid target address with -t")
-				return False
-			self.target_address = self.reachability_target_address
-			self.target_address_source = "-t"
-			mndbg.dbgp("tellme: using controlled chunk %s and reachability target %s for q3" % (
-				PTR_PRINT % self.controlled_chunk_address,
-				PTR_PRINT % self.reachability_target_address,
-			))
-		else:
-			self.target_address = 0
-			self.target_address_source = ""
-			mndbg.dbgp("tellme: using controlled chunk %s for q3 discovery mode (no -t target)" % (
-				PTR_PRINT % self.controlled_chunk_address,
-			))
-		return True
+		return self.parseControlledChunkInputs()
 
 	def parseTemplateSelection(self):
 		"""Load and validate a request template when question profile 9 is selected."""
@@ -31849,16 +32222,27 @@ class MnAI(object):
 			return False
 
 		self.effective_question_type = _guessTemplateQuestionType(self.template_file)
+		self.template_placeholders = set()
 		mndbg.dbgp("tellme: using template file %s for q9" % self.template_file)
 		if self.prebuilt_prompt != "":
 			mndbg.dbgp("tellme: q9 will reuse the prebuilt request prompt from %s" % self.template_file)
 			self.logInfo("Using prebuilt request from: %s" % self.template_file)
+		else:
+			try:
+				self.template_placeholders = _loadTemplatePlaceholderNames(self.template_file)
+			except Exception as e:
+				self.logError("Unable to read template placeholders from %s" % self.template_file)
+				self.logErrorDetail(str(e))
+				return False
 		if self.effective_question_type != "":
 			mndbg.dbgp("tellme: inferred base question type '%s' from template name" % self.effective_question_type)
-			if self.target_address > 0 and self.heap_target_address == 0 and self.target_address_source == "-a" and self.effective_question_type == "1":
+			if self.target_address > 0 and self.heap_target_address == 0 and self.target_address_source == "-a" and self.usesHeapAnalysisTarget():
 				self.heap_target_address = self.target_address
-				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for ai.q1 template" % (PTR_PRINT % self.heap_target_address))
-		elif self.prebuilt_prompt == "":
+				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for the active template" % (PTR_PRINT % self.heap_target_address))
+		if self.target_address > 0 and self.additional_target_address == 0 and self.target_address_source == "-a" and self.usesAdditionalCodeTarget():
+			self.additional_target_address = self.target_address
+			mndbg.dbgp("tellme: treating -a target %s as an additional code target for the active template" % (PTR_PRINT % self.additional_target_address))
+		if self.prebuilt_prompt == "":
 			self.logInfo("Using request template: %s" % self.template_file)
 		return True
 
@@ -31869,41 +32253,18 @@ class MnAI(object):
 			return True
 		default_template_path = _ensureDefaultTemplate(self.question_type, self.mona_config)
 		if default_template_path != "":
-			self.logInfo("Template created at %s (won't be used unless you run -q 9 -f %s)" % (
-				default_template_path,
-				default_template_path
-			))
+			self.logInfo("Template created at %s " % default_template_path)
+			self.logInfoDetail("(won't be used unless you run -q 9 -f %s)" % default_template_path)
 		return True
 
 	def parseQ2FollowDepth(self):
 		"""Parse q2/q3 call/jump follow depth from -d."""
-		mndbg.dbgp(get_current_function_name())
-		self.q2_follow_depth = 2
-		if self.effective_question_type not in ["2", "3", "3b"] or "d" not in self.args:
-			return True
-		if type(self.args["d"]).__name__.lower() == "bool":
-			self.logError("Please specify a numeric depth with -d <1-4> for '-q %s'" % self.effective_question_type)
-			return False
-		follow_depth, depth_ok = getIntArg(self.args["d"])
-		if not depth_ok:
-			self.logError("Invalid -d value '%s' for '-q %s'. Please specify a number between 1 and 4." % (
-				self.args["d"], self.effective_question_type
-			))
-			return False
-		if follow_depth < 1 or follow_depth > 4:
-			self.logError("Invalid -d value '%s' for '-q %s'. Please specify a number between 1 and 4." % (
-				self.args["d"], self.effective_question_type
-			))
-			return False
-		self.q2_follow_depth = follow_depth
-		mndbg.dbgp("tellme: using q%s control-flow follow depth %d from -d" % (
-			self.effective_question_type, self.q2_follow_depth
-		))
-		return True
+		return self.parseControlFlowFollowDepth()
 
 	def parseRequestSettings(self):
-		"""Resolve API key, model, timeout, token budget, and test overrides for the request."""
+		"""Resolve API key, model, timeout, token budget, upload mode, and test overrides for the request."""
 		mndbg.dbgp(get_current_function_name())
+		self.openai_upload_requested = ("upload" in self.args)
 		if "maxsize" in self.args:
 			if type(self.args["maxsize"]).__name__.lower() == "bool":
 				self.logError("Please specify a size value with -maxsize <kilobytes>")
@@ -31952,7 +32313,6 @@ class MnAI(object):
 				mndbg.dbgp("tellme: extending default timeout for q8 to %.1fs" % self.timeout_seconds)
 			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
 			mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
-				
 				self.engine, self.timeout_seconds, self.timeout_source
 			))
 			mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
@@ -31986,6 +32346,14 @@ class MnAI(object):
 				mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
 					self.engine, json.dumps(self.api_options, sort_keys=True)
 				))
+		if self.openai_upload_requested:
+			if self.engine != "openai":
+				self.logError("The -upload flag is currently only supported with the openai engine.")
+				return False
+			self.logInfo("OpenAI upload mode requested.")
+			self.logInfo("Mona will upload the saved request file plus any -l/-p files")
+			self.logInfoDetail("instead of embedding them in the submitted text prompt.")
+			self.logInfoDetail("This is useful for large contexts that would exceed model input limits if included in the prompt.")
 		return True
 
 	def validateProviderConfiguration(self):
@@ -32068,9 +32436,9 @@ class MnAI(object):
 			if len(self.additional_context_files) > 0:
 				mndbg.dbgp("tellme: using additional context files %s" % ", ".join(self.additional_context_files))
 		if len(self.heapdynamics_files) > 0:
-			self.logInfo("Will check if %s contains useful information" % ", ".join(self.heapdynamics_files))
+			self.logInfo("Including %s in analysis" % ", ".join(self.heapdynamics_files))
 		else:
-			self.logInfo("Will check if c:\\alloc.txt contains useful information")
+			self.logInfo("Including c:\\alloc.txt in analysis")
 		if len(self.additional_context_files) > 0:
 			self.logInfo("Will read additional context from: %s" % ", ".join(self.additional_context_files))
 		return True
@@ -32089,13 +32457,13 @@ class MnAI(object):
 			self.logError("Unable to find/read PoC file %s" % self.poc_file)
 			return False
 		mndbg.dbgp("tellme: using poc file %s" % self.poc_file)
-		self.logInfo("Will read PoC/trigger from: %s" % self.poc_file)
+		self.logInfo("Including PoC/trigger from: %s" % self.poc_file)
 		return True
 
 	def parseRopModuleSelection(self):
 		"""Resolve q8-specific module, IAT, and section scope information."""
 		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type != "8":
+		if not self.needsRopModuleContext():
 			return True
 		try:
 			self.rop_target_modules = _collectRopTargetModules(self.args)
@@ -32115,16 +32483,15 @@ class MnAI(object):
 	def validateCurrentInstruction(self):
 		"""Resolve q2/q3 code locations and keep enough state to report invalid locations in the prompt."""
 		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type not in ["2", "3"] or self.prebuilt_prompt != "":
+		if not self.needsFunctionContext() or self.prebuilt_prompt != "":
 			return True
 		regs = getAllRegisters()
 		self.current_pc_address = regs.get(PROGRAM_COUNTER, 0)
-		if self.effective_question_type == "2" and self.target_address == 0:
+		if self.target_address == 0 and not self.needsControlledDataContext():
 			self.target_address = self.current_pc_address
 			self.target_address_source = PROGRAM_COUNTER.upper()
 		has_instr, instr_reason = tellMeHasCurrentInstruction(self.current_pc_address)
-		mndbg.dbgp("tellme: q%s current-instruction check at %s: %s (%s)" % (
-			self.effective_question_type,
+		mndbg.dbgp("tellme: current-instruction check at %s: %s (%s)" % (
 			PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "0x0",
 			str(has_instr),
 			instr_reason
@@ -32135,7 +32502,7 @@ class MnAI(object):
 			self.logInfoDetail("The request will report that invalid location and continue with any additional -a target.")
 		if self.additional_target_address > 0:
 			addy_ok, addy_reason = tellMeHasCurrentInstruction(self.additional_target_address)
-			mndbg.dbgp("tellme: q2 -a target check at %s: %s (%s)" % (
+			mndbg.dbgp("tellme: additional -a target check at %s: %s (%s)" % (
 				PTR_PRINT % self.additional_target_address,
 				str(addy_ok),
 				addy_reason
@@ -32145,12 +32512,220 @@ class MnAI(object):
 				self.logInfoDetail("Reason: %s" % addy_reason)
 		return True
 
+	def enrichContextWithFunctionAnalysis(self, context, function_context_cache=None, function_context_active_keys=None):
+		"""Add generic function-level code-flow context to the collected request state."""
+		mndbg.dbgp(get_current_function_name())
+		if function_context_cache is None:
+			function_context_cache = {}
+		if function_context_active_keys is None:
+			function_context_active_keys = set()
+		total_steps = 2 if self.additional_target_address > 0 and self.additional_target_address != self.current_pc_address else 1
+		current_step = 1
+		self.logInfo("[%d/%d] Extending request context with function-level code flow analysis..." % (
+			current_step, total_steps
+		))
+		context["analysis_target"] = {
+			"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
+			"source": PROGRAM_COUNTER.upper()
+		}
+		if "function_analyses" not in context or not isinstance(context.get("function_analyses"), list):
+			context["function_analyses"] = []
+		try:
+			self.logInfoDetail("Step %d/%d: collecting current %s function context" % (
+				current_step, total_steps, PROGRAM_COUNTER.upper()
+			))
+			if not isinstance(context.get("current_function"), dict) or len(context.get("current_function", {})) == 0:
+				context["current_function"] = collectAICurrentFunctionContext(
+					self.current_pc_address,
+					follow_depth=self.q2_follow_depth,
+					context_cache=function_context_cache,
+					active_keys=function_context_active_keys
+				)
+			context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+			if "near_entry_execution_context" in context["current_function"]:
+				self.logInfo("Including near-entry execution context for the current %s function analysis." % PROGRAM_COUNTER.upper())
+				self.logInfoDetail(
+					"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
+						context["current_function"].get("function_start", "unknown"),
+						context["current_function"].get("offset_from_function_start", "unknown"),
+						context["current_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
+					)
+				)
+			if context["current_function"] not in context["function_analyses"]:
+				context["function_analyses"].append(context["current_function"])
+		except Exception as e:
+			context["current_function_error"] = str(e)
+			mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
+		if self.additional_target_address > 0:
+			if self.additional_target_address == self.current_pc_address:
+				context["additional_function_note"] = "The -a address matches the current %s value, so only one function analysis was collected." % PROGRAM_COUNTER.upper()
+			else:
+				try:
+					current_step = 2
+					self.logInfo("[%d/%d] Collecting additional -a function context..." % (
+						current_step, total_steps
+					))
+					self.logInfoDetail("Step %d/%d: collecting additional -a function context" % (
+						current_step, total_steps
+					))
+					context["additional_function"] = collectAICurrentFunctionContext(
+						self.additional_target_address,
+						follow_depth=self.q2_follow_depth,
+						context_cache=function_context_cache,
+						active_keys=function_context_active_keys
+					)
+					context["additional_function"]["source"] = "-a"
+					if "near_entry_execution_context" in context["additional_function"]:
+						self.logInfo("Including near-entry execution context for the -a function analysis.")
+						self.logInfoDetail(
+							"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
+								context["additional_function"].get("function_start", "unknown"),
+								context["additional_function"].get("offset_from_function_start", "unknown"),
+								context["additional_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
+							)
+						)
+					context["function_analyses"].append(context["additional_function"])
+				except Exception as e:
+					context["additional_function_error"] = str(e)
+					mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
+		return context
+
+	def enrichContextWithControlledDataAnalysis(self, context, function_context_cache=None, function_context_active_keys=None):
+		"""Add controlled-chunk reachability context to the collected request state."""
+		mndbg.dbgp(get_current_function_name())
+		if function_context_cache is None:
+			function_context_cache = {}
+		if function_context_active_keys is None:
+			function_context_active_keys = set()
+		total_steps = 7
+		q3_startmoment = time.time()
+		def _format_major_step_elapsed(startmoment):
+			try:
+				elapsed_seconds = max(0, int(round(time.time() - startmoment)))
+			except Exception:
+				elapsed_seconds = 0
+			return str(datetime.timedelta(seconds=elapsed_seconds))
+		def _log_step_header(step_number, title_text, first_step=False):
+			if not first_step:
+				dbg.log("")
+			self.logInfo("<b>[%d/%d] %s</b>" % (
+				step_number,
+				total_steps,
+				title_text
+			))
+		def _log_major_step_start(step_number, label):
+			completed_steps = max(0, step_number - 1)
+			eta = get_eta(q3_startmoment, completed_steps, total_steps) if completed_steps > 0 else "calculating eta..."
+			self.logInfoDetail("<b>Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
+				step_number,
+				total_steps,
+				label,
+				_format_major_step_elapsed(q3_startmoment),
+				eta
+			))
+		def _log_major_step_complete(step_number, label):
+			eta = get_eta(q3_startmoment, step_number, total_steps) if step_number < total_steps else "complete"
+			self.logInfoDetail("<b>Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
+				step_number,
+				total_steps,
+				label,
+				_format_major_step_elapsed(q3_startmoment),
+				eta
+			))
+		current_step = 1
+		step_label = "reachability target setup" if self.reachability_target_address > 0 else "controlled-data goal setup"
+		_log_step_header(current_step, "Extending request context with chunk, stack, and control-flow analysis...", first_step=True)
+		_log_major_step_start(current_step, step_label)
+		context["q3_goal"] = "targeted_reachability" if self.reachability_target_address > 0 else "discovery_chunk_write_or_control_sink"
+		context["analysis_target"] = {
+			"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
+			"source": PROGRAM_COUNTER.upper()
+		}
+		if self.reachability_target_address > 0:
+			self.logInfoDetail("Step 1/%d: collecting target address disassembly and function context" % total_steps)
+			context["reachability_target"] = _buildReachabilityTargetContext(self.reachability_target_address)
+		_log_major_step_complete(current_step, step_label)
+		current_step = 2
+		step_label = "controlled chunk dump and reference matching"
+		_log_step_header(current_step, "Dumping controlled chunk and matching live references...")
+		_log_major_step_start(current_step, step_label)
+		context["controlled_chunk"] = _buildControlledChunkContext(self.controlled_chunk_address)
+		context["controlled_chunk_references"] = _collectControlledChunkReferences(context["controlled_chunk"], getAllRegisters())
+		_log_major_step_complete(current_step, step_label)
+		current_step = 3
+		step_label = "current function control-flow collection"
+		_log_step_header(current_step, "Collecting current %s function code flow. Hang on, this may take a while" % PROGRAM_COUNTER.upper())
+		_log_major_step_start(current_step, step_label)
+		if not isinstance(context.get("current_function"), dict) or len(context.get("current_function", {})) == 0:
+			context["current_function"] = collectAICurrentFunctionContext(
+				self.current_pc_address,
+				follow_depth=self.q2_follow_depth,
+				context_cache=function_context_cache,
+				active_keys=function_context_active_keys
+			)
+		context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+		_log_major_step_complete(current_step, step_label)
+		if self.reachability_target_address > 0:
+			current_step = 4
+			step_label = "target function context collection"
+			_log_step_header(current_step, "Collecting target function context...")
+			_log_major_step_start(current_step, step_label)
+			if not isinstance(context.get("target_function"), dict) or len(context.get("target_function", {})) == 0:
+				context["target_function"] = collectAICurrentFunctionContext(
+					self.reachability_target_address,
+					follow_depth=1,
+					context_cache=function_context_cache,
+					active_keys=function_context_active_keys
+				)
+			context["target_function"]["source"] = "-t"
+			_log_major_step_complete(current_step, step_label)
+		current_step = 5
+		step_label = "caller-side resume path analysis"
+		_log_step_header(current_step, "Walking caller-side resume paths from the call stack...")
+		_log_major_step_start(current_step, step_label)
+		return_resume = _collectReturnResumeContext(
+			context.get("call_stack", {}),
+			max_frames=self.q2_follow_depth,
+			follow_depth=self.q2_follow_depth,
+			function_context_cache=function_context_cache,
+			function_context_active_keys=function_context_active_keys
+		)
+		for key, value in return_resume.items():
+			context[key] = value
+		_log_major_step_complete(current_step, step_label)
+		current_step = 6
+		step_label = "controlled-object callee extraction"
+		_log_step_header(current_step, "Extracting first-hop controlled-object callees and callee-side write sinks...")
+		_log_major_step_start(current_step, step_label)
+		context["controlled_object_callees"] = _collectControlledObjectCallees(
+			context.get("current_function", {}),
+			context.get("caller_function", {}),
+			context.get("caller_chain", []),
+			context.get("controlled_chunk_references", {})
+		)
+		_log_major_step_complete(current_step, step_label)
+		current_step = 7
+		step_label = "reachable candidate flattening"
+		_log_step_header(current_step, "Flattening reachable branch/call/jump candidates...")
+		_log_major_step_start(current_step, step_label)
+		context["reachable_functions"] = _collectReachableFunctions(
+			context.get("current_function", {}),
+			context.get("caller_function", {}),
+			context.get("caller_chain", [])
+		)
+		_log_major_step_complete(current_step, step_label)
+		self.logInfoDetail("Step %d/%d: controlled-data context enrichment complete" % (
+			current_step, total_steps
+		))
+		return context
+
 	def getRequestContext(self):
 		"""Collect debugger context and enrich it with function or ROP metadata when needed."""
 		mndbg.dbgp(get_current_function_name())
 		global _q3_control_flow_disasm_cache
 		global _q3_control_flow_uf_cache
 		if self.question_type == "9" and self.prebuilt_prompt != "":
+			self.last_request_context = None
 			return None
 		if mnproc is None:
 			mndbg.dbgp("tellme: initializing shared process context")
@@ -32160,7 +32735,8 @@ class MnAI(object):
 			return None
 
 		self.logInfo("Collecting context and preparing request...")
-		if self.effective_question_type in ["3", "3b"]:
+		collection_plan = self.buildContextCollectionPlan()
+		if self.needsControlledDataContext():
 			_q3_control_flow_disasm_cache = {}
 			_q3_control_flow_uf_cache = {}
 		function_context_cache = {}
@@ -32171,198 +32747,25 @@ class MnAI(object):
 			additional_context_files=self.additional_context_files,
 			poc_file=self.poc_file,
 			heap_target_address=self.heap_target_address,
-			ai_args=self.args
+			ai_args=self.args,
+			collection_plan=collection_plan
 		)
-		if self.effective_question_type == "8" and self.rop_target_modules is not None:
+		if self.needsRopModuleContext() and self.rop_target_modules is not None:
 			context["rop_target_modules"] = self.rop_target_modules
 		self.logInfoDetail("Done")
-
-		if self.effective_question_type == "2":
-			total_steps = 2 if self.additional_target_address > 0 and self.additional_target_address != self.current_pc_address else 1
-			current_step = 1
-			self.logInfo("[%d/%d] Extending q2 context with function-level code flow analysis..." % (
-				current_step, total_steps
-			))
-			context["analysis_target"] = {
-				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
-				"source": PROGRAM_COUNTER.upper()
-			}
-			context["function_analyses"] = []
-			try:
-				self.logInfoDetail("Step %d/%d: collecting current %s function context" % (
-					current_step, total_steps, PROGRAM_COUNTER.upper()
-				))
-				context["current_function"] = collectAICurrentFunctionContext(
-					self.current_pc_address,
-					follow_depth=self.q2_follow_depth,
-					context_cache=function_context_cache,
-					active_keys=function_context_active_keys
-				)
-				context["current_function"]["source"] = PROGRAM_COUNTER.upper()
-				if "near_entry_execution_context" in context["current_function"]:
-					self.logInfo("Including near-entry execution context for the current %s function analysis." % PROGRAM_COUNTER.upper())
-					self.logInfoDetail(
-						"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
-							context["current_function"].get("function_start", "unknown"),
-							context["current_function"].get("offset_from_function_start", "unknown"),
-							context["current_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
-						)
-					)
-				context["function_analyses"].append(context["current_function"])
-			except Exception as e:
-				context["current_function_error"] = str(e)
-				mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
-			if self.additional_target_address > 0:
-				if self.additional_target_address == self.current_pc_address:
-					context["additional_function_note"] = "The -a address matches the current %s value, so only one function analysis was collected." % PROGRAM_COUNTER.upper()
-				else:
-					try:
-						current_step = 2
-						self.logInfo("[%d/%d] Collecting additional -a function context..." % (
-							current_step, total_steps
-						))
-						self.logInfoDetail("Step %d/%d: collecting additional -a function context" % (
-							current_step, total_steps
-						))
-						context["additional_function"] = collectAICurrentFunctionContext(
-							self.additional_target_address,
-							follow_depth=self.q2_follow_depth,
-							context_cache=function_context_cache,
-							active_keys=function_context_active_keys
-						)
-						context["additional_function"]["source"] = "-a"
-						if "near_entry_execution_context" in context["additional_function"]:
-							self.logInfo("Including near-entry execution context for the -a function analysis.")
-							self.logInfoDetail(
-								"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
-									context["additional_function"].get("function_start", "unknown"),
-									context["additional_function"].get("offset_from_function_start", "unknown"),
-									context["additional_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
-								)
-							)
-						context["function_analyses"].append(context["additional_function"])
-					except Exception as e:
-						context["additional_function_error"] = str(e)
-						mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
-		if self.effective_question_type in ["3", "3b"]:
-			total_steps = 7
-			q3_startmoment = time.time()
-			def _format_major_step_elapsed(startmoment):
-				try:
-					elapsed_seconds = max(0, int(round(time.time() - startmoment)))
-				except Exception:
-					elapsed_seconds = 0
-				return str(datetime.timedelta(seconds=elapsed_seconds))
-			def _log_q3_step_header(step_number, title_text, first_step=False):
-				if not first_step:
-					dbg.log("")
-				self.logInfo("<b>[%d/%d] %s</b>" % (
-					step_number,
-					total_steps,
-					title_text
-				))
-			def _log_q3_major_step_start(step_number, label):
-				completed_steps = max(0, step_number - 1)
-				eta = get_eta(q3_startmoment, completed_steps, total_steps) if completed_steps > 0 else "calculating eta..."
-				self.logInfoDetail("<b>Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
-					step_number,
-					total_steps,
-					label,
-					_format_major_step_elapsed(q3_startmoment),
-					eta
-				))
-			def _log_q3_major_step_complete(step_number, label):
-				eta = get_eta(q3_startmoment, step_number, total_steps) if step_number < total_steps else "complete"
-				self.logInfoDetail("<b>Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
-					step_number,
-					total_steps,
-					label,
-					_format_major_step_elapsed(q3_startmoment),
-					eta
-				))
-			current_step = 1
-			step_label = "reachability target setup" if self.reachability_target_address > 0 else "q3 goal setup"
-			_log_q3_step_header(current_step, "Extending q3 context with chunk, stack, and control-flow analysis...", first_step=True)
-			_log_q3_major_step_start(current_step, step_label)
-			context["q3_goal"] = "targeted_reachability" if self.reachability_target_address > 0 else "discovery_chunk_write_or_control_sink"
-			context["analysis_target"] = {
-				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
-				"source": PROGRAM_COUNTER.upper()
-			}
-			if self.reachability_target_address > 0:
-				self.logInfoDetail("Step 1/%d: collecting target address disassembly and function context" % total_steps)
-				context["reachability_target"] = _buildReachabilityTargetContext(self.reachability_target_address)
-			_log_q3_major_step_complete(current_step, step_label)
-			current_step = 2
-			step_label = "controlled chunk dump and reference matching"
-			_log_q3_step_header(current_step, "Dumping controlled chunk and matching live references...")
-			_log_q3_major_step_start(current_step, step_label)
-			context["controlled_chunk"] = _buildControlledChunkContext(self.controlled_chunk_address)
-			context["controlled_chunk_references"] = _collectControlledChunkReferences(context["controlled_chunk"], getAllRegisters())
-			_log_q3_major_step_complete(current_step, step_label)
-			current_step = 3
-			step_label = "current function control-flow collection"
-			_log_q3_step_header(current_step, "Collecting current %s function code flow. Hang on, this may take a while" % PROGRAM_COUNTER.upper())
-			_log_q3_major_step_start(current_step, step_label)
-			context["current_function"] = collectAICurrentFunctionContext(
-				self.current_pc_address,
-				follow_depth=self.q2_follow_depth,
-				context_cache=function_context_cache,
-				active_keys=function_context_active_keys
-			)
-			context["current_function"]["source"] = PROGRAM_COUNTER.upper()
-			_log_q3_major_step_complete(current_step, step_label)
-			if self.reachability_target_address > 0:
-				current_step = 4
-				step_label = "target function context collection"
-				_log_q3_step_header(current_step, "Collecting target function context...")
-				_log_q3_major_step_start(current_step, step_label)
-				context["target_function"] = collectAICurrentFunctionContext(
-					self.reachability_target_address,
-					follow_depth=1,
-					context_cache=function_context_cache,
-					active_keys=function_context_active_keys
-				)
-				context["target_function"]["source"] = "-t"
-				_log_q3_major_step_complete(current_step, step_label)
-			current_step = 5
-			step_label = "caller-side resume path analysis"
-			_log_q3_step_header(current_step, "Walking caller-side resume paths from the call stack...")
-			_log_q3_major_step_start(current_step, step_label)
-			return_resume = _collectReturnResumeContext(
-				context.get("call_stack", {}),
-				max_frames=self.q2_follow_depth,
-				follow_depth=self.q2_follow_depth,
+		if self.needsControlledDataContext():
+			context = self.enrichContextWithControlledDataAnalysis(
+				context,
 				function_context_cache=function_context_cache,
 				function_context_active_keys=function_context_active_keys
 			)
-			for key, value in return_resume.items():
-				context[key] = value
-			_log_q3_major_step_complete(current_step, step_label)
-			current_step = 6
-			step_label = "controlled-object callee extraction"
-			_log_q3_step_header(current_step, "Extracting first-hop controlled-object callees and callee-side write sinks...")
-			_log_q3_major_step_start(current_step, step_label)
-			context["controlled_object_callees"] = _collectControlledObjectCallees(
-				context.get("current_function", {}),
-				context.get("caller_function", {}),
-				context.get("caller_chain", []),
-				context.get("controlled_chunk_references", {})
+		elif self.needsFunctionContext():
+			context = self.enrichContextWithFunctionAnalysis(
+				context,
+				function_context_cache=function_context_cache,
+				function_context_active_keys=function_context_active_keys
 			)
-			_log_q3_major_step_complete(current_step, step_label)
-			current_step = 7
-			step_label = "reachable candidate flattening"
-			_log_q3_step_header(current_step, "Flattening reachable branch/call/jump candidates...")
-			_log_q3_major_step_start(current_step, step_label)
-			context["reachable_functions"] = _collectReachableFunctions(
-				context.get("current_function", {}),
-				context.get("caller_function", {}),
-				context.get("caller_chain", [])
-			)
-			_log_q3_major_step_complete(current_step, step_label)
-			self.logInfoDetail("Step %d/%d: q3 context enrichment complete" % (
-				current_step, total_steps
-			))
+		self.last_request_context = context
 		return context
 
 	def buildRequestPrompt(self):
@@ -32377,7 +32780,12 @@ class MnAI(object):
 			if context is None and not (self.question_type == "9" and self.prebuilt_prompt != ""):
 				return False
 			if self.question_type == "9":
-				self.prompt = buildAIPromptFromTemplateFile(self.template_file, context, question_type=self.question_type)
+				self.prompt = buildAIPromptFromTemplateFile(
+					self.template_file,
+					context,
+					question_type=self.effective_question_type,
+					maxsize_kb=self.max_request_kb
+				)
 			else:
 				self.prompt = buildAIPrompt(self.question_type, context, maxsize_kb=self.max_request_kb)
 			prompt_bytes = len(self.prompt.encode("utf-8")) if isinstance(self.prompt, text_type) else len(self.prompt)
@@ -32441,6 +32849,12 @@ class MnAI(object):
 		if self.engine == "openai":
 			openai_client_class, _openai_version, openai_import_error = _importOpenAI()
 			if openai_client_class is None:
+				if self.openai_upload_requested:
+					self.logError("OpenAI SDK import failed. Upload mode requires the OpenAI Python SDK.")
+					self.logErrorDetail("Python executable: %s" % sys.executable)
+					self.logErrorDetail("OpenAI import error: %s" % (openai_import_error.splitlines()[-1] if openai_import_error.strip() != "" else "unknown import error"))
+					self.logErrorDetail("Install the library into the debugger Python environment with: python -m pip install openai")
+					return None, False
 				openai_use_http_fallback = True
 				self.logError("OpenAI SDK import failed.")
 				self.logErrorDetail("Python executable: %s" % sys.executable)
@@ -32451,7 +32865,7 @@ class MnAI(object):
 						self.logErrorDetail("On this interpreter, the OpenAI module may work only once per WinDBG process.")
 						self.logErrorDetail("The direct HTTPS fallback avoids that import path for this request.")
 					self.logErrorDetail("OpenAI import error: %s" % openai_import_error.splitlines()[-1])
-					self.logInfo("OpenAI: Falling back to direct HTTPS request.")
+				self.logInfo("OpenAI: Falling back to direct HTTPS request.")
 		return openai_client_class, openai_use_http_fallback
 
 	def writeRequestLog(self, request_id=""):
@@ -32525,327 +32939,417 @@ class MnAI(object):
 		)
 		return self.raw_response_logfile_path
 
-	def getOpenAIAgentsBridgePaths(self):
-		"""Resolve stable bridge script/log paths plus unique output/status files for the current request."""
+	def getOpenAIUploadFilePaths(self):
+		"""Return the deduplicated file list for OpenAI upload mode, led by the saved request file."""
 		mndbg.dbgp(get_current_function_name())
-		if self.request_id == "":
-			self.request_id = generateAIRequestId()
-		self.bridge_script_path = getAbsolutePath("mona_openaiagents_bridge.py")
-		self.bridge_log_file_path = getAbsolutePath("tellme_openaiagents_bridge.log")
-		self.bridge_output_file_path = getAbsolutePath("tellme_response_%s.md" % self.request_id)
-		self.bridge_status_file_path = getAbsolutePath("tellme_%s.status.json" % self.request_id)
-		self.bridge_raw_request_file_path = getAbsolutePath("tellme_%s.bridge_request.json" % self.request_id)
-		self.bridge_raw_result_file_path = getAbsolutePath("tellme_%s.bridge_result.json" % self.request_id)
-		return self.bridge_script_path, self.bridge_log_file_path, self.bridge_output_file_path, self.bridge_status_file_path
+		file_paths = []
+		seen_paths = set()
+
+		def _add_file(path_value):
+			path_value = ensure_text(path_value).strip()
+			if path_value == "":
+				return
+			normalized_path = os.path.normcase(os.path.abspath(path_value))
+			if normalized_path in seen_paths:
+				return
+			seen_paths.add(normalized_path)
+			file_paths.append(path_value)
+
+		_add_file(self.request_logfile_path)
+		for context_file in self.heapdynamics_files:
+			_add_file(context_file)
+		explicit_heapdynamics_paths = set([
+			os.path.normcase(os.path.abspath(path_value))
+			for path_value in self.heapdynamics_files
+			if ensure_text(path_value).strip() != ""
+		])
+		context_heapdynamics = {}
+		if isinstance(self.last_request_context, dict):
+			context_heapdynamics = self.last_request_context.get("heapdynamics", [])
+		for heapdynamics_info in context_heapdynamics:
+			if not isinstance(heapdynamics_info, dict):
+				continue
+			implicit_file_path = ensure_text(heapdynamics_info.get("file", "")).strip()
+			if implicit_file_path == "":
+				continue
+			normalized_implicit_path = os.path.normcase(os.path.abspath(implicit_file_path))
+			if normalized_implicit_path in explicit_heapdynamics_paths:
+				continue
+			# Auto-discovered heap logs such as c:\alloc.txt are uploaded only when
+			# the collected context shows they actually produced relevant matches.
+			if len(heapdynamics_info.get("matched_entries", [])) == 0 and len(heapdynamics_info.get("matched_registers", [])) == 0:
+				continue
+			_add_file(implicit_file_path)
+		for context_file in self.additional_context_files:
+			_add_file(context_file)
+		_add_file(self.poc_file)
+		return file_paths
+
+	def submitOpenAIUploadRequest(self, openai_client_class, attempt_timeout):
+			"""Upload the saved request plus supporting files, then submit a compact inline instruction."""
+			mndbg.dbgp(get_current_function_name())
+			upload_file_paths = self.getOpenAIUploadFilePaths()
+			if len(upload_file_paths) == 0:
+				raise ValueError("OpenAI upload mode could not find any files to upload")
+			primary_request_name = os.path.basename(upload_file_paths[0])
+			supporting_names = [os.path.basename(path_value) for path_value in upload_file_paths[1:]]
+			instruction_text = _buildOpenAIUploadInstruction(primary_request_name, supporting_names)
+			self.logInfoDetail("Upload mode: preparing %d file(s) for OpenAI" % len(upload_file_paths))
+			for file_index, file_path in enumerate(upload_file_paths, 1):
+				role_label = "request"
+				if file_index > 1:
+					role_label = "supporting"
+				self.logInfoDetail("  [%d/%d] %s file: %s" % (
+					file_index, len(upload_file_paths), role_label, file_path
+				))
+			self.response, self.request_id, self.openai_uploaded_files = callAIOpenAIWithFiles(
+				openai_client_class,
+				self.api_key,
+				self.model,
+				instruction_text,
+				upload_file_paths,
+				timeout_seconds=attempt_timeout,
+				options=self.api_options
+			)
+			if len(self.openai_uploaded_files) > 0:
+				self.logInfoDetail("OpenAI upload mode created %d remote file(s):" % len(self.openai_uploaded_files))
+				for uploaded_file in self.openai_uploaded_files:
+					self.logInfoDetail("  %s -> %s" % (
+						ensure_text(uploaded_file.get("path", "")).strip(),
+						ensure_text(uploaded_file.get("id", "")).strip()
+					))
+			return self.response
+
+	def getOpenAIAgentsBridgePaths(self):
+			"""Resolve stable bridge script/log paths plus unique output/status files for the current request."""
+			mndbg.dbgp(get_current_function_name())
+			if self.request_id == "":
+				self.request_id = generateAIRequestId()
+			self.bridge_script_path = getAbsolutePath("mona_openaiagents_bridge.py")
+			self.bridge_log_file_path = getAbsolutePath("tellme_openaiagents_bridge.log")
+			self.bridge_output_file_path = getAbsolutePath("tellme_response_%s.md" % self.request_id)
+			self.bridge_status_file_path = getAbsolutePath("tellme_%s.status.json" % self.request_id)
+			self.bridge_raw_request_file_path = getAbsolutePath("tellme_%s.bridge_request.json" % self.request_id)
+			self.bridge_raw_result_file_path = getAbsolutePath("tellme_%s.bridge_result.json" % self.request_id)
+			return self.bridge_script_path, self.bridge_log_file_path, self.bridge_output_file_path, self.bridge_status_file_path
 
 	def ensureOpenAIAgentsBridgeScript(self):
-		"""Write the OpenAI Agents bridge helper script to disk."""
-		mndbg.dbgp(get_current_function_name())
-		if self.bridge_script_path == "":
-			self.getOpenAIAgentsBridgePaths()
-		script_text = _getOpenAIAgentsBridgeScriptText()
-		with open(self.bridge_script_path, "wb") as fh:
-			fh.write(script_text.encode("utf-8"))
-		return self.bridge_script_path
+			"""Write the OpenAI Agents bridge helper script to disk."""
+			mndbg.dbgp(get_current_function_name())
+			if self.bridge_script_path == "":
+				self.getOpenAIAgentsBridgePaths()
+			script_text = _getOpenAIAgentsBridgeScriptText()
+			with open(self.bridge_script_path, "wb") as fh:
+				fh.write(script_text.encode("utf-8"))
+			return self.bridge_script_path
 
 	def ensureOpenAIAgentsBridgeRunning(self):
-		"""Start the local OpenAI Agents bridge when it is not already listening."""
-		mndbg.dbgp(get_current_function_name())
-		self.ensureOpenAIAgentsBridgeScript()
-		bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
-		if bridge_ok:
-			return True
-		bridge_host, bridge_port = _getLocalBridgeHostPort(self.api_url)
-		self.logInfo("Starting the OpenAI Agents bridge helper outside the debugger.")
-		self.logInfoDetail("Python    : %s" % self.bridge_python)
-		self.logInfoDetail("Script    : %s" % self.bridge_script_path)
-		self.logInfoDetail("Log       : %s" % self.bridge_log_file_path)
-		launch_command = list(self.bridge_python_command) + [
-			"-u",
-			self.bridge_script_path,
-			"--serve",
-			"--host",
-			bridge_host,
-			"--port",
-			str(bridge_port),
-			"--log-file",
-			self.bridge_log_file_path
-		]
-		try:
-			bridge_pid = mndbg.launchDetachedCommand(launch_command, output_path=self.bridge_log_file_path, redirect_output=False)
-			self.logInfoDetail("PID       : %s" % str(bridge_pid))
-		except Exception as e:
-			self.logError("Unable to launch the OpenAI Agents bridge helper.")
-			self.logErrorDetail(str(e))
-			self.logErrorDetail("Log       : %s" % self.bridge_log_file_path)
-			return False
-		for _ in xrange(0, 20):
-			time.sleep(0.25)
+			"""Start the local OpenAI Agents bridge when it is not already listening."""
+			mndbg.dbgp(get_current_function_name())
+			self.ensureOpenAIAgentsBridgeScript()
 			bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
 			if bridge_ok:
 				return True
-		self.logError("Unable to start the OpenAI Agents bridge helper.")
-		self.logErrorDetail("Check bridge log for bootstrap errors: %s" % self.bridge_log_file_path)
-		return False
+			bridge_host, bridge_port = _getLocalBridgeHostPort(self.api_url)
+			self.logInfo("Starting the OpenAI Agents bridge helper outside the debugger.")
+			self.logInfoDetail("Python    : %s" % self.bridge_python)
+			self.logInfoDetail("Script    : %s" % self.bridge_script_path)
+			self.logInfoDetail("Log       : %s" % self.bridge_log_file_path)
+			launch_command = list(self.bridge_python_command) + [
+				"-u",
+				self.bridge_script_path,
+				"--serve",
+				"--host",
+				bridge_host,
+				"--port",
+				str(bridge_port),
+				"--log-file",
+				self.bridge_log_file_path
+			]
+			try:
+				bridge_pid = mndbg.launchDetachedCommand(launch_command, output_path=self.bridge_log_file_path, redirect_output=False)
+				self.logInfoDetail("PID       : %s" % str(bridge_pid))
+			except Exception as e:
+				self.logError("Unable to launch the OpenAI Agents bridge helper.")
+				self.logErrorDetail(str(e))
+				self.logErrorDetail("Log       : %s" % self.bridge_log_file_path)
+				return False
+			for _ in xrange(0, 20):
+				time.sleep(0.25)
+				bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
+				if bridge_ok:
+					return True
+			self.logError("Unable to start the OpenAI Agents bridge helper.")
+			self.logErrorDetail("Check bridge log for bootstrap errors: %s" % self.bridge_log_file_path)
+			return False
 
 	def validateOpenAIAgentsBridgeDependencies(self):
-		"""Verify that the configured bridge Python can import the non-stdlib modules the bridge requires."""
-		mndbg.dbgp(get_current_function_name())
-		import_check_code = (
-			"import agents\n"
-			"from agents import Agent, Runner, ModelSettings, RunConfig\n"
-			"from openai.types.shared import Reasoning\n"
-			"print('OK')\n"
-		)
-		try:
-			process = subprocess.Popen(
-				list(self.bridge_python_command) + ["-c", import_check_code],
-				stdout=subprocess.PIPE,
-				stderr=subprocess.STDOUT
+			"""Verify that the configured bridge Python can import the non-stdlib modules the bridge requires."""
+			mndbg.dbgp(get_current_function_name())
+			import_check_code = (
+				"import agents\n"
+				"from agents import Agent, Runner, ModelSettings, RunConfig\n"
+				"from openai.types.shared import Reasoning\n"
+				"print('OK')\n"
 			)
-			output_data = process.communicate()[0]
-			output_text = ensure_text(output_data)
-			return_code = process.returncode
-		except Exception as e:
-			self.logError("Unable to validate the OpenAI Agents bridge Python environment.")
-			self.logErrorDetail("Python    : %s" % self.bridge_python)
-			self.logErrorDetail(str(e))
-			return False
-		if return_code != 0:
-			self.logError("The configured OpenAI Agents bridge Python environment is missing required libraries.")
-			self.logInfoDetail("Python    : %s" % self.bridge_python)
-			self.logInfoDetail("It must be able to import: agents, Agent/Runner/ModelSettings/RunConfig, and openai.types.shared.Reasoning")
-			self.logInfoDetail("")
-			self.logErrorDetail("Install the missing libraries with:")
-			for install_command in self._getBridgePythonInstallCommands():
-				self.logErrorDetail(install_command)
-			#for output_line in output_text.split("\n"):
-			#	output_line = output_line.strip()
-			#	if output_line != "":
-			#		self.logErrorDetail(output_line)
-			return False
-		return True
+			try:
+				process = subprocess.Popen(
+					list(self.bridge_python_command) + ["-c", import_check_code],
+					stdout=subprocess.PIPE,
+					stderr=subprocess.STDOUT
+				)
+				output_data = process.communicate()[0]
+				output_text = ensure_text(output_data)
+				return_code = process.returncode
+			except Exception as e:
+				self.logError("Unable to validate the OpenAI Agents bridge Python environment.")
+				self.logErrorDetail("Python    : %s" % self.bridge_python)
+				self.logErrorDetail(str(e))
+				return False
+			if return_code != 0:
+				self.logError("The configured OpenAI Agents bridge Python environment is missing required libraries.")
+				self.logInfoDetail("Python    : %s" % self.bridge_python)
+				self.logInfoDetail("It must be able to import: agents, Agent/Runner/ModelSettings/RunConfig, and openai.types.shared.Reasoning")
+				self.logInfoDetail("")
+				self.logErrorDetail("Install the missing libraries with:")
+				for install_command in self._getBridgePythonInstallCommands():
+					self.logErrorDetail(install_command)
+				#for output_line in output_text.split("\n"):
+				#	output_line = output_line.strip()
+				#	if output_line != "":
+				#		self.logErrorDetail(output_line)
+				return False
+			return True
 
 	def submitOpenAIAgentsBridgeJob(self):
-		"""Queue the current request for asynchronous execution via the local OpenAI Agents bridge."""
-		mndbg.dbgp(get_current_function_name())
-		self.getOpenAIAgentsBridgePaths()
-		if not self.ensureOpenAIAgentsBridgeRunning():
+			"""Queue the current request for asynchronous execution via the local OpenAI Agents bridge."""
+			mndbg.dbgp(get_current_function_name())
+			self.getOpenAIAgentsBridgePaths()
+			if not self.ensureOpenAIAgentsBridgeRunning():
+				return self.response
+			bridge_payload = {
+				"request_id": self.request_id,
+				"api_key": self.api_key,
+				"model": self.model,
+				"prompt": self.prompt,
+				"output_file": self.bridge_output_file_path,
+				"status_file": self.bridge_status_file_path,
+				"raw_request_file": self.bridge_raw_request_file_path,
+				"raw_result_file": self.bridge_raw_result_file_path,
+				"question_type": self.question_type,
+				"template_file": self.template_file,
+				"target_address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
+				"target_address_source": self.target_address_source,
+				"reasoning_effort": self.reasoning_effort,
+				"verbosity": self.response_verbosity,
+				"max_turns": self.max_turns,
+				"max_tokens": self.max_tokens
+			}
+			try:
+				bridge_response = submitOpenAIAgentsBridgeRequest(self.api_url, bridge_payload, timeout_seconds=min(self.timeout_seconds, 10.0))
+			except Exception as e:
+				logAIProviderError(self.engine, e)
+				return self.response
+			self.writeRequestLog(request_id=self.request_id)
+			self.response = "The OpenAI Agents bridge accepted the request and will write the result to %s." % self.bridge_output_file_path
+			dbg.log("")
+			self.logInfo("OpenAI Agents bridge request accepted.")
+			self.logInfoDetail("Request id : %s" % self.request_id)
+			self.logInfoDetail("Bridge URL : %s" % self.api_url)
+			self.logInfoDetail("Status     : %s" % ensure_text(bridge_response.get("status", "queued")).strip())
+			self.logInfoDetail("Request    : %s" % self.request_logfile_path)
+			self.logInfoDetail("Output     : %s" % self.bridge_output_file_path)
+			self.logInfoDetail("Status file: %s" % self.bridge_status_file_path)
+			self.logInfoDetail("Raw request: %s" % self.bridge_raw_request_file_path)
+			self.logInfoDetail("Raw result : %s" % self.bridge_raw_result_file_path)
+			self.logInfoDetail("Bridge log : %s" % self.bridge_log_file_path)
+			self.logInfoDetail("The bridge runs outside the debugger and waits for the final result there.")
 			return self.response
-		bridge_payload = {
-			"request_id": self.request_id,
-			"api_key": self.api_key,
-			"model": self.model,
-			"prompt": self.prompt,
-			"output_file": self.bridge_output_file_path,
-			"status_file": self.bridge_status_file_path,
-			"raw_request_file": self.bridge_raw_request_file_path,
-			"raw_result_file": self.bridge_raw_result_file_path,
-			"question_type": self.question_type,
-			"template_file": self.template_file,
-			"target_address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
-			"target_address_source": self.target_address_source,
-			"reasoning_effort": self.reasoning_effort,
-			"verbosity": self.response_verbosity,
-			"max_turns": self.max_turns,
-			"max_tokens": self.max_tokens
-		}
-		try:
-			bridge_response = submitOpenAIAgentsBridgeRequest(self.api_url, bridge_payload, timeout_seconds=min(self.timeout_seconds, 10.0))
-		except Exception as e:
-			logAIProviderError(self.engine, e)
-			return self.response
-		self.writeRequestLog(request_id=self.request_id)
-		self.response = "The OpenAI Agents bridge accepted the request and will write the result to %s." % self.bridge_output_file_path
-		dbg.log("")
-		self.logInfo("OpenAI Agents bridge request accepted.")
-		self.logInfoDetail("Request id : %s" % self.request_id)
-		self.logInfoDetail("Bridge URL : %s" % self.api_url)
-		self.logInfoDetail("Status     : %s" % ensure_text(bridge_response.get("status", "queued")).strip())
-		self.logInfoDetail("Request    : %s" % self.request_logfile_path)
-		self.logInfoDetail("Output     : %s" % self.bridge_output_file_path)
-		self.logInfoDetail("Status file: %s" % self.bridge_status_file_path)
-		self.logInfoDetail("Raw request: %s" % self.bridge_raw_request_file_path)
-		self.logInfoDetail("Raw result : %s" % self.bridge_raw_result_file_path)
-		self.logInfoDetail("Bridge log : %s" % self.bridge_log_file_path)
-		self.logInfoDetail("The bridge runs outside the debugger and waits for the final result there.")
-		return self.response
 
 	def handleUnexpectedPayloadFallback(self, err):
-		"""Preserve raw provider output when text extraction fails instead of treating it as a hard error."""
-		mndbg.dbgp(get_current_function_name())
-		if ensure_text(getattr(err, "type", "")).strip() != "UnexpectedPayloadError":
-			return False
-		raw_payload = getattr(err, "body", None)
-		if raw_payload in [None, ""]:
-			raw_payload = {"error": {"message": _getProviderErrorMessage(err)}}
-		if getattr(err, "request_id", ""):
-			self.request_id = err.request_id
-		self.writeRawResponseLog(raw_payload)
-		response_summary = _summarizeUnexpectedAIResponse(raw_payload)
-		if response_summary != "":
-			self.response = "%s\nThe raw response was saved to %s." % (
-				response_summary,
-				self.raw_response_logfile_path
-			)
-		else:
-			self.response = (
-				"The provider returned a response in an unexpected format.\n"
-				"The raw response was saved to %s." % self.raw_response_logfile_path
-			)
-		self.logInfo("The provider returned a response, but its format was not recognized.")
-		self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
-		return True
+			"""Preserve raw provider output when text extraction fails instead of treating it as a hard error."""
+			mndbg.dbgp(get_current_function_name())
+			if ensure_text(getattr(err, "type", "")).strip() != "UnexpectedPayloadError":
+				return False
+			raw_payload = getattr(err, "body", None)
+			if raw_payload in [None, ""]:
+				raw_payload = {"error": {"message": _getProviderErrorMessage(err)}}
+			if getattr(err, "request_id", ""):
+				self.request_id = err.request_id
+			self.writeRawResponseLog(raw_payload)
+			response_summary = _summarizeUnexpectedAIResponse(raw_payload)
+			if response_summary != "":
+				self.response = "%s\nThe raw response was saved to %s." % (
+					response_summary,
+					self.raw_response_logfile_path
+				)
+			else:
+				self.response = (
+					"The provider returned a response in an unexpected format.\n"
+					"The raw response was saved to %s." % self.raw_response_logfile_path
+				)
+			self.logInfo("The provider returned a response, but its format was not recognized.")
+			self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
+			return True
 
 	def request(self, question_type=None, prompt=None):
-		"""Send the prepared request or save it offline, and keep the response text on the instance."""
-		mndbg.dbgp(get_current_function_name())
-		if question_type is not None:
-			self.question_type = question_type
-		if prompt is not None:
-			self.prompt = prompt
-		if self.prompt == "":
-			self.logError("Cannot execute an empty tellme request")
-			return self.response
+			"""Send the prepared request or save it offline, and keep the response text on the instance."""
+			mndbg.dbgp(get_current_function_name())
+			if question_type is not None:
+				self.question_type = question_type
+			if prompt is not None:
+				self.prompt = prompt
+			if self.prompt == "":
+				self.logError("Cannot execute an empty tellme request")
+				return self.response
 
-		mndbg.dbgp("tellme: prompt length is %d bytes" % len(self.prompt))
-		if self.offline or self.engine == "offline":
+			mndbg.dbgp("tellme: prompt length is %d bytes" % len(self.prompt))
+			if self.offline or self.engine == "offline":
+				self.response = ""
+				self.writeOfflineRequest()
+				return self.response
+
+			self.writeRequestLog()
+			if self.submit_requested:
+				self.logInfo("AI submission confirmed via -submit")
+			elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
+				self.response = ""
+				self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
+				if self.request_logfile_path != "":
+					self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
+				return self.response
+			elif not self.reloadPromptFromRequestLog():
+				return self.response
+
+			if self.engine == "openaiagents":
+				if self.request_id == "":
+					self.request_id = generateAIRequestId()
+				return self.submitOpenAIAgentsBridgeJob()
+
+			openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
+			if self.engine == "openai" and not openai_use_http_fallback and openai_client_class is None:
+				return self.response
+			self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
+			self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
+			if self.engine in ["ollama", "customai"] and self.api_url != "":
+				self.logInfoDetail("URL       : %s" % self.api_url)
+			if self.engine in ["ollama", "customai"] and self.response_field != "":
+				self.logInfoDetail("Response  : %s" % self.response_field)
+			if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+				self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
+			if self.engine == "anthropic":
+				self.logInfoDetail("Max tokens: %d" % self.max_tokens)
+
+			max_attempts = 5
+			retry_timeout_increment = min(self.timeout_seconds, 120.0)
 			self.response = ""
-			self.writeOfflineRequest()
-			return self.response
-
-		self.writeRequestLog()
-		if self.submit_requested:
-			self.logInfo("AI submission confirmed via -submit")
-		elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
-			self.response = ""
-			self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
-			if self.request_logfile_path != "":
-				self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
-			return self.response
-		elif not self.reloadPromptFromRequestLog():
-			return self.response
-
-		if self.engine == "openaiagents":
-			if self.request_id == "":
-				self.request_id = generateAIRequestId()
-			return self.submitOpenAIAgentsBridgeJob()
-
-		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
-		self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
-		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
-		if self.engine in ["ollama", "customai"] and self.api_url != "":
-			self.logInfoDetail("URL       : %s" % self.api_url)
-		if self.engine in ["ollama", "customai"] and self.response_field != "":
-			self.logInfoDetail("Response  : %s" % self.response_field)
-		if isinstance(self.api_options, dict) and len(self.api_options) > 0:
-			self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
-		if self.engine == "anthropic":
-			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
-
-		max_attempts = 5
-		retry_timeout_increment = min(self.timeout_seconds, 120.0)
-		self.response = ""
-		self.request_id = ""
-		for attempt in xrange(1, max_attempts + 1):
-			attempt_timeout = self.timeout_seconds + ((attempt - 1) * retry_timeout_increment)
-			timeout_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=attempt_timeout)
-			dbg.log("")
-			self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs, expires at %s)" % (
-				self.engine,
-				attempt,
-				attempt_timeout,
-				timeout_expires_at.strftime("%Y-%m-%d %H:%M:%S")
-			))
-			try:
-				if self.engine == "openai":
-					if openai_use_http_fallback:
-						self.response, self.request_id = callAIOpenAIDirect(
-							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+			self.request_id = ""
+			for attempt in xrange(1, max_attempts + 1):
+				attempt_timeout = self.timeout_seconds + ((attempt - 1) * retry_timeout_increment)
+				timeout_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=attempt_timeout)
+				dbg.log("")
+				self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs, expires at %s)" % (
+					self.engine,
+					attempt,
+					attempt_timeout,
+					timeout_expires_at.strftime("%Y-%m-%d %H:%M:%S")
+				))
+				try:
+					if self.engine == "openai":
+						if self.openai_upload_requested:
+							self.submitOpenAIUploadRequest(openai_client_class, attempt_timeout)
+						elif openai_use_http_fallback:
+							self.response, self.request_id = callAIOpenAIDirect(
+								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+							)
+						else:
+							self.response, self.request_id = callAIOpenAI(
+								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+							)
+					elif self.engine == "anthropic":
+						self.response, self.request_id = callAIAnthropic(
+							self.api_key,
+							self.model,
+							self.prompt,
+							timeout_seconds=attempt_timeout,
+							max_tokens=self.max_tokens,
+							options=self.api_options
+						)
+					elif self.engine == "ollama":
+						self.response, self.request_id = callAIOllama(
+							self.api_url,
+							self.model,
+							self.prompt,
+							timeout_seconds=attempt_timeout,
+							response_field=self.response_field or "response",
+							options=self.api_options
 						)
 					else:
-						self.response, self.request_id = callAIOpenAI(
-							openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+						self.response, self.request_id = callAICustom(
+							self.api_url,
+							self.model,
+							self.prompt,
+							timeout_seconds=attempt_timeout,
+							response_field=self.response_field,
+							options=self.api_options
 						)
-				elif self.engine == "anthropic":
-					self.response, self.request_id = callAIAnthropic(
-						self.api_key,
-						self.model,
-						self.prompt,
-						timeout_seconds=attempt_timeout,
-						max_tokens=self.max_tokens,
-						options=self.api_options
-					)
-				elif self.engine == "ollama":
-					self.response, self.request_id = callAIOllama(
-						self.api_url,
-						self.model,
-						self.prompt,
-						timeout_seconds=attempt_timeout,
-						response_field=self.response_field or "response",
-						options=self.api_options
-					)
-				else:
-					self.response, self.request_id = callAICustom(
-						self.api_url,
-						self.model,
-						self.prompt,
-						timeout_seconds=attempt_timeout,
-						response_field=self.response_field,
-						options=self.api_options
-					)
-				break
-			except Exception as e:
-				mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
-					attempt,
-					max_attempts,
-					traceback.format_exc()
-				), errormode=False)
-				if _isTimeoutError(self.engine, e):
-					try:
-						error_body = getattr(e, "body", None)
-						if not isinstance(error_body, dict):
-							error_body = {}
-						error_body["attempt_timeout"] = attempt_timeout
-						error_body["suggested_timeout"] = attempt_timeout + retry_timeout_increment
-						e.body = error_body
-					except Exception:
-						pass
-				if self.handleUnexpectedPayloadFallback(e):
 					break
-				logAIProviderError(self.engine, e)
-				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
-					return self.response
-				next_timeout = self.timeout_seconds + (attempt * retry_timeout_increment)
-				retry_sleep_seconds = 10
-				self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
-					retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
-				))
-				time.sleep(retry_sleep_seconds)
-				interruptMona()
+				except Exception as e:
+					mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
+						attempt,
+						max_attempts,
+						traceback.format_exc()
+					), errormode=False)
+					if _isTimeoutError(self.engine, e):
+						try:
+							error_body = getattr(e, "body", None)
+							if not isinstance(error_body, dict):
+								error_body = {}
+							error_body["attempt_timeout"] = attempt_timeout
+							error_body["suggested_timeout"] = attempt_timeout + retry_timeout_increment
+							e.body = error_body
+						except Exception:
+							pass
+					if self.handleUnexpectedPayloadFallback(e):
+						break
+					logAIProviderError(self.engine, e)
+					if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
+						return self.response
+					next_timeout = self.timeout_seconds + (attempt * retry_timeout_increment)
+					retry_sleep_seconds = 10
+					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
+						retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
+					))
+					time.sleep(retry_sleep_seconds)
+					interruptMona()
 
-		if self.request_id:
-			self.logInfoDetail("Request id: %s" % self.request_id)
-		self.writeRequestLog(request_id=self.request_id)
-		ai_response_lines, _response_logfile_path = self.writeResponseLog()
-		dbg.log("")
-		self.logInfo("AI response:")
-		for line in ai_response_lines:
-			self.logInfoDetail(line)
-		if self.response.strip() == "":
-			self.logInfoDetail("<empty response>")
-		else:
+			if self.request_id:
+				self.logInfoDetail("Request id: %s" % self.request_id)
+			self.writeRequestLog(request_id=self.request_id)
+			ai_response_lines, _response_logfile_path = self.writeResponseLog()
 			dbg.log("")
-			self.logInfoDetail("Request saved to %s" % self.request_logfile_path)
-			self.logInfoDetail("Response saved to %s" % self.response_logfile_path)
-			if self.raw_response_logfile_path != "":
-				self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
-		return self.response
+			self.logInfo("AI response:")
+			for line in ai_response_lines:
+				self.logInfoDetail(line)
+			if self.response.strip() == "":
+				self.logInfoDetail("<empty response>")
+			else:
+				dbg.log("")
+				self.logInfoDetail("Request saved to %s" % self.request_logfile_path)
+				self.logInfoDetail("Response saved to %s" % self.response_logfile_path)
+				if self.raw_response_logfile_path != "":
+					self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
+			return self.response
 
 	def execute(self):
 		"""Run the full tellme workflow from argument parsing through request execution."""
 		mndbg.dbgp(get_current_function_name())
-		if not self.validateCpbArgument():
+		if not mndbg.validateCpbArgument(
+			self.args,
+			log_error=self.logError,
+			log_error_detail=self.logErrorDetail,
+			debug_label="tellme"
+		):
 			return ""
 		if not self.parseEngineSelection():
 			return ""
@@ -32860,15 +33364,15 @@ class MnAI(object):
 			return ""
 		if not self.parseTargetAddress():
 			return ""
-		if not self.parseQ3ChunkAndTarget():
+		if not self.parseControlledChunkInputs():
 			return ""
 		if not self.parseTemplateSelection():
 			return ""
-		if not self.parseQ3ChunkAndTarget():
+		if not self.parseControlledChunkInputs():
 			return ""
 		if not self.ensureDefaultTemplates():
 			return ""
-		if not self.parseQ2FollowDepth():
+		if not self.parseControlFlowFollowDepth():
 			return ""
 		if not self.parseContextFiles():
 			return ""
@@ -41392,7 +41896,7 @@ Optional arguments:
 
 	Supported engines:
 	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
-	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
+	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; supports plain text submission by default and optional file uploads via -upload; the OpenAI Python SDK is required for -upload)
 	    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
 	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
     - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
@@ -41526,6 +42030,10 @@ Official model docs:
 	                   and only reports the final request size. If you set -maxsize, mona will try to reduce lower-priority
 	                   evidence to stay within that target and will record any reductions under [omitted_sections]
 	    -submit      : Skip the confirmation prompt and submit the AI request immediately
+	    -upload      : OpenAI only. Upload the saved request file plus any -l/-p files and submit a short inline instruction
+	                   that tells the model to use the uploaded request file as the authoritative prompt source.
+	                   If this flag is not set, tellme embeds the rendered request and any extra file contents directly in the text prompt.
+	                   Upload mode requires the OpenAI Python SDK and does not use the direct HTTPS fallback path.
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
 	                   2 = analyse the current __PC__ function, plus an optional extra function from -a
@@ -41601,6 +42109,7 @@ Official model docs:
 	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
 	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
+	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py -upload
 	    __LAUNCHCMD__ tellme -e openai -model gpt-5-mini -q 1
 	    __LAUNCHCMD__ tellme -e anthropic -model claude-sonnet-4-6 -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 1 -submit
@@ -41616,9 +42125,11 @@ Official model docs:
 
 	Debugger context variables:
 	    [debugger]                 = debugger backend name
+	    [debugger_flavor]          = debugger flavor or front-end name
 	    [processname]              = debugged process image name
 	    [architecture]             = target architecture
 	    [pointer_size]             = pointer width in bytes
+	    [python_version]           = Python runtime version used to build the request
 	    [timestamp]                = local timestamp when the request was built
 	    [registers]                = current register set and values
 	    [program_counter]          = current instruction pointer
@@ -41630,9 +42141,11 @@ Official model docs:
 	    [pc_memory]                = raw bytes near the current instruction pointer
 	    [stack_memory]             = raw bytes near the current stack pointer
 	    [modules]                  = crash-focused module summary used by default for -q 1
+	    [modules_mini]             = explicit alias of the compact q1 module summary
 	    [modules_full]             = full loaded module listing
 	    [call_stack]               = WinDBG call stack output
 	    [windbg_analyze]           = compact !analyze -v crash summary used by default for -q 1
+	    [windbg_analyze_mini]      = explicit alias of the compact q1 !analyze -v summary
 	    [windbg_analyze_full]      = full raw !analyze -v output
 	    [findmsp]                  = cyclic-pattern analysis results
 	                                 For q1, and for q9 templates that still resolve live debugger context,
@@ -41646,6 +42159,7 @@ Official model docs:
 	    [heap_details]             = heap, segment, VAD, and chunk summary
 	    [heap_analysis_target]     = extra heap-focused target from -a when using -q 1
 	    [heapdynamics]             = focused heapdynamics matches used by default for -q 1
+	    [heapdynamics_mini]        = explicit alias of the focused q1 heapdynamics matches
 	    [heapdynamics_full]        = larger raw heapdynamics context, including file-backed evidence when retained
 	    [evidence]                 = deduplicated shared heap and alloc/free evidence records
 	    [size_budget]              = final q1 request size and optional requested -maxsize target
@@ -41673,13 +42187,13 @@ Official model docs:
 	    [post_return_constraints]  = q3 caller-side instructions likely to consume return values or persistent state
 	    [reachable_functions]      = q3 flattened reachable call/jump targets from the current and caller-side code paths
 	    [rop_target_modules]       = q8 module, IAT, and compact return-ending windows for ROP analysis
-	    current_function.control_flow_follow_depth = q2/q3 call/jump follow depth used for nested target analysis
-	    Error variables may also appear when collection fails
 	For -q 1, -q 2, -q 3, and -q 8, the final request sent to the AI uses the structured 'variables' object.
 	For -q 1 specifically, compact variables are used by default, but larger *_full variables are still kept unless
 	you explicitly request shrinking with -maxsize.
 	For -q 9, mona reads the template file and replaces placeholders such as [registers] and [pc_disasm]
 	with the actual debugger values before submitting the resulting prompt.
+	For -q 9, q3/q8 placeholders such as [controlled_chunk], [return_resume_analysis], or [rop_target_modules]
+	trigger the corresponding live context collection as well.
 	Unknown placeholders are reported and left unchanged instead of aborting prompt generation.
 
 	Request generation notes:
