@@ -653,7 +653,7 @@ set CUSTOMAI_TIMEOUT=300
 set CUSTOMAI_RESPONSE_FIELD=choices.0.message.content
 ```
 
-For `openai` direct integration, install the OpenAI Python library for every Python version you use with `mona`. For example, if you run Mona under both Python 3.9 and Python 3.14, install the library into both environments.
+For `openai` direct integration, install the OpenAI Python library for every Python version you use with `mona`. This is required for normal SDK-backed OpenAI usage and specifically for the `tellme -upload` file-upload mode. For example, if you run Mona under both Python 3.9 and Python 3.14, install the library into both environments.
 
 ```batch
 py -3.9-32 -m pip install openai
@@ -681,6 +681,8 @@ If you want Mona to launch the bridge with that interpreter, configure it like t
 
 If you use a different Python version for the bridge, run the same `pip install` command against that interpreter instead.
 
+For `openai`, `tellme -upload` changes how Mona submits the request. Instead of embedding the rendered request text and any `-l` / `-p` file contents directly into one large prompt, Mona first writes the request to disk, uploads that saved request file plus any supporting files, and sends a short inline instruction that tells the model to use the uploaded request file as the authoritative prompt source. This is useful when the full combined context would be awkward or too large as one inline text prompt.
+
 At runtime, Mona validates that the configured `openaiagents.bridge.python` environment can import:
 
 * `agents`
@@ -698,7 +700,7 @@ In Mona, an **engine** is the backend that receives the generated AI request. So
 Currently supported engines are:
 
 * `offline`: save the request only; do not submit it
-* `openai`: direct OpenAI API integration
+* `openai`: direct OpenAI API integration; by default Mona submits a plain text request, and `tellme -upload` switches that engine to OpenAI file-upload mode
 * `openaiagents`: local bridge that uses the OpenAI Agents SDK and OpenAI Python library outside the debugger
 * `anthropic`: direct Anthropic API integration without an Anthropic SDK dependency
 * `ollama`: local or remote Ollama endpoint; supports either OpenAI-style `/v1/responses` or native `/api/generate`. Prefer `/api/generate` for the most reliable plain-text `tellme` output; use `/v1/responses` when you specifically want OpenAI-style compatibility and have confirmed the model returns final assistant text there.
@@ -729,6 +731,7 @@ Basic examples:
 !mona tellme -e openai -q 8
 !mona tellme -e openai -q 1 -timeout 300
 !mona tellme -e openai -q 1 -submit
+!mona tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py -upload
 !mona tellme -e openai -q 1 -offline
 ```
 
@@ -752,6 +755,8 @@ Useful options:
   add extra context files; heapdynamics-style logs are recognized automatically
 * `-p <file>`:
   attach a PoC or trigger file
+* `-upload`:
+  openai only; upload the saved request file plus any `-l` / `-p` files and send a compact inline instruction that tells the model to use the uploaded request file as the authoritative prompt source
 * `-model <id>`:
   override the configured model for one request
 * `-timeout <seconds>`:
@@ -778,6 +783,8 @@ How to choose a mode:
 * Use `-a` with `-q 2` when you want to add a second known-good symbol or address to the function analysis.
 * Use `-offline` when you want to manually submit the generated request to a browser-based AI session.
 * For automated submission, `tellme` asks for confirmation before sending the request unless you pass `-submit`.
+* Use `-upload` with `-e openai` when you want OpenAI to read the saved request file and supporting files as attachments instead of embedding everything directly into one large text prompt.
+* In `-upload` mode, Mona uploads the saved request file first, then any `-l` / `-p` files, and asks the model to treat the saved request file as the primary instruction source.
 
 Template usage:
 
