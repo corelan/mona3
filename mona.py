@@ -7700,12 +7700,13 @@ Sink ranking:
 
 Center the analysis on:
 1. chunk bytes and pointer-like fields inside the controlled chunk
-2. registers and stack slots that reference the chunk
-3. current function, reachable callees, branch targets, caller functions, and caller-resume sites
-4. direct callees reached with controlled-derived registers or stack arguments
-5. indirect transfers inside those callees
-6. memory writes inside those callees whose destination is controlled-derived
-7. branch predicates that read from controlled-derived base registers
+2. the exact !heap -p -a style probe captured for the requested -c address
+3. registers and stack slots that reference the chunk
+4. current function, reachable callees, branch targets, caller functions, and caller-resume sites
+5. direct callees reached with controlled-derived registers or stack arguments
+6. indirect transfers inside those callees
+7. memory writes inside those callees whose destination is controlled-derived
+8. branch predicates that read from controlled-derived base registers
 
 Answer in this exact order:
 
@@ -7977,8 +7978,9 @@ def _buildControlledChunkContext(address):
 	info = OrderedDict()
 	info["requested_address"] = PTR_PRINT % address
 	info["source"] = "-c"
+	info["requested_address_heap_probe"] = _getHeapChunkMetadata(address)
 	info["heap_reference"] = _buildHeapReferenceEntry("controlled_chunk", address, "q3_-c", "", [])
-	info["heap_metadata"] = _getHeapChunkMetadata(address)
+	info["heap_metadata"] = info["requested_address_heap_probe"]
 	info["first_bytes"] = _readFirstBytesPreview(address, size=0x20, label="controlled_chunk_first_bytes")
 	if info["heap_reference"].get("match", "none") == "Chunk":
 		chunk_ptr = _tryParseAddressToken(info["heap_reference"].get("chunk_ptr", ""))
