@@ -36,7 +36,7 @@ $Revision: 3333
 """
 
 __VERSION__ = '3.0'
-__REV__ = 3021
+__REV__ = 3022
 
 DEBUG_MODE = False
 _AI_MODEL_LIST_CACHE = {}
