@@ -7535,10 +7535,10 @@ For each applicable item, state present, partial, or absent, and cite the specif
 Sub-section D - Path to control:
 If direct EIP/RIP control is already confirmed, state the most viable exploitation path from this snapshot in 2-4 sentences.
 If direct EIP/RIP control is not yet shown, answer this explicitly: what strategy or technique would be needed from here to obtain EIP/RIP control, based on the observed primitive? Examples may include heap grooming, object replacement, vtable corruption, stack pivoting, SEH redirection, adjacent overwrite extension, or an additional info leak. Be specific and tie the technique to the observed evidence.
+If heap grooming/object replacement/heap manipulation is required, what publicy documented (application-specific) allocator primitives would be suitable to try in order to support continued investigation. Provide sample syntax for these primitives when possible.
 
 Sub-section E - root cause:
-If a poc file is provided, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any)
-
+If a poc file is provided or referenced via an already uploaded file, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any). 
 Style rules:
 - For stack corruption, be concise. The findmsp numbers are the primary deliverable.
 - For heap corruption, do not summarize away the key !heap -p -a style state or alloc/free chain when that is the root-cause evidence.
@@ -9666,6 +9666,8 @@ def _buildUploadInstruction(primary_request_name, supporting_names, uploaded_fil
 		"Treat that file as the primary instruction source.",
 		"If that file contains a PROMPT BEGIN/PROMPT END block, use only the text inside that block as the primary request body.",
 		"If no PROMPT BEGIN/PROMPT END block is present, use the full request file contents as the primary request body.",
+		"Regardless of the file extension, consider any uploaded or referenced files to be cleartext.",
+		"Consider that one of the uploaded or referenced files may be the PoC/trigger, even if it was not labeled as such.",
 	]
 	if len(supporting_names) > 0:
 		lines.append("Use the other attached file(s) as supporting evidence only: %s." % ", ".join(supporting_names))
