@@ -5172,6 +5172,8 @@ def getAIMaxTokens(engine, mona_config):
 	max_tokens = 4096
 	if engine == "openaiagents":
 		max_tokens = 8192
+	elif engine == "anthropic":
+		max_tokens = 8192
 	max_tokens_source = "default"
 	max_tokens_raw = mona_config.get(max_tokens_name).strip()
 	if max_tokens_raw != "":
@@ -10030,6 +10032,28 @@ def _anthropic_extract_text(message):
 	return "\n".join([p for p in parts if p]).strip()
 
 
+def _anthropicGetStopReason(message):
+	mndbg.dbgp(get_current_function_name())
+	if isinstance(message, dict):
+		return ensure_text(message.get("stop_reason", "")).strip()
+	return ensure_text(getattr(message, "stop_reason", "")).strip()
+
+
+def _anthropicBuildTruncationNote(message, max_tokens=0):
+	mndbg.dbgp(get_current_function_name())
+	stop_reason = _anthropicGetStopReason(message)
+	if stop_reason != "max_tokens":
+		return ""
+	note_lines = [
+		"[Anthropic note]",
+		"This answer was likely cut off because the response hit the current max_tokens limit."
+	]
+	if isinstance(max_tokens, int) and max_tokens > 0:
+		note_lines.append("Current anthropic.max_tokens value: %d." % max_tokens)
+	note_lines.append("Increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS if you want a longer answer.")
+	return "\n".join(note_lines)
+
+
 def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic SDK model '%s' with timeout %.1fs and max_tokens=%d" % (
@@ -10068,6 +10092,9 @@ def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_s
 	request_id = getattr(message, "_request_id", "")
 	text = _anthropic_extract_text(message)
 	if text:
+		truncation_note = _anthropicBuildTruncationNote(message, max_tokens=max_tokens)
+		if truncation_note != "":
+			text = "%s\n\n%s" % (text, truncation_note)
 		return text, request_id
 	raise AIProviderError(
 		"Anthropic returned an empty or unexpected response payload",
@@ -10186,6 +10213,9 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 		mndbg.dbgp("tellme: Anthropic response id: %s" % response_id)
 	text = _anthropic_extract_text(message)
 	if text:
+		truncation_note = _anthropicBuildTruncationNote(message, max_tokens=max_tokens)
+		if truncation_note != "":
+			text = "%s\n\n%s" % (text, truncation_note)
 		return text, response_id
 	raise AIProviderError(
 		"Anthropic returned an empty or unexpected response payload",
@@ -31606,7 +31636,7 @@ class MnAI(object):
 				{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
 				{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
 				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "4096"},
+				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "8192"},
 			]
 		if engine == "ollama":
 			return [
@@ -41929,11 +41959,11 @@ Configuration:
 	       __LAUNCHCMD__ config -set openaiagents.verbosity low
 	       __LAUNCHCMD__ config -set openaiagents.max_turns 8
 	       __LAUNCHCMD__ config -set openaiagents.max_tokens 8192
-	       __LAUNCHCMD__ config -set mona.ai.engine anthropic
+       __LAUNCHCMD__ config -set mona.ai.engine anthropic
        __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
        __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
        __LAUNCHCMD__ config -set anthropic.timeout 300
-       __LAUNCHCMD__ config -set anthropic.max_tokens 4096
+       __LAUNCHCMD__ config -set anthropic.max_tokens 8192
        __LAUNCHCMD__ config -set mona.ai.engine ollama
        __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
        __LAUNCHCMD__ config -set ollama.model llama3
