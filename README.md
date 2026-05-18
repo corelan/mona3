@@ -549,6 +549,8 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 
 Mona includes AI-assisted analysis through the `tellme` command. It can inspect the current WinDBG context, build a structured prompt from that context, and either save that prompt for manual use or submit it directly to a configured AI engine.
 
+For a walkthrough and additional background, see the Corelan post: https://www.corelan.be/index.php/2026/05/14/mona-tellme/
+
 There are two supported ways to use it:
 
 * **Manual workflow**: `mona` builds the request and saves it to disk. You paste that request into ChatGPT, Claude, Grok, or another AI tool yourself.
@@ -795,6 +797,22 @@ Template usage:
 ```
 
 If `ai.q1`, `ai.q2`, `ai.q3`, or `ai.q8` do not exist yet, running the corresponding `-q 1`, `-q 2`, `-q 3`, or `-q 8` command will create them in the configured `workingfolder`, or next to `mona.ini` when no working folder is set.
+
+## Markdown output
+
+Most `mona` output files are written as Markdown. If you configure a `workingfolder`, those files will be created there. Otherwise, they are typically written next to `mona.ini`.
+
+This is useful because the output can be viewed either as plain text or rendered as formatted Markdown with headings, tables, fenced blocks, and embedded images.
+
+Recommended viewers/editors:
+
+* **Visual Studio Code**: open the `.md` file and use **Markdown Preview** with `Ctrl+Shift+V`
+* **Notepad++**: can render Markdown with a Markdown preview plugin
+* **Typora**: native live Markdown rendering
+* **Obsidian**: renders Markdown files directly
+* **MarkText**: open source Markdown editor with live preview
+
+If you are reviewing `mona` output regularly, using a Markdown-capable viewer will make files such as `rop.md`, `findmsp.md`, `heaplayout.md`, and AI prompt/output files much easier to read.
 
 With `-q 9`, Mona supports two template styles:
 
