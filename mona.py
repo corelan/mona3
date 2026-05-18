@@ -4413,17 +4413,17 @@ def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_
 	logfile.write("", thislog)
 	logfile.write("AI Engine", thislog)
 	logfile.write("---------", thislog)
-	logfile.write("Engine    : %s" % engine, thislog)
-	logfile.write("Model     : %s" % model, thislog)
-	logfile.write("Question  : %s" % question_type, thislog)
+	logfile.write("- Engine: **%s**" % engine, thislog)
+	logfile.write("- Model: **%s**" % model, thislog)
+	logfile.write("- Question: **%s**" % question_type, thislog)
 	if request_id:
-		logfile.write("Request id: %s" % request_id, thislog)
+		logfile.write("- Request id: **%s**" % request_id, thislog)
 	if template_file != "":
-		logfile.write("Template  : %s" % template_file, thislog)
+		logfile.write("- Template: **%s**" % template_file, thislog)
 	if isinstance(target_address, int) and target_address > 0:
-		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
+		logfile.write("- Target: **%s**" % (PTR_PRINT % target_address), thislog)
 		if target_address_source != "":
-			logfile.write("Target src: %s" % target_address_source, thislog)
+			logfile.write("- Target src: **%s**" % target_address_source, thislog)
 	logfile.write("", thislog)
 
 
@@ -5739,6 +5739,121 @@ def formatAIUploadedFileLines(uploaded_files=None):
 		lines.append("| `%s` | `%s` |" % (local_path_md, file_id_md))
 	lines.append("")
 	return lines
+
+
+def formatAIReferencedFileIdLines(file_ids=None):
+	mndbg.dbgp(get_current_function_name())
+	lines = []
+	if not isinstance(file_ids, list) or len(file_ids) == 0:
+		return lines
+	filtered_ids = []
+	seen_ids = set()
+	for file_id in file_ids:
+		file_id = ensure_text(file_id).strip()
+		if file_id == "" or file_id in seen_ids:
+			continue
+		seen_ids.add(file_id)
+		filtered_ids.append(file_id)
+	if len(filtered_ids) == 0:
+		return lines
+	lines.append("Referenced file IDs:")
+	lines.append("--------------------")
+	lines.append("")
+	for file_id in filtered_ids:
+		lines.append("- `%s`" % file_id.replace("`", "\\`"))
+	lines.append("")
+	return lines
+
+
+def _buildFileReferenceUsageInstruction(referenced_file_ids=None, uploaded_files=None):
+	mndbg.dbgp(get_current_function_name())
+	referenced_ids = []
+	seen_referenced_ids = set()
+	for file_id in referenced_file_ids or []:
+		file_id = ensure_text(file_id).strip()
+		if file_id == "" or file_id in seen_referenced_ids:
+			continue
+		seen_referenced_ids.add(file_id)
+		referenced_ids.append(file_id)
+	uploaded_entries = []
+	seen_uploaded_ids = set()
+	for uploaded_file in uploaded_files or []:
+		if not isinstance(uploaded_file, dict):
+			continue
+		file_id = ensure_text(uploaded_file.get("id", "")).strip()
+		file_name = ensure_text(uploaded_file.get("name", "")).strip()
+		if file_id == "" or file_id in seen_uploaded_ids:
+			continue
+		seen_uploaded_ids.add(file_id)
+		uploaded_entries.append((file_name, file_id))
+	if len(referenced_ids) == 0 and len(uploaded_entries) == 0:
+		return ""
+	lines = [
+		"Inspect the attached provider file references and use their contents in the analysis when they are relevant to the request.",
+		"Before the main answer, add a short 'File references used' section.",
+		"Only list the provider file references you actually used in the analysis."
+	]
+	if len(referenced_ids) > 0:
+		lines.append("Use the file(s) referenced by these provider file ID(s) as supporting analysis input: %s." % ", ".join(["`%s`" % file_id for file_id in referenced_ids]))
+	if len(uploaded_entries) > 0:
+		lines.append(
+			"Use these uploaded file references as supporting analysis input: %s." % ", ".join([
+				"`%s` -> `%s`" % (ensure_text(file_name).replace("`", "\\`"), ensure_text(file_id).replace("`", "\\`"))
+				for file_name, file_id in uploaded_entries
+			])
+		)
+	lines.append("If none of those file references were used, say so briefly.")
+	return "\n".join(lines)
+
+
+def _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=None, uploaded_files=None):
+	mndbg.dbgp(get_current_function_name())
+	prompt_text = ensure_text(prompt).strip()
+	instruction_text = _buildFileReferenceUsageInstruction(
+		referenced_file_ids=referenced_file_ids,
+		uploaded_files=uploaded_files
+	)
+	if instruction_text == "":
+		return prompt_text
+	if prompt_text == "":
+		return instruction_text
+	return "%s\n\n%s" % (prompt_text, instruction_text)
+
+
+def _mergeReferencedFileIds(primary_ids=None, extra_ids=None):
+	mndbg.dbgp(get_current_function_name())
+	merged_ids = []
+	seen_ids = set()
+	for id_list in [primary_ids or [], extra_ids or []]:
+		for file_id in id_list:
+			file_id = ensure_text(file_id).strip()
+			if file_id == "" or file_id in seen_ids:
+				continue
+			seen_ids.add(file_id)
+			merged_ids.append(file_id)
+	return merged_ids
+
+
+def _mergeAnthropicReferencedFiles(primary_files=None, extra_ids=None):
+	mndbg.dbgp(get_current_function_name())
+	merged_files = []
+	seen_ids = set()
+	for file_info in primary_files or []:
+		if isinstance(file_info, dict):
+			file_id = ensure_text(file_info.get("id", "")).strip()
+		else:
+			file_id = ensure_text(file_info).strip()
+		if file_id == "" or file_id in seen_ids:
+			continue
+		seen_ids.add(file_id)
+		merged_files.append(file_info)
+	for file_id in extra_ids or []:
+		file_id = ensure_text(file_id).strip()
+		if file_id == "" or file_id in seen_ids:
+			continue
+		seen_ids.add(file_id)
+		merged_files.append(file_id)
+	return merged_files
 
 
 def _renderAIRawPayloadText(raw_payload):
@@ -7420,6 +7535,9 @@ For each applicable item, state present, partial, or absent, and cite the specif
 Sub-section D - Path to control:
 If direct EIP/RIP control is already confirmed, state the most viable exploitation path from this snapshot in 2-4 sentences.
 If direct EIP/RIP control is not yet shown, answer this explicitly: what strategy or technique would be needed from here to obtain EIP/RIP control, based on the observed primitive? Examples may include heap grooming, object replacement, vtable corruption, stack pivoting, SEH redirection, adjacent overwrite extension, or an additional info leak. Be specific and tie the technique to the observed evidence.
+
+Sub-section E - root cause:
+If a poc file is provided, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any)
 
 Style rules:
 - For stack corruption, be concise. The findmsp numbers are the primary deliverable.
@@ -9104,21 +9222,21 @@ def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_
 	logfile.write("", thislog)
 	logfile.write("AI Engine", thislog)
 	logfile.write("---------", thislog)
-	logfile.write("Engine    : %s" % engine, thislog)
-	logfile.write("Model     : %s" % model, thislog)
-	logfile.write("Question  : %s" % question_type, thislog)
+	logfile.write("- Engine: **%s**" % engine, thislog)
+	logfile.write("- Model: **%s**" % model, thislog)
+	logfile.write("- Question: **%s**" % question_type, thislog)
 	if request_id:
-		logfile.write("Request id: %s" % request_id, thislog)
+		logfile.write("- Request id: **%s**" % request_id, thislog)
 	if template_file != "":
-		logfile.write("Template  : %s" % template_file, thislog)
+		logfile.write("- Template: **%s**" % template_file, thislog)
 	if isinstance(target_address, int) and target_address > 0:
-		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
+		logfile.write("- Target: **%s**" % (PTR_PRINT % target_address), thislog)
 		if target_address_source != "":
-			logfile.write("Target src: %s" % target_address_source, thislog)
+			logfile.write("- Target src: **%s**" % target_address_source, thislog)
 	logfile.write("", thislog)
 
 
-def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
+def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source="", referenced_file_ids=None):
 	mndbg.dbgp(get_current_function_name())
 	logfile = MnLog("tellme_request.md")
 	thislog = logfile.reset(showheader=False, skipModuleTable=True)
@@ -9134,6 +9252,8 @@ def writeAIRequestLog(engine, model, question_type, prompt, request_id="", templ
 		target_address=target_address,
 		target_address_source=target_address_source
 	)
+	for line in formatAIReferencedFileIdLines(referenced_file_ids):
+		logfile.write(stripTags(line), thislog)
 	logfile.write("PROMPT BEGIN", thislog)
 	logfile.write("------------", thislog)
 	for line in prompt.splitlines():
@@ -9509,13 +9629,14 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+	request_prompt = _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=file_ids)
 	request_kwargs = {
 		"model": model
 	}
 	if file_ids:
-		request_kwargs["input"] = _buildOpenAIInputItems(prompt, file_ids=file_ids)
+		request_kwargs["input"] = _buildOpenAIInputItems(request_prompt, file_ids=file_ids)
 	else:
-		request_kwargs["input"] = prompt
+		request_kwargs["input"] = request_prompt
 	if isinstance(options, dict) and len(options) > 0:
 		request_kwargs["extra_body"] = {"options": options}
 	response = client.responses.create(**request_kwargs)
@@ -9536,7 +9657,7 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		)
 
 
-def _buildUploadInstruction(primary_request_name, supporting_names, uploaded_files=None):
+def _buildUploadInstruction(primary_request_name, supporting_names, uploaded_files=None, referenced_file_ids=None):
 	"""Build the small inline instruction used when tellme uploads the request as files."""
 	mndbg.dbgp(get_current_function_name())
 	primary_request_name = ensure_text(primary_request_name).strip() or "request.txt"
@@ -9549,8 +9670,12 @@ def _buildUploadInstruction(primary_request_name, supporting_names, uploaded_fil
 	if len(supporting_names) > 0:
 		lines.append("Use the other attached file(s) as supporting evidence only: %s." % ", ".join(supporting_names))
 		lines.append("If supporting files conflict with the primary request file, follow the primary request file and mention the conflict briefly.")
-	if isinstance(uploaded_files, list) and len(uploaded_files) > 0:
-		lines.append("Before the main answer, add a short 'Uploaded file IDs' section that maps each uploaded filename to its unique file ID.")
+	file_reference_instruction = _buildFileReferenceUsageInstruction(
+		referenced_file_ids=referenced_file_ids,
+		uploaded_files=uploaded_files
+	)
+	if file_reference_instruction != "":
+		lines.append(file_reference_instruction)
 	return "\n".join(lines)
 
 
@@ -9707,13 +9832,14 @@ def _extractOpenAIText(response_data):
 def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
+	request_prompt = _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=file_ids)
 	request_body = {
 		"model": model
 	}
 	if file_ids:
-		request_body["input"] = _buildOpenAIInputItems(prompt, file_ids=file_ids)
+		request_body["input"] = _buildOpenAIInputItems(request_prompt, file_ids=file_ids)
 	else:
-		request_body["input"] = prompt
+		request_body["input"] = request_prompt
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -9908,12 +10034,20 @@ def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_s
 		model, timeout_seconds, max_tokens
 	))
 	client = anthropic_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+	request_prompt = _appendFileReferenceUsageInstruction(
+		prompt,
+		referenced_file_ids=[
+			file_info.get("id", "") if isinstance(file_info, dict) else file_info
+			for file_info in (referenced_files or [])
+		],
+		uploaded_files=referenced_files if any(isinstance(file_info, dict) for file_info in (referenced_files or [])) else None
+	)
 	message_kwargs = {
 		"model": model,
 		"max_tokens": max_tokens,
 		"messages": [{
 			"role": "user",
-			"content": _buildAnthropicMessageContent(prompt, referenced_files=referenced_files)
+			"content": _buildAnthropicMessageContent(request_prompt, referenced_files=referenced_files)
 		}]
 	}
 	if isinstance(options, dict) and len(options) > 0:
@@ -9946,13 +10080,21 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
 	))
+	request_prompt = _appendFileReferenceUsageInstruction(
+		prompt,
+		referenced_file_ids=[
+			file_info.get("id", "") if isinstance(file_info, dict) else file_info
+			for file_info in (referenced_files or [])
+		],
+		uploaded_files=referenced_files if any(isinstance(file_info, dict) for file_info in (referenced_files or [])) else None
+	)
 	request_body = {
 		"model": model,
 		"max_tokens": max_tokens,
 		"messages": [
 			{
 				"role": "user",
-				"content": _buildAnthropicMessageContent(prompt, referenced_files=referenced_files)
+				"content": _buildAnthropicMessageContent(request_prompt, referenced_files=referenced_files)
 			}
 		]
 	}
@@ -32742,6 +32884,79 @@ class MnAI(object):
 		self.last_request_context = context
 		return context
 
+	def getInlineContextFilePaths(self):
+		"""Return deduplicated local file paths whose contents were embedded into the inline request."""
+		mndbg.dbgp(get_current_function_name())
+		file_paths = []
+		seen_paths = set()
+
+		def _add_file(path_value):
+			path_value = ensure_text(path_value).strip()
+			if path_value == "":
+				return
+			normalized_path = os.path.normcase(os.path.abspath(path_value))
+			if normalized_path in seen_paths:
+				return
+			seen_paths.add(normalized_path)
+			file_paths.append(path_value)
+
+		for context_file in self.heapdynamics_files:
+			_add_file(context_file)
+		explicit_heapdynamics_paths = set([
+			os.path.normcase(os.path.abspath(path_value))
+			for path_value in self.heapdynamics_files
+			if ensure_text(path_value).strip() != ""
+		])
+		context_heapdynamics = {}
+		if isinstance(self.last_request_context, dict):
+			context_heapdynamics = self.last_request_context.get("heapdynamics", [])
+		for heapdynamics_info in context_heapdynamics:
+			if not isinstance(heapdynamics_info, dict):
+				continue
+			implicit_file_path = ensure_text(heapdynamics_info.get("file", "")).strip()
+			if implicit_file_path == "":
+				continue
+			normalized_implicit_path = os.path.normcase(os.path.abspath(implicit_file_path))
+			if normalized_implicit_path in explicit_heapdynamics_paths:
+				continue
+			if len(heapdynamics_info.get("matched_entries", [])) == 0 and len(heapdynamics_info.get("matched_registers", [])) == 0:
+				continue
+			_add_file(implicit_file_path)
+		for context_file in self.additional_context_files:
+			_add_file(context_file)
+		_add_file(self.poc_file)
+		return file_paths
+
+	def warnLargeInlineFileContext(self, prompt_bytes):
+		"""Warn when local file-backed context is embedded inline into a potentially large cloud-provider request."""
+		mndbg.dbgp(get_current_function_name())
+		if self.engine not in ["openai", "anthropic"]:
+			return
+		if self.upload_requested:
+			return
+		file_paths = self.getInlineContextFilePaths()
+		if len(file_paths) == 0:
+			return
+		total_file_bytes = 0
+		accessible_files = []
+		for file_path in file_paths:
+			try:
+				file_size = os.path.getsize(file_path)
+			except Exception:
+				continue
+			total_file_bytes += file_size
+			accessible_files.append(file_path)
+			threshold_bytes = 512 * 1024
+		if prompt_bytes < threshold_bytes and total_file_bytes < threshold_bytes:
+			return
+		self.logError("Large inline request warning: file-backed context is being embedded directly into the %s request." % self.engine)
+		self.logErrorDetail("Prompt size : %d bytes (%.2f KB)" % (prompt_bytes, float(prompt_bytes) / 1024.0))
+		self.logErrorDetail("File input  : %d file(s), %d bytes (%.2f KB) total" % (
+			len(accessible_files), total_file_bytes, float(total_file_bytes) / 1024.0
+		))
+		self.logErrorDetail("Threshold   : %d bytes (%.2f KB)" % (threshold_bytes, float(threshold_bytes) / 1024.0))
+		self.logErrorDetail("If this request is too large for the engine, retry with -upload so Mona sends the files separately.")
+
 	def buildRequestPrompt(self):
 		"""Build or reuse the final prompt text that will be saved or sent to the provider."""
 		mndbg.dbgp(get_current_function_name())
@@ -32764,6 +32979,7 @@ class MnAI(object):
 				self.prompt = buildAIPrompt(self.question_type, context, maxsize_kb=self.max_request_kb)
 			prompt_bytes = len(self.prompt.encode("utf-8")) if isinstance(self.prompt, text_type) else len(self.prompt)
 			self.logInfoDetail("Request size: %.2f KB" % (float(prompt_bytes) / 1024.0))
+			self.warnLargeInlineFileContext(prompt_bytes)
 			if self.engine == "openaiagents" and self.max_tokens_source == "default":
 				derived_max_tokens, estimated_input_tokens = deriveOpenAIAgentsMaxTokensFromPrompt(self.prompt)
 				self.max_tokens = derived_max_tokens
@@ -32866,7 +33082,8 @@ class MnAI(object):
 			request_id=request_id,
 			template_file=self.template_file,
 			target_address=self.target_address,
-			target_address_source=self.target_address_source
+			target_address_source=self.target_address_source,
+			referenced_file_ids=self.referenced_file_ids
 		)
 		return self.request_logfile_path
 
@@ -32974,146 +33191,169 @@ class MnAI(object):
 		return file_paths
 
 	def submitProviderUploadRequest(self, openai_client_class, anthropic_client_class, attempt_timeout):
-			"""Upload the saved request plus supporting files, then submit a compact inline instruction."""
-			mndbg.dbgp(get_current_function_name())
-			upload_file_paths = self.getUploadFilePaths()
-			if len(upload_file_paths) == 0:
-				raise ValueError("%s upload mode could not find any files to upload" % self.engine.capitalize())
-			primary_request_name = os.path.basename(upload_file_paths[0])
-			supporting_names = [os.path.basename(path_value) for path_value in upload_file_paths[1:]]
-			self.logInfoDetail("Upload mode: preparing %d file(s) for %s" % (len(upload_file_paths), self.engine))
-			for file_index, file_path in enumerate(upload_file_paths, 1):
-				role_label = "request"
-				if file_index > 1:
-					role_label = "supporting"
-				self.logInfoDetail("  [%d/%d] %s file: %s" % (
-					file_index, len(upload_file_paths), role_label, file_path
+		"""Upload the saved request plus supporting files, then submit a compact inline instruction."""
+		mndbg.dbgp(get_current_function_name())
+		upload_file_paths = self.getUploadFilePaths()
+		if len(upload_file_paths) == 0:
+			raise ValueError("%s upload mode could not find any files to upload" % self.engine.capitalize())
+
+		primary_request_name = os.path.basename(upload_file_paths[0])
+		supporting_names = [os.path.basename(path_value) for path_value in upload_file_paths[1:]]
+		self.logInfoDetail("Upload mode: preparing %d file(s) for %s" % (len(upload_file_paths), self.engine))
+		for file_index, file_path in enumerate(upload_file_paths, 1):
+			role_label = "request"
+			if file_index > 1:
+				role_label = "supporting"
+			self.logInfoDetail("  [%d/%d] %s file: %s" % (
+				file_index, len(upload_file_paths), role_label, file_path
+			))
+		if len(self.referenced_file_ids) > 0:
+			self.logInfoDetail("Referenced file IDs to include in the request:")
+			for file_index, file_id in enumerate(self.referenced_file_ids, 1):
+				self.logInfoDetail("  [%d/%d] %s" % (
+					file_index, len(self.referenced_file_ids), ensure_text(file_id).strip()
 				))
-			if self.engine == "openai":
+
+		if self.engine == "openai":
+			self.provider_uploaded_files = []
+			try:
+				if openai_client_class is None:
+					raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
+				self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIWithFiles(
+					openai_client_class,
+					self.api_key,
+					self.model,
+					"",
+					upload_file_paths,
+					timeout_seconds=attempt_timeout,
+					options=self.api_options
+				)
+			except Exception as upload_err:
+				if not _shouldFallbackFromSDK(self.engine, upload_err):
+					raise
+				self.logInfo("OpenAI SDK upload path failed. Falling back to direct HTTPS upload.")
+				self.logInfoDetail(str(upload_err))
 				self.provider_uploaded_files = []
+				self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIDirectWithFiles(
+					self.api_key,
+					self.model,
+					"",
+					upload_file_paths,
+					timeout_seconds=attempt_timeout,
+					options=self.api_options
+				)
+		elif self.engine == "anthropic":
+			self.provider_uploaded_files = []
+			try:
+				if anthropic_client_class is None:
+					raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
+				self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicWithFiles(
+					anthropic_client_class,
+					self.api_key,
+					self.model,
+					"",
+					upload_file_paths,
+					timeout_seconds=attempt_timeout,
+					max_tokens=self.max_tokens,
+					options=self.api_options
+				)
+			except Exception as upload_err:
+				if not _shouldFallbackFromSDK(self.engine, upload_err):
+					raise
+				self.logInfo("Anthropic SDK upload path failed. Falling back to direct HTTPS upload.")
+				self.logInfoDetail(_describeProviderException(upload_err))
+				self.provider_uploaded_files = []
+				self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicDirectWithFiles(
+					self.api_key,
+					self.model,
+					"",
+					upload_file_paths,
+					timeout_seconds=attempt_timeout,
+					max_tokens=self.max_tokens,
+					options=self.api_options
+				)
+		else:
+			raise ValueError("Upload mode is not supported for engine '%s'" % self.engine)
+
+		if len(self.provider_uploaded_files) > 0:
+			merged_upload_file_ids = _mergeReferencedFileIds(
+				[item.get("id", "") for item in self.provider_uploaded_files],
+				self.referenced_file_ids
+			)
+			merged_anthropic_references = _mergeAnthropicReferencedFiles(
+				self.provider_uploaded_files,
+				self.referenced_file_ids
+			)
+			instruction_text = _buildUploadInstruction(
+				primary_request_name,
+				supporting_names,
+				uploaded_files=self.provider_uploaded_files,
+				referenced_file_ids=self.referenced_file_ids
+			)
+			self.logInfo("Upload complete. Waiting for %s to analyze the uploaded files." % self.engine)
+			if self.engine == "openai":
 				try:
 					if openai_client_class is None:
 						raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
-					self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIWithFiles(
+					self.response, self.request_id = callAIOpenAI(
 						openai_client_class,
 						self.api_key,
 						self.model,
-						"",
-						upload_file_paths,
+						instruction_text,
 						timeout_seconds=attempt_timeout,
-						options=self.api_options
+						options=self.api_options,
+						file_ids=merged_upload_file_ids
 					)
-				except Exception as upload_err:
-					if not _shouldFallbackFromSDK(self.engine, upload_err):
+				except Exception as request_err:
+					if not _shouldFallbackFromSDK(self.engine, request_err):
 						raise
-					self.logInfo("OpenAI SDK upload path failed. Falling back to direct HTTPS upload.")
-					self.logInfoDetail(str(upload_err))
-					self.provider_uploaded_files = []
-					self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIDirectWithFiles(
+					self.logInfo("OpenAI SDK request path failed after upload. Falling back to direct HTTPS request.")
+					self.logInfoDetail(str(request_err))
+					self.response, self.request_id = callAIOpenAIDirect(
 						self.api_key,
 						self.model,
-						"",
-						upload_file_paths,
+						instruction_text,
 						timeout_seconds=attempt_timeout,
-						options=self.api_options
+						options=self.api_options,
+						file_ids=merged_upload_file_ids
 					)
 			elif self.engine == "anthropic":
-				self.provider_uploaded_files = []
 				try:
 					if anthropic_client_class is None:
 						raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
-					self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicWithFiles(
+					self.response, self.request_id = callAIAnthropicSDK(
 						anthropic_client_class,
 						self.api_key,
 						self.model,
-						"",
-						upload_file_paths,
+						instruction_text,
 						timeout_seconds=attempt_timeout,
 						max_tokens=self.max_tokens,
-						options=self.api_options
+						options=self.api_options,
+						referenced_files=merged_anthropic_references
 					)
-				except Exception as upload_err:
-					if not _shouldFallbackFromSDK(self.engine, upload_err):
+				except Exception as request_err:
+					if not _shouldFallbackFromSDK(self.engine, request_err):
 						raise
-					self.logInfo("Anthropic SDK upload path failed. Falling back to direct HTTPS upload.")
-					self.logInfoDetail(_describeProviderException(upload_err))
-					self.provider_uploaded_files = []
-					self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicDirectWithFiles(
+					self.logInfo("Anthropic SDK request path failed after upload. Falling back to direct HTTPS request.")
+					self.logInfoDetail(_describeProviderException(request_err))
+					self.response, self.request_id = callAIAnthropic(
 						self.api_key,
 						self.model,
-						"",
-						upload_file_paths,
+						instruction_text,
 						timeout_seconds=attempt_timeout,
 						max_tokens=self.max_tokens,
-						options=self.api_options
+						options=self.api_options,
+						referenced_files=merged_anthropic_references
 					)
-			else:
-				raise ValueError("Upload mode is not supported for engine '%s'" % self.engine)
-			if len(self.provider_uploaded_files) > 0:
-				instruction_text = _buildUploadInstruction(primary_request_name, supporting_names, uploaded_files=self.provider_uploaded_files)
-				self.logInfo("Upload complete. Waiting for %s to analyze the uploaded files." % self.engine)
-				if self.engine == "openai":
-					try:
-						if openai_client_class is None:
-							raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
-						self.response, self.request_id = callAIOpenAI(
-							openai_client_class,
-							self.api_key,
-							self.model,
-							instruction_text,
-							timeout_seconds=attempt_timeout,
-							options=self.api_options,
-							file_ids=[item.get("id", "") for item in self.provider_uploaded_files]
-						)
-					except Exception as request_err:
-						if not _shouldFallbackFromSDK(self.engine, request_err):
-							raise
-						self.logInfo("OpenAI SDK request path failed after upload. Falling back to direct HTTPS request.")
-						self.logInfoDetail(str(request_err))
-						self.response, self.request_id = callAIOpenAIDirect(
-							self.api_key,
-							self.model,
-							instruction_text,
-							timeout_seconds=attempt_timeout,
-							options=self.api_options,
-							file_ids=[item.get("id", "") for item in self.provider_uploaded_files]
-						)
-				elif self.engine == "anthropic":
-					try:
-						if anthropic_client_class is None:
-							raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
-						self.response, self.request_id = callAIAnthropicSDK(
-							anthropic_client_class,
-							self.api_key,
-							self.model,
-							instruction_text,
-							timeout_seconds=attempt_timeout,
-							max_tokens=self.max_tokens,
-							options=self.api_options,
-							referenced_files=self.provider_uploaded_files
-						)
-					except Exception as request_err:
-						if not _shouldFallbackFromSDK(self.engine, request_err):
-							raise
-						self.logInfo("Anthropic SDK request path failed after upload. Falling back to direct HTTPS request.")
-						self.logInfoDetail(_describeProviderException(request_err))
-						self.response, self.request_id = callAIAnthropic(
-							self.api_key,
-							self.model,
-							instruction_text,
-							timeout_seconds=attempt_timeout,
-							max_tokens=self.max_tokens,
-							options=self.api_options,
-							referenced_files=self.provider_uploaded_files
-						)
-				self.logInfoDetail("%s upload mode created %d remote file(s):" % (self.engine.capitalize(), len(self.provider_uploaded_files)))
-				for uploaded_file in self.provider_uploaded_files:
-					self.logInfoDetail("  %s -> %s" % (
-						ensure_text(uploaded_file.get("path", "")).strip(),
-						ensure_text(uploaded_file.get("id", "")).strip()
-					))
-			self.openai_uploaded_files = list(self.provider_uploaded_files)
-			return self.response
+
+			self.logInfoDetail("%s upload mode created %d remote file(s):" % (self.engine.capitalize(), len(self.provider_uploaded_files)))
+			for uploaded_file in self.provider_uploaded_files:
+				self.logInfoDetail("  %s -> %s" % (
+					ensure_text(uploaded_file.get("path", "")).strip(),
+					ensure_text(uploaded_file.get("id", "")).strip()
+				))
+		self.openai_uploaded_files = list(self.provider_uploaded_files)
+		return self.response
 
 	def getOpenAIAgentsBridgePaths(self):
 			"""Resolve stable bridge script/log paths plus unique output/status files for the current request."""
