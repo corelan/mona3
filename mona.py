@@ -41505,7 +41505,7 @@ Official model docs:
 	                   8 = analyse ROP primitive quality and feasibility
 	                   9 = load a request template from -f <file>
 	                   Running -q 1, -q 2, -q 3, or -q 8 also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
-	                   otherwise next to mona.ini
+	                   otherwise in the same folder as mona.ini
 	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this adds an extra heap target.
