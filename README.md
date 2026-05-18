@@ -544,7 +544,7 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 
 ### F. Output files
 
-Most `mona` output files are written as Markdown. If you configure a `workingfolder`, those files will be created there. Otherwise, they are typically written next to `mona.ini`.
+Most `mona` output files are written as Markdown. If you configure a `workingfolder`, those files will be created there. Otherwise, they are written using Mona's normal relative/debugger-folder path resolution, which is not necessarily the same folder as `mona.ini`.
 
 This is useful because the output can be viewed either as plain text or rendered as formatted Markdown with headings, tables, fenced blocks, and embedded images.
 
@@ -660,7 +660,7 @@ How to choose a mode:
 * For automated submission, `tellme` asks for confirmation before sending the request unless you pass `-submit`.
 * For more advanced `tellme` modes and options such as `-upload`, `-q 9`, templates, model overrides, timeouts, and extra context files, see the blog post and wiki.
 
-If `ai.q1`, `ai.q2`, `ai.q3`, or `ai.q8` do not exist yet, running the corresponding `-q 1`, `-q 2`, `-q 3`, or `-q 8` command will create them in the configured `workingfolder`, or next to `mona.ini` when no working folder is set.
+If `ai.q1`, `ai.q2`, `ai.q3`, or `ai.q8` do not exist yet, running the corresponding `-q 1`, `-q 2`, `-q 3`, or `-q 8` command will create them in the configured `workingfolder`, or in the same folder as `mona.ini` when no working folder is set.
 
 For engine-specific setup, model recommendations, local/self-hosted examples, bridge configuration, advanced options, and troubleshooting, see the [Mona wiki](https://github.com/corelan/mona3/wiki).
 
