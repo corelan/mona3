@@ -232,11 +232,15 @@ def getOSVersion():
 	osversions["6.1"] = "win7"
 	osversions["6.2"] = "win8"
 	osversions["6.3"] = "win8.1"
-	osversions["10.0"] = "win10"
 	peb = getPEBAddress()
 	majorversion = int(pykd.ptrDWord(peb + PEB_OS_MAJOR_VERSION[_arch_idx]))
 	minorversion = int(pykd.ptrDWord(peb + PEB_OS_MINOR_VERSION[_arch_idx]))
+	buildversion = int(pykd.ptrWord(peb + PEB_OS_BUILD_NUMBER[_arch_idx]))
 	thisversion = str(majorversion)+"." + str(minorversion)
+	if thisversion == "10.0":
+		if buildversion >= 22000:
+			return "win11"
+		return "win10"
 	if thisversion in osversions:
 		return osversions[thisversion]
 	else:

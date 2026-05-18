@@ -13427,8 +13427,10 @@ def _parseOsVersion():
 		build = g_os_version["build"]
   
 		if major == 10:
-			# if build >= 22000 => win 11
-			offset_category = "win10"
+			if build >= 22000:
+				offset_category = "win11"
+			else:
+				offset_category = "win10"
 		elif major == 6:
 			if minor == 0: offset_category = "vista"
 			elif minor == 1: offset_category = "win7"
@@ -25737,7 +25739,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	routinedefs["VirtualAlloc"] 			= virtualalloc
 	# only run these on older systems
 	osver=dbg.getOsVersion()
-	if not (osver == "6" or osver == "7" or osver == "8" or osver == "10" or osver == "11" or osver == "vista" or osver == "win7" or osver == "2008server" or osver == "win8" or osver == "win8.1" or osver == "win10"):
+	if not (osver == "6" or osver == "7" or osver == "8" or osver == "10" or osver == "11" or osver == "vista" or osver == "win7" or osver == "2008server" or osver == "win8" or osver == "win8.1" or osver == "win10" or osver == "win11"):
 		routinedefs["SetInformationProcess"]	= setinformationprocess
 		routinedefs["SetProcessDEPPolicy"]		= setprocessdeppolicy	
 	
