@@ -7538,7 +7538,7 @@ For each applicable item, state present, partial, or absent, and cite the specif
 Sub-section D - Path to control:
 If direct EIP/RIP control is already confirmed, state the most viable exploitation path from this snapshot in 2-4 sentences.
 If direct EIP/RIP control is not yet shown, answer this explicitly: what strategy or technique would be needed from here to obtain EIP/RIP control, based on the observed primitive? Examples may include heap grooming, object replacement, vtable corruption, stack pivoting, SEH redirection, adjacent overwrite extension, or an additional info leak. Be specific and tie the technique to the observed evidence.
-If heap grooming/object replacement/heap manipulation is required, what publicy documented (application/script-specific) allocator primitives would be suitable to try in order to support continued investigation. Provide sample syntax for these primitives when possible.
+If further progress depends on heap grooming or object replacement, identify any publicly documented application- or script-specific allocator primitives that would be suitable to try next. Treat heap grooming as primitives that help shape, spray, or otherwise manipulate heap layout, and object replacement as primitives that provide control over replacement object contents. Provide example allocator code or sample syntax where possible.
 
 Sub-section E - root cause:
 If a poc file is provided or referenced via an already uploaded file, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any). 
@@ -32248,35 +32248,75 @@ class MnAI(object):
 			return False
 		return True
 
+	def _resolveContextFileArgs(self):
+		"""Resolve and validate raw -l context file arguments before any context collection starts."""
+		mndbg.dbgp(get_current_function_name())
+		context_files = []
+		if "l" not in self.args:
+			return True, context_files
+		if type(self.args["l"]).__name__.lower() == "bool":
+			self.logError("Please specify at least one context file with -l <file1,file2,...>")
+			return False, []
+		for raw_file in str(self.args["l"]).replace('"', "").replace("'", "").split(","):
+			raw_file = raw_file.strip()
+			if raw_file == "":
+				continue
+			context_file = getAbsolutePath(raw_file)
+			if not os.path.isfile(context_file):
+				self.logError("Unable to find/read context file %s" % context_file)
+				return False, []
+			context_files.append(context_file)
+		if len(context_files) == 0:
+			self.logError("Please specify at least one valid context file with -l")
+			return False, []
+		return True, context_files
+
+	def _resolvePocFileArg(self):
+		"""Resolve and validate the raw -p PoC file argument before any context collection starts."""
+		mndbg.dbgp(get_current_function_name())
+		if "p" not in self.args:
+			return True, ""
+		if type(self.args["p"]).__name__.lower() == "bool":
+			self.logError("Please specify a PoC file with -p <file>")
+			return False, ""
+		poc_file = getAbsolutePath(str(self.args["p"]).replace('"', "").replace("'", "").strip())
+		if not os.path.isfile(poc_file):
+			self.logError("Unable to find/read PoC file %s" % poc_file)
+			return False, ""
+		return True, poc_file
+
+	def validateInputFiles(self):
+		"""Fail fast on invalid -l/-p file arguments before request preparation continues."""
+		mndbg.dbgp(get_current_function_name())
+		context_ok, _context_files = self._resolveContextFileArgs()
+		if not context_ok:
+			return False
+		poc_ok, _poc_file = self._resolvePocFileArg()
+		if not poc_ok:
+			return False
+		return True
+
 	def parseContextFiles(self):
 		"""Classify optional context files into heapdynamics logs and generic attachments."""
 		mndbg.dbgp(get_current_function_name())
 		self.heapdynamics_files = []
 		self.additional_context_files = []
-		if "l" in self.args:
-			if type(self.args["l"]).__name__.lower() == "bool":
-				self.logError("Please specify at least one context file with -l <file1,file2,...>")
-				return False
-			for raw_file in str(self.args["l"]).replace('"', "").replace("'", "").split(","):
-				raw_file = raw_file.strip()
-				if raw_file == "":
-					continue
-				context_file = getAbsolutePath(raw_file)
-				if not os.path.isfile(context_file):
-					self.logError("Unable to find/read context file %s" % context_file)
-					return False
-				looks_like_heapdynamics, _ = _isHeapdynamicsFile(context_file)
-				if looks_like_heapdynamics:
-					self.heapdynamics_files.append(context_file)
-				else:
-					self.additional_context_files.append(context_file)
-			if len(self.heapdynamics_files) == 0 and len(self.additional_context_files) == 0:
-				self.logError("Please specify at least one valid context file with -l")
-				return False
-			if len(self.heapdynamics_files) > 0:
-				mndbg.dbgp("tellme: using heapdynamics files %s" % ", ".join(self.heapdynamics_files))
-			if len(self.additional_context_files) > 0:
-				mndbg.dbgp("tellme: using additional context files %s" % ", ".join(self.additional_context_files))
+		context_ok, context_files = self._resolveContextFileArgs()
+		if not context_ok:
+			return False
+		for context_file in context_files:
+			looks_like_heapdynamics, _ = _isHeapdynamicsFile(context_file)
+			if looks_like_heapdynamics:
+				self.heapdynamics_files.append(context_file)
+			else:
+				self.additional_context_files.append(context_file)
+		if len(self.heapdynamics_files) == 0 and len(self.additional_context_files) == 0 and len(context_files) > 0:
+			self.logError("Please specify at least one valid context file with -l")
+			return False
+		if len(self.heapdynamics_files) > 0:
+			mndbg.dbgp("tellme: using heapdynamics files %s" % ", ".join(self.heapdynamics_files))
+		if len(self.additional_context_files) > 0:
+			mndbg.dbgp("tellme: using additional context files %s" % ", ".join(self.additional_context_files))
 		if len(self.heapdynamics_files) > 0:
 			self.logInfo("Including %s in analysis" % ", ".join(self.heapdynamics_files))
 		else:
@@ -32289,15 +32329,12 @@ class MnAI(object):
 		"""Resolve an optional PoC/trigger file to add to the request context."""
 		mndbg.dbgp(get_current_function_name())
 		self.poc_file = ""
-		if "p" not in self.args:
+		poc_ok, poc_file = self._resolvePocFileArg()
+		if not poc_ok:
+			return False
+		self.poc_file = poc_file
+		if self.poc_file == "":
 			return True
-		if type(self.args["p"]).__name__.lower() == "bool":
-			self.logError("Please specify a PoC file with -p <file>")
-			return False
-		self.poc_file = getAbsolutePath(str(self.args["p"]).replace('"', "").replace("'", "").strip())
-		if not os.path.isfile(self.poc_file):
-			self.logError("Unable to find/read PoC file %s" % self.poc_file)
-			return False
 		mndbg.dbgp("tellme: using poc file %s" % self.poc_file)
 		self.logInfo("Including PoC/trigger from: %s" % self.poc_file)
 		return True
@@ -33485,6 +33522,8 @@ class MnAI(object):
 			return ""
 		if not self.parseQuestionProfile():
 			self.maybePrintAvailableModelsWhenIdle()
+			return ""
+		if not self.validateInputFiles():
 			return ""
 		if not self.validateProviderConfiguration():
 			return ""
