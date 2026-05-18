@@ -25,6 +25,7 @@
   - [C. Running Mona in WinDBG Classic on Windows 7](#c-running-mona-in-windbg-classic-on-windows-7)
   - [D. Helping Python find its libraries](#d-helping-python-find-its-libraries)
   - [E. Running Mona in Immunity](#e-running-mona-in-immunity)
+  - [F. Output files](#f-output-files)
 - 🧠 [AI integration](#ai-integration)
   - [Manual workflow](#manual-workflow)
   - [Automated workflow](#automated-workflow)
@@ -541,6 +542,22 @@ If you'd like, you can also change the icon.  From the same ***Shortcut*** tab s
 * Select the first icon in the list and click OK
 * Click OK to save the changes
 
+### F. Output files
+
+Most `mona` output files are written as Markdown. If you configure a `workingfolder`, those files will be created there. Otherwise, they are typically written next to `mona.ini`.
+
+This is useful because the output can be viewed either as plain text or rendered as formatted Markdown with headings, tables, fenced blocks, and embedded images.
+
+Recommended viewers/editors:
+
+* **Visual Studio Code**: open the `.md` file and use **Markdown Preview** with `Ctrl+Shift+V`
+* **Notepad++**: can render Markdown with a Markdown preview plugin
+* **Typora**: native live Markdown rendering
+* **Obsidian**: renders Markdown files directly
+* **MarkText**: open source Markdown editor with live preview
+
+If you are reviewing `mona` output regularly, using a Markdown-capable viewer will make files such as `rop.md`, `findmsp.md`, `heaplayout.md`, and AI prompt/output files much easier to read.
+
 
 ---
 
@@ -644,22 +661,6 @@ How to choose a mode:
 * For more advanced `tellme` modes and options such as `-upload`, `-q 9`, templates, model overrides, timeouts, and extra context files, see the blog post and wiki.
 
 If `ai.q1`, `ai.q2`, `ai.q3`, or `ai.q8` do not exist yet, running the corresponding `-q 1`, `-q 2`, `-q 3`, or `-q 8` command will create them in the configured `workingfolder`, or next to `mona.ini` when no working folder is set.
-
-## Markdown output
-
-Most `mona` output files are written as Markdown. If you configure a `workingfolder`, those files will be created there. Otherwise, they are typically written next to `mona.ini`.
-
-This is useful because the output can be viewed either as plain text or rendered as formatted Markdown with headings, tables, fenced blocks, and embedded images.
-
-Recommended viewers/editors:
-
-* **Visual Studio Code**: open the `.md` file and use **Markdown Preview** with `Ctrl+Shift+V`
-* **Notepad++**: can render Markdown with a Markdown preview plugin
-* **Typora**: native live Markdown rendering
-* **Obsidian**: renders Markdown files directly
-* **MarkText**: open source Markdown editor with live preview
-
-If you are reviewing `mona` output regularly, using a Markdown-capable viewer will make files such as `rop.md`, `findmsp.md`, `heaplayout.md`, and AI prompt/output files much easier to read.
 
 For engine-specific setup, model recommendations, local/self-hosted examples, bridge configuration, advanced options, and troubleshooting, see the [Mona wiki](https://github.com/corelan/mona3/wiki).
 
