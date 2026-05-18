@@ -633,7 +633,6 @@ The current `tellme` question profiles are:
 * `-q 1`: analyze the current crash context
 * `-q 2`: analyze the current function at the live instruction pointer, optionally plus a second location from `-a`
 * `-q 3`: analyze whether a controlled heap chunk can steer execution to a target, or discover promising chunk-driven paths when `-t` is omitted
-* `-q 8`: analyze ROP primitive quality and feasibility
 * `-q 9 -f <file>`: use a saved request template or a previously built prompt file
 
 Basic examples:
@@ -643,7 +642,6 @@ Basic examples:
 !mona tellme -e openai -q 1 -offline
 !mona tellme -e openai -q 2 -a kernel32!CreateFileW
 !mona tellme -e openai -q 3 -c poi(esp+4) -t kernel32!CreateFileW
-!mona tellme -e openai -q 8
 !mona tellme -e openai -q 1 -submit
 ```
 
