@@ -142,6 +142,7 @@ import time
 import socket
 import subprocess
 import shlex
+import mimetypes
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -5074,6 +5075,50 @@ def _importOpenAI():
 		return None, "", traceback.format_exc()
 
 
+def _importAnthropic():
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: loading Anthropic SDK on demand")
+	try:
+		dbg.log("[+] Loading Anthropic SDK...")
+		import anthropic as anthropic_module
+		from anthropic import Anthropic as anthropic_client_class
+		anthropic_version = getattr(anthropic_module, "__version__", "").strip()
+		if anthropic_version == "":
+			anthropic_version = "unknown"
+		dbg.log("    Anthropic SDK version: %s" % anthropic_version)
+		return anthropic_client_class, anthropic_version, ""
+	except Exception:
+		return None, "", traceback.format_exc()
+
+
+def _guessMimeType(path_value):
+	mndbg.dbgp(get_current_function_name())
+	try:
+		mime_type, _encoding = mimetypes.guess_type(path_value)
+	except Exception:
+		mime_type = None
+	if mime_type:
+		return mime_type
+	return "application/octet-stream"
+
+
+def _splitFileIdArgument(raw_value):
+	mndbg.dbgp(get_current_function_name())
+	file_ids = []
+	if raw_value in [None, False]:
+		return file_ids
+	try:
+		text_value = ensure_text(raw_value)
+	except Exception:
+		text_value = str(raw_value)
+	for token in re.split(r"[\s,]+", text_value.strip()):
+		token = token.strip()
+		if token == "" or token in file_ids:
+			continue
+		file_ids.append(token)
+	return file_ids
+
+
 def getAITimeout(engine, mona_config, args=None):
 	mndbg.dbgp(get_current_function_name())
 	timeout_name = "%s.timeout" % engine
@@ -5235,6 +5280,27 @@ def _getProviderErrorMessage(err):
 	return err.__class__.__name__
 
 
+def _describeProviderException(err):
+	mndbg.dbgp(get_current_function_name())
+	err_cls = getattr(err.__class__, "__name__", type(err).__name__)
+	message = _getProviderErrorMessage(err)
+	if message == "" or message == err_cls:
+		return err_cls
+	return "%s: %s" % (err_cls, message)
+
+
+def _readHTTPResponseText(response_obj):
+	mndbg.dbgp(get_current_function_name())
+	if response_obj is None:
+		return ""
+	raw_body = response_obj.read()
+	if raw_body in [None, ""]:
+		return ""
+	if isinstance(raw_body, bytes_type):
+		return ensure_text(raw_body.decode("utf-8", "replace"))
+	return ensure_text(raw_body)
+
+
 def _logProviderErrorDetails(prefix, payload):
 	mndbg.dbgp(get_current_function_name())
 	if "request_id" in payload:
@@ -5289,6 +5355,7 @@ def _logOpenAIError(err):
 
 	if message:
 		dbg.log("    Message       : %s" % message, highlight=1)
+	dbg.log("    Error type    : %s" % err_cls, highlight=1)
 	_logProviderErrorDetails("OpenAI", payload)
 
 
@@ -5326,6 +5393,7 @@ def _logAnthropicError(err):
 
 	if message:
 		dbg.log("    Message       : %s" % message, highlight=1)
+	dbg.log("    Error type    : %s" % err_cls, highlight=1)
 	_logProviderErrorDetails("Anthropic", payload)
 
 
@@ -5406,6 +5474,7 @@ def logAIProviderError(engine, err):
 
 	dbg.log("[!] %s request failed" % engine.capitalize(), highlight=1)
 	dbg.log("    Message       : %s" % _getProviderErrorMessage(err), highlight=1)
+	dbg.log("    Error type    : %s" % getattr(err.__class__, "__name__", type(err).__name__), highlight=1)
 
 
 def _isTimeoutError(engine, err):
@@ -5424,6 +5493,49 @@ def _isTimeoutError(engine, err):
 	except Exception:
 		message = str(err).lower()
 	return ("timeout" in message) or ("timed out" in message)
+
+
+def _shouldFallbackFromSDK(engine, err):
+	mndbg.dbgp(get_current_function_name())
+	err_cls = err.__class__.__name__.strip()
+	status_code = getattr(err, "status_code", None)
+	err_type = ensure_text(getattr(err, "type", "")).strip()
+	if isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in [408, 409, 429]:
+		return False
+	if err_cls in ["AttributeError", "TypeError", "ValueError", "KeyError", "IndexError"]:
+		return False
+	if err_cls in [
+		"AuthenticationError",
+		"PermissionDeniedError",
+		"BadRequestError",
+		"NotFoundError",
+		"ConflictError",
+		"RateLimitError",
+		"UnprocessableEntityError",
+	]:
+		return False
+	if err_type in ["UnexpectedPayloadError", "FileUploadError"]:
+		return False
+	try:
+		message = _getProviderErrorMessage(err).lower()
+	except Exception:
+		message = str(err).lower()
+	if err_cls in ["APIConnectionError", "APITimeoutError", "TimeoutError", "ConnectError", "ReadTimeout"]:
+		return True
+	for marker in [
+		"connection",
+		"unable to reach",
+		"urlerror",
+		"timeout",
+		"timed out",
+		"sdkinterfaceerror",
+		"sdkunavailable",
+		"import failed",
+		"transport",
+	]:
+		if marker in message or marker in err_cls.lower():
+			return True
+	return False
 
 
 def _normalizeUrlWithSuffix(base_url, suffix):
@@ -5602,6 +5714,30 @@ def formatAIResponseLines(answer):
 	lines = []
 	for raw_line in answer.splitlines():
 		lines.append(raw_line.replace("\t", "    ").rstrip())
+	return lines
+
+
+def formatAIUploadedFileLines(uploaded_files=None):
+	mndbg.dbgp(get_current_function_name())
+	lines = []
+	if not isinstance(uploaded_files, list) or len(uploaded_files) == 0:
+		return lines
+	lines.append("Uploaded file IDs:")
+	lines.append("------------------")
+	lines.append("")
+	lines.append("| Local file | File ID |")
+	lines.append("|---|---|")
+	for uploaded_file in uploaded_files:
+		if not isinstance(uploaded_file, dict):
+			continue
+		local_path = ensure_text(uploaded_file.get("path", "")).strip()
+		file_id = ensure_text(uploaded_file.get("id", "")).strip()
+		if local_path == "" and file_id == "":
+			continue
+		local_path_md = local_path.replace("|", "\\|")
+		file_id_md = file_id.replace("|", "\\|")
+		lines.append("| `%s` | `%s` |" % (local_path_md, file_id_md))
+	lines.append("")
 	return lines
 
 
@@ -9006,7 +9142,7 @@ def writeAIRequestLog(engine, model, question_type, prompt, request_id="", templ
 	return thislog
 
 
-def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source=""):
+def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source="", uploaded_files=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: writing AI response to tellme_response.md")
 	logfile = MnLog("tellme_response.md")
@@ -9022,6 +9158,8 @@ def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lin
 		target_address=target_address,
 		target_address_source=target_address_source
 	)
+	for line in formatAIUploadedFileLines(uploaded_files):
+		logfile.write(stripTags(line), thislog)
 	logfile.write("AI response:", thislog)
 	logfile.write("------------", thislog)
 	for line in ai_response_lines:
@@ -9367,14 +9505,17 @@ def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, 
 	return list(model_ids)
 
 
-def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None):
+def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
 	request_kwargs = {
-		"model": model,
-		"input": prompt
+		"model": model
 	}
+	if file_ids:
+		request_kwargs["input"] = _buildOpenAIInputItems(prompt, file_ids=file_ids)
+	else:
+		request_kwargs["input"] = prompt
 	if isinstance(options, dict) and len(options) > 0:
 		request_kwargs["extra_body"] = {"options": options}
 	response = client.responses.create(**request_kwargs)
@@ -9395,7 +9536,7 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		)
 
 
-def _buildOpenAIUploadInstruction(primary_request_name, supporting_names):
+def _buildUploadInstruction(primary_request_name, supporting_names, uploaded_files=None):
 	"""Build the small inline instruction used when tellme uploads the request as files."""
 	mndbg.dbgp(get_current_function_name())
 	primary_request_name = ensure_text(primary_request_name).strip() or "request.txt"
@@ -9408,8 +9549,100 @@ def _buildOpenAIUploadInstruction(primary_request_name, supporting_names):
 	if len(supporting_names) > 0:
 		lines.append("Use the other attached file(s) as supporting evidence only: %s." % ", ".join(supporting_names))
 		lines.append("If supporting files conflict with the primary request file, follow the primary request file and mention the conflict briefly.")
-	lines.append("Return the final answer only.")
+	if isinstance(uploaded_files, list) and len(uploaded_files) > 0:
+		lines.append("Before the main answer, add a short 'Uploaded file IDs' section that maps each uploaded filename to its unique file ID.")
 	return "\n".join(lines)
+
+
+def _buildOpenAIInputItems(prompt, file_ids=None):
+	mndbg.dbgp(get_current_function_name())
+	content_items = []
+	for file_id in file_ids or []:
+		file_id = ensure_text(file_id).strip()
+		if file_id == "":
+			continue
+		content_items.append({
+			"type": "input_file",
+			"file_id": file_id
+		})
+	content_items.append({
+		"type": "input_text",
+		"text": prompt
+	})
+	return [{
+		"role": "user",
+		"content": content_items
+	}]
+
+
+def _anthropicFileBlockFromReference(file_id, title="", mime_type=""):
+	mndbg.dbgp(get_current_function_name())
+	file_id = ensure_text(file_id).strip()
+	title = ensure_text(title).strip()
+	if file_id == "":
+		return None
+	block = {
+		"type": "document",
+		"source": {
+			"type": "file",
+			"file_id": file_id
+		}
+	}
+	if title != "":
+		block["title"] = title
+	return block
+
+
+def _getAnthropicUploadMimeType(file_path=""):
+	mndbg.dbgp(get_current_function_name())
+	return "text/plain"
+
+
+def _buildAnthropicMessageContent(prompt, referenced_files=None):
+	mndbg.dbgp(get_current_function_name())
+	content_items = []
+	for file_info in referenced_files or []:
+		if isinstance(file_info, dict):
+			file_block = _anthropicFileBlockFromReference(
+				file_info.get("id", ""),
+				title=file_info.get("name", ""),
+				mime_type=file_info.get("mime_type", "")
+			)
+		else:
+			file_block = _anthropicFileBlockFromReference(file_info)
+		if file_block is not None:
+			content_items.append(file_block)
+	content_items.append({
+		"type": "text",
+		"text": prompt
+	})
+	return content_items
+
+
+def _encodeMultipartForm(fields, files):
+	mndbg.dbgp(get_current_function_name())
+	boundary = "----mona-%s-%d" % (generateAIRequestId(), random.randint(100000, 999999))
+	body_chunks = []
+	for field_name, field_value in fields:
+		body_chunks.append(("--%s\r\n" % boundary).encode("utf-8"))
+		body_chunks.append(("Content-Disposition: form-data; name=\"%s\"\r\n\r\n" % field_name).encode("utf-8"))
+		body_chunks.append(ensure_bytes(ensure_text(field_value), encoding="utf-8"))
+		body_chunks.append(b"\r\n")
+	for file_name, file_path, mime_type in files:
+		with open(file_path, "rb") as fh:
+			file_bytes = fh.read()
+		body_chunks.append(("--%s\r\n" % boundary).encode("utf-8"))
+		body_chunks.append((
+			"Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n" % (
+				file_name,
+				os.path.basename(file_path)
+			)
+		).encode("utf-8"))
+		body_chunks.append(("Content-Type: %s\r\n\r\n" % mime_type).encode("utf-8"))
+		body_chunks.append(file_bytes)
+		body_chunks.append(b"\r\n")
+	body_chunks.append(("--%s--\r\n" % boundary).encode("utf-8"))
+	return b"".join(body_chunks), boundary
 
 
 def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None):
@@ -9431,16 +9664,11 @@ def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text,
 			"type": "input_file",
 			"file_id": getattr(uploaded_file, "id", "")
 		})
-	content_items.append({
-		"type": "input_text",
-		"text": instruction_text
-	})
+	if ensure_text(instruction_text).strip() == "":
+		return "", "", uploaded_files
 	request_kwargs = {
 		"model": model,
-		"input": [{
-			"role": "user",
-			"content": content_items
-		}]
+		"input": _buildOpenAIInputItems(instruction_text, file_ids=[item.get("file_id", "") for item in content_items if item.get("type") == "input_file"])
 	}
 	if isinstance(options, dict) and len(options) > 0:
 		request_kwargs["extra_body"] = {"options": options}
@@ -9476,13 +9704,16 @@ def _extractOpenAIText(response_data):
 	return "\n".join([part for part in parts if part]).strip()
 
 
-def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None):
+def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	request_body = {
-		"model": model,
-		"input": prompt
+		"model": model
 	}
+	if file_ids:
+		request_body["input"] = _buildOpenAIInputItems(prompt, file_ids=file_ids)
+	else:
+		request_body["input"] = prompt
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -9498,8 +9729,7 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 	try:
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
-			raw_response = response.read()
-			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			response_text = _readHTTPResponseText(response)
 			response_data = json.loads(response_text) if response_text.strip() != "" else {}
 			request_id = ""
 			try:
@@ -9519,7 +9749,7 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 		parsed_body = {}
 		request_id = ""
 		try:
-			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+			raw_body = _readHTTPResponseText(e)
 		except Exception:
 			raw_body = ""
 		try:
@@ -9578,6 +9808,77 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 	)
 
 
+def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
+	mndbg.dbgp(get_current_function_name())
+	mime_type = _guessMimeType(file_path)
+	request_body, boundary = _encodeMultipartForm(
+		[("purpose", "user_data")],
+		[("file", file_path, mime_type)]
+	)
+	request = urllib_Request(
+		"https://api.openai.com/v1/files",
+		data=request_body,
+		headers={
+			"authorization": "Bearer %s" % api_key,
+			"content-type": "multipart/form-data; boundary=%s" % boundary,
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			payload_text = _readHTTPResponseText(response)
+			payload = json.loads(payload_text) if payload_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = _readHTTPResponseText(e)
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		raise AIProviderError(
+			"OpenAI file upload failed",
+			status_code=status_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type="FileUploadError"
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach OpenAI API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	return {
+		"id": ensure_text(payload.get("id", "")).strip(),
+		"path": file_path,
+		"name": os.path.basename(file_path),
+		"mime_type": ensure_text(payload.get("mime_type", mime_type)).strip() or mime_type
+	}
+
+
+def callAIOpenAIDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None):
+	mndbg.dbgp(get_current_function_name())
+	uploaded_files = []
+	for file_path in file_paths:
+		uploaded_files.append(_openaiUploadFileDirect(api_key, file_path, timeout_seconds=timeout_seconds))
+	if ensure_text(instruction_text).strip() == "":
+		return "", "", uploaded_files
+	response_text, request_id = callAIOpenAIDirect(
+		api_key,
+		model,
+		instruction_text,
+		timeout_seconds=timeout_seconds,
+		options=options,
+		file_ids=[item.get("id", "") for item in uploaded_files]
+	)
+	return response_text, request_id, uploaded_files
+
+
 def _anthropic_extract_text(message):
 	mndbg.dbgp(get_current_function_name())
 	parts = []
@@ -9601,7 +9902,46 @@ def _anthropic_extract_text(message):
 	return "\n".join([p for p in parts if p]).strip()
 
 
-def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None):
+def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling Anthropic SDK model '%s' with timeout %.1fs and max_tokens=%d" % (
+		model, timeout_seconds, max_tokens
+	))
+	client = anthropic_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
+	message_kwargs = {
+		"model": model,
+		"max_tokens": max_tokens,
+		"messages": [{
+			"role": "user",
+			"content": _buildAnthropicMessageContent(prompt, referenced_files=referenced_files)
+		}]
+	}
+	if isinstance(options, dict) and len(options) > 0:
+		message_kwargs["extra_body"] = {"options": options}
+	use_files_beta = bool(referenced_files)
+	response_parent = getattr(client, "beta", None) if use_files_beta else client
+	response_method = getattr(response_parent, "messages", None)
+	if response_method is None or not hasattr(response_method, "create"):
+		raise AIProviderError(
+			"Anthropic SDK does not expose messages.create",
+			error_type="SDKInterfaceError"
+		)
+	if use_files_beta:
+		message_kwargs["betas"] = ["files-api-2025-04-14"]
+	message = response_method.create(**message_kwargs)
+	request_id = getattr(message, "_request_id", "")
+	text = _anthropic_extract_text(message)
+	if text:
+		return text, request_id
+	raise AIProviderError(
+		"Anthropic returned an empty or unexpected response payload",
+		request_id=request_id,
+		body={"raw_response": _captureAIRawResponse(message)},
+		error_type="UnexpectedPayloadError"
+	)
+
+
+def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
@@ -9612,28 +9952,30 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 		"messages": [
 			{
 				"role": "user",
-				"content": prompt
+				"content": _buildAnthropicMessageContent(prompt, referenced_files=referenced_files)
 			}
 		]
 	}
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
+	request_headers = {
+		"content-type": "application/json",
+		"x-api-key": api_key,
+		"anthropic-version": "2023-06-01",
+		"user-agent": "mona-tellme/3.0"
+	}
+	if referenced_files:
+		request_headers["anthropic-beta"] = "files-api-2025-04-14"
 	request = urllib_Request(
 		"https://api.anthropic.com/v1/messages",
 		data=request_data,
-		headers={
-			"content-type": "application/json",
-			"x-api-key": api_key,
-			"anthropic-version": "2023-06-01",
-			"user-agent": "mona-tellme/3.0"
-		}
+		headers=request_headers
 	)
 	try:
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
-			raw_response = response.read()
-			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			response_text = _readHTTPResponseText(response)
 			message = json.loads(response_text) if response_text.strip() != "" else {}
 			response_id = ""
 			try:
@@ -9653,7 +9995,7 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 		parsed_body = {}
 		request_id = ""
 		try:
-			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+			raw_body = _readHTTPResponseText(e)
 		except Exception:
 			raw_body = ""
 		try:
@@ -9707,6 +10049,97 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 		body={"raw_response": message},
 		error_type="UnexpectedPayloadError"
 	)
+
+
+def _anthropicUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
+	mndbg.dbgp(get_current_function_name())
+	mime_type = _getAnthropicUploadMimeType(file_path)
+	request_body, boundary = _encodeMultipartForm([], [("file", file_path, mime_type)])
+	request = urllib_Request(
+		"https://api.anthropic.com/v1/files",
+		data=request_body,
+		headers={
+			"x-api-key": api_key,
+			"anthropic-version": "2023-06-01",
+			"anthropic-beta": "files-api-2025-04-14",
+			"content-type": "multipart/form-data; boundary=%s" % boundary,
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			payload_text = _readHTTPResponseText(response)
+			payload = json.loads(payload_text) if payload_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = _readHTTPResponseText(e)
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		raise AIProviderError(
+			"Anthropic file upload failed",
+			status_code=status_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type="FileUploadError"
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach Anthropic API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	return {
+		"id": ensure_text(payload.get("id", "")).strip(),
+		"path": file_path,
+		"name": os.path.basename(file_path),
+		"mime_type": ensure_text(payload.get("mime_type", mime_type)).strip() or mime_type
+	}
+
+
+def callAIAnthropicWithFiles(anthropic_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=4096, options=None):
+	mndbg.dbgp(get_current_function_name())
+	uploaded_files = []
+	for file_path in file_paths:
+		uploaded_files.append(_anthropicUploadFileDirect(api_key, file_path, timeout_seconds=timeout_seconds))
+	if ensure_text(instruction_text).strip() == "":
+		return "", "", uploaded_files
+	response_text, request_id = callAIAnthropicSDK(
+		anthropic_client_class,
+		api_key,
+		model,
+		instruction_text,
+		timeout_seconds=timeout_seconds,
+		max_tokens=max_tokens,
+		options=options,
+		referenced_files=uploaded_files
+	)
+	return response_text, request_id, uploaded_files
+
+
+def callAIAnthropicDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=4096, options=None):
+	mndbg.dbgp(get_current_function_name())
+	uploaded_files = []
+	for file_path in file_paths:
+		uploaded_files.append(_anthropicUploadFileDirect(api_key, file_path, timeout_seconds=timeout_seconds))
+	if ensure_text(instruction_text).strip() == "":
+		return "", "", uploaded_files
+	response_text, request_id = callAIAnthropic(
+		api_key,
+		model,
+		instruction_text,
+		timeout_seconds=timeout_seconds,
+		max_tokens=max_tokens,
+		options=options,
+		referenced_files=uploaded_files
+	)
+	return response_text, request_id, uploaded_files
 
 
 def _extractCustomAIText(response_data, response_field=""):
@@ -31701,8 +32134,11 @@ class MnAI(object):
 		self.raw_response_logfile_path = ""
 		self.offline_logfile_path = ""
 		self.available_model_ids = []
+		self.upload_requested = False
 		self.openai_upload_requested = False
+		self.provider_uploaded_files = []
 		self.openai_uploaded_files = []
+		self.referenced_file_ids = []
 		self.last_request_context = None
 
 	def logInfo(self, message):
@@ -32300,7 +32736,19 @@ class MnAI(object):
 	def parseRequestSettings(self):
 		"""Resolve API key, model, timeout, token budget, upload mode, and test overrides for the request."""
 		mndbg.dbgp(get_current_function_name())
-		self.openai_upload_requested = ("upload" in self.args)
+		self.upload_requested = ("upload" in self.args)
+		self.openai_upload_requested = self.upload_requested
+		self.referenced_file_ids = []
+		if "id" in self.args:
+			if type(self.args["id"]).__name__.lower() == "bool":
+				self.logError("Please specify one or more file IDs with -id <id1,id2,...>")
+				return False
+			self.referenced_file_ids = _splitFileIdArgument(self.args["id"])
+			if len(self.referenced_file_ids) == 0:
+				self.logError("Please specify one or more valid file IDs with -id <id1,id2,...>")
+				return False
+			self.logInfo("Referencing %d existing provider file ID(s)." % len(self.referenced_file_ids))
+			self.logInfoDetail(", ".join(self.referenced_file_ids))
 		if "maxsize" in self.args:
 			if type(self.args["maxsize"]).__name__.lower() == "bool":
 				self.logError("Please specify a size value with -maxsize <kilobytes>")
@@ -32357,6 +32805,9 @@ class MnAI(object):
 		else:
 			self.model = getDefaultAIModel("openai")
 			mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
+		if len(self.referenced_file_ids) > 0 and self.engine not in ["openai", "anthropic"]:
+			self.logError("The -id flag is currently only supported with the openai and anthropic engines.")
+			return False
 
 		if "model" in self.args:
 			if type(self.args["model"]).__name__.lower() == "bool":
@@ -32382,14 +32833,15 @@ class MnAI(object):
 				mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
 					self.engine, json.dumps(self.api_options, sort_keys=True)
 				))
-		if self.openai_upload_requested:
-			if self.engine != "openai":
-				self.logError("The -upload flag is currently only supported with the openai engine.")
+		if self.upload_requested:
+			if self.engine not in ["openai", "anthropic"]:
+				self.logError("The -upload flag is currently only supported with the openai and anthropic engines.")
 				return False
-			self.logInfo("OpenAI upload mode requested.")
+			self.logInfo("%s upload mode requested." % self.engine.capitalize())
 			self.logInfo("Mona will upload the saved request file plus any -l/-p files")
 			self.logInfoDetail("instead of embedding them in the submitted text prompt.")
-			self.logInfoDetail("This is useful for large contexts that would exceed model input limits if included in the prompt.")
+			self.logInfoDetail("This is useful for large contexts that would exceed")
+			self.logInfoDetail("model input limits if included in the prompt.")
 		return True
 
 	def validateProviderConfiguration(self):
@@ -32880,17 +33332,12 @@ class MnAI(object):
 		"""Prepare the OpenAI client or HTTP fallback path for provider requests."""
 		mndbg.dbgp(get_current_function_name())
 		openai_client_class = None
+		openai_sdk_version = ""
 		openai_import_error = ""
 		openai_use_http_fallback = False
 		if self.engine == "openai":
-			openai_client_class, _openai_version, openai_import_error = _importOpenAI()
+			openai_client_class, openai_sdk_version, openai_import_error = _importOpenAI()
 			if openai_client_class is None:
-				if self.openai_upload_requested:
-					self.logError("OpenAI SDK import failed. Upload mode requires the OpenAI Python SDK.")
-					self.logErrorDetail("Python executable: %s" % sys.executable)
-					self.logErrorDetail("OpenAI import error: %s" % (openai_import_error.splitlines()[-1] if openai_import_error.strip() != "" else "unknown import error"))
-					self.logErrorDetail("Install the library into the debugger Python environment with: python -m pip install openai")
-					return None, False
 				openai_use_http_fallback = True
 				self.logError("OpenAI SDK import failed.")
 				self.logErrorDetail("Python executable: %s" % sys.executable)
@@ -32902,7 +33349,25 @@ class MnAI(object):
 						self.logErrorDetail("The direct HTTPS fallback avoids that import path for this request.")
 					self.logErrorDetail("OpenAI import error: %s" % openai_import_error.splitlines()[-1])
 				self.logInfo("OpenAI: Falling back to direct HTTPS request.")
-		return openai_client_class, openai_use_http_fallback
+		return openai_client_class, openai_use_http_fallback, openai_sdk_version
+
+	def getAnthropicRequestMode(self):
+		"""Prepare the Anthropic client or HTTP fallback path for provider requests."""
+		mndbg.dbgp(get_current_function_name())
+		anthropic_client_class = None
+		anthropic_sdk_version = ""
+		anthropic_import_error = ""
+		anthropic_use_http_fallback = False
+		if self.engine == "anthropic":
+			anthropic_client_class, anthropic_sdk_version, anthropic_import_error = _importAnthropic()
+			if anthropic_client_class is None:
+				anthropic_use_http_fallback = True
+				self.logError("Anthropic SDK import failed.")
+				self.logErrorDetail("Python executable: %s" % sys.executable)
+				if anthropic_import_error.strip() != "":
+					self.logErrorDetail("Anthropic import error: %s" % anthropic_import_error.splitlines()[-1])
+				self.logInfo("Anthropic: Falling back to direct HTTPS request.")
+		return anthropic_client_class, anthropic_use_http_fallback, anthropic_sdk_version
 
 	def writeRequestLog(self, request_id=""):
 		"""Write the outgoing request to disk and remember the generated file path."""
@@ -32956,7 +33421,8 @@ class MnAI(object):
 			ai_response_lines,
 			template_file=self.template_file,
 			target_address=self.target_address,
-			target_address_source=self.target_address_source
+			target_address_source=self.target_address_source,
+			uploaded_files=self.provider_uploaded_files
 		)
 		return ai_response_lines, self.response_logfile_path
 
@@ -32975,8 +33441,8 @@ class MnAI(object):
 		)
 		return self.raw_response_logfile_path
 
-	def getOpenAIUploadFilePaths(self):
-		"""Return the deduplicated file list for OpenAI upload mode, led by the saved request file."""
+	def getUploadFilePaths(self):
+		"""Return the deduplicated file list for provider upload mode, led by the saved request file."""
 		mndbg.dbgp(get_current_function_name())
 		file_paths = []
 		seen_paths = set()
@@ -33021,16 +33487,15 @@ class MnAI(object):
 		_add_file(self.poc_file)
 		return file_paths
 
-	def submitOpenAIUploadRequest(self, openai_client_class, attempt_timeout):
+	def submitProviderUploadRequest(self, openai_client_class, anthropic_client_class, attempt_timeout):
 			"""Upload the saved request plus supporting files, then submit a compact inline instruction."""
 			mndbg.dbgp(get_current_function_name())
-			upload_file_paths = self.getOpenAIUploadFilePaths()
+			upload_file_paths = self.getUploadFilePaths()
 			if len(upload_file_paths) == 0:
-				raise ValueError("OpenAI upload mode could not find any files to upload")
+				raise ValueError("%s upload mode could not find any files to upload" % self.engine.capitalize())
 			primary_request_name = os.path.basename(upload_file_paths[0])
 			supporting_names = [os.path.basename(path_value) for path_value in upload_file_paths[1:]]
-			instruction_text = _buildOpenAIUploadInstruction(primary_request_name, supporting_names)
-			self.logInfoDetail("Upload mode: preparing %d file(s) for OpenAI" % len(upload_file_paths))
+			self.logInfoDetail("Upload mode: preparing %d file(s) for %s" % (len(upload_file_paths), self.engine))
 			for file_index, file_path in enumerate(upload_file_paths, 1):
 				role_label = "request"
 				if file_index > 1:
@@ -33038,22 +33503,130 @@ class MnAI(object):
 				self.logInfoDetail("  [%d/%d] %s file: %s" % (
 					file_index, len(upload_file_paths), role_label, file_path
 				))
-			self.response, self.request_id, self.openai_uploaded_files = callAIOpenAIWithFiles(
-				openai_client_class,
-				self.api_key,
-				self.model,
-				instruction_text,
-				upload_file_paths,
-				timeout_seconds=attempt_timeout,
-				options=self.api_options
-			)
-			if len(self.openai_uploaded_files) > 0:
-				self.logInfoDetail("OpenAI upload mode created %d remote file(s):" % len(self.openai_uploaded_files))
-				for uploaded_file in self.openai_uploaded_files:
+			if self.engine == "openai":
+				self.provider_uploaded_files = []
+				try:
+					if openai_client_class is None:
+						raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
+					self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIWithFiles(
+						openai_client_class,
+						self.api_key,
+						self.model,
+						"",
+						upload_file_paths,
+						timeout_seconds=attempt_timeout,
+						options=self.api_options
+					)
+				except Exception as upload_err:
+					if not _shouldFallbackFromSDK(self.engine, upload_err):
+						raise
+					self.logInfo("OpenAI SDK upload path failed. Falling back to direct HTTPS upload.")
+					self.logInfoDetail(str(upload_err))
+					self.provider_uploaded_files = []
+					self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIDirectWithFiles(
+						self.api_key,
+						self.model,
+						"",
+						upload_file_paths,
+						timeout_seconds=attempt_timeout,
+						options=self.api_options
+					)
+			elif self.engine == "anthropic":
+				self.provider_uploaded_files = []
+				try:
+					if anthropic_client_class is None:
+						raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
+					self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicWithFiles(
+						anthropic_client_class,
+						self.api_key,
+						self.model,
+						"",
+						upload_file_paths,
+						timeout_seconds=attempt_timeout,
+						max_tokens=self.max_tokens,
+						options=self.api_options
+					)
+				except Exception as upload_err:
+					if not _shouldFallbackFromSDK(self.engine, upload_err):
+						raise
+					self.logInfo("Anthropic SDK upload path failed. Falling back to direct HTTPS upload.")
+					self.logInfoDetail(_describeProviderException(upload_err))
+					self.provider_uploaded_files = []
+					self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicDirectWithFiles(
+						self.api_key,
+						self.model,
+						"",
+						upload_file_paths,
+						timeout_seconds=attempt_timeout,
+						max_tokens=self.max_tokens,
+						options=self.api_options
+					)
+			else:
+				raise ValueError("Upload mode is not supported for engine '%s'" % self.engine)
+			if len(self.provider_uploaded_files) > 0:
+				instruction_text = _buildUploadInstruction(primary_request_name, supporting_names, uploaded_files=self.provider_uploaded_files)
+				self.logInfo("Upload complete. Waiting for %s to analyze the uploaded files." % self.engine)
+				if self.engine == "openai":
+					try:
+						if openai_client_class is None:
+							raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
+						self.response, self.request_id = callAIOpenAI(
+							openai_client_class,
+							self.api_key,
+							self.model,
+							instruction_text,
+							timeout_seconds=attempt_timeout,
+							options=self.api_options,
+							file_ids=[item.get("id", "") for item in self.provider_uploaded_files]
+						)
+					except Exception as request_err:
+						if not _shouldFallbackFromSDK(self.engine, request_err):
+							raise
+						self.logInfo("OpenAI SDK request path failed after upload. Falling back to direct HTTPS request.")
+						self.logInfoDetail(str(request_err))
+						self.response, self.request_id = callAIOpenAIDirect(
+							self.api_key,
+							self.model,
+							instruction_text,
+							timeout_seconds=attempt_timeout,
+							options=self.api_options,
+							file_ids=[item.get("id", "") for item in self.provider_uploaded_files]
+						)
+				elif self.engine == "anthropic":
+					try:
+						if anthropic_client_class is None:
+							raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
+						self.response, self.request_id = callAIAnthropicSDK(
+							anthropic_client_class,
+							self.api_key,
+							self.model,
+							instruction_text,
+							timeout_seconds=attempt_timeout,
+							max_tokens=self.max_tokens,
+							options=self.api_options,
+							referenced_files=self.provider_uploaded_files
+						)
+					except Exception as request_err:
+						if not _shouldFallbackFromSDK(self.engine, request_err):
+							raise
+						self.logInfo("Anthropic SDK request path failed after upload. Falling back to direct HTTPS request.")
+						self.logInfoDetail(_describeProviderException(request_err))
+						self.response, self.request_id = callAIAnthropic(
+							self.api_key,
+							self.model,
+							instruction_text,
+							timeout_seconds=attempt_timeout,
+							max_tokens=self.max_tokens,
+							options=self.api_options,
+							referenced_files=self.provider_uploaded_files
+						)
+				self.logInfoDetail("%s upload mode created %d remote file(s):" % (self.engine.capitalize(), len(self.provider_uploaded_files)))
+				for uploaded_file in self.provider_uploaded_files:
 					self.logInfoDetail("  %s -> %s" % (
 						ensure_text(uploaded_file.get("path", "")).strip(),
 						ensure_text(uploaded_file.get("id", "")).strip()
 					))
+			self.openai_uploaded_files = list(self.provider_uploaded_files)
 			return self.response
 
 	def getOpenAIAgentsBridgePaths(self):
@@ -33123,9 +33696,12 @@ class MnAI(object):
 			"""Verify that the configured bridge Python can import the non-stdlib modules the bridge requires."""
 			mndbg.dbgp(get_current_function_name())
 			import_check_code = (
+				"import openai\n"
 				"import agents\n"
 				"from agents import Agent, Runner, ModelSettings, RunConfig\n"
 				"from openai.types.shared import Reasoning\n"
+				"print('OPENAI_SDK=%s' % getattr(openai, '__version__', 'unknown'))\n"
+				"print('OPENAI_AGENTS_SDK=%s' % getattr(agents, '__version__', 'unknown'))\n"
 				"print('OK')\n"
 			)
 			try:
@@ -33155,6 +33731,18 @@ class MnAI(object):
 				#	if output_line != "":
 				#		self.logErrorDetail(output_line)
 				return False
+			openai_sdk_version = ""
+			openai_agents_sdk_version = ""
+			for output_line in output_text.split("\n"):
+				output_line = output_line.strip()
+				if output_line.startswith("OPENAI_SDK="):
+					openai_sdk_version = output_line.split("=", 1)[1].strip()
+				elif output_line.startswith("OPENAI_AGENTS_SDK="):
+					openai_agents_sdk_version = output_line.split("=", 1)[1].strip()
+			if openai_sdk_version != "":
+				self.logInfoDetail("Bridge OpenAI SDK : %s" % openai_sdk_version)
+			if openai_agents_sdk_version != "":
+				self.logInfoDetail("Bridge Agents SDK : %s" % openai_agents_sdk_version)
 			return True
 
 	def submitOpenAIAgentsBridgeJob(self):
@@ -33229,153 +33817,203 @@ class MnAI(object):
 			return True
 
 	def request(self, question_type=None, prompt=None):
-			"""Send the prepared request or save it offline, and keep the response text on the instance."""
-			mndbg.dbgp(get_current_function_name())
-			if question_type is not None:
-				self.question_type = question_type
-			if prompt is not None:
-				self.prompt = prompt
-			if self.prompt == "":
-				self.logError("Cannot execute an empty tellme request")
-				return self.response
+		"""Send the prepared request or save it offline, and keep the response text on the instance."""
+		mndbg.dbgp(get_current_function_name())
+		if question_type is not None:
+			self.question_type = question_type
+		if prompt is not None:
+			self.prompt = prompt
+		if self.prompt == "":
+			self.logError("Cannot execute an empty tellme request")
+			return self.response
 
-			mndbg.dbgp("tellme: prompt length is %d bytes" % len(self.prompt))
-			if self.offline or self.engine == "offline":
-				self.response = ""
-				self.writeOfflineRequest()
-				return self.response
-
-			self.writeRequestLog()
-			if self.submit_requested:
-				self.logInfo("AI submission confirmed via -submit")
-			elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
-				self.response = ""
-				self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
-				if self.request_logfile_path != "":
-					self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
-				return self.response
-			elif not self.reloadPromptFromRequestLog():
-				return self.response
-
-			if self.engine == "openaiagents":
-				if self.request_id == "":
-					self.request_id = generateAIRequestId()
-				return self.submitOpenAIAgentsBridgeJob()
-
-			openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
-			if self.engine == "openai" and not openai_use_http_fallback and openai_client_class is None:
-				return self.response
-			self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
-			self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
-			if self.engine in ["ollama", "customai"] and self.api_url != "":
-				self.logInfoDetail("URL       : %s" % self.api_url)
-			if self.engine in ["ollama", "customai"] and self.response_field != "":
-				self.logInfoDetail("Response  : %s" % self.response_field)
-			if isinstance(self.api_options, dict) and len(self.api_options) > 0:
-				self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
-			if self.engine == "anthropic":
-				self.logInfoDetail("Max tokens: %d" % self.max_tokens)
-
-			max_attempts = 5
-			retry_timeout_increment = min(self.timeout_seconds, 120.0)
+		mndbg.dbgp("tellme: prompt length is %d bytes" % len(self.prompt))
+		if self.offline or self.engine == "offline":
 			self.response = ""
-			self.request_id = ""
-			for attempt in xrange(1, max_attempts + 1):
-				attempt_timeout = self.timeout_seconds + ((attempt - 1) * retry_timeout_increment)
-				timeout_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=attempt_timeout)
-				dbg.log("")
-				self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs, expires at %s)" % (
-					self.engine,
-					attempt,
-					attempt_timeout,
-					timeout_expires_at.strftime("%Y-%m-%d %H:%M:%S")
-				))
-				try:
-					if self.engine == "openai":
-						if self.openai_upload_requested:
-							self.submitOpenAIUploadRequest(openai_client_class, attempt_timeout)
-						elif openai_use_http_fallback:
-							self.response, self.request_id = callAIOpenAIDirect(
-								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
-							)
-						else:
+			self.writeOfflineRequest()
+			return self.response
+
+		self.writeRequestLog()
+		if self.submit_requested:
+			self.logInfo("AI submission confirmed via -submit")
+		elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
+			self.response = ""
+			self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
+			if self.request_logfile_path != "":
+				self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
+			return self.response
+		elif not self.reloadPromptFromRequestLog():
+			return self.response
+
+		if self.engine == "openaiagents":
+			if self.request_id == "":
+				self.request_id = generateAIRequestId()
+			return self.submitOpenAIAgentsBridgeJob()
+
+		openai_client_class, openai_use_http_fallback, openai_sdk_version = self.getOpenAIRequestMode()
+		anthropic_client_class, anthropic_use_http_fallback, anthropic_sdk_version = self.getAnthropicRequestMode()
+		if self.engine == "openai" and not openai_use_http_fallback and openai_client_class is None:
+			return self.response
+		self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
+		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
+		if self.engine == "openai":
+			if openai_sdk_version != "":
+				self.logInfoDetail("OpenAI SDK: %s" % openai_sdk_version)
+			elif openai_use_http_fallback:
+				self.logInfoDetail("OpenAI SDK: unavailable, using direct HTTPS fallback")
+		if self.engine == "anthropic":
+			if anthropic_sdk_version != "":
+				self.logInfoDetail("Anthropic SDK: %s" % anthropic_sdk_version)
+			elif anthropic_use_http_fallback:
+				self.logInfoDetail("Anthropic SDK: unavailable, using direct HTTPS fallback")
+		if self.engine in ["ollama", "customai"] and self.api_url != "":
+			self.logInfoDetail("URL       : %s" % self.api_url)
+		if self.engine in ["ollama", "customai"] and self.response_field != "":
+			self.logInfoDetail("Response  : %s" % self.response_field)
+		if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+			self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
+		if self.engine == "anthropic":
+			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
+
+		max_attempts = 5
+		retry_timeout_increment = min(self.timeout_seconds, 120.0)
+		self.response = ""
+		self.request_id = ""
+		for attempt in xrange(1, max_attempts + 1):
+			attempt_timeout = self.timeout_seconds + ((attempt - 1) * retry_timeout_increment)
+			timeout_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=attempt_timeout)
+			dbg.log("")
+			self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs, expires at %s)" % (
+				self.engine,
+				attempt,
+				attempt_timeout,
+				timeout_expires_at.strftime("%Y-%m-%d %H:%M:%S")
+			))
+			try:
+				if self.engine == "openai":
+					if self.upload_requested:
+						self.submitProviderUploadRequest(openai_client_class, anthropic_client_class, attempt_timeout)
+					elif openai_use_http_fallback:
+						self.response, self.request_id = callAIOpenAIDirect(
+							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
+						)
+					else:
+						try:
 							self.response, self.request_id = callAIOpenAI(
-								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
 							)
-					elif self.engine == "anthropic":
+						except Exception as openai_sdk_err:
+							if not _shouldFallbackFromSDK(self.engine, openai_sdk_err):
+								raise
+							self.logInfo("OpenAI SDK request failed. Falling back to direct HTTPS request.")
+							self.logInfoDetail(str(openai_sdk_err))
+							self.response, self.request_id = callAIOpenAIDirect(
+								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
+							)
+				elif self.engine == "anthropic":
+					if self.upload_requested:
+						self.submitProviderUploadRequest(openai_client_class, anthropic_client_class, attempt_timeout)
+					elif anthropic_use_http_fallback:
 						self.response, self.request_id = callAIAnthropic(
 							self.api_key,
 							self.model,
 							self.prompt,
 							timeout_seconds=attempt_timeout,
 							max_tokens=self.max_tokens,
-							options=self.api_options
-						)
-					elif self.engine == "ollama":
-						self.response, self.request_id = callAIOllama(
-							self.api_url,
-							self.model,
-							self.prompt,
-							timeout_seconds=attempt_timeout,
-							response_field=self.response_field or "response",
-							options=self.api_options
+							options=self.api_options,
+							referenced_files=self.referenced_file_ids
 						)
 					else:
-						self.response, self.request_id = callAICustom(
-							self.api_url,
-							self.model,
-							self.prompt,
-							timeout_seconds=attempt_timeout,
-							response_field=self.response_field,
-							options=self.api_options
-						)
-					break
-				except Exception as e:
-					mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
-						attempt,
-						max_attempts,
-						traceback.format_exc()
-					), errormode=False)
-					if _isTimeoutError(self.engine, e):
 						try:
-							error_body = getattr(e, "body", None)
-							if not isinstance(error_body, dict):
-								error_body = {}
-							error_body["attempt_timeout"] = attempt_timeout
-							error_body["suggested_timeout"] = attempt_timeout + retry_timeout_increment
-							e.body = error_body
-						except Exception:
-							pass
-					if self.handleUnexpectedPayloadFallback(e):
-						break
-					logAIProviderError(self.engine, e)
-					if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
-						return self.response
-					next_timeout = self.timeout_seconds + (attempt * retry_timeout_increment)
-					retry_sleep_seconds = 10
-					self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
-						retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
-					))
-					time.sleep(retry_sleep_seconds)
-					interruptMona()
+							self.response, self.request_id = callAIAnthropicSDK(
+								anthropic_client_class,
+								self.api_key,
+								self.model,
+								self.prompt,
+								timeout_seconds=attempt_timeout,
+								max_tokens=self.max_tokens,
+								options=self.api_options,
+								referenced_files=self.referenced_file_ids
+							)
+						except Exception as anthropic_sdk_err:
+							if not _shouldFallbackFromSDK(self.engine, anthropic_sdk_err):
+								raise
+							self.logInfo("Anthropic SDK request failed. Falling back to direct HTTPS request.")
+							self.logInfoDetail(str(anthropic_sdk_err))
+							self.response, self.request_id = callAIAnthropic(
+								self.api_key,
+								self.model,
+								self.prompt,
+								timeout_seconds=attempt_timeout,
+								max_tokens=self.max_tokens,
+								options=self.api_options,
+								referenced_files=self.referenced_file_ids
+							)
+				elif self.engine == "ollama":
+					self.response, self.request_id = callAIOllama(
+						self.api_url,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						response_field=self.response_field or "response",
+						options=self.api_options
+					)
+				else:
+					self.response, self.request_id = callAICustom(
+						self.api_url,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						response_field=self.response_field,
+						options=self.api_options
+					)
+				break
+			except Exception as e:
+				mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
+					attempt,
+					max_attempts,
+					traceback.format_exc()
+				), errormode=False)
+				if _isTimeoutError(self.engine, e):
+					try:
+						error_body = getattr(e, "body", None)
+						if not isinstance(error_body, dict):
+							error_body = {}
+						error_body["attempt_timeout"] = attempt_timeout
+						error_body["suggested_timeout"] = attempt_timeout + retry_timeout_increment
+						e.body = error_body
+					except Exception:
+						pass
+				if self.handleUnexpectedPayloadFallback(e):
+					break
+				logAIProviderError(self.engine, e)
+				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
+					return self.response
+				next_timeout = self.timeout_seconds + (attempt * retry_timeout_increment)
+				retry_sleep_seconds = 10
+				self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
+					retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
+				))
+				time.sleep(retry_sleep_seconds)
+				interruptMona()
 
-			if self.request_id:
-				self.logInfoDetail("Request id: %s" % self.request_id)
-			self.writeRequestLog(request_id=self.request_id)
-			ai_response_lines, _response_logfile_path = self.writeResponseLog()
+		if self.request_id:
+			self.logInfoDetail("Request id: %s" % self.request_id)
+		self.writeRequestLog(request_id=self.request_id)
+		ai_response_lines, _response_logfile_path = self.writeResponseLog()
+		dbg.log("")
+		self.logInfo("AI response:")
+		for line in ai_response_lines:
+			self.logInfoDetail(line)
+		if self.response.strip() == "":
+			self.logInfoDetail("<empty response>")
+		else:
 			dbg.log("")
-			self.logInfo("AI response:")
-			for line in ai_response_lines:
-				self.logInfoDetail(line)
-			if self.response.strip() == "":
-				self.logInfoDetail("<empty response>")
-			else:
-				dbg.log("")
-				self.logInfoDetail("Request saved to %s" % self.request_logfile_path)
-				self.logInfoDetail("Response saved to %s" % self.response_logfile_path)
-				if self.raw_response_logfile_path != "":
-					self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
-			return self.response
+			self.logInfoDetail("Request saved to %s" % self.request_logfile_path)
+			self.logInfoDetail("Response saved to %s" % self.response_logfile_path)
+			if self.raw_response_logfile_path != "":
+				self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
+		return self.response
 
 	def execute(self):
 		"""Run the full tellme workflow from argument parsing through request execution."""
@@ -33400,6 +34038,11 @@ class MnAI(object):
 			return ""
 		if not self.parseTargetAddress():
 			return ""
+		try:
+			self.logInfo("Closing WinDBG log, if any, to prevent poluting any open log files.")
+			dbg.nativeCommand(".logclose")
+		except Exception:
+			pass
 		if not self.parseControlledChunkInputs():
 			return ""
 		if not self.parseTemplateSelection():
@@ -41946,9 +42589,9 @@ Optional arguments:
 
 	Supported engines:
 	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
-	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; supports plain text submission by default and optional file uploads via -upload; the OpenAI Python SDK is required for -upload)
+	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; prefers the OpenAI Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id)
 	    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
-	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
+	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; prefers the Anthropic Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces)
     - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
     - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
 
@@ -42080,10 +42723,17 @@ Official model docs:
 	                   and only reports the final request size. If you set -maxsize, mona will try to reduce lower-priority
 	                   evidence to stay within that target and will record any reductions under [omitted_sections]
 	    -submit      : Skip the confirmation prompt and submit the AI request immediately
-	    -upload      : OpenAI only. Upload the saved request file plus any -l/-p files and submit a short inline instruction
-	                   that tells the model to use the uploaded request file as the authoritative prompt source.
+	    -upload      : OpenAI and Anthropic. Upload the saved request file plus any -l/-p files and submit a short
+	                   inline instruction that tells the model to use the uploaded request file as the authoritative prompt source.
+	                   Mona asks the model to echo the unique file ID for each uploaded file so you can reuse them later with -id.
+	                   Mona also prints the provider-assigned file IDs right after upload and writes them into tellme_response.md.
 	                   If this flag is not set, tellme embeds the rendered request and any extra file contents directly in the text prompt.
-	                   Upload mode requires the OpenAI Python SDK and does not use the direct HTTPS fallback path.
+	                   Mona tries the provider SDK first and falls back to direct HTTPS if the SDK is unavailable or fails.
+	    -id <ids>    : Comma- or space-separated file ID(s) to reference in a later request, for example:
+	                   -id file-abc123,file-def456
+	                   This works with any request profile, including -q 9 templates.
+	                   Use the file IDs printed by Mona after upload or the Uploaded file IDs section in tellme_response.md.
+	                   Mona passes the IDs through as-is, so make sure they belong to the provider you selected.
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
 	                   2 = analyse the current __PC__ function, plus an optional extra function from -a
@@ -42160,6 +42810,8 @@ Official model docs:
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
 	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
 	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py -upload
+	    __LAUNCHCMD__ tellme -e anthropic -q 1 -l alloc.txt,triage.txt -p poc.py -upload
+	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -id file-abc123,file-def456
 	    __LAUNCHCMD__ tellme -e openai -model gpt-5-mini -q 1
 	    __LAUNCHCMD__ tellme -e anthropic -model claude-sonnet-4-6 -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 1 -submit
