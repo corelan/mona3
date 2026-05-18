@@ -704,3 +704,4 @@ If you are changing or debugging a specific `!mona` command, be aware that the r
 ## 📚 Posts and resources about Mona v3
 
 * [Mona v3 Release - Announcement on Corelan Blog](https://www.corelan.be/index.php/2026/05/01/mona-v3-released/)
+* [Mona tellme - AI-assisted analysis with Mona](https://www.corelan.be/index.php/2026/05/14/mona-tellme/)
