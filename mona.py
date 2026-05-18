@@ -7538,7 +7538,7 @@ For each applicable item, state present, partial, or absent, and cite the specif
 Sub-section D - Path to control:
 If direct EIP/RIP control is already confirmed, state the most viable exploitation path from this snapshot in 2-4 sentences.
 If direct EIP/RIP control is not yet shown, answer this explicitly: what strategy or technique would be needed from here to obtain EIP/RIP control, based on the observed primitive? Examples may include heap grooming, object replacement, vtable corruption, stack pivoting, SEH redirection, adjacent overwrite extension, or an additional info leak. Be specific and tie the technique to the observed evidence.
-If further progress depends on heap grooming or object replacement, identify any publicly documented application- or script-specific allocator primitives that would be suitable to try next. Treat heap grooming as primitives that help shape, spray, or otherwise manipulate heap layout, and object replacement as primitives that provide control over replacement object contents. Provide example allocator code or sample syntax where possible.
+If further progress depends on heap grooming, heap layout manipulation or object replacement, identify any publicly documented application- or script-specific allocator primitives that would be suitable to try next. Treat heap grooming as primitives that help shape, spray, or otherwise manipulate heap layout, and object replacement as primitives that provide control over replacement object contents. Provide example allocator code or sample syntax where possible.
 
 Sub-section E - root cause:
 If a poc file is provided or referenced via an already uploaded file, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any). 
@@ -22531,6 +22531,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
 	items = list(mnproc.getPEB().getModules(peb_order=peb_order).items())
+	displayed_module_count = len(items) if len(logfile) > 0 else len(modules)
 	if sort_keys:
 		# Apply compound sort in reverse key order so first key wins (stable sort)
 		for key, reverse in reversed(sort_keys):
@@ -22544,7 +22545,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.getPEB().getModules()), len(modules))
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.getPEB().getModules()), displayed_module_count)
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
 	thistable += " | PEB order: %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
 	if sort_keys:
@@ -22634,7 +22635,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				md_lines.append("## Module Table")
 				md_lines.append("")
 				md_lines.append("- Total nr of modules loaded: **%d**" % len(mnproc.getPEB().getModules()))
-				md_lines.append("- Nr of modules displayed after filters: **%d**" % len(modules))
+				md_lines.append("- Nr of modules displayed after filters: **%d**" % displayed_module_count)
 				md_lines.append("- PEB order: **%s**" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order))
 				if sort_keys:
 					sort_desc = " -> ".join("%s (%s)" % (k, "descending" if r else "ascending") for k, r in sort_keys)
