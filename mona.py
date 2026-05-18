@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 import codecs
+import io
 
 """
  
@@ -7537,7 +7538,7 @@ For each applicable item, state present, partial, or absent, and cite the specif
 Sub-section D - Path to control:
 If direct EIP/RIP control is already confirmed, state the most viable exploitation path from this snapshot in 2-4 sentences.
 If direct EIP/RIP control is not yet shown, answer this explicitly: what strategy or technique would be needed from here to obtain EIP/RIP control, based on the observed primitive? Examples may include heap grooming, object replacement, vtable corruption, stack pivoting, SEH redirection, adjacent overwrite extension, or an additional info leak. Be specific and tie the technique to the observed evidence.
-If heap grooming/object replacement/heap manipulation is required, what publicy documented (application-specific) allocator primitives would be suitable to try in order to support continued investigation. Provide sample syntax for these primitives when possible.
+If heap grooming/object replacement/heap manipulation is required, what publicy documented (application/script-specific) allocator primitives would be suitable to try in order to support continued investigation. Provide sample syntax for these primitives when possible.
 
 Sub-section E - root cause:
 If a poc file is provided or referenced via an already uploaded file, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any). 
@@ -9748,6 +9749,14 @@ def _buildAnthropicMessageContent(prompt, referenced_files=None):
 	return content_items
 
 
+def _getProviderUploadFilename(file_path):
+	mndbg.dbgp(get_current_function_name())
+	basename = os.path.basename(ensure_text(file_path).strip())
+	if basename.lower() == "tellme_request.md":
+		return "tellme_request.txt"
+	return basename
+
+
 def _encodeMultipartForm(fields, files):
 	mndbg.dbgp(get_current_function_name())
 	boundary = "----mona-%s-%d" % (generateAIRequestId(), random.randint(100000, 999999))
@@ -9757,14 +9766,18 @@ def _encodeMultipartForm(fields, files):
 		body_chunks.append(("Content-Disposition: form-data; name=\"%s\"\r\n\r\n" % field_name).encode("utf-8"))
 		body_chunks.append(ensure_bytes(ensure_text(field_value), encoding="utf-8"))
 		body_chunks.append(b"\r\n")
-	for file_name, file_path, mime_type in files:
+	for file_entry in files:
+		file_name, file_path, mime_type = file_entry[:3]
+		upload_filename = os.path.basename(file_path)
+		if len(file_entry) > 3:
+			upload_filename = ensure_text(file_entry[3]).strip() or upload_filename
 		with open(file_path, "rb") as fh:
 			file_bytes = fh.read()
 		body_chunks.append(("--%s\r\n" % boundary).encode("utf-8"))
 		body_chunks.append((
 			"Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n" % (
 				file_name,
-				os.path.basename(file_path)
+				upload_filename
 			)
 		).encode("utf-8"))
 		body_chunks.append(("Content-Type: %s\r\n\r\n" % mime_type).encode("utf-8"))
@@ -9782,12 +9795,22 @@ def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text,
 	uploaded_files = []
 	content_items = []
 	for file_path in file_paths:
+		upload_name = _getProviderUploadFilename(file_path)
 		with open(file_path, "rb") as file_handle:
-			uploaded_file = client.files.create(file=file_handle, purpose="user_data")
+			file_bytes = file_handle.read()
+		upload_stream = io.BytesIO(file_bytes)
+		upload_stream.name = upload_name
+		try:
+			uploaded_file = client.files.create(file=upload_stream, purpose="user_data")
+		finally:
+			try:
+				upload_stream.close()
+			except Exception:
+				pass
 		uploaded_files.append({
 			"id": getattr(uploaded_file, "id", ""),
 			"path": file_path,
-			"name": os.path.basename(file_path)
+			"name": upload_name
 		})
 		content_items.append({
 			"type": "input_file",
@@ -9941,9 +9964,10 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 	mndbg.dbgp(get_current_function_name())
 	mime_type = _guessMimeType(file_path)
+	upload_name = _getProviderUploadFilename(file_path)
 	request_body, boundary = _encodeMultipartForm(
 		[("purpose", "user_data")],
-		[("file", file_path, mime_type)]
+		[("file", file_path, mime_type, upload_name)]
 	)
 	request = urllib_Request(
 		"https://api.openai.com/v1/files",
@@ -9986,7 +10010,7 @@ def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 	return {
 		"id": ensure_text(payload.get("id", "")).strip(),
 		"path": file_path,
-		"name": os.path.basename(file_path),
+		"name": upload_name,
 		"mime_type": ensure_text(payload.get("mime_type", mime_type)).strip() or mime_type
 	}
 
@@ -10228,7 +10252,8 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 def _anthropicUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 	mndbg.dbgp(get_current_function_name())
 	mime_type = _getAnthropicUploadMimeType(file_path)
-	request_body, boundary = _encodeMultipartForm([], [("file", file_path, mime_type)])
+	upload_name = _getProviderUploadFilename(file_path)
+	request_body, boundary = _encodeMultipartForm([], [("file", file_path, mime_type, upload_name)])
 	request = urllib_Request(
 		"https://api.anthropic.com/v1/files",
 		data=request_body,
@@ -10272,7 +10297,7 @@ def _anthropicUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 	return {
 		"id": ensure_text(payload.get("id", "")).strip(),
 		"path": file_path,
-		"name": os.path.basename(file_path),
+		"name": upload_name,
 		"mime_type": ensure_text(payload.get("mime_type", mime_type)).strip() or mime_type
 	}
 
