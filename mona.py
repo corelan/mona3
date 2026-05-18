@@ -10344,7 +10344,7 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None, mdstyle=False):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None, mdstyle=False, title=""):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
@@ -10352,6 +10352,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	logobj  : optional MnLog object for file output
 	logfile : optional filename (used with logobj.write())
 	mdstyle : when True, render as an aligned markdown pipe table
+	title   : optional title printed above the table
 	"""
 
 	if itemsequence is None:
@@ -10554,6 +10555,15 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	if logobj is not None and logfile is not None:
 		logobj.write("", logfile)
 		logobj.write("", logfile)
+
+	title = _ensure_text(title).strip()
+	if title != "":
+		dbg.log("")
+		dbg.log("%s%s" % (padding, title))
+		dbg.log("")
+		if logobj is not None and logfile is not None:
+			logobj.write("## %s" % stripTags(title), logfile)
+			logobj.write("", logfile)
 
 	header_line = _render_row([_ensure_text(h) for h in headers], use_mdstyle=False)
 	header_file_line = _render_row([_ensure_text(h) for h in headers], use_mdstyle=mdstyle, file_mode=True)
@@ -35294,7 +35304,7 @@ def procLayout(args):
 
 	headers = ["Start", "End", "Size", "Type", "Description"]
 	types   = ["pointer", "pointer", "Size", "string", "string"]
-	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts, mdstyle=True)
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts, mdstyle=True, title="Results:")
 
 	dbg.log("")
 	dbg.log("    Total: %d entities" % len(table_seq))
