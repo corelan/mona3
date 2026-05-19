@@ -41,6 +41,28 @@ __REV__ = 3023
 
 DEBUG_MODE = False
 _AI_MODEL_LIST_CACHE = {}
+MONA_OPTIONAL_UPGRADE_PACKAGES = [
+	{
+		"pip_name": "keystone-engine",
+		"import_names": ["keystone"],
+		"label": "Keystone Engine"
+	},
+	{
+		"pip_name": "openai",
+		"import_names": ["openai"],
+		"label": "OpenAI SDK"
+	},
+	{
+		"pip_name": "anthropic",
+		"import_names": ["anthropic"],
+		"label": "Anthropic SDK"
+	},
+	{
+		"pip_name": "openai-agents",
+		"import_names": ["agents"],
+		"label": "OpenAI Agents SDK"
+	}
+]
 
 
 ## Some Python2/Python3 compatibility stuff
@@ -34993,6 +35015,319 @@ def procUpdate(args):
 			mndbg.dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
 		return False, ""
 
+	def _module_imports_succeed(import_names):
+		import_names = import_names or []
+		if len(import_names) == 0:
+			return False
+		for import_name in import_names:
+			import_name = ensure_text(import_name).strip()
+			if import_name == "":
+				return False
+			try:
+				__import__(import_name)
+			except Exception as e:
+				mndbg.dbgp("Optional package probe failed for import '%s': %s" % (import_name, str(e)), errormode=False)
+				return False
+		return True
+
+	def _get_optional_upgrade_targets():
+		targets = []
+		for package_info in MONA_OPTIONAL_UPGRADE_PACKAGES:
+			pip_name = ensure_text(package_info.get("pip_name", "")).strip()
+			label = ensure_text(package_info.get("label", pip_name)).strip() or pip_name
+			import_names = package_info.get("import_names", [])
+			if pip_name == "":
+				continue
+			is_loaded = _module_imports_succeed(import_names)
+			targets.append({
+				"pip_name": pip_name,
+				"label": label,
+				"import_names": list(import_names),
+				"is_loaded": is_loaded
+			})
+			if not is_loaded:
+				mndbg.dbgp("Optional package '%s' is not importable in this Python, skipping pip upgrade" % pip_name)
+		return targets
+
+	def _quote_windbg_command_argument(value):
+		value = ensure_text(value)
+		if value == "":
+			return "\"\""
+		if re.search(r'[\s"]', value):
+			return "\"%s\"" % value.replace("\"", "\\\"")
+		return value
+
+	def _run_windbg_pip_command(command_arguments):
+		command_arguments = [ensure_text(arg).strip() for arg in (command_arguments or []) if ensure_text(arg).strip() != ""]
+		if len(command_arguments) == 0:
+			return 1, "missing pykd.pip arguments"
+		try:
+			command_text = "!pykd.pip %s" % " ".join([_quote_windbg_command_argument(arg) for arg in command_arguments])
+			mndbg.dbgp("Running WinDBG pip command: %s" % command_text)
+			output_text = ensure_text(dbg.nativeCommand(command_text)).strip()
+			error_markers = [
+				"ERROR:",
+				"Exception:",
+				"No matching distribution found",
+				"Could not find a version that satisfies the requirement"
+			]
+			for marker in error_markers:
+				if marker.lower() in output_text.lower():
+					return 1, output_text
+			return 0, output_text
+		except Exception:
+			return 1, safeTracebackText()
+
+	def _run_update_subprocess(command_array):
+		popen_kwargs = {}
+		if os.name == "nt":
+			try:
+				startupinfo = subprocess.STARTUPINFO()
+				startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+				popen_kwargs["startupinfo"] = startupinfo
+			except Exception:
+				pass
+			if hasattr(subprocess, "CREATE_NO_WINDOW"):
+				popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+		devnull_handle = None
+		try:
+			devnull_handle = open(os.devnull, "rb")
+			process = subprocess.Popen(
+				command_array,
+				stdout=subprocess.PIPE,
+				stderr=subprocess.STDOUT,
+				stdin=devnull_handle,
+				**popen_kwargs
+			)
+			output_data = process.communicate()[0]
+			return process.returncode, ensure_text(output_data).strip()
+		finally:
+			if devnull_handle is not None:
+				devnull_handle.close()
+
+	def _get_installed_package_version(target):
+		pip_name = ensure_text(target.get("pip_name", "")).strip()
+		import_name = ""
+		if len(target.get("import_names", [])) > 0:
+			import_name = ensure_text(target["import_names"][0]).strip()
+		if import_name == "":
+			return "", "missing import name"
+		if mndbg.isWinDBG():
+			try:
+				version_text = ""
+				try:
+					module = __import__(import_name)
+					version_text = ensure_text(getattr(module, "__version__", "")).strip()
+				except Exception:
+					version_text = ""
+				if version_text == "":
+					try:
+						try:
+							from importlib import metadata as importlib_metadata
+						except Exception:
+							import importlib_metadata
+						version_text = ensure_text(importlib_metadata.version(pip_name)).strip()
+					except Exception:
+						version_text = ""
+				if version_text == "":
+					try:
+						import pkg_resources
+						version_text = ensure_text(pkg_resources.get_distribution(pip_name).version).strip()
+					except Exception:
+						version_text = ""
+				if version_text == "":
+					return "", "unable to resolve package version"
+				return version_text, ""
+			except Exception:
+				return "", safeTracebackText()
+		version_probe_code = (
+			"import sys\n"
+			"pip_name = sys.argv[1]\n"
+			"import_name = sys.argv[2]\n"
+			"version = ''\n"
+			"try:\n"
+			"    module = __import__(import_name)\n"
+			"    version = getattr(module, '__version__', '')\n"
+			"except Exception:\n"
+			"    version = ''\n"
+			"if version is None:\n"
+			"    version = ''\n"
+			"version = str(version).strip()\n"
+			"if version == '':\n"
+			"    try:\n"
+			"        try:\n"
+			"            from importlib import metadata as importlib_metadata\n"
+			"        except Exception:\n"
+			"            import importlib_metadata\n"
+			"        version = str(importlib_metadata.version(pip_name)).strip()\n"
+			"    except Exception:\n"
+			"        version = ''\n"
+			"if version == '':\n"
+			"    try:\n"
+			"        import pkg_resources\n"
+			"        version = str(pkg_resources.get_distribution(pip_name).version).strip()\n"
+			"    except Exception:\n"
+			"        version = ''\n"
+			"sys.stdout.write(version)\n"
+		)
+		return_code, output_text = _run_update_subprocess([
+			sys.executable,
+			"-c",
+			version_probe_code,
+			pip_name,
+			import_name
+		])
+		if return_code != 0:
+			return "", output_text
+		return output_text.strip(), ""
+
+	def _upgrade_optional_installed_packages(simulation_mode=False):
+		dbg.log("")
+		dbg.log("[+] Checking pip package updates", highlight=1)
+		targets = _get_optional_upgrade_targets()
+		if len(targets) == 0:
+			dbg.log("[+] No optional Python packages are configured for update checks", highlight=1)
+			return
+		dbg.log("[+] Optional Python package refresh", highlight=1)
+		if mndbg.isWinDBG():
+			dbg.log("    Backend: !pykd.pip")
+		else:
+			dbg.log("    Python : %s" % sys.executable)
+		dbg.log("    Targets: %s" % ", ".join([target["pip_name"] for target in targets]))
+		results = []
+		if simulation_mode:
+			dbg.log("    [*] Simulation mode enabled - not upgrading packages")
+			for target in targets:
+				if not target.get("is_loaded", False):
+					results.append({
+						"pip_name": target["pip_name"],
+						"label": target["label"],
+						"before_version": "<not installed>",
+						"after_version": "<not installed>",
+						"status": "not installed",
+						"error": ""
+					})
+					continue
+				before_version, before_error = _get_installed_package_version(target)
+				if before_version == "":
+					before_version = "<unknown>"
+				results.append({
+					"pip_name": target["pip_name"],
+					"label": target["label"],
+					"before_version": before_version,
+					"after_version": before_version,
+					"status": "simulation",
+					"error": before_error
+				})
+			dbg.log("    Versions:", highlight=1)
+			for result in results:
+				status_text = result["status"]
+				if status_text == "simulation" and result["error"] != "":
+					status_text = "%s, probe error" % status_text
+				dbg.log("        [*] %s: %s -> %s (%s)" % (
+					result["pip_name"],
+					result["before_version"],
+					result["after_version"],
+					status_text
+				), highlight=1)
+			return
+		for target in targets:
+			if not target.get("is_loaded", False):
+				results.append({
+					"pip_name": target["pip_name"],
+					"label": target["label"],
+					"before_version": "<not installed>",
+					"after_version": "<not installed>",
+					"status": "not installed",
+					"error": ""
+				})
+				continue
+			before_version, before_error = _get_installed_package_version(target)
+			if before_version == "":
+				before_version = "<unknown>"
+			dbg.log("    [+] Upgrading %s (%s)" % (target["label"], target["pip_name"]))
+			try:
+				if mndbg.isWinDBG():
+					return_code, output_text = _run_windbg_pip_command(["install", "--upgrade", target["pip_name"]])
+				else:
+					command_array = [sys.executable, "-m", "pip", "install", "--upgrade", target["pip_name"]]
+					mndbg.dbgp("Running optional package upgrade command: %s" % repr(command_array))
+					return_code, output_text = _run_update_subprocess(command_array)
+				if return_code != 0:
+					dbg.log("        [-] pip failed for %s" % target["pip_name"], highlight=1)
+					if output_text != "":
+						dbg.log("            %s" % output_text.splitlines()[-1], highlight=1)
+						mndbg.dbgp("pip output for %s:\n%s" % (target["pip_name"], output_text), errormode=False)
+					results.append({
+						"pip_name": target["pip_name"],
+						"label": target["label"],
+						"before_version": before_version,
+						"after_version": before_version,
+						"status": "pip failed",
+						"error": before_error
+					})
+					continue
+				after_version, after_error = _get_installed_package_version(target)
+				if after_version == "":
+					after_version = "<unknown>"
+				success_markers = [
+					"Successfully installed",
+					"Requirement already satisfied",
+					"Successfully uninstalled"
+				]
+				had_success_marker = False
+				for marker in success_markers:
+					if marker.lower() in output_text.lower():
+						had_success_marker = True
+						break
+				if had_success_marker:
+					dbg.log("        [+] pip completed for %s" % target["pip_name"], highlight=1)
+				else:
+					dbg.log("        [*] pip finished for %s - inspect debug log for full output" % target["pip_name"], highlight=1)
+				if output_text != "":
+					mndbg.dbgp("pip output for %s:\n%s" % (target["pip_name"], output_text))
+				updated = (before_version != after_version and before_version != "<unknown>" and after_version != "<unknown>")
+				status_text = "updated" if updated else "unchanged"
+				if after_error != "":
+					status_text = "updated?" if before_version != after_version else "version probe failed"
+				results.append({
+					"pip_name": target["pip_name"],
+					"label": target["label"],
+					"before_version": before_version,
+					"after_version": after_version,
+					"status": status_text,
+					"error": before_error or after_error
+				})
+			except Exception as e:
+				dbg.log("        [-] Unable to upgrade %s" % target["pip_name"], highlight=1)
+				dbg.log("            %s" % str(e), highlight=1)
+				mndbg.dbgp("Optional package upgrade failed for %s: %s" % (target["pip_name"], safeTracebackText()), errormode=False)
+				results.append({
+					"pip_name": target["pip_name"],
+					"label": target["label"],
+					"before_version": before_version,
+					"after_version": before_version,
+					"status": "upgrade error",
+					"error": before_error
+				})
+		dbg.log("    Versions:", highlight=1)
+		for result in results:
+			line_prefix = "+" if result["status"] == "updated" else "*"
+			line_text = "        [%s] %s: %s -> %s" % (
+				line_prefix,
+				result["pip_name"],
+				result["before_version"],
+				result["after_version"]
+			)
+			if result["status"] == "updated":
+				dbg.log(line_text, highlight=True)
+			else:
+				dbg.log(line_text)
+			if result["status"] not in ["updated", "unchanged"]:
+				dbg.log("            %s" % result["status"], highlight=1)
+			if result["error"] != "":
+				mndbg.dbgp("Version probe detail for %s: %s" % (result["pip_name"], result["error"]), errormode=False)
+
 	def _read_release_notes_sections(releasenotes_file):
 		sections = []
 		if not os.path.isfile(releasenotes_file):
@@ -35100,6 +35435,16 @@ def procUpdate(args):
 			force_update = str_to_bool(args["force"])
 		except:
 			force_update = True
+
+	pip_update_enabled = True
+	try:
+		mona_config = MnConfig()
+		pip_update_value = ensure_text(mona_config.get("pip_update")).strip()
+		if pip_update_value != "":
+			pip_update_enabled = str_to_bool(pip_update_value)
+			mndbg.dbgp("Update diagnostics: config pip_update=%s -> enabled=%s" % (pip_update_value, str(pip_update_enabled)))
+	except Exception:
+		mndbg.dbgp("Update diagnostics: unable to read pip_update config:\n%s" % safeTracebackText(), errormode=False)
 
 	if simulate_only:
 		dbg.log("[+] Simulation mode enabled", highlight=1)
@@ -35333,6 +35678,12 @@ def procUpdate(args):
 			mndbg.dbgp("Release notes were not downloaded, so nothing will be shown")
 		else:
 			mndbg.dbgp("No release notes targets were collected, so no release notes section will be printed")
+
+	if pip_update_enabled:
+		_upgrade_optional_installed_packages(simulation_mode=simulate_only)
+	else:
+		dbg.log("")
+		dbg.log("[+] Skipping pip package updates because config setting pip_update is disabled", highlight=1)
 
 	return "Done"
 
@@ -41635,12 +41986,17 @@ Mona uses the following parameters:
    excluded_modules
    author
    alias
+   pip_update
 
 The exclude_modules parameter takes a comma-separated list of module names. 
 You can add items to the parameter using the -add option, and remove items using -del
 
 The alias variable allow you to set the command you're using to launch mona.
 This will affect clickable links and help output.
+
+The pip_update variable controls whether 'mona up' also refreshes already-installed
+optional Python packages such as keystone-engine, openai, anthropic, and openai-agents.
+Accepted values are case-insensitive and include true/false, yes/no, on/off, and 1/0.
 
   For example, in WinDBG(X):
     !load pykd
@@ -41956,6 +42312,8 @@ Optional argument:
     -t <type>     : specify type of output. Valid choices are 'python' (default) or 'ruby' """
 	
 	updateUsage = """Update mona to the latest version
+	Also refreshes already-installed optional Python packages (keystone-engine, openai,
+	anthropic, openai-agents) unless config setting 'pip_update' is set to false.
 	Optional argument:
 	     -simul    	  : Check for updates and simulate updating. Will show release notes if available.	
 	     -force    	  : Always overwrite local file(s) with downloaded copy if version/revision info is present.
