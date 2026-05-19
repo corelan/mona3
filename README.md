@@ -244,7 +244,15 @@ This technically allows you to reference `mona.py` without having to provide the
 
 ### 2.2. Centralized installation (recommended) 
 
-**Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. 
+**Advantages**: Maintain a ***single copy*** on your system. Each `mona up` update applies to *all* debuggers immediately. By default, `mona up` also checks already-installed optional Python packages used by mona, such as `keystone-engine`, `openai`, `anthropic`, and `openai-agents`, and refreshes only the ones that are currently installed/importable.
+
+If you want `mona up` to skip that optional package refresh step, set:
+
+```text
+!mona config -set pip_update false
+```
+
+Accepted values are case-insensitive and include `true`/`false`, `yes`/`no`, `on`/`off`, and `1`/`0`.
 
 We will put the files in a central location. That means we'll have to refer to the files using their absolute path.
 
