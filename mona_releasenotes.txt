@@ -1,3 +1,16 @@
+[mona 3.0.3024]
+- Update revision (mona: 3024) update pip modules via mona up
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/56e6100">56e6100</link> allow pip updates via mona up. you can turn it off via mona config variable pip_update
+  - <link cmd="https://github.com/corelan/mona3/commit/cca5eb8">cca5eb8</link> update prompt
+  - <link cmd="https://github.com/corelan/mona3/commit/cef22e6">cef22e6</link> fix count bug
+  - <link cmd="https://github.com/corelan/mona3/commit/d4efc18">d4efc18</link> validate files first
+  - <link cmd="https://github.com/corelan/mona3/commit/a2a73ae">a2a73ae</link> change filename extension when uploading to openai/anthropic
+  - <link cmd="https://github.com/corelan/mona3/commit/827b229">827b229</link> increase max tokens a bit for anthropic and report if response was truncated
+  - <link cmd="https://github.com/corelan/mona3/commit/b50faa7">b50faa7</link> improve prompt
+  - <link cmd="https://github.com/corelan/mona3/commit/7ed1ff0">7ed1ff0</link> verbose logging, stability improvements, better references to already uploaded files
+  - <link cmd="https://github.com/corelan/mona3/commit/c739928">c739928</link> reinstate the use of anthropic library, fallback to https. improve support for -upload and susequent use of file ids via -id in mona ai
+
 [mona 3.0.3023]
 - Update revision (mona: 3023, windbglib: 3013) identify windows 11, add logo to output markdown files
 corelanc0d3r:
@@ -184,22 +197,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/fedd091">fedd091</link> do it for immunity as well
   - <link cmd="https://github.com/corelan/mona3/commit/907a3fa">907a3fa</link> make line that contains pageacl address stand out (bold) in windbg
   - <link cmd="https://github.com/corelan/mona3/commit/23f16a3">23f16a3</link> Update mona.py
-
-[mona 3.0.3013]
-- Update revision (mona: 3013) some AI and mona config improvements
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/e527a39">e527a39</link> Merge branch 'main' of https://github.com/corelan/mona3
-  - <link cmd="https://github.com/corelan/mona3/commit/0bd178f">0bd178f</link> update tellme usage, create templates, report missing arg when using mona config -del
-  - <link cmd="https://github.com/corelan/mona3/commit/8ed3178">8ed3178</link> Update mona.py
-  - <link cmd="https://github.com/corelan/mona3/commit/3279f5a">3279f5a</link> Merge branch 'main' of https://github.com/corelan/mona3
-  - <link cmd="https://github.com/corelan/mona3/commit/6ca378b">6ca378b</link> add globalflags to context
-  - <link cmd="https://github.com/corelan/mona3/commit/435a44c">435a44c</link> update help text
-  - <link cmd="https://github.com/corelan/mona3/commit/94694bd">94694bd</link> fallback
-  - <link cmd="https://github.com/corelan/mona3/commit/9e50e75">9e50e75</link> allow -a to specify a heap chunk to investigate
-  - <link cmd="https://github.com/corelan/mona3/commit/daca77a">daca77a</link> updates to AI integration
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/733baa4">733baa4</link> Update revision (mona: 3012)
-  - <link cmd="https://github.com/corelan/mona3/commit/e22a7e1">e22a7e1</link> Update revision (mona: 3011) AI integration improvements and bugfixes
 
 [windbglib 3.0.3005]
 github-actions[bot]:
