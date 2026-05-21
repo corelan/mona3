@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function
 import codecs
-import io
 
 """
  
@@ -37,32 +36,10 @@ $Revision: 3333
 """
 
 __VERSION__ = '3.0'
-__REV__ = 3024
+__REV__ = 3021
 
 DEBUG_MODE = False
 _AI_MODEL_LIST_CACHE = {}
-MONA_OPTIONAL_UPGRADE_PACKAGES = [
-	{
-		"pip_name": "keystone-engine",
-		"import_names": ["keystone"],
-		"label": "Keystone Engine"
-	},
-	{
-		"pip_name": "openai",
-		"import_names": ["openai"],
-		"label": "OpenAI SDK"
-	},
-	{
-		"pip_name": "anthropic",
-		"import_names": ["anthropic"],
-		"label": "Anthropic SDK"
-	},
-	{
-		"pip_name": "openai-agents",
-		"import_names": ["agents"],
-		"label": "OpenAI Agents SDK"
-	}
-]
 
 
 ## Some Python2/Python3 compatibility stuff
@@ -156,7 +133,6 @@ import itertools
 import traceback
 import json
 import textwrap
-import os.path
 from collections import OrderedDict
 import bisect
 import math
@@ -165,7 +141,6 @@ import time
 import socket
 import subprocess
 import shlex
-import mimetypes
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -409,33 +384,6 @@ class MnDebugger:
 				devnull_handle.close()
 		output_text = ensure_text(output_data)
 		return output_text.split("\n")
-
-	def validateCpbArgument(self, args, log_error=None, log_error_detail=None, debug_label=""):
-		"""Validate -cpb syntax early so callers do not continue with a silently ignored badchar filter."""
-		mndbg.dbgp(get_current_function_name())
-		if "cpb" not in args:
-			return True
-		if type(args["cpb"]).__name__.lower() == "bool":
-			if callable(log_error):
-				log_error("Please specify badchars with -cpb <bytes>")
-			if callable(log_error_detail):
-				log_error_detail("Example: -cpb '\\x00\\x0a\\x0d'")
-			return False
-		strb, badcharsok = cpbArgToBytes(args["cpb"])
-		if not badcharsok:
-			if callable(log_error):
-				log_error("Unable to parse -cpb value '%s'" % args["cpb"])
-			if callable(log_error_detail):
-				log_error_detail("Use \\xNN byte syntax, for example: -cpb '\\x00\\x20\\x0a\\x0d\\x3f'")
-				log_error_detail("Ranges are also supported, for example: -cpb '\\x00..\\x05\\x20\\x3f'")
-			return False
-		debug_prefix = ensure_text(debug_label).strip() or "cpb"
-		mndbg.dbgp("%s: validated -cpb value '%s' -> %s" % (
-			debug_prefix,
-			args["cpb"],
-			_renderBadchars(strb)
-		))
-		return True
 
 	def launchDetachedCommand(self, command_array, output_path="", redirect_output=True):
 		"""Launch a detached OS command and optionally redirect stdout/stderr to a log file."""
@@ -3871,11 +3819,9 @@ def _collectRopTargetModules(args):
 	return selection
 
 
-def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0, ai_args=None, collection_plan=None):
+def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0, ai_args=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
-	if collection_plan is None:
-		collection_plan = _buildAIContextCollectionPlan(question_type)
 	context = {
 		"debugger": __DEBUGGERAPP__,
 		"debugger_flavor": g_windbg_pretty_name,
@@ -3883,7 +3829,6 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		"modules": "",
 		"architecture": arch,
 		"pointer_size": PTR_SIZE,
-		"python_version": sys.version.split("\n")[0].strip(),
 		"timestamp": mndbg.get_current_datetime(),
 		"registers": {},
 	}
@@ -3912,32 +3857,30 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 
 	pc = regs.get(PROGRAM_COUNTER, 0)
 	sp = regs.get(STACK_POINTER, 0)
-	if collection_plan.get("include_instruction_heap_context", False) or collection_plan.get("include_heap_details", False):
+	if question_type in ["1", "3"]:
 		try:
 			extra_references = []
-			if isinstance(heap_target_address, int) and heap_target_address > 0:
+			if question_type == "1" and isinstance(heap_target_address, int) and heap_target_address > 0:
 				extra_references.append({
 					"name": "manual_target",
 					"value": heap_target_address,
-					"source": "manual_target"
+					"source": "q1_-a"
 				})
 				context["heap_analysis_target"] = {
 					"address": PTR_PRINT % heap_target_address,
 					"source": "-a"
 				}
-			if collection_plan.get("include_instruction_heap_context", False):
-				context["instruction_heap_references"] = _collectInstructionHeapContext(regs, pc, extra_references=extra_references)
+			context["instruction_heap_references"] = _collectInstructionHeapContext(regs, pc, extra_references=extra_references)
 		except Exception as e:
 			context["instruction_heap_references_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect instruction heap references: %s" % str(e), errormode=False)
 		try:
-			if collection_plan.get("include_heap_details", False):
-				context["heap_details"] = _collectHeapDetails()
+			context["heap_details"] = _collectHeapDetails()
 		except Exception as e:
 			context["heap_details_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heap_details: %s" % str(e), errormode=False)
 
-	if collection_plan.get("include_findmsp", False):
+	if question_type == "1":
 		try:
 			context["findmsp"] = _getFindMspSummary(args=ai_args or {})
 			if context["findmsp"].get("seh", []):
@@ -3948,7 +3891,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["findmsp_error_traceback"] = safeTracebackText()
 			mndbg.dbgp("tellme: failed to collect findmsp context:\n%s" % context["findmsp_error_traceback"], errormode=False)
 
-	if collection_plan.get("include_modules", False):
+	if question_type != "8":
 		try:
 			context["modules"] = _formatContextText(_renderModulesText(focus_addresses=[pc], max_modules=0), max_len=65535)
 			context["modules_full"] = context["modules"]
@@ -3956,13 +3899,12 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["modules_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect module list: %s" % str(e), errormode=False)
 
-	if collection_plan.get("include_pc_context", False) and isinstance(pc, int) and pc > 0:
+	if question_type in ["1", "3"] and isinstance(pc, int) and pc > 0:
 		context["program_counter"] = PTR_PRINT % pc
 		context["pc_disasm"] = _getDisasmSummary(pc)
 		context["pc_page"] = _getPageSummary(pc)
 		context["pc_module"] = _getModuleSummary(pc)
 		context["pc_memory"] = _readMemoryPreview(pc, 0x40, "pc_memory")
-	if collection_plan.get("include_heapdynamics", False) and isinstance(pc, int) and pc > 0:
 		try:
 			heapdynamics = _collectHeapdynamicsContexts(regs, pc, heapdynamics_files)
 			if len(heapdynamics) > 0:
@@ -3972,20 +3914,20 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 			context["heapdynamics_error"] = str(e)
 			mndbg.dbgp("tellme: failed to collect heapdynamics context: %s" % str(e), errormode=False)
 
-	if collection_plan.get("include_stack_context", False) and isinstance(sp, int) and sp > 0:
+	if question_type in ["1", "3"] and isinstance(sp, int) and sp > 0:
 		context["stack_pointer"] = PTR_PRINT % sp
 		context["stack_page"] = _getPageSummary(sp)
 		context["stack_memory"] = _readMemoryPreview(sp, 0x100, "stack_memory")
 
-	if collection_plan.get("include_ntglobal_flag", False):
+	if question_type == "1":
 		context["ntglobal_flag"] = _getNtGlobalFlagSummary()
-	if collection_plan.get("include_seh_chain", False) and arch == 32:
+		if arch == 32:
 			context["seh_chain"] = _getSehChainSummary()
-	if collection_plan.get("include_call_stack", False):
 		context["call_stack"] = _getCallStack("kb", max_lines=20)
-	if collection_plan.get("include_windbg_analyze", False):
 		context["windbg_analyze"] = _getWindbgAnalyze("!analyze -v")
 		context["windbg_analyze_full"] = context["windbg_analyze"]
+	if question_type in ["3", "3b"]:
+		context["call_stack"] = _getCallStack("kb", max_lines=20)
 	if additional_context_files is None:
 		additional_context_files = []
 	if len(additional_context_files) > 0:
@@ -4018,10 +3960,8 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 	if question_type == "9":
 		raise ValueError("Question type '9' must be built from a template file with -f")
 
+	instructions = _getProfileInstructions(question_type)
 	request_variables = _pruneEmptyRequestValues(request_variables)
-	instructions = _getProfileInstructions(question_type, {
-		"has_controlled_object_callees": bool(request_variables.get("controlled_object_callees")),
-	})
 
 	request_payload = _buildRequestPayload("profile", question_type, request_variables)
 	return instructions + "\n\nDebugger request JSON:\n" + json.dumps(request_payload, indent=2)
@@ -4436,17 +4376,17 @@ def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_
 	logfile.write("", thislog)
 	logfile.write("AI Engine", thislog)
 	logfile.write("---------", thislog)
-	logfile.write("- Engine: **%s**" % engine, thislog)
-	logfile.write("- Model: **%s**" % model, thislog)
-	logfile.write("- Question: **%s**" % question_type, thislog)
+	logfile.write("Engine    : %s" % engine, thislog)
+	logfile.write("Model     : %s" % model, thislog)
+	logfile.write("Question  : %s" % question_type, thislog)
 	if request_id:
-		logfile.write("- Request id: **%s**" % request_id, thislog)
+		logfile.write("Request id: %s" % request_id, thislog)
 	if template_file != "":
-		logfile.write("- Template: **%s**" % template_file, thislog)
+		logfile.write("Template  : %s" % template_file, thislog)
 	if isinstance(target_address, int) and target_address > 0:
-		logfile.write("- Target: **%s**" % (PTR_PRINT % target_address), thislog)
+		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
 		if target_address_source != "":
-			logfile.write("- Target src: **%s**" % target_address_source, thislog)
+			logfile.write("Target src: %s" % target_address_source, thislog)
 	logfile.write("", thislog)
 
 
@@ -5098,50 +5038,6 @@ def _importOpenAI():
 		return None, "", traceback.format_exc()
 
 
-def _importAnthropic():
-	mndbg.dbgp(get_current_function_name())
-	mndbg.dbgp("tellme: loading Anthropic SDK on demand")
-	try:
-		dbg.log("[+] Loading Anthropic SDK...")
-		import anthropic as anthropic_module
-		from anthropic import Anthropic as anthropic_client_class
-		anthropic_version = getattr(anthropic_module, "__version__", "").strip()
-		if anthropic_version == "":
-			anthropic_version = "unknown"
-		dbg.log("    Anthropic SDK version: %s" % anthropic_version)
-		return anthropic_client_class, anthropic_version, ""
-	except Exception:
-		return None, "", traceback.format_exc()
-
-
-def _guessMimeType(path_value):
-	mndbg.dbgp(get_current_function_name())
-	try:
-		mime_type, _encoding = mimetypes.guess_type(path_value)
-	except Exception:
-		mime_type = None
-	if mime_type:
-		return mime_type
-	return "application/octet-stream"
-
-
-def _splitFileIdArgument(raw_value):
-	mndbg.dbgp(get_current_function_name())
-	file_ids = []
-	if raw_value in [None, False]:
-		return file_ids
-	try:
-		text_value = ensure_text(raw_value)
-	except Exception:
-		text_value = str(raw_value)
-	for token in re.split(r"[\s,]+", text_value.strip()):
-		token = token.strip()
-		if token == "" or token in file_ids:
-			continue
-		file_ids.append(token)
-	return file_ids
-
-
 def getAITimeout(engine, mona_config, args=None):
 	mndbg.dbgp(get_current_function_name())
 	timeout_name = "%s.timeout" % engine
@@ -5194,8 +5090,6 @@ def getAIMaxTokens(engine, mona_config):
 	max_tokens_name = "%s.max_tokens" % engine
 	max_tokens = 4096
 	if engine == "openaiagents":
-		max_tokens = 8192
-	elif engine == "anthropic":
 		max_tokens = 8192
 	max_tokens_source = "default"
 	max_tokens_raw = mona_config.get(max_tokens_name).strip()
@@ -5305,27 +5199,6 @@ def _getProviderErrorMessage(err):
 	return err.__class__.__name__
 
 
-def _describeProviderException(err):
-	mndbg.dbgp(get_current_function_name())
-	err_cls = getattr(err.__class__, "__name__", type(err).__name__)
-	message = _getProviderErrorMessage(err)
-	if message == "" or message == err_cls:
-		return err_cls
-	return "%s: %s" % (err_cls, message)
-
-
-def _readHTTPResponseText(response_obj):
-	mndbg.dbgp(get_current_function_name())
-	if response_obj is None:
-		return ""
-	raw_body = response_obj.read()
-	if raw_body in [None, ""]:
-		return ""
-	if isinstance(raw_body, bytes_type):
-		return ensure_text(raw_body.decode("utf-8", "replace"))
-	return ensure_text(raw_body)
-
-
 def _logProviderErrorDetails(prefix, payload):
 	mndbg.dbgp(get_current_function_name())
 	if "request_id" in payload:
@@ -5380,7 +5253,6 @@ def _logOpenAIError(err):
 
 	if message:
 		dbg.log("    Message       : %s" % message, highlight=1)
-	dbg.log("    Error type    : %s" % err_cls, highlight=1)
 	_logProviderErrorDetails("OpenAI", payload)
 
 
@@ -5418,7 +5290,6 @@ def _logAnthropicError(err):
 
 	if message:
 		dbg.log("    Message       : %s" % message, highlight=1)
-	dbg.log("    Error type    : %s" % err_cls, highlight=1)
 	_logProviderErrorDetails("Anthropic", payload)
 
 
@@ -5499,7 +5370,6 @@ def logAIProviderError(engine, err):
 
 	dbg.log("[!] %s request failed" % engine.capitalize(), highlight=1)
 	dbg.log("    Message       : %s" % _getProviderErrorMessage(err), highlight=1)
-	dbg.log("    Error type    : %s" % getattr(err.__class__, "__name__", type(err).__name__), highlight=1)
 
 
 def _isTimeoutError(engine, err):
@@ -5518,49 +5388,6 @@ def _isTimeoutError(engine, err):
 	except Exception:
 		message = str(err).lower()
 	return ("timeout" in message) or ("timed out" in message)
-
-
-def _shouldFallbackFromSDK(engine, err):
-	mndbg.dbgp(get_current_function_name())
-	err_cls = err.__class__.__name__.strip()
-	status_code = getattr(err, "status_code", None)
-	err_type = ensure_text(getattr(err, "type", "")).strip()
-	if isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in [408, 409, 429]:
-		return False
-	if err_cls in ["AttributeError", "TypeError", "ValueError", "KeyError", "IndexError"]:
-		return False
-	if err_cls in [
-		"AuthenticationError",
-		"PermissionDeniedError",
-		"BadRequestError",
-		"NotFoundError",
-		"ConflictError",
-		"RateLimitError",
-		"UnprocessableEntityError",
-	]:
-		return False
-	if err_type in ["UnexpectedPayloadError", "FileUploadError"]:
-		return False
-	try:
-		message = _getProviderErrorMessage(err).lower()
-	except Exception:
-		message = str(err).lower()
-	if err_cls in ["APIConnectionError", "APITimeoutError", "TimeoutError", "ConnectError", "ReadTimeout"]:
-		return True
-	for marker in [
-		"connection",
-		"unable to reach",
-		"urlerror",
-		"timeout",
-		"timed out",
-		"sdkinterfaceerror",
-		"sdkunavailable",
-		"import failed",
-		"transport",
-	]:
-		if marker in message or marker in err_cls.lower():
-			return True
-	return False
 
 
 def _normalizeUrlWithSuffix(base_url, suffix):
@@ -5740,145 +5567,6 @@ def formatAIResponseLines(answer):
 	for raw_line in answer.splitlines():
 		lines.append(raw_line.replace("\t", "    ").rstrip())
 	return lines
-
-
-def formatAIUploadedFileLines(uploaded_files=None):
-	mndbg.dbgp(get_current_function_name())
-	lines = []
-	if not isinstance(uploaded_files, list) or len(uploaded_files) == 0:
-		return lines
-	lines.append("Uploaded file IDs:")
-	lines.append("------------------")
-	lines.append("")
-	lines.append("| Local file | File ID |")
-	lines.append("|---|---|")
-	for uploaded_file in uploaded_files:
-		if not isinstance(uploaded_file, dict):
-			continue
-		local_path = ensure_text(uploaded_file.get("path", "")).strip()
-		file_id = ensure_text(uploaded_file.get("id", "")).strip()
-		if local_path == "" and file_id == "":
-			continue
-		local_path_md = local_path.replace("|", "\\|")
-		file_id_md = file_id.replace("|", "\\|")
-		lines.append("| `%s` | `%s` |" % (local_path_md, file_id_md))
-	lines.append("")
-	return lines
-
-
-def formatAIReferencedFileIdLines(file_ids=None):
-	mndbg.dbgp(get_current_function_name())
-	lines = []
-	if not isinstance(file_ids, list) or len(file_ids) == 0:
-		return lines
-	filtered_ids = []
-	seen_ids = set()
-	for file_id in file_ids:
-		file_id = ensure_text(file_id).strip()
-		if file_id == "" or file_id in seen_ids:
-			continue
-		seen_ids.add(file_id)
-		filtered_ids.append(file_id)
-	if len(filtered_ids) == 0:
-		return lines
-	lines.append("Referenced file IDs:")
-	lines.append("--------------------")
-	lines.append("")
-	for file_id in filtered_ids:
-		lines.append("- `%s`" % file_id.replace("`", "\\`"))
-	lines.append("")
-	return lines
-
-
-def _buildFileReferenceUsageInstruction(referenced_file_ids=None, uploaded_files=None):
-	mndbg.dbgp(get_current_function_name())
-	referenced_ids = []
-	seen_referenced_ids = set()
-	for file_id in referenced_file_ids or []:
-		file_id = ensure_text(file_id).strip()
-		if file_id == "" or file_id in seen_referenced_ids:
-			continue
-		seen_referenced_ids.add(file_id)
-		referenced_ids.append(file_id)
-	uploaded_entries = []
-	seen_uploaded_ids = set()
-	for uploaded_file in uploaded_files or []:
-		if not isinstance(uploaded_file, dict):
-			continue
-		file_id = ensure_text(uploaded_file.get("id", "")).strip()
-		file_name = ensure_text(uploaded_file.get("name", "")).strip()
-		if file_id == "" or file_id in seen_uploaded_ids:
-			continue
-		seen_uploaded_ids.add(file_id)
-		uploaded_entries.append((file_name, file_id))
-	if len(referenced_ids) == 0 and len(uploaded_entries) == 0:
-		return ""
-	lines = [
-		"Inspect the attached provider file references and use their contents in the analysis when they are relevant to the request.",
-		"Before the main answer, add a short 'File references used' section.",
-		"Only list the provider file references you actually used in the analysis."
-	]
-	if len(referenced_ids) > 0:
-		lines.append("Use the file(s) referenced by these provider file ID(s) as supporting analysis input: %s." % ", ".join(["`%s`" % file_id for file_id in referenced_ids]))
-	if len(uploaded_entries) > 0:
-		lines.append(
-			"Use these uploaded file references as supporting analysis input: %s." % ", ".join([
-				"`%s` -> `%s`" % (ensure_text(file_name).replace("`", "\\`"), ensure_text(file_id).replace("`", "\\`"))
-				for file_name, file_id in uploaded_entries
-			])
-		)
-	lines.append("If none of those file references were used, say so briefly.")
-	return "\n".join(lines)
-
-
-def _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=None, uploaded_files=None):
-	mndbg.dbgp(get_current_function_name())
-	prompt_text = ensure_text(prompt).strip()
-	instruction_text = _buildFileReferenceUsageInstruction(
-		referenced_file_ids=referenced_file_ids,
-		uploaded_files=uploaded_files
-	)
-	if instruction_text == "":
-		return prompt_text
-	if prompt_text == "":
-		return instruction_text
-	return "%s\n\n%s" % (prompt_text, instruction_text)
-
-
-def _mergeReferencedFileIds(primary_ids=None, extra_ids=None):
-	mndbg.dbgp(get_current_function_name())
-	merged_ids = []
-	seen_ids = set()
-	for id_list in [primary_ids or [], extra_ids or []]:
-		for file_id in id_list:
-			file_id = ensure_text(file_id).strip()
-			if file_id == "" or file_id in seen_ids:
-				continue
-			seen_ids.add(file_id)
-			merged_ids.append(file_id)
-	return merged_ids
-
-
-def _mergeAnthropicReferencedFiles(primary_files=None, extra_ids=None):
-	mndbg.dbgp(get_current_function_name())
-	merged_files = []
-	seen_ids = set()
-	for file_info in primary_files or []:
-		if isinstance(file_info, dict):
-			file_id = ensure_text(file_info.get("id", "")).strip()
-		else:
-			file_id = ensure_text(file_info).strip()
-		if file_id == "" or file_id in seen_ids:
-			continue
-		seen_ids.add(file_id)
-		merged_files.append(file_info)
-	for file_id in extra_ids or []:
-		file_id = ensure_text(file_id).strip()
-		if file_id == "" or file_id in seen_ids:
-			continue
-		seen_ids.add(file_id)
-		merged_files.append(file_id)
-	return merged_files
 
 
 def _renderAIRawPayloadText(raw_payload):
@@ -6402,7 +6090,8 @@ def _summarizeHeapCommandOutput(heap_info):
 		if line == "":
 			continue
 		line_l = line.lower()
-		summary_lines.append(line)
+		if len(summary_lines) < 6:
+			summary_lines.append(_formatContextText(line, max_len=256))
 		for marker in ["busy", "free", "lfh", "virtalloc", "virtualalloc"]:
 			if marker in line_l and marker not in state_matches:
 				state_matches.append(marker)
@@ -6422,7 +6111,6 @@ def _summarizeHeapCommandOutput(heap_info):
 		summary["state"] = ",".join(state_matches)
 	if len(summary_lines) > 0:
 		summary["summary_lines"] = summary_lines
-		summary["output"] = output
 	return summary
 
 
@@ -6546,157 +6234,6 @@ def _compactHeapdynamicsContexts(heapdynamics):
 		mini_contexts.append(mini)
 
 	return mini_contexts, evidence, omitted_sections
-
-
-_TEMPLATE_CRASH_PLACEHOLDERS = set([
-	"analysis_target",
-	"call_stack",
-	"evidence",
-	"findmsp",
-	"findseh",
-	"heap_analysis_target",
-	"heap_details",
-	"heapdynamics",
-	"heapdynamics_full",
-	"heapdynamics_mini",
-	"instruction_heap_references",
-	"modules",
-	"modules_full",
-	"modules_mini",
-	"ntglobal_flag",
-	"omitted_sections",
-	"pc_disasm",
-	"pc_memory",
-	"pc_module",
-	"pc_page",
-	"seh_chain",
-	"size_budget",
-	"stack_memory",
-	"stack_page",
-	"stack_pointer",
-	"windbg_analyze",
-	"windbg_analyze_full",
-	"windbg_analyze_mini",
-])
-
-_TEMPLATE_FUNCTION_PLACEHOLDERS = set([
-	"additional_function",
-	"additional_function_note",
-	"analysis_target",
-	"current_function",
-	"function_analyses",
-])
-
-_TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS = set([
-	"caller_chain",
-	"caller_function",
-	"caller_resume_window",
-	"control_flow_disasm_map",
-	"control_flow_target_map",
-	"controlled_chunk",
-	"controlled_chunk_references",
-	"controlled_object_callees",
-	"current_function",
-	"post_return_constraints",
-	"q3_goal",
-	"reachable_functions",
-	"reachability_target",
-	"return_context",
-	"return_resume_analysis",
-	"target_function",
-])
-
-_TEMPLATE_ROP_PLACEHOLDERS = set([
-	"rop_target_modules",
-])
-
-
-def _extractTemplatePlaceholderNames(text_value):
-	mndbg.dbgp(get_current_function_name())
-	placeholder_names = set()
-	for placeholder_name in re.findall(r"\[([A-Za-z0-9_]+)\]", ensure_text(text_value or "")):
-		placeholder_names.add(placeholder_name.lower())
-	return placeholder_names
-
-
-def _loadTemplatePlaceholderNames(template_path):
-	mndbg.dbgp(get_current_function_name())
-	try:
-		with open(template_path, "rb") as fh:
-			template_text = fh.read().decode("latin-1")
-	except Exception as e:
-		raise RuntimeError("Unable to read template file '%s': %s" % (template_path, str(e)))
-	prompt_block_text = _extractPromptBlockFromSavedRequestText(template_text)
-	if prompt_block_text != "":
-		template_text = prompt_block_text
-	return _extractTemplatePlaceholderNames(template_text)
-
-
-def _buildAIContextCollectionPlan(question_type="", requested_placeholders=None):
-	mndbg.dbgp(get_current_function_name())
-	placeholder_names = set([ensure_text(name).strip().lower() for name in (requested_placeholders or set()) if ensure_text(name).strip() != ""])
-	plan = OrderedDict([
-		("include_instruction_heap_context", False),
-		("include_heap_details", False),
-		("include_findmsp", False),
-		("include_modules", False),
-		("include_pc_context", False),
-		("include_heapdynamics", False),
-		("include_stack_context", False),
-		("include_ntglobal_flag", False),
-		("include_seh_chain", False),
-		("include_call_stack", False),
-		("include_windbg_analyze", False),
-	])
-
-	if question_type == "1":
-		for key in plan:
-			plan[key] = True
-	elif question_type == "2":
-		plan["include_modules"] = True
-	elif question_type in ["3", "3b"]:
-		for key in [
-			"include_instruction_heap_context",
-			"include_heap_details",
-			"include_modules",
-			"include_pc_context",
-			"include_heapdynamics",
-			"include_stack_context",
-			"include_call_stack",
-		]:
-			plan[key] = True
-	elif question_type == "8":
-		plan["include_modules"] = False
-
-	if len(placeholder_names & _TEMPLATE_CRASH_PLACEHOLDERS) > 0:
-		for key in [
-			"include_instruction_heap_context",
-			"include_heap_details",
-			"include_findmsp",
-			"include_modules",
-			"include_pc_context",
-			"include_heapdynamics",
-			"include_stack_context",
-			"include_ntglobal_flag",
-			"include_seh_chain",
-			"include_call_stack",
-			"include_windbg_analyze",
-		]:
-			plan[key] = True
-	if len(placeholder_names & _TEMPLATE_FUNCTION_PLACEHOLDERS) > 0:
-		plan["include_modules"] = True
-	if len(placeholder_names & _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS) > 0:
-		for key in [
-			"include_instruction_heap_context",
-			"include_heap_details",
-			"include_modules",
-			"include_pc_context",
-			"include_heapdynamics",
-			"include_stack_context",
-			"include_call_stack",
-		]:
-			plan[key] = True
-	return plan
 
 
 def _serializeModuleSummaryForTellme(mod):
@@ -7337,11 +6874,9 @@ def _buildRequestVariables(context):
 		"debugger_flavor",
 		"processname",
 		"modules",
-		"modules_mini",
 		"modules_full",
 		"architecture",
 		"pointer_size",
-		"python_version",
 		"timestamp",
 		"registers",
 		"program_counter",
@@ -7358,12 +6893,10 @@ def _buildRequestVariables(context):
 		"findseh",
 		"call_stack",
 		"windbg_analyze",
-		"windbg_analyze_mini",
 		"windbg_analyze_full",
 		"instruction_heap_references",
 		"heap_details",
 		"heapdynamics",
-		"heapdynamics_mini",
 		"heapdynamics_full",
 		"evidence",
 		"size_budget",
@@ -7376,21 +6909,7 @@ def _buildRequestVariables(context):
 		"additional_function",
 		"additional_function_note",
 		"function_analyses",
-		"q3_goal",
-		"reachability_target",
-		"controlled_chunk",
-		"controlled_chunk_references",
-		"target_function",
-		"return_context",
-		"return_resume_analysis",
 		"controlled_object_callees",
-		"control_flow_disasm_map",
-		"control_flow_target_map",
-		"caller_function",
-		"caller_chain",
-		"caller_resume_window",
-		"post_return_constraints",
-		"reachable_functions",
 		"rop_target_modules",
 	]
 	for key in preferred_keys:
@@ -7402,44 +6921,6 @@ def _buildRequestVariables(context):
 		if key not in variables:
 			variables[key] = context[key]
 	return variables
-
-
-def _buildTemplateRequestVariables(context, requested_placeholders=None, question_type="", maxsize_kb=0):
-	mndbg.dbgp(get_current_function_name())
-	placeholder_names = set([ensure_text(name).strip().lower() for name in (requested_placeholders or set()) if ensure_text(name).strip() != ""])
-	variables = _buildRequestVariables(context)
-	crash_view_placeholders = set([
-		"evidence",
-		"findmsp",
-		"findseh",
-		"heap_analysis_target",
-		"heap_details",
-		"heapdynamics",
-		"heapdynamics_full",
-		"heapdynamics_mini",
-		"instruction_heap_references",
-		"modules_mini",
-		"ntglobal_flag",
-		"omitted_sections",
-		"seh_chain",
-		"size_budget",
-		"windbg_analyze",
-		"windbg_analyze_full",
-		"windbg_analyze_mini",
-	])
-	include_crash_view = question_type == "1" or len(placeholder_names & crash_view_placeholders) > 0
-	include_controlled_data_view = question_type in ["3", "3b"] or len(placeholder_names & _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS) > 0
-	if include_crash_view:
-		variables.update(_optimizeQ1RequestVariables(context, maxsize_kb=maxsize_kb))
-		if "modules" in variables and "modules_mini" not in variables:
-			variables["modules_mini"] = variables["modules"]
-		if "windbg_analyze" in variables and "windbg_analyze_mini" not in variables:
-			variables["windbg_analyze_mini"] = variables["windbg_analyze"]
-		if "heapdynamics" in variables and "heapdynamics_mini" not in variables:
-			variables["heapdynamics_mini"] = variables["heapdynamics"]
-	if include_controlled_data_view:
-		variables.update(_optimizeQ3RequestVariables(context, maxsize_kb=maxsize_kb))
-	return _pruneEmptyRequestValues(variables)
 
 
 def _buildRequestPayload(mode, question_type, variables, template_text="", template_file=""):
@@ -7455,31 +6936,10 @@ def _buildRequestPayload(mode, question_type, variables, template_text="", templ
 	return request_payload
 
 
-def _getProfileInstructions(question_type, options=None):
+def _getProfileInstructions(question_type):
 	mndbg.dbgp(get_current_function_name())
-	if options is None:
-		options = {}
-	def _withMarkdownOutput(profile_text):
-		mndbg.dbgp(get_current_function_name())
-		profile_text = ensure_text(profile_text)
-		return """Output format:
-- Produce the final answer in Markdown.
-- Use headings, bullet lists, tables, and code blocks where they improve readability.
-- If the profile below says "Output exactly" or otherwise mandates a strict section order, preserve that structure exactly and render it in Markdown without changing the required content.
-
-""" + profile_text
-	has_controlled_object_callees = bool(options.get("has_controlled_object_callees", False))
-	q3_visible_scope_rule = ""
-	q3_controlled_callee_rule = ""
-	q3b_priority_controlled_callees = ""
-	q3b_controlled_callee_rule = ""
-	if has_controlled_object_callees:
-		q3_visible_scope_rule = '   - If controlled_object_callees is present, treat it as explicit evidence for first-hop direct callees that likely receive CC/CD object pointers.\n'
-		q3_controlled_callee_rule = '   - If controlled_object_callees is present, expand every listed callee before ranking sinks, even when the same callee is also reachable only through control_flow_target_refs.\n'
-		q3b_priority_controlled_callees = ", controlled_object_callees"
-		q3b_controlled_callee_rule = "- If controlled_object_callees is present, treat it as explicit first-hop callee expansion evidence. Do not stop at the call site when a listed callee body is supplied there.\n"
 	if question_type == "1":
-		return _withMarkdownOutput("""You are an expert in Windows memory corruption analysis: assembly, reverse engineering, WinDBG, mona.py, and exploit development.
+		return """You are an expert in Windows memory corruption analysis: assembly, reverse engineering, WinDBG, mona.py, and exploit development.
 Focus on crash triage and immediate exploit-relevant assessment from a single debugger snapshot.
 Use the keys under the 'variables' object as the debugger context. Prioritize registers, program_counter, pc_disasm, pc_page, pc_module, stack_memory, findmsp, findseh, seh_chain, windbg_analyze, instruction_heap_references, heap_details, heapdynamics, evidence.heap_blocks, pc_disasm.after, modules_full, and ntglobal_flag. Ignore low-value variables unless they materially affect the conclusion.
 
@@ -7560,10 +7020,7 @@ For each applicable item, state present, partial, or absent, and cite the specif
 Sub-section D - Path to control:
 If direct EIP/RIP control is already confirmed, state the most viable exploitation path from this snapshot in 2-4 sentences.
 If direct EIP/RIP control is not yet shown, answer this explicitly: what strategy or technique would be needed from here to obtain EIP/RIP control, based on the observed primitive? Examples may include heap grooming, object replacement, vtable corruption, stack pivoting, SEH redirection, adjacent overwrite extension, or an additional info leak. Be specific and tie the technique to the observed evidence.
-If further progress depends on heap grooming, heap layout manipulation or object replacement, identify any known/publicly documented/easy to implement application / script language-specific allocator primitives that would be suitable to try next. Treat heap grooming as primitives that help shape, spray, or otherwise manipulate heap layout, and object replacement as primitives that provide control over replacement object contents. Provide one or two example allocator code or sample syntax for further analysis and study.
 
-Sub-section E - root cause:
-If a poc file is provided or referenced via an already uploaded file, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any). 
 Style rules:
 - For stack corruption, be concise. The findmsp numbers are the primary deliverable.
 - For heap corruption, do not summarize away the key !heap -p -a style state or alloc/free chain when that is the root-cause evidence.
@@ -7571,9 +7028,9 @@ Style rules:
 - Cite register values, offsets, chunk sizes, and addresses numerically.
 - Do not invent facts. Mark uncertain inferences clearly.
 - Do not repeat the same evidence across sections.
-Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis.""")
+Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis."""
 	if question_type == "2":
-		return _withMarkdownOutput("""You are an expert in assembly analysis, reverse engineering, annotation, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return """You are an expert in assembly analysis, reverse engineering, annotation, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on reconstructing what the code does, annotating the important instructions and blocks, and then explaining the function in clear human language. Treat this as code-understanding work, not crash triage.
 Use the entries under 'variables' as the debugger context. Prioritize function_analyses, analysis_target, registers, modules, architecture, pointer_size, and any supplied additional_context_files or poc_file that clarify the code path. Ignore variables that are not useful and briefly say why only when that matters.
 Be concise, but make the analysis strong. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, branch conditions, or pseudocode fragments that support the conclusion.
@@ -7594,9 +7051,9 @@ Use symbol names when they are reliable. If symbols are missing or ambiguous, sa
 Do not focus on stack state, call stack, or broader crash context unless they are required to explain the function logic or near_entry_execution_context explicitly makes that necessary.
 Do not invent facts that are not present in the snapshot.""" % (
 			PROGRAM_COUNTER.upper(),
-		))
+		)
 	if question_type == "3":
-		return _withMarkdownOutput("""You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 
 Task:
 Perform bounded, evidence-based path-feasibility analysis from the current instruction pointer.
@@ -7631,7 +7088,8 @@ Mandatory method:
 2. Build visible path scope:
    - Start at program_counter/current_function.
    - Use all relevant supplied disassembly/maps/caller/callee/return-resume/context fields inside variables.
-%s   - Resolve control_flow_target_refs and nested_control_flow_target_refs through control_flow_target_map.
+   - Treat controlled_object_callees as first-class evidence for first-hop direct callees that likely receive CC/CD object pointers.
+   - Resolve control_flow_target_refs and nested_control_flow_target_refs through control_flow_target_map.
    - Do not treat empty target arrays as absence when refs exist.
    - If a referenced target lacks disassembly, mark that edge UNDER-COLLECTED and list the missing command later.
 
@@ -7650,7 +7108,8 @@ Mandatory method:
 
 5. Expand controlled-object callees:
    - If a direct callee receives CC or a CD pointer via this/object/argument/register/stack, and callee disassembly is supplied, inspect it.
-%s   - Identify CD predicates, CD reads, CD writes/RMW operations, CD indirect transfers, and further callees receiving CC/CD values.
+   - If controlled_object_callees is present, expand every listed callee before ranking sinks, even when the same callee is also reachable only through control_flow_target_refs.
+   - Identify CD predicates, CD reads, CD writes/RMW operations, CD indirect transfers, and further callees receiving CC/CD values.
 
 5.5. Indirect transfers in reachable callees:
    - Any indirect control-flow instruction inside a reachable callee must be enumerated as a materially distinct sink.
@@ -7670,13 +7129,7 @@ Mandatory method:
        containing callee, call site into callee, CC/CD argument/register at callee entry,
        indirect transfer instruction, last visible assignment chain,
        CD expression if reconstructable, and missing command if not reconstructable.
-
-5.6. Controlled writes / memory modifications:
-   - Enumerate every store, RMW, or callee write where the destination address is CD (reg derived from CC at the store instruction).
-   - If destination is [reg+off] and reg is CC-derived at the write site (even if off is unknown), promote to PLAUSIBLE-LOW with blocker "under-collected write destination expression".
-   - If the write is through a CD this/argument in a reachable callee, treat as controlled-derived.
-   - Do not require the written value to be CC-controlled — only the destination.
-
+	   
 6. Analyze branch feasibility:
    - Spell out predicates for promoted/plausible paths.
    - Express predicates in terms of CC offsets, CD expressions, live registers, stack slots, or external state.
@@ -7790,24 +7243,21 @@ Style:
 - Do not speculate beyond supplied evidence.
 - Do not omit materially distinct sinks.
 - Classify and rank; do not merely narrate.
-- When evidence is missing, say exactly what is missing.""" % (
-			q3_visible_scope_rule,
-			q3_controlled_callee_rule,
-		))
+- When evidence is missing, say exactly what is missing."""
 	if question_type == "3b":
-		return _withMarkdownOutput("""You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 
 Focus on bounded reachability from the current instruction pointer to a supplied target address, or, in discovery mode, to the nearest controlled-data sink. The only bytes you may assume can change are bytes inside the supplied controlled heap chunk. Even if the chunk is currently free or not visibly populated, assume its contents are fully controllable.
 
 Treat this as evidence-based path-feasibility analysis, not crash triage and not open-ended symbolic execution.
 
 Use the entries under "variables" as the debugger context. Prioritize:
-q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function%s, return_resume_analysis, control_flow_disasm_map, control_flow_target_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
+q3_goal, controlled_chunk, controlled_chunk_references, reachability_target, current_function, target_function, controlled_object_callees, return_resume_analysis, control_flow_disasm_map, control_flow_target_map, return_context, caller_function, caller_chain, caller_resume_window, post_return_constraints, registers, program_counter, stack_pointer, pc_disasm, stack_memory, call_stack, modules, additional_context_files.
 
 Prefer raw chunk bytes, pointer-sized chunk contents, stack memory, live registers, and disassembly over summary-style diagnostics.
 
 Use architecture and pointer_size to interpret registers, pointer values, stack arguments, calling conventions, object pointers, and memory operands. Do not assume x86, 32-bit registers, 4-byte pointers, or x86 calling conventions unless explicitly indicated.
-Do not summarize away path evidence or stop after the first plausible sink.
+Follow the rules in this prompt with zero summarization or early stopping. 
 Perform exhaustive enumeration of every sink using the full control_flow_target_map and nested_control_flow_target_refs. 
 Do not omit any materially distinct controlled-write or indirect-call sink.
 
@@ -7832,7 +7282,8 @@ Core rules:
 - When quoting or summarizing disassembly snippets, include the function name and module-relative location when available, not just the raw address. Prefer forms such as MSHTML!CView::AddInvalidationTask+0x1a @ 0x6b5205ab or module!symbol+offset, because raw addresses alone are unstable under ASLR.
 - Treat caller-side post-return logic as first-class.
 - Treat callee-side controlled-object logic as first-class when a reachable callee receives the controlled chunk or a controlled-derived pointer.
-%s - Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
+- Treat controlled_object_callees as mandatory first-hop callee expansion evidence. Do not stop at the call site when a listed callee body is supplied there.
+- Do not rely on precomputed sink summaries. If raw caller/callee disassembly is present, derive controlled-derived sinks yourself from the instruction stream.
 - Search exhaustively within the collected scope. Do not stop after the earliest, easiest, or first plausible sink. Continue enumerating materially distinct scenarios across intra-function, callee-mediated, and return-resume paths until the supplied disassembly scope is exhausted or blocked.
 - When control_flow_target_refs or nested_control_flow_target_refs are present, resolve them through control_flow_target_map. Do not treat empty control_flow_targets or nested_control_flow_targets arrays as absence if refs are present.
 
@@ -7979,13 +7430,12 @@ Sink ranking:
 
 Center the analysis on:
 1. chunk bytes and pointer-like fields inside the controlled chunk
-2. the exact !heap -p -a style probe captured for the requested -c address
-3. registers and stack slots that reference the chunk
-4. current function, reachable callees, branch targets, caller functions, and caller-resume sites
-5. direct callees reached with controlled-derived registers or stack arguments
-6. indirect transfers inside those callees
-7. memory writes inside those callees whose destination is controlled-derived
-8. branch predicates that read from controlled-derived base registers
+2. registers and stack slots that reference the chunk
+3. current function, reachable callees, branch targets, caller functions, and caller-resume sites
+4. direct callees reached with controlled-derived registers or stack arguments
+5. indirect transfers inside those callees
+6. memory writes inside those callees whose destination is controlled-derived
+7. branch predicates that read from controlled-derived base registers
 
 Answer in this exact order:
 
@@ -8105,12 +7555,9 @@ Style rules:
 - Use numeric addresses, offsets, register names, and field offsets.
 - Do not transcribe long dumps.
 - Prefer short disassembly-backed path descriptions.
-- Do not invent object types unless strongly supported by disassembly.""" % (
-			q3b_priority_controlled_callees,
-			q3b_controlled_callee_rule,
-		))
+- Do not invent object types unless strongly supported by disassembly."""
 	if question_type == "8":
-		return _withMarkdownOutput("""You are analyzing a debugger snapshot from mona.py running under WinDBG.
+		return """You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on ROP primitive quality and feasibility.
 Use 'rop_target_modules' as the primary input and honor the supplied architecture and calling convention.
 Use 'return_windows' as compact gadget-ending candidates. Each entry ends in C3 or C2 <imm16> and provides:
@@ -8129,7 +7576,7 @@ For useful example gadgets, show:
 * notable side effects / clobbers / stack adjustment if implied by the decoded gadget
 * whether it looks clean, fragile, or speculative
 
-Keep the answer concise, evidence-based, architecture-aware, and non-operational.""")
+Keep the answer concise, evidence-based, architecture-aware, and non-operational."""
 	raise ValueError("Unsupported question type '%s'. Customize _getProfileInstructions() to add more profiles." % question_type)
 
 
@@ -8143,7 +7590,6 @@ def _getProfileTemplateVariables(question_type):
 		"modules_full",
 		"architecture",
 		"pointer_size",
-		"python_version",
 		"timestamp",
 		"registers",
 		"program_counter",
@@ -8177,7 +7623,6 @@ def _getProfileTemplateVariables(question_type):
 		"modules",
 		"architecture",
 		"pointer_size",
-		"python_version",
 		"timestamp",
 		"registers",
 		"additional_context_files",
@@ -8233,7 +7678,6 @@ def _getProfileTemplateVariables(question_type):
 			"processname",
 			"architecture",
 			"pointer_size",
-			"python_version",
 			"timestamp",
 			"rop_target_modules",
 		]
@@ -8257,9 +7701,8 @@ def _buildControlledChunkContext(address):
 	info = OrderedDict()
 	info["requested_address"] = PTR_PRINT % address
 	info["source"] = "-c"
-	info["requested_address_heap_probe"] = _getHeapChunkMetadata(address)
 	info["heap_reference"] = _buildHeapReferenceEntry("controlled_chunk", address, "q3_-c", "", [])
-	info["heap_metadata"] = info["requested_address_heap_probe"]
+	info["heap_metadata"] = _getHeapChunkMetadata(address)
 	info["first_bytes"] = _readFirstBytesPreview(address, size=0x20, label="controlled_chunk_first_bytes")
 	if info["heap_reference"].get("match", "none") == "Chunk":
 		chunk_ptr = _tryParseAddressToken(info["heap_reference"].get("chunk_ptr", ""))
@@ -9182,7 +8625,7 @@ def _readPromptFromSavedRequest(request_path):
 	return fallback_prompt, request_size, len(fallback_prompt.encode("utf-8")), "full_file"
 
 
-def buildAIPromptFromTemplateFile(template_path, context, question_type="9", maxsize_kb=0):
+def buildAIPromptFromTemplateFile(template_path, context, question_type="9"):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: building prompt from template file %s" % template_path)
 	try:
@@ -9195,13 +8638,7 @@ def buildAIPromptFromTemplateFile(template_path, context, question_type="9", max
 		mndbg.dbgp("tellme: using PROMPT BEGIN/PROMPT END block from template %s" % template_path)
 		template_text = prompt_block_text
 
-	requested_placeholders = _extractTemplatePlaceholderNames(template_text)
-	available_variables = _buildTemplateRequestVariables(
-		context,
-		requested_placeholders=requested_placeholders,
-		question_type=question_type,
-		maxsize_kb=maxsize_kb
-	)
+	available_variables = _buildRequestVariables(context)
 	used_variables = OrderedDict()
 	unknown_placeholders = []
 	empty_placeholders = []
@@ -9247,21 +8684,21 @@ def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_
 	logfile.write("", thislog)
 	logfile.write("AI Engine", thislog)
 	logfile.write("---------", thislog)
-	logfile.write("- Engine: **%s**" % engine, thislog)
-	logfile.write("- Model: **%s**" % model, thislog)
-	logfile.write("- Question: **%s**" % question_type, thislog)
+	logfile.write("Engine    : %s" % engine, thislog)
+	logfile.write("Model     : %s" % model, thislog)
+	logfile.write("Question  : %s" % question_type, thislog)
 	if request_id:
-		logfile.write("- Request id: **%s**" % request_id, thislog)
+		logfile.write("Request id: %s" % request_id, thislog)
 	if template_file != "":
-		logfile.write("- Template: **%s**" % template_file, thislog)
+		logfile.write("Template  : %s" % template_file, thislog)
 	if isinstance(target_address, int) and target_address > 0:
-		logfile.write("- Target: **%s**" % (PTR_PRINT % target_address), thislog)
+		logfile.write("Target    : %s" % (PTR_PRINT % target_address), thislog)
 		if target_address_source != "":
-			logfile.write("- Target src: **%s**" % target_address_source, thislog)
+			logfile.write("Target src: %s" % target_address_source, thislog)
 	logfile.write("", thislog)
 
 
-def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source="", referenced_file_ids=None):
+def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source=""):
 	mndbg.dbgp(get_current_function_name())
 	logfile = MnLog("tellme_request.md")
 	thislog = logfile.reset(showheader=False, skipModuleTable=True)
@@ -9277,8 +8714,6 @@ def writeAIRequestLog(engine, model, question_type, prompt, request_id="", templ
 		target_address=target_address,
 		target_address_source=target_address_source
 	)
-	for line in formatAIReferencedFileIdLines(referenced_file_ids):
-		logfile.write(stripTags(line), thislog)
 	logfile.write("PROMPT BEGIN", thislog)
 	logfile.write("------------", thislog)
 	for line in prompt.splitlines():
@@ -9287,7 +8722,7 @@ def writeAIRequestLog(engine, model, question_type, prompt, request_id="", templ
 	return thislog
 
 
-def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source="", uploaded_files=None):
+def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source=""):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: writing AI response to tellme_response.md")
 	logfile = MnLog("tellme_response.md")
@@ -9303,8 +8738,6 @@ def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lin
 		target_address=target_address,
 		target_address_source=target_address_source
 	)
-	for line in formatAIUploadedFileLines(uploaded_files):
-		logfile.write(stripTags(line), thislog)
 	logfile.write("AI response:", thislog)
 	logfile.write("------------", thislog)
 	for line in ai_response_lines:
@@ -9650,18 +9083,14 @@ def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, 
 	return list(model_ids)
 
 
-def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None):
+def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
-	request_prompt = _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=file_ids)
 	request_kwargs = {
-		"model": model
+		"model": model,
+		"input": prompt
 	}
-	if file_ids:
-		request_kwargs["input"] = _buildOpenAIInputItems(request_prompt, file_ids=file_ids)
-	else:
-		request_kwargs["input"] = request_prompt
 	if isinstance(options, dict) and len(options) > 0:
 		request_kwargs["extra_body"] = {"options": options}
 	response = client.responses.create(**request_kwargs)
@@ -9682,191 +9111,6 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		)
 
 
-def _buildUploadInstruction(primary_request_name, supporting_names, uploaded_files=None, referenced_file_ids=None):
-	"""Build the small inline instruction used when tellme uploads the request as files."""
-	mndbg.dbgp(get_current_function_name())
-	primary_request_name = ensure_text(primary_request_name).strip() or "request.txt"
-	lines = [
-		"The authoritative tellme request is attached in the file '%s'." % primary_request_name,
-		"Treat that file as the primary instruction source.",
-		"If that file contains a PROMPT BEGIN/PROMPT END block, use only the text inside that block as the primary request body.",
-		"If no PROMPT BEGIN/PROMPT END block is present, use the full request file contents as the primary request body.",
-		"Regardless of the file extension, consider any uploaded or referenced files to be cleartext.",
-		"Consider that one of the uploaded or referenced files may be the PoC/trigger, even if it was not labeled as such.",
-	]
-	if len(supporting_names) > 0:
-		lines.append("Use the other attached file(s) as supporting evidence only: %s." % ", ".join(supporting_names))
-		lines.append("If supporting files conflict with the primary request file, follow the primary request file and mention the conflict briefly.")
-	file_reference_instruction = _buildFileReferenceUsageInstruction(
-		referenced_file_ids=referenced_file_ids,
-		uploaded_files=uploaded_files
-	)
-	if file_reference_instruction != "":
-		lines.append(file_reference_instruction)
-	return "\n".join(lines)
-
-
-def _buildOpenAIInputItems(prompt, file_ids=None):
-	mndbg.dbgp(get_current_function_name())
-	content_items = []
-	for file_id in file_ids or []:
-		file_id = ensure_text(file_id).strip()
-		if file_id == "":
-			continue
-		content_items.append({
-			"type": "input_file",
-			"file_id": file_id
-		})
-	content_items.append({
-		"type": "input_text",
-		"text": prompt
-	})
-	return [{
-		"role": "user",
-		"content": content_items
-	}]
-
-
-def _anthropicFileBlockFromReference(file_id, title="", mime_type=""):
-	mndbg.dbgp(get_current_function_name())
-	file_id = ensure_text(file_id).strip()
-	title = ensure_text(title).strip()
-	if file_id == "":
-		return None
-	block = {
-		"type": "document",
-		"source": {
-			"type": "file",
-			"file_id": file_id
-		}
-	}
-	if title != "":
-		block["title"] = title
-	return block
-
-
-def _getAnthropicUploadMimeType(file_path=""):
-	mndbg.dbgp(get_current_function_name())
-	return "text/plain"
-
-
-def _buildAnthropicMessageContent(prompt, referenced_files=None):
-	mndbg.dbgp(get_current_function_name())
-	content_items = []
-	for file_info in referenced_files or []:
-		if isinstance(file_info, dict):
-			file_block = _anthropicFileBlockFromReference(
-				file_info.get("id", ""),
-				title=file_info.get("name", ""),
-				mime_type=file_info.get("mime_type", "")
-			)
-		else:
-			file_block = _anthropicFileBlockFromReference(file_info)
-		if file_block is not None:
-			content_items.append(file_block)
-	content_items.append({
-		"type": "text",
-		"text": prompt
-	})
-	return content_items
-
-
-def _getProviderUploadFilename(file_path):
-	mndbg.dbgp(get_current_function_name())
-	basename = os.path.basename(ensure_text(file_path).strip())
-	if basename.lower() == "tellme_request.md":
-		return "tellme_request.txt"
-	return basename
-
-
-def _encodeMultipartForm(fields, files):
-	mndbg.dbgp(get_current_function_name())
-	boundary = "----mona-%s-%d" % (generateAIRequestId(), random.randint(100000, 999999))
-	body_chunks = []
-	for field_name, field_value in fields:
-		body_chunks.append(("--%s\r\n" % boundary).encode("utf-8"))
-		body_chunks.append(("Content-Disposition: form-data; name=\"%s\"\r\n\r\n" % field_name).encode("utf-8"))
-		body_chunks.append(ensure_bytes(ensure_text(field_value), encoding="utf-8"))
-		body_chunks.append(b"\r\n")
-	for file_entry in files:
-		file_name, file_path, mime_type = file_entry[:3]
-		upload_filename = os.path.basename(file_path)
-		if len(file_entry) > 3:
-			upload_filename = ensure_text(file_entry[3]).strip() or upload_filename
-		with open(file_path, "rb") as fh:
-			file_bytes = fh.read()
-		body_chunks.append(("--%s\r\n" % boundary).encode("utf-8"))
-		body_chunks.append((
-			"Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n" % (
-				file_name,
-				upload_filename
-			)
-		).encode("utf-8"))
-		body_chunks.append(("Content-Type: %s\r\n\r\n" % mime_type).encode("utf-8"))
-		body_chunks.append(file_bytes)
-		body_chunks.append(b"\r\n")
-	body_chunks.append(("--%s--\r\n" % boundary).encode("utf-8"))
-	return b"".join(body_chunks), boundary
-
-
-def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None):
-	"""Upload local files to OpenAI and submit a Responses API request that references those file IDs."""
-	mndbg.dbgp(get_current_function_name())
-	mndbg.dbgp("tellme: calling OpenAI upload mode with %d file(s) and timeout %.1fs" % (len(file_paths), timeout_seconds))
-	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
-	uploaded_files = []
-	content_items = []
-	for file_path in file_paths:
-		upload_name = _getProviderUploadFilename(file_path)
-		with open(file_path, "rb") as file_handle:
-			file_bytes = file_handle.read()
-		upload_stream = io.BytesIO(file_bytes)
-		upload_stream.name = upload_name
-		try:
-			uploaded_file = client.files.create(file=upload_stream, purpose="user_data")
-		finally:
-			try:
-				upload_stream.close()
-			except Exception:
-				pass
-		uploaded_files.append({
-			"id": getattr(uploaded_file, "id", ""),
-			"path": file_path,
-			"name": upload_name
-		})
-		content_items.append({
-			"type": "input_file",
-			"file_id": getattr(uploaded_file, "id", "")
-		})
-	if ensure_text(instruction_text).strip() == "":
-		return "", "", uploaded_files
-	request_kwargs = {
-		"model": model,
-		"input": _buildOpenAIInputItems(instruction_text, file_ids=[item.get("file_id", "") for item in content_items if item.get("type") == "input_file"])
-	}
-	if isinstance(options, dict) and len(options) > 0:
-		request_kwargs["extra_body"] = {"options": options}
-	response = client.responses.create(**request_kwargs)
-	request_id = getattr(response, "_request_id", "")
-	if request_id:
-		mndbg.dbgp("tellme: OpenAI upload-mode request id: %s" % request_id)
-	output_text = getattr(response, "output_text", "")
-	if output_text:
-		return output_text, request_id, uploaded_files
-	try:
-		return str(response.output[0].content[0].text), request_id, uploaded_files
-	except Exception:
-		raise AIProviderError(
-			"OpenAI returned an empty or unexpected response payload",
-			request_id=request_id,
-			body={
-				"uploaded_files": uploaded_files,
-				"raw_response": _captureAIRawResponse(response)
-			},
-			error_type="UnexpectedPayloadError"
-		)
-
-
 def _extractOpenAIText(response_data):
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(response_data, dict):
@@ -9878,17 +9122,13 @@ def _extractOpenAIText(response_data):
 	return "\n".join([part for part in parts if part]).strip()
 
 
-def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None):
+def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
-	request_prompt = _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=file_ids)
 	request_body = {
-		"model": model
+		"model": model,
+		"input": prompt
 	}
-	if file_ids:
-		request_body["input"] = _buildOpenAIInputItems(request_prompt, file_ids=file_ids)
-	else:
-		request_body["input"] = request_prompt
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -9904,7 +9144,8 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 	try:
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
-			response_text = _readHTTPResponseText(response)
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
 			response_data = json.loads(response_text) if response_text.strip() != "" else {}
 			request_id = ""
 			try:
@@ -9924,7 +9165,7 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 		parsed_body = {}
 		request_id = ""
 		try:
-			raw_body = _readHTTPResponseText(e)
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
 		except Exception:
 			raw_body = ""
 		try:
@@ -9983,78 +9224,6 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 	)
 
 
-def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
-	mndbg.dbgp(get_current_function_name())
-	mime_type = _guessMimeType(file_path)
-	upload_name = _getProviderUploadFilename(file_path)
-	request_body, boundary = _encodeMultipartForm(
-		[("purpose", "user_data")],
-		[("file", file_path, mime_type, upload_name)]
-	)
-	request = urllib_Request(
-		"https://api.openai.com/v1/files",
-		data=request_body,
-		headers={
-			"authorization": "Bearer %s" % api_key,
-			"content-type": "multipart/form-data; boundary=%s" % boundary,
-			"user-agent": "mona-tellme/3.0"
-		}
-	)
-	try:
-		response = urllib_urlopen(request, timeout=timeout_seconds)
-		try:
-			payload_text = _readHTTPResponseText(response)
-			payload = json.loads(payload_text) if payload_text.strip() != "" else {}
-		finally:
-			try:
-				response.close()
-			except Exception:
-				pass
-	except urllib_HTTPError as e:
-		status_code = getattr(e, "code", None)
-		raw_body = _readHTTPResponseText(e)
-		try:
-			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
-		except Exception:
-			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
-		raise AIProviderError(
-			"OpenAI file upload failed",
-			status_code=status_code,
-			body=parsed_body if parsed_body else raw_body,
-			error_type="FileUploadError"
-		)
-	except urllib_URLError as e:
-		raise AIProviderError(
-			"Unable to reach OpenAI API: %s" % str(getattr(e, "reason", e)),
-			body={"error": {"message": str(getattr(e, "reason", e))}},
-			error_type=e.__class__.__name__
-		)
-	return {
-		"id": ensure_text(payload.get("id", "")).strip(),
-		"path": file_path,
-		"name": upload_name,
-		"mime_type": ensure_text(payload.get("mime_type", mime_type)).strip() or mime_type
-	}
-
-
-def callAIOpenAIDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None):
-	mndbg.dbgp(get_current_function_name())
-	uploaded_files = []
-	for file_path in file_paths:
-		uploaded_files.append(_openaiUploadFileDirect(api_key, file_path, timeout_seconds=timeout_seconds))
-	if ensure_text(instruction_text).strip() == "":
-		return "", "", uploaded_files
-	response_text, request_id = callAIOpenAIDirect(
-		api_key,
-		model,
-		instruction_text,
-		timeout_seconds=timeout_seconds,
-		options=options,
-		file_ids=[item.get("id", "") for item in uploaded_files]
-	)
-	return response_text, request_id, uploaded_files
-
-
 def _anthropic_extract_text(message):
 	mndbg.dbgp(get_current_function_name())
 	parts = []
@@ -10078,121 +9247,39 @@ def _anthropic_extract_text(message):
 	return "\n".join([p for p in parts if p]).strip()
 
 
-def _anthropicGetStopReason(message):
-	mndbg.dbgp(get_current_function_name())
-	if isinstance(message, dict):
-		return ensure_text(message.get("stop_reason", "")).strip()
-	return ensure_text(getattr(message, "stop_reason", "")).strip()
-
-
-def _anthropicBuildTruncationNote(message, max_tokens=0):
-	mndbg.dbgp(get_current_function_name())
-	stop_reason = _anthropicGetStopReason(message)
-	if stop_reason != "max_tokens":
-		return ""
-	note_lines = [
-		"[Anthropic note]",
-		"This answer was likely cut off because the response hit the current max_tokens limit."
-	]
-	if isinstance(max_tokens, int) and max_tokens > 0:
-		note_lines.append("Current anthropic.max_tokens value: %d." % max_tokens)
-	note_lines.append("Increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS if you want a longer answer.")
-	return "\n".join(note_lines)
-
-
-def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
-	mndbg.dbgp(get_current_function_name())
-	mndbg.dbgp("tellme: calling Anthropic SDK model '%s' with timeout %.1fs and max_tokens=%d" % (
-		model, timeout_seconds, max_tokens
-	))
-	client = anthropic_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
-	request_prompt = _appendFileReferenceUsageInstruction(
-		prompt,
-		referenced_file_ids=[
-			file_info.get("id", "") if isinstance(file_info, dict) else file_info
-			for file_info in (referenced_files or [])
-		],
-		uploaded_files=referenced_files if any(isinstance(file_info, dict) for file_info in (referenced_files or [])) else None
-	)
-	message_kwargs = {
-		"model": model,
-		"max_tokens": max_tokens,
-		"messages": [{
-			"role": "user",
-			"content": _buildAnthropicMessageContent(request_prompt, referenced_files=referenced_files)
-		}]
-	}
-	if isinstance(options, dict) and len(options) > 0:
-		message_kwargs["extra_body"] = {"options": options}
-	use_files_beta = bool(referenced_files)
-	response_parent = getattr(client, "beta", None) if use_files_beta else client
-	response_method = getattr(response_parent, "messages", None)
-	if response_method is None or not hasattr(response_method, "create"):
-		raise AIProviderError(
-			"Anthropic SDK does not expose messages.create",
-			error_type="SDKInterfaceError"
-		)
-	if use_files_beta:
-		message_kwargs["betas"] = ["files-api-2025-04-14"]
-	message = response_method.create(**message_kwargs)
-	request_id = getattr(message, "_request_id", "")
-	text = _anthropic_extract_text(message)
-	if text:
-		truncation_note = _anthropicBuildTruncationNote(message, max_tokens=max_tokens)
-		if truncation_note != "":
-			text = "%s\n\n%s" % (text, truncation_note)
-		return text, request_id
-	raise AIProviderError(
-		"Anthropic returned an empty or unexpected response payload",
-		request_id=request_id,
-		body={"raw_response": _captureAIRawResponse(message)},
-		error_type="UnexpectedPayloadError"
-	)
-
-
-def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
+def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
 	))
-	request_prompt = _appendFileReferenceUsageInstruction(
-		prompt,
-		referenced_file_ids=[
-			file_info.get("id", "") if isinstance(file_info, dict) else file_info
-			for file_info in (referenced_files or [])
-		],
-		uploaded_files=referenced_files if any(isinstance(file_info, dict) for file_info in (referenced_files or [])) else None
-	)
 	request_body = {
 		"model": model,
 		"max_tokens": max_tokens,
 		"messages": [
 			{
 				"role": "user",
-				"content": _buildAnthropicMessageContent(request_prompt, referenced_files=referenced_files)
+				"content": prompt
 			}
 		]
 	}
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
-	request_headers = {
-		"content-type": "application/json",
-		"x-api-key": api_key,
-		"anthropic-version": "2023-06-01",
-		"user-agent": "mona-tellme/3.0"
-	}
-	if referenced_files:
-		request_headers["anthropic-beta"] = "files-api-2025-04-14"
 	request = urllib_Request(
 		"https://api.anthropic.com/v1/messages",
 		data=request_data,
-		headers=request_headers
+		headers={
+			"content-type": "application/json",
+			"x-api-key": api_key,
+			"anthropic-version": "2023-06-01",
+			"user-agent": "mona-tellme/3.0"
+		}
 	)
 	try:
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
-			response_text = _readHTTPResponseText(response)
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
 			message = json.loads(response_text) if response_text.strip() != "" else {}
 			response_id = ""
 			try:
@@ -10212,7 +9299,7 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 		parsed_body = {}
 		request_id = ""
 		try:
-			raw_body = _readHTTPResponseText(e)
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
 		except Exception:
 			raw_body = ""
 		try:
@@ -10259,9 +9346,6 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 		mndbg.dbgp("tellme: Anthropic response id: %s" % response_id)
 	text = _anthropic_extract_text(message)
 	if text:
-		truncation_note = _anthropicBuildTruncationNote(message, max_tokens=max_tokens)
-		if truncation_note != "":
-			text = "%s\n\n%s" % (text, truncation_note)
 		return text, response_id
 	raise AIProviderError(
 		"Anthropic returned an empty or unexpected response payload",
@@ -10269,98 +9353,6 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 		body={"raw_response": message},
 		error_type="UnexpectedPayloadError"
 	)
-
-
-def _anthropicUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
-	mndbg.dbgp(get_current_function_name())
-	mime_type = _getAnthropicUploadMimeType(file_path)
-	upload_name = _getProviderUploadFilename(file_path)
-	request_body, boundary = _encodeMultipartForm([], [("file", file_path, mime_type, upload_name)])
-	request = urllib_Request(
-		"https://api.anthropic.com/v1/files",
-		data=request_body,
-		headers={
-			"x-api-key": api_key,
-			"anthropic-version": "2023-06-01",
-			"anthropic-beta": "files-api-2025-04-14",
-			"content-type": "multipart/form-data; boundary=%s" % boundary,
-			"user-agent": "mona-tellme/3.0"
-		}
-	)
-	try:
-		response = urllib_urlopen(request, timeout=timeout_seconds)
-		try:
-			payload_text = _readHTTPResponseText(response)
-			payload = json.loads(payload_text) if payload_text.strip() != "" else {}
-		finally:
-			try:
-				response.close()
-			except Exception:
-				pass
-	except urllib_HTTPError as e:
-		status_code = getattr(e, "code", None)
-		raw_body = _readHTTPResponseText(e)
-		try:
-			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
-		except Exception:
-			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
-		raise AIProviderError(
-			"Anthropic file upload failed",
-			status_code=status_code,
-			body=parsed_body if parsed_body else raw_body,
-			error_type="FileUploadError"
-		)
-	except urllib_URLError as e:
-		raise AIProviderError(
-			"Unable to reach Anthropic API: %s" % str(getattr(e, "reason", e)),
-			body={"error": {"message": str(getattr(e, "reason", e))}},
-			error_type=e.__class__.__name__
-		)
-	return {
-		"id": ensure_text(payload.get("id", "")).strip(),
-		"path": file_path,
-		"name": upload_name,
-		"mime_type": ensure_text(payload.get("mime_type", mime_type)).strip() or mime_type
-	}
-
-
-def callAIAnthropicWithFiles(anthropic_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=4096, options=None):
-	mndbg.dbgp(get_current_function_name())
-	uploaded_files = []
-	for file_path in file_paths:
-		uploaded_files.append(_anthropicUploadFileDirect(api_key, file_path, timeout_seconds=timeout_seconds))
-	if ensure_text(instruction_text).strip() == "":
-		return "", "", uploaded_files
-	response_text, request_id = callAIAnthropicSDK(
-		anthropic_client_class,
-		api_key,
-		model,
-		instruction_text,
-		timeout_seconds=timeout_seconds,
-		max_tokens=max_tokens,
-		options=options,
-		referenced_files=uploaded_files
-	)
-	return response_text, request_id, uploaded_files
-
-
-def callAIAnthropicDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=4096, options=None):
-	mndbg.dbgp(get_current_function_name())
-	uploaded_files = []
-	for file_path in file_paths:
-		uploaded_files.append(_anthropicUploadFileDirect(api_key, file_path, timeout_seconds=timeout_seconds))
-	if ensure_text(instruction_text).strip() == "":
-		return "", "", uploaded_files
-	response_text, request_id = callAIAnthropic(
-		api_key,
-		model,
-		instruction_text,
-		timeout_seconds=timeout_seconds,
-		max_tokens=max_tokens,
-		options=options,
-		referenced_files=uploaded_files
-	)
-	return response_text, request_id, uploaded_files
 
 
 def _extractCustomAIText(response_data, response_field=""):
@@ -10998,7 +9990,7 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None, mdstyle=False, title=""):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None, mdstyle=False):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
@@ -11006,7 +9998,6 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	logobj  : optional MnLog object for file output
 	logfile : optional filename (used with logobj.write())
 	mdstyle : when True, render as an aligned markdown pipe table
-	title   : optional title printed above the table
 	"""
 
 	if itemsequence is None:
@@ -11209,15 +10200,6 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	if logobj is not None and logfile is not None:
 		logobj.write("", logfile)
 		logobj.write("", logfile)
-
-	title = _ensure_text(title).strip()
-	if title != "":
-		dbg.log("")
-		dbg.log("%s%s" % (padding, title))
-		dbg.log("")
-		if logobj is not None and logfile is not None:
-			logobj.write("## %s" % stripTags(title), logfile)
-			logobj.write("", logfile)
 
 	header_line = _render_row([_ensure_text(h) for h in headers], use_mdstyle=False)
 	header_file_line = _render_row([_ensure_text(h) for h in headers], use_mdstyle=mdstyle, file_mode=True)
@@ -14091,10 +13073,8 @@ def _parseOsVersion():
 		build = g_os_version["build"]
   
 		if major == 10:
-			if build >= 22000:
-				offset_category = "win11"
-			else:
-				offset_category = "win10"
+			# if build >= 22000 => win 11
+			offset_category = "win10"
 		elif major == 6:
 			if minor == 0: offset_category = "vista"
 			elif minor == 1: offset_category = "win7"
@@ -14879,152 +13859,130 @@ class MnLog:
 		"""	
 		mndbg.dbgp(get_current_function_name())
 		global g_no_header
-		old_g_no_header = g_no_header
-		try:
-			if clear:
-				mndbg.dbgp("Filename: %s" % self.filename)
-				if not g_silent:
-					dbg.log("")
-					if self.numbered:
-						dbg.log("[+] Preparing output file '" + self.filename +"' (timestamped)")
-					else:
-						dbg.log("[+] Preparing output file '" + self.filename +"'")
-			if not showheader:
-				g_no_header = True
-			debuggedname = dbg.getDebuggedName()
-			thispid = dbg.getDebuggedPid()
-			if thispid == 0:
-				debuggedname = "_no_name_"
-			
-			thisconfig = MnConfig()
-			workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
-			mndbg.dbgp("Workingfolder: %s" % workingfolder)
-
-			#strip extension from debuggedname
-			parts = debuggedname.split(".")
-			extlen = len(parts[len(parts)-1])+1
-			debuggedname = debuggedname[0:len(debuggedname)-extlen]
-			debuggedname = debuggedname.replace(" ","_")
-			workingfolder = workingfolder.replace('%p', debuggedname)
-			workingfolder = workingfolder.replace('%i', str(thispid))		
-			#logfile = workingfolder + "\\" + self.filename
-			# working folder will be created inside getAbsolutePath if needed
-			logfile = getAbsolutePath(self.filename)
-
-			if clear:
+		if clear:
+			mndbg.dbgp("Filename: %s" % self.filename)
+			if not g_silent:
+				dbg.log("")
 				if self.numbered:
-					# when numbered=True: always create a timestamped logfile name
-					try:
-						logfile = self._get_timestamped_filename(logfile)
-					except Exception:
-						pass
-				if not g_silent:
-					dbg.log("    - (Re)setting output file %s" % logfile)
-				if not self.numbered:
-					# remove logfile.old2 if it exists
-					try:
-						if os.path.isfile(logfile + ".old2"):
-							os.remove(logfile + ".old2")
-					except Exception:
-						pass
-
-					# rotate logfile.old -> logfile.old2
-					try:
-						if os.path.isfile(logfile + ".old"):
-							os.rename(logfile + ".old", logfile + ".old2")
-					except Exception:
-						pass
-
-					# rotate logfile -> logfile.old
-					try:
-						if os.path.isfile(logfile):
-							os.rename(logfile, logfile + ".old")
-					except Exception:
-						pass
-
-				#write header
-				if not g_no_header:
-					try:
-						header_lines = []
-						is_markdown_log = ensure_text(logfile).lower().endswith(".md")
-						separatorlength = 100
-						thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
-						thisversion = thisversion.replace("'","")
-						dbgpretty = "Immunity Debugger"
-						if mndbg.isWinDBG():
-							dbgpretty = g_windbg_pretty_name
-						osver=dbg.getOsVersion()
-						osrel=dbg.getOsRelease()
-						currmonaargs = " ".join(x for x in currentArgs)
-						if is_markdown_log:
-							try:
-								config_dir = os.path.dirname(thisconfig.getFileName())
-							except Exception:
-								config_dir = ""
-							if config_dir:
-								markdown_logo = os.path.join(config_dir, "monav3.png")
-								if os.path.isfile(markdown_logo):
-									log_dir = os.path.dirname(logfile)
-									logo_name = "monav3.png"
-									target_logo = os.path.join(log_dir, logo_name)
-									try:
-										if (not os.path.isfile(target_logo)) and (os.path.abspath(markdown_logo).lower() != os.path.abspath(target_logo).lower()):
-											shutil.copyfile(markdown_logo, target_logo)
-									except Exception:
-										pass
-									logo_path = os.path.relpath(target_logo, log_dir)
-									logo_path = logo_path.replace("\\", "/")
-									header_lines.append('<img src="%s" alt="Corelan Mona v3" width="120" height="120" />' % logo_path)
-									header_lines.append("")
-							header_lines.append("# mona.py output")
-							header_lines.append("")
-							header_lines.append("Generated by `mona.py` v%s.%s (%s %dbit)" % (thisversion, thisrevision, dbgpretty, arch))
-							header_lines.append("")
-							header_lines.append("References:")
-							header_lines.append("- https://www.corelan.be")
-							header_lines.append("- https://github.com/corelan/mona3")
-							header_lines.append("- https://www.corelan-training.com")
-							header_lines.append("- https://www.corelan-certified.com")
-							header_lines.append("")
-							header_lines.append("## Session")
-							header_lines.append("")
-							header_lines.append("- **OS**: %s, release %s" % (osver, osrel))
-							header_lines.append("- **Process**: %s (pid %s)" % (debuggedname, str(thispid)))
-							header_lines.append("- **Command**: `%s`" % currmonaargs.replace("`", "\\`"))
-							header_lines.append("- **Generated**: %s" % mndbg.get_current_datetime())
-							header_lines.append("")
-						else:
-							header_lines.append("=" * separatorlength)
-							header_lines.append("  Output generated by mona.py v%s.%s (%s %dbit)" % (thisversion, thisrevision, dbgpretty, arch))
-							header_lines.append("  https://www.corelan.be | https://github.com/corelan/mona3")
-							header_lines.append("  https://www.corelan-training.com | https://www.corelan-certified.com")
-							header_lines.append("=" * separatorlength)
-							header_lines.append("  OS : " + osver + ", release " + osrel)
-							header_lines.append("  Process being debugged : " + debuggedname +" (pid " + str(thispid) + ")")
-							header_lines.append("  You ran: %s" % currmonaargs)
-							header_lines.append("=" * separatorlength)
-							header_lines.append("  " + mndbg.get_current_datetime())
-							header_lines.append("=" * separatorlength)
-						with open(logfile,"wb") as fh:
-							fh.write(encodeTextForFile("\n".join(header_lines) + "\n", self.encoding))
-					except:
-						pass
+					dbg.log("[+] Preparing output file '" + self.filename +"' (timestamped)")
 				else:
-					try:
-						with open(logfile,"wb") as fh:
-							fh.write(b"")
-					except:
-						pass
-				#write module table
+					dbg.log("[+] Preparing output file '" + self.filename +"'")
+		if not showheader:
+			g_no_header = True
+		debuggedname = dbg.getDebuggedName()
+		thispid = dbg.getDebuggedPid()
+		if thispid == 0:
+			debuggedname = "_no_name_"
+		
+		thisconfig = MnConfig()
+		workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
+		mndbg.dbgp("Workingfolder: %s" % workingfolder)
+
+		#strip extension from debuggedname
+		parts = debuggedname.split(".")
+		extlen = len(parts[len(parts)-1])+1
+		debuggedname = debuggedname[0:len(debuggedname)-extlen]
+		debuggedname = debuggedname.replace(" ","_")
+		workingfolder = workingfolder.replace('%p', debuggedname)
+		workingfolder = workingfolder.replace('%i', str(thispid))		
+		#logfile = workingfolder + "\\" + self.filename
+		# working folder will be created inside getAbsolutePath if needed
+		logfile = getAbsolutePath(self.filename)
+
+		if clear:
+			if self.numbered:
+				# when numbered=True: always create a timestamped logfile name
 				try:
-					if not skipModuleTable:
-						showModuleTable(logfile)
-				except Exception as e:
-					mndbg.dbgp("showModuleTable failed: %s" % str(e), errormode=False)
-					mndbg.dbgp(traceback.format_exc(), errormode=False)
-			return logfile
-		finally:
-			g_no_header = old_g_no_header
+					logfile = self._get_timestamped_filename(logfile)
+				except Exception:
+					pass
+			if not g_silent:
+				dbg.log("    - (Re)setting output file %s" % logfile)
+			if not self.numbered:
+				# remove logfile.old2 if it exists
+				try:
+					if os.path.isfile(logfile + ".old2"):
+						os.remove(logfile + ".old2")
+				except Exception:
+					pass
+
+				# rotate logfile.old -> logfile.old2
+				try:
+					if os.path.isfile(logfile + ".old"):
+						os.rename(logfile + ".old", logfile + ".old2")
+				except Exception:
+					pass
+
+				# rotate logfile -> logfile.old
+				try:
+					if os.path.isfile(logfile):
+						os.rename(logfile, logfile + ".old")
+				except Exception:
+					pass
+
+			#write header
+			if not g_no_header:
+				try:
+					header_lines = []
+					is_markdown_log = ensure_text(logfile).lower().endswith(".md")
+					separatorlength = 100
+					thisversion,thisrevision = getVersionInfo(inspect.stack()[0][1])
+					thisversion = thisversion.replace("'","")
+					dbgpretty = "Immunity Debugger"
+					if mndbg.isWinDBG():
+						dbgpretty = g_windbg_pretty_name
+					osver=dbg.getOsVersion()
+					osrel=dbg.getOsRelease()
+					currmonaargs = " ".join(x for x in currentArgs)
+					if is_markdown_log:
+						header_lines.append("# mona.py Output")
+						header_lines.append("")
+						header_lines.append("Generated by `mona.py` v%s.%s (%s %dbit)" % (thisversion, thisrevision, dbgpretty, arch))
+						header_lines.append("")
+						header_lines.append("References:")
+						header_lines.append("- https://www.corelan.be")
+						header_lines.append("- https://github.com/corelan/mona3")
+						header_lines.append("- https://www.corelan-training.com")
+						header_lines.append("- https://www.corelan-certified.com")
+						header_lines.append("")
+						header_lines.append("## Session")
+						header_lines.append("")
+						header_lines.append("- OS: %s, release %s" % (osver, osrel))
+						header_lines.append("- Process: %s (pid %s)" % (debuggedname, str(thispid)))
+						header_lines.append("- Command: `%s`" % currmonaargs.replace("`", "\\`"))
+						header_lines.append("- Generated: %s" % mndbg.get_current_datetime())
+						header_lines.append("")
+						header_lines.append("---")
+					else:
+						header_lines.append("=" * separatorlength)
+						header_lines.append("  Output generated by mona.py v%s.%s (%s %dbit)" % (thisversion, thisrevision, dbgpretty, arch))
+						header_lines.append("  https://www.corelan.be | https://github.com/corelan/mona3")
+						header_lines.append("  https://www.corelan-training.com | https://www.corelan-certified.com")
+						header_lines.append("=" * separatorlength)
+						header_lines.append("  OS : " + osver + ", release " + osrel)
+						header_lines.append("  Process being debugged : " + debuggedname +" (pid " + str(thispid) + ")")
+						header_lines.append("  You ran: %s" % currmonaargs)
+						header_lines.append("=" * separatorlength)
+						header_lines.append("  " + mndbg.get_current_datetime())
+						header_lines.append("=" * separatorlength)
+					with open(logfile,"wb") as fh:
+						fh.write(encodeTextForFile("\n".join(header_lines) + "\n", self.encoding))
+				except:
+					pass
+			else:
+				try:
+					with open(logfile,"wb") as fh:
+						fh.write(b"")
+				except:
+					pass
+			#write module table
+			try:
+				if not skipModuleTable:
+					showModuleTable(logfile)
+			except Exception as e:
+				mndbg.dbgp("showModuleTable failed: %s" % str(e), errormode=False)
+				mndbg.dbgp(traceback.format_exc(), errormode=False)
+		return logfile
 		
 	def write(self,entry,logfile):
 		"""
@@ -17461,15 +16419,277 @@ class MnNTHeap(MnHeap):
 		return "NT"
 
 	def getSegments(self):
-		"""Return all segments for this heap as a list. Cached after first call.
+		"""Return all segments for this heap as a list. Delegates to BackEndAllocator."""
+		return self.getBackEndAllocator().getSegments()
 
-		Each element is a segment object (MnNTVistaSegment or subclass)
-		that already knows its encoding key, so callers can invoke
-		segment.getChunks() directly without needing the heap.
+	def getBackEndAllocator(self):
+		"""Return the BackEndAllocator for this heap. Lazy, cached."""
+		if not hasattr(self, '_backend') or self._backend is None:
+			self._backend = MnNTBackEndAllocator(self)
+		return self._backend
+
+	def getFrontEndAllocator(self):
+		"""Return the FrontEndAllocator for this heap. Lazy, cached.
+		Subclasses override to return the correct version-specific allocator.
 		"""
-		if not hasattr(self, '_segments') or self._segments is None:
-			self._segments = list(self.iterSegments())
-		return self._segments
+		if not hasattr(self, '_frontend') or self._frontend is None:
+			self._frontend = MnNTVistaFrontEndAllocator(self)
+		return self._frontend
+
+	def getLFHChunks(self):
+		"""Populate LFH chunks via FrontEndAllocator. Called by _apply_walk_level."""
+		if self.usesLFH():
+			return self.getFrontEndAllocator().getChunks()
+		return {}
+
+	def getSegmentChunks(self):
+		"""All chunks from back-end segments (parent=SEGMENT). Returns {addr: MnChunk}."""
+		return self.getBackEndAllocator().getChunks()
+
+	def getLFHSubSegmentChunks(self):
+		"""All chunks from LFH subsegments (parent=LFH). Returns {addr: MnChunk}."""
+		if self.usesLFH():
+			return self.getFrontEndAllocator().getChunks()
+		return {}
+
+	def getVABlockChunks(self):
+		"""All chunks from VirtualAllocdBlocks (parent=VADBLOCK). Returns {addr: MnChunk}."""
+		return self.getBackEndAllocator().getVABlocks()
+
+	def getAllChunks(self):
+		"""Merged dict of all chunks across all parent types. Cached."""
+		if not hasattr(self, '_all_chunks') or self._all_chunks is None:
+			self._all_chunks = {}
+			self._all_chunks.update(self.getBackEndAllocator().getChunks())
+			if self.usesLFH():
+				self._all_chunks.update(self.getLFHChunks())
+		return self._all_chunks
+
+	def iterChunksByParent(self, parent_type):
+		"""Enumerate chunks filtered by ChunkParent type."""
+		if parent_type == ChunkParent.SEGMENT:
+			return self.getBackEndAllocator().getChunks()
+		elif parent_type == ChunkParent.LFH:
+			return self.getFrontEndAllocator().getChunks()
+		elif parent_type == ChunkParent.VADBLOCK:
+			return self.getBackEndAllocator().getVABlocks()
+		return {}
+
+	def iterChunksByState(self, state):
+		"""Yield all chunks matching the given ChunkState regardless of parent type."""
+		for chunk in self.getAllChunks().values():
+			if chunk.getState() == state:
+				yield chunk
+
+	def findChunk(self, addr):
+		"""Given any address, locate the owning chunk.
+
+		Searches LFH first (fast path via index arithmetic), then segments.
+		Returns MnChunk if addr falls within a known chunk's range, None otherwise.
+		"""
+		if self.usesLFH() and self.getFrontEndAllocator().contains(addr):
+			for chunk in self.getFrontEndAllocator().getChunks().values():
+				chunk_end = chunk.chunkptr + (chunk.size * HEAPGRANULARITY)
+				if chunk.chunkptr <= addr < chunk_end:
+					return chunk
+
+		backend = self.getBackEndAllocator()
+		seg = backend.getSegmentForAddress(addr)
+		if seg:
+			for chunk in seg.getChunks():
+				chunk_end = chunk.chunkptr + (chunk.size * HEAPGRANULARITY)
+				if chunk.chunkptr <= addr < chunk_end:
+					return chunk
+		return None
+
+	def classifyAddress(self, addr):
+		"""Identify which allocator component owns an address.
+
+		Returns: (ChunkParent, context_dict) or (None, {}) if not in heap.
+		"""
+		if self.usesLFH():
+			fe = self.getFrontEndAllocator()
+			if fe.contains(addr):
+				return (ChunkParent.LFH, {"allocator": fe})
+
+		backend = self.getBackEndAllocator()
+		seg = backend.getSegmentForAddress(addr)
+		if seg:
+			return (ChunkParent.SEGMENT, {"segment": seg})
+
+		va_blocks = backend.getVABlocks()
+		for va_addr, va_info in va_blocks.items():
+			va_end = va_addr + va_info.get("reserve_size", 0)
+			if va_addr <= addr < va_end:
+				return (ChunkParent.VADBLOCK, {"va_entry": va_addr, "va_info": va_info})
+
+		return (None, {})
+
+	def getHeapStats(self):
+		"""Aggregate heap statistics."""
+		backend = self.getBackEndAllocator()
+		segments = backend.getSegments()
+		backend_chunks = backend.getChunks()
+		backend_busy = sum(1 for c in backend_chunks.values() if c.getState() == ChunkState.BUSY)
+		backend_free = len(backend_chunks) - backend_busy
+
+		lfh_total = lfh_busy = lfh_free = 0
+		active_buckets = 0
+		if self.usesLFH():
+			fe = self.getFrontEndAllocator()
+			lfh_total, lfh_busy, lfh_free = fe.getUtilization()
+			active_buckets = len(fe.getActiveBuckets())
+
+		return {
+			"segment_count": len(segments),
+			"va_block_count": len(backend.getVABlocks()),
+			"active_buckets": active_buckets,
+			"backend": {"total": len(backend_chunks), "busy": backend_busy, "free": backend_free},
+			"lfh": {"total": lfh_total, "busy": lfh_busy, "free": lfh_free},
+		}
+
+	def getChunksAround(self, addr, count=5):
+		"""Return chunks surrounding a given address in memory order.
+
+		Returns: (before: [MnChunk], target: MnChunk or None, after: [MnChunk])
+
+		Uses LFH fast path when addr falls inside an LFH subsegment (O(1) index
+		arithmetic within the subsegment block array).
+		"""
+		if self.usesLFH():
+			result = self._getChunksAroundLFH(addr, count)
+			if result is not None:
+				return result
+
+		all_chunks = self.getAllChunks()
+		if not all_chunks:
+			return ([], None, [])
+
+		sorted_addrs = sorted(all_chunks.keys())
+		idx = bisect.bisect_right(sorted_addrs, addr) - 1
+		if idx < 0:
+			idx = 0
+
+		target = None
+		if idx < len(sorted_addrs):
+			candidate = all_chunks[sorted_addrs[idx]]
+			chunk_end = candidate.chunkptr + (candidate.size * HEAPGRANULARITY)
+			if candidate.chunkptr <= addr < chunk_end:
+				target = candidate
+
+		if target is None:
+			idx = bisect.bisect_left(sorted_addrs, addr)
+
+		before_start = max(0, idx - count)
+		before = [all_chunks[sorted_addrs[i]] for i in range(before_start, idx)]
+		after_end = min(len(sorted_addrs), idx + 1 + count)
+		after_start = idx + 1 if target else idx
+		after = [all_chunks[sorted_addrs[i]] for i in range(after_start, after_end)]
+
+		return (before, target, after)
+
+	def _getChunksAroundLFH(self, addr, count):
+		"""LFH fast path: if addr is in a subsegment, use block index arithmetic."""
+		try:
+			fe = self.getFrontEndAllocator()
+			for ss in fe.getAllSubSegments():
+				r = ss.getRange()
+				if r[0] == 0 or not (r[0] <= addr < r[1]):
+					continue
+				ud = ss.getUserData()
+				if ud is None or ud.corrupted:
+					continue
+				if ud.block_size_bytes == 0:
+					continue
+				offset_in_region = addr - ud.first_block_addr
+				if offset_in_region < 0:
+					continue
+				block_idx = offset_in_region // ud.block_size_bytes
+				all_blocks = ud.getChunks()
+				if not all_blocks:
+					continue
+				target = None
+				if 0 <= block_idx < len(all_blocks):
+					candidate = all_blocks[block_idx]
+					cend = candidate.chunkptr + (candidate.size * HEAPGRANULARITY)
+					if candidate.chunkptr <= addr < cend:
+						target = candidate
+				if target is None:
+					block_idx = min(block_idx, len(all_blocks) - 1)
+				before_start = max(0, block_idx - count)
+				before = all_blocks[before_start:block_idx]
+				after_start = block_idx + 1 if target else block_idx
+				after_end = min(len(all_blocks), after_start + count)
+				after = all_blocks[after_start:after_end]
+				return (before, target, after)
+		except:
+			pass
+		return None
+
+	def searchChunks(self, value, size=None, parent_filter=None, busy_only=True,
+					 offset_filter=None):
+		"""Find all chunks whose user data contains a specific value.
+
+		Arguments:
+			value         - int (pointer-sized) or bytes to search for
+			size          - search width in bytes (default: pointer size)
+			parent_filter - ChunkParent or None (search all)
+			busy_only     - if True, skip FREE chunks
+			offset_filter - int or None; if set, only check at this offset
+
+		Returns: [(MnChunk, offset)]
+		"""
+		ptrsize = archValue(4, 8)
+		if size is None:
+			size = ptrsize
+
+		if isinstance(value, int):
+			if size == 4:
+				needle = struct.pack('<L', value & 0xFFFFFFFF)
+			elif size == 8:
+				needle = struct.pack('<Q', value & 0xFFFFFFFFFFFFFFFF)
+			else:
+				needle = struct.pack('<L', value & 0xFFFFFFFF)
+		else:
+			needle = value
+
+		if parent_filter:
+			chunks = self.iterChunksByParent(parent_filter)
+		else:
+			chunks = self.getAllChunks()
+
+		total_chunks = len(chunks)
+		progress_step = max(total_chunks // 10, 1)
+		results = []
+		scanned = 0
+		for chunk in chunks.values():
+			scanned += 1
+			if scanned % progress_step == 0:
+				dbg.log("    [searchChunks] %d/%d chunks scanned (%d%%)..." % (
+					scanned, total_chunks, (scanned * 100) // total_chunks))
+			if busy_only and chunk.getState() != ChunkState.BUSY:
+				continue
+			try:
+				data_addr = chunk.userptr
+				data_size = chunk.usersize
+				if data_size <= 0 or data_size > 0x100000:
+					continue
+				user_data = dbg.readMemory(data_addr, data_size)
+				if offset_filter is not None:
+					if offset_filter + len(needle) <= len(user_data):
+						if user_data[offset_filter:offset_filter + len(needle)] == needle:
+							results.append((chunk, offset_filter))
+				else:
+					pos = 0
+					while True:
+						idx = user_data.find(needle, pos)
+						if idx == -1:
+							break
+						results.append((chunk, idx))
+						pos = idx + 1
+			except:
+				pass
+		return results
 
 	def getVABlocks(self):
 		"""Return VA blocks dict.  Alias for getVirtualAllocdBlocks()."""
@@ -17638,16 +16858,14 @@ class MnNTHeap(MnHeap):
 		mndbg.dbgp("getVirtualAllocdBlocks: heap=0x%x listhead=0x%x (offset 0x%x)" % (self.heapbase, listhead, va_offset))
 
 		try:
-			entry = readPtrSizeBytes(listhead)
-			mndbg.dbgp("getVirtualAllocdBlocks: Flink=0x%x" % entry)
-			while entry != listhead:
+			head = MnListEntry(listhead)
+			for entry in head.walk():
 				vab = MnVirtualAllocdBlocks(entry)
 				mndbg.dbgp("getVirtualAllocdBlocks: entry=0x%x commit=0x%x reserve=0x%x" % (entry, vab.CommitSize, vab.ReserveSize))
 				self.VirtualAllocdBlocks[entry] = {
 					"commit_size":  vab.CommitSize,
 					"reserve_size": vab.ReserveSize,
 				}
-				entry = readPtrSizeBytes(entry)
 		except Exception as e:
 			mndbg.dbgp("getVirtualAllocdBlocks: exception: %s" % str(e))
 
@@ -18039,6 +17257,11 @@ class MnNT8Heap(MnNTVistaHeap):
 		super(MnNT8Heap, self).__init__(address, walk_level)
 		self.heap_version = HeapVersion.WIN8
 
+	def getFrontEndAllocator(self):
+		if not hasattr(self, '_frontend') or self._frontend is None:
+			self._frontend = MnNT8FrontEndAllocator(self)
+		return self._frontend
+
 	def getEncodingKey(self):
 		"""Retrieve the Encoding key from the Win8+ NT heap header.
 
@@ -18209,6 +17432,11 @@ class MnNT10Heap(MnNT8Heap):
 	def __init__(self, address, walk_level=WalkLevel.HEAP):
 		super(MnNT10Heap, self).__init__(address, walk_level)
 		self.heap_version = HeapVersion.WIN10
+
+	def getFrontEndAllocator(self):
+		if not hasattr(self, '_frontend') or self._frontend is None:
+			self._frontend = MnNT10FrontEndAllocator(self)
+		return self._frontend
 
 
 class MnNT11Heap(MnNT10Heap):
@@ -18622,6 +17850,20 @@ class MnNTVistaLFH:
 		self.Buckets               = lfhbase + self._offsets["Buckets"][MnPEB.getArch()]
 		self.LocalData             = lfhbase + self._offsets["LocalData"][MnPEB.getArch()]
 
+	def getBlockZones(self):
+		"""Walk SubSegmentZones chain (Vista: raw pointer, NULL-terminated)."""
+		zones = []
+		seen = set()
+		entry = self.SubSegmentZones_Flink
+		ptrsize = archValue(4, 8)
+		while entry != 0:
+			if entry in seen:
+				break
+			seen.add(entry)
+			zones.append({"address": entry})
+			entry = readPtrSizeBytes(entry)
+		return zones
+
 
 class MnNT8LFH:
 	"""
@@ -18669,6 +17911,14 @@ class MnNT8LFH:
 		self.SegmentInfoArrays           = lfhbase + self._offsets["SegmentInfoArrays"][MnPEB.getArch()]
 		self.AffinitizedInfoArrays       = lfhbase + self._offsets["AffinitizedInfoArrays"][MnPEB.getArch()]
 		self.LocalData                   = lfhbase + self._offsets["LocalData"][MnPEB.getArch()]
+
+	def getBlockZones(self):
+		"""Walk SubSegmentZones _LIST_ENTRY (Win8+: doubly-linked list)."""
+		zones = []
+		head_addr = self.address + self._offsets["SubSegmentZones"][MnPEB.getArch()]
+		for entry in MnListEntry(head_addr).walk():
+			zones.append({"address": entry})
+		return zones
 
 
 class MnNT10LFH:
@@ -18721,38 +17971,144 @@ class MnNT10LFH:
 		self.SegmentAllocator            = readPtrSizeBytes(lfhbase + self._offsets["SegmentAllocator"][MnPEB.getArch()])
 		self.LocalData                   = lfhbase + self._offsets["LocalData"][MnPEB.getArch()]
 
+	def getBlockZones(self):
+		"""Walk SubSegmentZones _LIST_ENTRY (Win10: same as Win8)."""
+		zones = []
+		head_addr = self.address + self._offsets["SubSegmentZones"][MnPEB.getArch()]
+		for entry in MnListEntry(head_addr).walk():
+			zones.append({"address": entry})
+		return zones
 
-class MnNTVistaSubSegment:
+
+class ChunkParent:
+	"""Identifies which allocator component owns a heap chunk.
+
+	SEGMENT  - Back-end allocator: chunk lives in a heap segment.
+	LFH      - Front-end allocator: chunk is an LFH subsegment block.
+	VADBLOCK - VirtualAllocdBlocks: large allocation (> VirtualMemoryThreshold).
 	"""
-	Represents _HEAP_SUBSEGMENT on Windows Vista/7.
-	No DelayFreeList field.
+	SEGMENT  = "segment"
+	LFH      = "lfh"
+	VADBLOCK = "vadblock"
 
-	x86 layout (0x20 bytes):
-	+0x000 LocalInfo      : Ptr32
-	+0x004 UserBlocks     : Ptr32
-	+0x008 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
-	+0x010 BlockSize      : Uint2B  (union with Alignment[2] at +0x010)
-	+0x012 Flags          : Uint2B
-	+0x014 BlockCount     : Uint2B
-	+0x016 SizeIndex      : UChar
-	+0x017 AffinityIndex  : UChar
-	+0x018 SFreeListEntry : _SINGLE_LIST_ENTRY
-	+0x01c Lock           : Uint4B
 
-	x64 layout (0x30 bytes):
-	+0x000 LocalInfo      : Ptr64
-	+0x008 UserBlocks     : Ptr64
-	+0x010 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
-	+0x018 BlockSize      : Uint2B  (union with Alignment[2] at +0x018)
-	+0x01a Flags          : Uint2B
-	+0x01c BlockCount     : Uint2B
-	+0x01e SizeIndex      : UChar
-	+0x01f AffinityIndex  : UChar
-	+0x020 SFreeListEntry : _SINGLE_LIST_ENTRY
-	+0x028 Lock           : Uint4B
+class ChunkState:
+	"""Allocation state of a heap chunk (Python 2 compatible enum pattern).
+
+	BUSY - Chunk is allocated (flag bit 0x01 set).
+	FREE - Chunk is on the free list.
+	"""
+	BUSY = "busy"
+	FREE = "free"
+
+
+class MnSListEntry(object):
+	"""Walks _SINGLE_LIST_ENTRY or _SLIST_HEADER singly-linked NULL-terminated lists."""
+
+	def __init__(self, address, is_slist_header=False):
+		self.address = address
+		self._is_slist_header = is_slist_header
+
+	@property
+	def head(self):
+		"""Return the first entry pointer (0 if empty)."""
+		if self._is_slist_header:
+			if arch == 64:
+				# x64 _SLIST_HEADER: Region at +0x008, NextEntry = (Region >> 4) << 4
+				region = struct.unpack('<Q', dbg.readMemory(self.address + 8, 8))[0]
+				return (region >> 4) << 4
+			else:
+				# x86 _SLIST_HEADER: Next is at offset 0 (union with _SINGLE_LIST_ENTRY)
+				return readPtrSizeBytes(self.address)
+		return readPtrSizeBytes(self.address)
+
+	def walk(self):
+		"""Yield address of each node following Next until NULL. Cycle-safe."""
+		seen = set()
+		entry = self.head
+		while entry != 0:
+			if entry in seen:
+				break
+			seen.add(entry)
+			yield entry
+			entry = readPtrSizeBytes(entry)
+
+
+class MnNTLFHSubSegmentBase(object):
+	"""Base for version-specific LFH subsegment classes.
+
+	Implements _HEAP_SUBSEGMENT with embedded _INTERLOCK_SEQ parsing.
+	Subclasses must define _offsets dict.
 	"""
 
-	# _HEAP_SUBSEGMENT field offsets: (offset_x86, offset_x64)
+	_offsets = {}
+
+	def __init__(self, ssbase, parent_bucket=None):
+		self.address = ssbase
+		self.parent_bucket = parent_bucket
+		self.corrupted = False
+		self.corruption_reason = ""
+		self._user_data = None
+
+		try:
+			ai = MnPEB.getArch()
+			self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][ai])
+			self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][ai])
+			raw_exchg           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][ai], 4))[0]
+			self.Depth          = raw_exchg & 0xFFFF
+			self.FreeEntryOffset = (raw_exchg >> 16) & 0xFFFF
+			self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][ai], 2))[0]
+			self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][ai], 2))[0]
+			self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][ai], 2))[0]
+			self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][ai], 1))[0]
+			self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][ai], 1))[0]
+		except Exception as e:
+			self.corrupted = True
+			self.corruption_reason = "Failed to read subsegment at 0x%x: %s" % (ssbase, str(e))
+			self.LocalInfo = 0
+			self.UserBlocks = 0
+			self.Depth = 0
+			self.FreeEntryOffset = 0
+			self.BlockSize = 0
+			self.Flags = 0
+			self.BlockCount = 0
+			self.SizeIndex = 0
+			self.AffinityIndex = 0
+
+	def getFreeCount(self):
+		return self.Depth
+
+	def getBusyCount(self):
+		return self.BlockCount - self.Depth
+
+	def isValid(self):
+		return not self.corrupted and self.UserBlocks != 0 and self.BlockSize > 0
+
+	def getUserData(self):
+		"""Lazy-construct and return the MnNTUserData for this subsegment."""
+		if self._user_data is None and self.isValid():
+			block_size_bytes = self.BlockSize * HEAPGRANULARITY
+			self._user_data = self._createUserData(self.UserBlocks, block_size_bytes, self.BlockCount)
+		return self._user_data
+
+	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
+		"""Subclasses override to create the correct MnNTUserData version."""
+		return MnNTVistaUserData(userblocks_addr, block_size_bytes, block_count, self)
+
+	def getRange(self):
+		"""Return (start, end) memory range covered by this subsegment's UserBlocks."""
+		if not self.isValid():
+			return (0, 0)
+		ud = self.getUserData()
+		if ud is None or ud.corrupted:
+			return (0, 0)
+		end = ud.first_block_addr + (self.BlockCount * self.BlockSize * HEAPGRANULARITY)
+		return (self.UserBlocks, end)
+
+
+class MnNTVistaLFHSubSegment(MnNTLFHSubSegmentBase):
+	"""_HEAP_SUBSEGMENT on Vista/7. No DelayFreeList."""
+
 	_offsets = {
 		"LocalInfo":      (0x000, 0x000),
 		"UserBlocks":     (0x004, 0x008),
@@ -18766,55 +18122,17 @@ class MnNTVistaSubSegment:
 		"Lock":           (0x01c, 0x028),
 	}
 
-	def __init__(self, ssbase):
-		self.address = ssbase
+	def __init__(self, ssbase, parent_bucket=None):
+		super(MnNTVistaLFHSubSegment, self).__init__(ssbase, parent_bucket)
+		self.DelayFreeList = 0
 
-		self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][MnPEB.getArch()])
-		self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][MnPEB.getArch()])
-		self.AggregateExchg = struct.unpack('<l', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][MnPEB.getArch()], 4))[0]
-		self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][MnPEB.getArch()], 2))[0]
-		self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][MnPEB.getArch()], 2))[0]
-		self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][MnPEB.getArch()], 2))[0]
-		self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][MnPEB.getArch()], 1))[0]
-		self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][MnPEB.getArch()], 1))[0]
-		self.SFreeListEntry = readPtrSizeBytes(ssbase + self._offsets["SFreeListEntry"][MnPEB.getArch()])
-		self.Lock           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["Lock"][MnPEB.getArch()], 4))[0]
+	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
+		return MnNTVistaUserData(userblocks_addr, block_size_bytes, block_count, self)
 
 
-class MnNT8SubSegment:
-	"""
-	Represents _HEAP_SUBSEGMENT on Windows 8/8.1.
-	DelayFreeList (_SLIST_HEADER) added at +0x008/+0x010, shifting AggregateExchg.
-	SFreeListEntry is before Lock.
+class MnNT8LFHSubSegment(MnNTLFHSubSegmentBase):
+	"""_HEAP_SUBSEGMENT on Win8/8.1. Has DelayFreeList."""
 
-	x86 layout (0x24 bytes):
-	+0x000 LocalInfo      : Ptr32
-	+0x004 UserBlocks     : Ptr32
-	+0x008 DelayFreeList  : _SLIST_HEADER (8 bytes)
-	+0x010 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
-	+0x014 BlockSize      : Uint2B  (union with Alignment[2] at +0x014)
-	+0x016 Flags          : Uint2B
-	+0x018 BlockCount     : Uint2B
-	+0x01a SizeIndex      : UChar
-	+0x01b AffinityIndex  : UChar
-	+0x01c SFreeListEntry : _SINGLE_LIST_ENTRY
-	+0x020 Lock           : Uint4B
-
-	x64 layout (0x40 bytes):
-	+0x000 LocalInfo      : Ptr64
-	+0x008 UserBlocks     : Ptr64
-	+0x010 DelayFreeList  : _SLIST_HEADER (16 bytes)
-	+0x020 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
-	+0x024 BlockSize      : Uint2B  (union with Alignment[2] at +0x024)
-	+0x026 Flags          : Uint2B
-	+0x028 BlockCount     : Uint2B
-	+0x02a SizeIndex      : UChar
-	+0x02b AffinityIndex  : UChar
-	+0x030 SFreeListEntry : _SINGLE_LIST_ENTRY
-	+0x038 Lock           : Uint4B
-	"""
-
-	# _HEAP_SUBSEGMENT field offsets: (offset_x86, offset_x64)
 	_offsets = {
 		"LocalInfo":      (0x000, 0x000),
 		"UserBlocks":     (0x004, 0x008),
@@ -18829,56 +18147,20 @@ class MnNT8SubSegment:
 		"Lock":           (0x020, 0x038),
 	}
 
-	def __init__(self, ssbase):
-		self.address = ssbase
+	def __init__(self, ssbase, parent_bucket=None):
+		super(MnNT8LFHSubSegment, self).__init__(ssbase, parent_bucket)
+		if not self.corrupted:
+			self.DelayFreeList = ssbase + self._offsets["DelayFreeList"][MnPEB.getArch()]
+		else:
+			self.DelayFreeList = 0
 
-		self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][MnPEB.getArch()])
-		self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][MnPEB.getArch()])
-		self.DelayFreeList  = ssbase + self._offsets["DelayFreeList"][MnPEB.getArch()]
-		self.AggregateExchg = struct.unpack('<l', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][MnPEB.getArch()], 4))[0]
-		self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][MnPEB.getArch()], 2))[0]
-		self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][MnPEB.getArch()], 2))[0]
-		self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][MnPEB.getArch()], 2))[0]
-		self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][MnPEB.getArch()], 1))[0]
-		self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][MnPEB.getArch()], 1))[0]
-		self.SFreeListEntry = readPtrSizeBytes(ssbase + self._offsets["SFreeListEntry"][MnPEB.getArch()])
-		self.Lock           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["Lock"][MnPEB.getArch()], 4))[0]
+	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
+		return MnNT8UserData(userblocks_addr, block_size_bytes, block_count, self)
 
 
-class MnNT10SubSegment:
-	"""
-	Represents _HEAP_SUBSEGMENT on Windows 10/11d
-	Lock and SFreeListEntry order swapped vs Win8 (Lock now before SFreeListEntry).
-	x64 struct is 8 bytes smaller than Win8 x64 as a result.
+class MnNT10LFHSubSegment(MnNTLFHSubSegmentBase):
+	"""_HEAP_SUBSEGMENT on Win10/11. Lock before SFreeListEntry."""
 
-	x86 layout (0x24 bytes):
-	+0x000 LocalInfo      : Ptr32
-	+0x004 UserBlocks     : Ptr32
-	+0x008 DelayFreeList  : _SLIST_HEADER (8 bytes)
-	+0x010 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
-	+0x014 BlockSize      : Uint2B  (union with Alignment[2] at +0x014)
-	+0x016 Flags          : Uint2B
-	+0x018 BlockCount     : Uint2B
-	+0x01a SizeIndex      : UChar
-	+0x01b AffinityIndex  : UChar
-	+0x01c Lock           : Uint4B
-	+0x020 SFreeListEntry : _SINGLE_LIST_ENTRY
-
-	x64 layout (0x38 bytes):
-	+0x000 LocalInfo      : Ptr64
-	+0x008 UserBlocks     : Ptr64
-	+0x010 DelayFreeList  : _SLIST_HEADER (16 bytes)
-	+0x020 AggregateExchg : _INTERLOCK_SEQ (4 bytes)
-	+0x024 BlockSize      : Uint2B  (union with Alignment[2] at +0x024)
-	+0x026 Flags          : Uint2B
-	+0x028 BlockCount     : Uint2B
-	+0x02a SizeIndex      : UChar
-	+0x02b AffinityIndex  : UChar
-	+0x02c Lock           : Uint4B
-	+0x030 SFreeListEntry : _SINGLE_LIST_ENTRY
-	"""
-
-	# _HEAP_SUBSEGMENT field offsets: (offset_x86, offset_x64)
 	_offsets = {
 		"LocalInfo":      (0x000, 0x000),
 		"UserBlocks":     (0x004, 0x008),
@@ -18893,106 +18175,619 @@ class MnNT10SubSegment:
 		"SFreeListEntry": (0x020, 0x030),
 	}
 
-	def __init__(self, ssbase):
-		self.address = ssbase
+	def __init__(self, ssbase, parent_bucket=None):
+		super(MnNT10LFHSubSegment, self).__init__(ssbase, parent_bucket)
+		if not self.corrupted:
+			self.DelayFreeList = ssbase + self._offsets["DelayFreeList"][MnPEB.getArch()]
+		else:
+			self.DelayFreeList = 0
 
-		self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][MnPEB.getArch()])
-		self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][MnPEB.getArch()])
-		self.DelayFreeList  = ssbase + self._offsets["DelayFreeList"][MnPEB.getArch()]
-		self.AggregateExchg = struct.unpack('<l', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][MnPEB.getArch()], 4))[0]
-		self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][MnPEB.getArch()], 2))[0]
-		self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][MnPEB.getArch()], 2))[0]
-		self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][MnPEB.getArch()], 2))[0]
-		self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][MnPEB.getArch()], 1))[0]
-		self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][MnPEB.getArch()], 1))[0]
-		self.Lock           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["Lock"][MnPEB.getArch()], 4))[0]
-		self.SFreeListEntry = readPtrSizeBytes(ssbase + self._offsets["SFreeListEntry"][MnPEB.getArch()])
+	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
+		return MnNT10UserData(userblocks_addr, block_size_bytes, block_count, self)
 
 
-"""
-Low Fragmentation Heap
-"""
-class MnLFH():
+class MnNTUserDataBase(object):
+	"""Base for _HEAP_USERDATA_HEADER implementations."""
 
-   # +0x000 Lock             : _RTL_CRITICAL_SECTION
-   # +0x018 SubSegmentZones  : _LIST_ENTRY
-   # +0x020 ZoneBlockSize    : Uint4B
-   # +0x024 Heap             : Ptr32 Void
-   # +0x028 SegmentChange    : Uint4B
-   # +0x02c SegmentCreate    : Uint4B
-   # +0x030 SegmentInsertInFree : Uint4B
-   # +0x034 SegmentDelete    : Uint4B
-   # +0x038 CacheAllocs      : Uint4B
-   # +0x03c CacheFrees       : Uint4B
-   # +0x040 SizeInCache      : Uint4B
-   # +0x048 RunInfo          : _HEAP_BUCKET_RUN_INFO
-   # +0x050 UserBlockCache   : [12] _USER_MEMORY_CACHE_ENTRY
-   # +0x110 Buckets          : [128] _HEAP_BUCKET
-   # +0x310 LocalData        : [1] _HEAP_LOCAL_DATA
+	# Subclasses set header_size
+	_header_size_x86 = 0x10
+	_header_size_x64 = 0x20
 
-   # blocks : LocalData->SegmentInfos->SubSegments (Mgmt List)->SubSegs
-   
-	# class attributes
-	Lock = None
-	SubSegmentZones = None
-	ZoneBlockSize = None
-	Heap = None
-	SegmentChange = None
-	SegmentCreate = None
-	SegmentInsertInFree = None
-	SegmentDelete = None
-	CacheAllocs = None
-	CacheFrees = None
-	SizeInCache = None
-	RunInfo = None
-	UserBlockCache = None
-	Buckets = None
-	LocalData = None
-	
-	def __init__(self,lfhbase):
-		self.lfhbase = lfhbase
-		self.populateLFHFields()
-		return
-		
-	def populateLFHFields(self):
-		# read 0x310 bytes and split into pieces
-		FLHHeader = dbg.readMemory(self.lfhbase,0x310)
-		self.Lock = FLHHeader[0:0x18]
-		self.SubSegmentZones = []
-		self.SubSegmentZones.append(struct.unpack('<L',FLHHeader[0x18:0x1c])[0])
-		self.SubSegmentZones.append(struct.unpack('<L',FLHHeader[0x1c:0x20])[0])
-		self.ZoneBlockSize = struct.unpack('<L',FLHHeader[0x20:0x24])[0]
-		self.Heap = struct.unpack('<L',FLHHeader[0x24:0x28])[0]
-		self.SegmentChange = struct.unpack('<L',FLHHeader[0x28:0x2c])[0]
-		self.SegmentCreate = struct.unpack('<L',FLHHeader[0x2c:0x30])[0]
-		self.SegmentInsertInFree = struct.unpack('<L',FLHHeader[0x30:0x34])[0]
-		self.SegmentDelete = struct.unpack('<L',FLHHeader[0x34:0x38])[0]
-		self.CacheAllocs = struct.unpack('<L',FLHHeader[0x38:0x3c])[0]
-		self.CacheFrees = struct.unpack('<L',FLHHeader[0x3c:0x40])[0]
-		self.SizeInCache = struct.unpack('<L',FLHHeader[0x40:0x44])[0]
-		self.RunInfo = []
-		self.RunInfo.append(struct.unpack('<L',FLHHeader[0x48:0x4c])[0])
-		self.RunInfo.append(struct.unpack('<L',FLHHeader[0x4c:0x50])[0])
-		self.UserBlockCache = []
-		cnt = 0
-		while cnt < (12*4):
-			self.UserBlockCache.append(struct.unpack('<L',FLHHeader[0x50+cnt:0x54+cnt])[0])
-			cnt += 4
+	def __init__(self, userblocks_addr, block_size_bytes, block_count, parent_subsegment=None):
+		self.address = userblocks_addr
+		self.block_size_bytes = block_size_bytes
+		self.block_count = block_count
+		self.parent_subsegment = parent_subsegment
+		self.corrupted = False
+		self.corruption_reason = ""
+		self.header_size = archValue(self._header_size_x86, self._header_size_x64)
+		self.first_block_addr = userblocks_addr + self.header_size
 
-	def getSegmentInfo(self):
-		# input : self.LocalData
-		# output : return SubSegment
-		return
+		try:
+			self.SubSegment = readPtrSizeBytes(userblocks_addr)
+			ptrsize = archValue(4, 8)
+			# SizeIndex at header+0x08 (x86) or header+0x10 (x64)
+			si_offset = archValue(0x08, 0x10)
+			self.SizeIndex = struct.unpack('<B', dbg.readMemory(userblocks_addr + si_offset, 1))[0]
+			# Signature at header+0x0c (x86) or header+0x14 (x64)
+			sig_offset = archValue(0x0c, 0x14)
+			self.Signature = struct.unpack('<L', dbg.readMemory(userblocks_addr + sig_offset, 4))[0]
+		except Exception as e:
+			self.corrupted = True
+			self.corruption_reason = "Failed to read UserData header at 0x%x: %s" % (userblocks_addr, str(e))
+			self.SubSegment = 0
+			self.SizeIndex = 0
+			self.Signature = 0
 
-	def getSubSegmentList(self):
-		# input : SubSegment
-		# output : subsegment mgmt list
-		return
+	def isValid(self):
+		"""Check if this UserData header looks valid."""
+		if self.corrupted:
+			return False
+		return True
 
-	def getSubSegment(self):
-		# input : subsegment list
-		# output : subsegments/blocks
-		return
+	def _getEncodingKey(self):
+		"""Walk up parent chain to find the encoding key."""
+		try:
+			ss = self.parent_subsegment
+			if ss and ss.parent_bucket:
+				bucket = ss.parent_bucket
+				if bucket.parent_lfh and bucket.parent_lfh.heap:
+					return bucket.parent_lfh.heap.getEncodingKey()
+		except:
+			pass
+		return 0
+
+	def getChunks(self):
+		"""Walk blocks and return list of MnChunk with parent=ChunkParent.LFH.
+
+		Each block is at first_block_addr + index * block_size_bytes.
+		Decode _HEAP_ENTRY header via encoding key.
+		"""
+		if self.corrupted or self.block_count == 0 or self.block_size_bytes == 0:
+			return []
+
+		key = self._getEncodingKey()
+		hdr_off = archValue(0, 8)
+		chunks = []
+		heap_base = 0
+		try:
+			ss = self.parent_subsegment
+			if ss and ss.parent_bucket and ss.parent_bucket.parent_lfh:
+				heap_base = ss.parent_bucket.parent_lfh.heap.heapbase
+		except:
+			pass
+
+		for i in range(self.block_count):
+			chunk_addr = self.first_block_addr + (i * self.block_size_bytes)
+			try:
+				if key == 0:
+					raw = dbg.readMemory(chunk_addr + hdr_off, 8)
+					size   = struct.unpack('<H', raw[0:2])[0]
+					flag   = struct.unpack('<B', raw[2:3])[0]
+					tag    = struct.unpack('<B', raw[3:4])[0]
+					prevsize = struct.unpack('<H', raw[4:6])[0]
+					segid  = struct.unpack('<B', raw[6:7])[0]
+					unused = struct.unpack('<B', raw[7:8])[0]
+				else:
+					raw = decodeHeapHeader(chunk_addr + hdr_off, 8, key)
+					size   = struct.unpack('<H', raw[0:2])[0]
+					flag   = struct.unpack('<B', raw[2:3])[0]
+					tag    = struct.unpack('<B', raw[3:4])[0]
+					prevsize = struct.unpack('<H', raw[4:6])[0]
+					segid  = struct.unpack('<B', raw[6:7])[0]
+					unused = struct.unpack('<B', raw[7:8])[0]
+				chunk = MnChunk(chunk_addr, "chunk", HEAPGRANULARITY, heap_base, 0,
+								size, prevsize, segid, flag, unused, tag)
+				chunk.parent = ChunkParent.LFH
+				chunk.parent_ref = self.parent_subsegment
+				chunks.append(chunk)
+			except:
+				pass
+		return chunks
+
+
+class MnNTVistaUserData(MnNTUserDataBase):
+	"""_HEAP_USERDATA_HEADER on Vista/7.
+
+	Stride computed from parent subsegment BlockSize * HEAPGRANULARITY.
+	No EncodedOffsets field.
+	"""
+	_header_size_x86 = 0x10
+	_header_size_x64 = 0x20
+
+
+class MnNT8UserData(MnNTUserDataBase):
+	"""_HEAP_USERDATA_HEADER on Win8.
+
+	Has FirstAllocationOffset and BlockStride fields (raw, not encoded).
+	BusyBitmap present.
+	"""
+	_header_size_x86 = 0x10
+	_header_size_x64 = 0x20
+
+	def __init__(self, userblocks_addr, block_size_bytes, block_count, parent_subsegment=None):
+		super(MnNT8UserData, self).__init__(userblocks_addr, block_size_bytes, block_count, parent_subsegment)
+		if not self.corrupted:
+			try:
+				offsets_field = archValue(0x10, 0x18)
+				raw_offsets = struct.unpack('<L', dbg.readMemory(userblocks_addr + offsets_field, 4))[0]
+				self.FirstAllocationOffset = raw_offsets & 0xFFFF
+				self.BlockStride = (raw_offsets >> 16) & 0xFFFF
+				if self.FirstAllocationOffset > 0:
+					self.first_block_addr = userblocks_addr + self.FirstAllocationOffset
+				if self.BlockStride > 0:
+					self.block_size_bytes = self.BlockStride
+			except:
+				pass
+
+
+class MnNT10UserData(MnNTUserDataBase):
+	"""_HEAP_USERDATA_HEADER on Win8.1/10/11.
+
+	EncodedOffsets field replaces raw FirstAllocationOffset/BlockStride.
+	Must XOR with encoding key material to decode.
+	"""
+	_header_size_x86 = 0x10
+	_header_size_x64 = 0x20
+
+	def __init__(self, userblocks_addr, block_size_bytes, block_count, parent_subsegment=None):
+		super(MnNT10UserData, self).__init__(userblocks_addr, block_size_bytes, block_count, parent_subsegment)
+		if not self.corrupted:
+			try:
+				offsets_field = archValue(0x10, 0x18)
+				raw_encoded = struct.unpack('<L', dbg.readMemory(userblocks_addr + offsets_field, 4))[0]
+				# Decode: XOR with encoding key low dword
+				key = self._getEncodingKey()
+				if key != 0:
+					decoded = raw_encoded ^ (key & 0xFFFFFFFF)
+				else:
+					decoded = raw_encoded
+				self.FirstAllocationOffset = decoded & 0xFFFF
+				self.BlockStride = (decoded >> 16) & 0xFFFF
+				if self.FirstAllocationOffset > 0:
+					self.first_block_addr = userblocks_addr + self.FirstAllocationOffset
+				if self.BlockStride > 0:
+					self.block_size_bytes = self.BlockStride
+			except:
+				pass
+
+
+class MnNTHeapBucket(object):
+	"""One LFH size class -- _HEAP_BUCKET + _HEAP_LOCAL_SEGMENT_INFO."""
+
+	# _HEAP_BUCKET is always 4 bytes: BlockUnits(2) + SizeIndex(1) + Flags(1)
+	_BUCKET_SIZE = 4
+
+	# _HEAP_LOCAL_SEGMENT_INFO offsets vary by version -- set by parent LFH class
+	_lsi_offsets_vista = {
+		"Hint":             (0x000, 0x000),  # Vista: just Hint/Bucket ptr, simplified
+		"ActiveSubsegment": (0x004, 0x008),
+	}
+
+	_lsi_offsets_win8 = {
+		"LocalData":        (0x000, 0x000),
+		"ActiveSubsegment": (0x004, 0x008),
+		"CachedItems":      (0x008, 0x010),
+		"SListHeader":      (0x048, 0x090),
+		"Counters":         (0x050, 0x0a0),
+		"LastOpSequence":   (0x058, 0x0a8),
+		"BucketIndex":      (0x05c, 0x0ac),
+		"LastUsed":         (0x05e, 0x0ae),
+		"NoThrashCount":    (0x060, 0x0b0),
+	}
+
+	_CACHED_ITEMS_COUNT = 16
+
+	def __init__(self, bucket_index, bucket_addr, lsi_addr, parent_lfh, subsegment_class):
+		self.bucket_index = bucket_index
+		self.bucket_addr = bucket_addr
+		self.lsi_addr = lsi_addr
+		self.parent_lfh = parent_lfh
+		self._subsegment_class = subsegment_class
+		self.corrupted = False
+		self.corruption_reason = ""
+		self._subsegments = None
+
+		ai = MnPEB.getArch()
+		try:
+			raw = dbg.readMemory(bucket_addr, self._BUCKET_SIZE)
+			self.BlockUnits  = struct.unpack('<H', raw[0:2])[0]
+			self.SizeIndex   = struct.unpack('<B', raw[2:3])[0]
+			self.Flags       = struct.unpack('<B', raw[3:4])[0]
+			self.UseAffinity = (self.Flags & 0x01) != 0
+		except Exception as e:
+			self.corrupted = True
+			self.corruption_reason = "Failed to read bucket at 0x%x: %s" % (bucket_addr, str(e))
+			self.BlockUnits = 0
+			self.SizeIndex = 0
+			self.Flags = 0
+			self.UseAffinity = False
+
+		self.block_size_bytes = self.BlockUnits * HEAPGRANULARITY
+		self.active_subsegment = None
+		self.cached_items = []
+
+		if lsi_addr != 0 and not self.corrupted:
+			try:
+				active_ptr = readPtrSizeBytes(lsi_addr + self._lsi_offsets_win8["ActiveSubsegment"][ai])
+				if active_ptr != 0:
+					self.active_subsegment = self._subsegment_class(active_ptr, parent_bucket=self)
+				# Read CachedItems[16] (only Win8+)
+				if "CachedItems" in self._lsi_offsets_win8:
+					cached_base = lsi_addr + self._lsi_offsets_win8["CachedItems"][ai]
+					ptrsize = archValue(4, 8)
+					for i in range(self._CACHED_ITEMS_COUNT):
+						ptr = readPtrSizeBytes(cached_base + i * ptrsize)
+						if ptr != 0:
+							ss = self._subsegment_class(ptr, parent_bucket=self)
+							if ss.isValid():
+								self.cached_items.append(ss)
+			except Exception as e:
+				self.corrupted = True
+				self.corruption_reason = "Failed to read LSI at 0x%x: %s" % (lsi_addr, str(e))
+
+	def isSentinel(self):
+		return self.bucket_index == 128
+
+	def getSubSegments(self):
+		"""Return all valid subsegments (active + cached)."""
+		if self._subsegments is None:
+			self._subsegments = []
+			if self.active_subsegment and self.active_subsegment.isValid():
+				self._subsegments.append(self.active_subsegment)
+			self._subsegments.extend(self.cached_items)
+		return self._subsegments
+
+	def getTotalBlocks(self):
+		return sum(ss.BlockCount for ss in self.getSubSegments())
+
+	def getFreeBlocks(self):
+		return sum(ss.getFreeCount() for ss in self.getSubSegments())
+
+	def getBusyBlocks(self):
+		return self.getTotalBlocks() - self.getFreeBlocks()
+
+	def isActive(self):
+		"""True if this bucket has at least one valid subsegment."""
+		return len(self.getSubSegments()) > 0
+
+
+class MnNTFrontEndAllocatorBase(object):
+	"""Base FrontEnd allocator — owns LFH state, provides unified interface to MnNTHeap.
+
+	Subclasses implement _resolveLSI() to handle version-specific LSI lookup.
+	"""
+
+	_lfh_class = None
+	_subsegment_class = None
+	_n_buckets = 128
+
+	def __init__(self, heap):
+		self.heap = heap
+		self.address = heap.getFrontEndHeap()
+		self._lfh = None
+		self._buckets = None
+		self._ranges = None
+
+	@property
+	def lfh(self):
+		if self._lfh is None and self.address != 0:
+			self._lfh = self._lfh_class(self.address)
+		return self._lfh
+
+	def _resolveLSI(self, bucket_index):
+		"""Return the address of _HEAP_LOCAL_SEGMENT_INFO for given bucket_index.
+		Subclasses override this for version-specific resolution.
+		"""
+		return 0
+
+	def getBuckets(self):
+		"""Iterate Buckets[0..n_buckets], resolve LSI per bucket, return all."""
+		if self._buckets is not None:
+			return self._buckets
+
+		self._buckets = []
+		if self.lfh is None:
+			return self._buckets
+
+		ai = MnPEB.getArch()
+		buckets_base = self.lfh.Buckets
+		bucket_size = MnNTHeapBucket._BUCKET_SIZE
+
+		for i in range(self._n_buckets):
+			bucket_addr = buckets_base + (i * bucket_size)
+			lsi_addr = self._resolveLSI(i)
+			bucket = MnNTHeapBucket(i, bucket_addr, lsi_addr, self, self._subsegment_class)
+			self._buckets.append(bucket)
+
+		return self._buckets
+
+	def getActiveBuckets(self):
+		"""Only buckets that have at least one active or cached subsegment."""
+		return [b for b in self.getBuckets() if b.isActive()]
+
+	def getAllSubSegments(self):
+		"""Flat list of all subsegments across all active buckets."""
+		result = []
+		for bucket in self.getActiveBuckets():
+			result.extend(bucket.getSubSegments())
+		return result
+
+	def getRanges(self):
+		"""Collect (start, end) for all subsegment UserBlocks regions."""
+		if self._ranges is not None:
+			return self._ranges
+		self._ranges = []
+		for ss in self.getAllSubSegments():
+			r = ss.getRange()
+			if r[0] != 0:
+				self._ranges.append(r)
+		return self._ranges
+
+	def getChunks(self):
+		"""Walk all buckets -> subsegments -> blocks, return dict keyed by address."""
+		chunks = {}
+		for ss in self.getAllSubSegments():
+			ud = ss.getUserData()
+			if ud and not ud.corrupted:
+				for chunk in ud.getChunks():
+					chunks[chunk.chunkptr] = chunk
+		return chunks
+
+	def getBucketForSize(self, size):
+		"""Given a user allocation size, return which bucket services it.
+
+		Returns None if size exceeds LFH range.
+		"""
+		block_units = (size + HEAPGRANULARITY - 1 + archValue(8, 16)) // HEAPGRANULARITY
+		for bucket in self.getBuckets():
+			if bucket.BlockUnits >= block_units and not bucket.isSentinel():
+				return bucket
+		return None
+
+	def getBucketStats(self):
+		"""Per-bucket summary for all active buckets."""
+		stats = []
+		for bucket in self.getActiveBuckets():
+			stats.append({
+				"index": bucket.bucket_index,
+				"block_size": bucket.block_size_bytes,
+				"subsegment_count": len(bucket.getSubSegments()),
+				"total_blocks": bucket.getTotalBlocks(),
+				"free_blocks": bucket.getFreeBlocks(),
+				"busy_blocks": bucket.getBusyBlocks(),
+			})
+		return stats
+
+	def getUtilization(self):
+		"""Aggregate block counts across the entire LFH.
+
+		Returns: (total_blocks, busy_blocks, free_blocks)
+		"""
+		total = busy = free = 0
+		for bucket in self.getActiveBuckets():
+			total += bucket.getTotalBlocks()
+			free += bucket.getFreeBlocks()
+			busy += bucket.getBusyBlocks()
+		return (total, busy, free)
+
+	def contains(self, addr):
+		"""Is addr within any LFH UserBlocks region."""
+		for start, end in self.getRanges():
+			if start <= addr < end:
+				return True
+		return False
+
+
+class MnNTVistaFrontEndAllocator(MnNTFrontEndAllocatorBase):
+	"""FrontEnd allocator for Vista/7.
+
+	LSI resolution: _HEAP_LOCAL_DATA contains inline SegmentInfo[128] array.
+	Each entry is a small _HEAP_LOCAL_SEGMENT_INFO (Vista format).
+	"""
+
+	_lfh_class = MnNTVistaLFH
+	_subsegment_class = MnNTVistaLFHSubSegment
+	_n_buckets = 128
+
+	# Vista _HEAP_LOCAL_SEGMENT_INFO size: (x86, x64)
+	_LSI_SIZE = (0x008, 0x010)
+
+	# Offset from _HEAP_LOCAL_DATA base to SegmentInfo[0]: (x86, x64)
+	_SEGINFO_OFFSET = (0x008, 0x010)
+
+	def _resolveLSI(self, bucket_index):
+		"""Vista/7: LSI is inline in _HEAP_LOCAL_DATA.SegmentInfo[bucket_index]."""
+		if self.lfh is None:
+			return 0
+		ai = MnPEB.getArch()
+		local_data = self.lfh.LocalData
+		lsi_size = self._LSI_SIZE[ai]
+		seg_info_base = local_data + self._SEGINFO_OFFSET[ai]
+		return seg_info_base + (bucket_index * lsi_size)
+
+
+class MnNT8FrontEndAllocator(MnNTFrontEndAllocatorBase):
+	"""FrontEnd allocator for Win8/8.1.
+
+	LSI resolution: _LFH_HEAP.SegmentInfoArrays[129] is a pointer array.
+	Each entry is a pointer to a _HEAP_LOCAL_SEGMENT_INFO structure.
+
+	AffinitizedInfoArrays[129] is a parallel pointer array for non-default
+	affinity slots (multi-processor LFH). Each non-NULL entry points to
+	an array of LSIs for that bucket across affinity groups.
+	"""
+
+	_lfh_class = MnNT8LFH
+	_subsegment_class = MnNT8LFHSubSegment
+	_n_buckets = 129
+
+	def _resolveLSI(self, bucket_index):
+		"""Win8+: read pointer from SegmentInfoArrays[bucket_index]."""
+		if self.lfh is None:
+			return 0
+		ai = MnPEB.getArch()
+		ptrsize = archValue(4, 8)
+		ptr_addr = self.lfh.SegmentInfoArrays + (bucket_index * ptrsize)
+		try:
+			return readPtrSizeBytes(ptr_addr)
+		except:
+			return 0
+
+	def _resolveAffinitizedLSI(self, bucket_index):
+		"""Win8+: read pointer from AffinitizedInfoArrays[bucket_index].
+
+		Returns 0 if no affinitized LSI exists for this bucket.
+		"""
+		if self.lfh is None:
+			return 0
+		ai = MnPEB.getArch()
+		ptrsize = archValue(4, 8)
+		ptr_addr = self.lfh.AffinitizedInfoArrays + (bucket_index * ptrsize)
+		try:
+			return readPtrSizeBytes(ptr_addr)
+		except:
+			return 0
+
+	def getAffinitizedSubSegments(self, bucket_index):
+		"""Walk AffinitizedInfoArrays for a bucket, return additional subsegments.
+
+		On multi-processor systems, a bucket with UseAffinity=1 has additional
+		LSIs per affinity slot. Each affinitized LSI has its own ActiveSubsegment
+		and CachedItems.
+		"""
+		aff_lsi = self._resolveAffinitizedLSI(bucket_index)
+		if aff_lsi == 0:
+			return []
+		ai = MnPEB.getArch()
+		ptrsize = archValue(4, 8)
+		subsegments = []
+		try:
+			active_off = MnNTHeapBucket._lsi_offsets_win8["ActiveSubsegment"][ai]
+			active_ptr = readPtrSizeBytes(aff_lsi + active_off)
+			if active_ptr != 0:
+				ss = self._subsegment_class(active_ptr, parent_bucket=None)
+				if ss.isValid():
+					subsegments.append(ss)
+			cached_off = MnNTHeapBucket._lsi_offsets_win8["CachedItems"][ai]
+			cached_base = aff_lsi + cached_off
+			for i in range(MnNTHeapBucket._CACHED_ITEMS_COUNT):
+				ptr = readPtrSizeBytes(cached_base + i * ptrsize)
+				if ptr != 0:
+					ss = self._subsegment_class(ptr, parent_bucket=None)
+					if ss.isValid():
+						subsegments.append(ss)
+		except:
+			pass
+		return subsegments
+
+	def getAllSubSegments(self):
+		"""Flat list of all subsegments including affinitized slots."""
+		result = []
+		for bucket in self.getActiveBuckets():
+			result.extend(bucket.getSubSegments())
+			if bucket.UseAffinity:
+				result.extend(self.getAffinitizedSubSegments(bucket.bucket_index))
+		return result
+
+
+class MnNT10FrontEndAllocator(MnNT8FrontEndAllocator):
+	"""FrontEnd allocator for Win10/11.
+
+	Same LSI resolution as Win8 (SegmentInfoArrays pointer array).
+	Uses Win10 LFH and subsegment classes.
+	"""
+
+	_lfh_class = MnNT10LFH
+	_subsegment_class = MnNT10LFHSubSegment
+	_n_buckets = 129
+
+
+class MnNTBackEndAllocator(object):
+	"""BackEnd allocator — owns segments, free lists, UCRs, and VA blocks.
+
+	The heap's getSegments()/getVirtualAllocdBlocks()/getUCRDescriptors() delegate here.
+	"""
+
+	def __init__(self, heap):
+		self.heap = heap
+		self._segments = None
+		self._chunks = None
+		self._va_blocks = None
+
+	def getSegments(self):
+		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
+		if self._segments is None:
+			self._segments = list(self.heap.iterSegments())
+		return self._segments
+
+	def getSegmentForAddress(self, addr):
+		"""Which segment contains the given address. Returns None if not found."""
+		for seg in self.getSegments():
+			try:
+				if seg.BaseAddress <= addr < seg.LastValidEntry:
+					return seg
+			except:
+				pass
+		return None
+
+	def getChunks(self):
+		"""All back-end segment chunks (walk all segments). parent=SEGMENT."""
+		if self._chunks is not None:
+			return self._chunks
+		self._chunks = {}
+		for seg in self.getSegments():
+			for chunk in seg.getChunks():
+				self._chunks[chunk.chunkptr] = chunk
+		return self._chunks
+
+	def getFreeChunks(self):
+		"""All chunks with state FREE."""
+		result = {}
+		for addr, chunk in self.getChunks().items():
+			if chunk.getState() == ChunkState.FREE:
+				result[addr] = chunk
+		return result
+
+	def getBusyChunks(self):
+		"""All segment chunks with state BUSY."""
+		result = {}
+		for addr, chunk in self.getChunks().items():
+			if chunk.getState() == ChunkState.BUSY:
+				result[addr] = chunk
+		return result
+
+	def getUCRDescriptors(self):
+		"""Walk the heap-wide UCRList."""
+		head = MnListEntry(self.heap.heapbase + self.heap._offset("UCRList"))
+		result = []
+		for entry in head.walk():
+			ucr = MnUCRDescriptor.fromListEntry(entry)
+			if ucr.size:
+				result.append(ucr)
+		return result
+
+	def getVABlocks(self):
+		"""Virtual-allocated blocks (> VirtualMemoryThreshold). Cached."""
+		if self._va_blocks is not None:
+			return self._va_blocks
+		self._va_blocks = self.heap.getVirtualAllocdBlocks()
+		return self._va_blocks
+
+	def contains(self, addr):
+		"""Is addr within any back-end segment committed range."""
+		return self.getSegmentForAddress(addr) is not None
+
+	def getRanges(self):
+		"""Return sorted list of (start, end) for all segments."""
+		ranges = []
+		for seg in self.getSegments():
+			try:
+				ranges.append((seg.BaseAddress, seg.LastValidEntry))
+			except:
+				pass
+		return sorted(ranges)
+
 
 """
 MnHeap Childclass
@@ -19056,10 +18851,12 @@ class MnChunk(MnListEntry):
 	commitsize = 0
 	reservesize = 0
 	remaining = 0
+	parent = ChunkParent.SEGMENT
+	parent_ref = None
 	hasust = False
-	dph_block_information_startstamp = 0 
+	dph_block_information_startstamp = 0
 	dph_block_information_heap = 0
-	dph_block_information_requestedsize = 0 
+	dph_block_information_requestedsize = 0
 	dph_block_information_actualsize = 0
 	dph_block_information_traceindex = 0
 	dph_block_information_stacktrace = 0
@@ -19132,6 +18929,12 @@ class MnChunk(MnListEntry):
 		self.flagtxt = getHeapFlag(self.flag)
 		# Inherit MnListEntry at the data area: for free chunks this is the _LIST_ENTRY (Flink/Blink).
 		super(MnChunk, self).__init__(self.userptr)
+
+	def getState(self):
+		"""Return ChunkState.BUSY or ChunkState.FREE based on the BUSY flag (bit 0)."""
+		if self.flag & 0x01:
+			return ChunkState.BUSY
+		return ChunkState.FREE
 
 	@classmethod
 	def walk(cls, first_entry, last_valid_entry, heap, segment_base):
@@ -22222,7 +22025,6 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
 	items = list(mnproc.getPEB().getModules(peb_order=peb_order).items())
-	displayed_module_count = len(items) if len(logfile) > 0 else len(modules)
 	if sort_keys:
 		# Apply compound sort in reverse key order so first key wins (stable sort)
 		for key, reverse in reversed(sort_keys):
@@ -22236,7 +22038,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.getPEB().getModules()), displayed_module_count)
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.getPEB().getModules()), len(modules))
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
 	thistable += " | PEB order: %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
 	if sort_keys:
@@ -22325,9 +22127,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				md_lines.append("")
 				md_lines.append("## Module Table")
 				md_lines.append("")
-				md_lines.append("- Total nr of modules loaded: **%d**" % len(mnproc.getPEB().getModules()))
-				md_lines.append("- Nr of modules displayed after filters: **%d**" % displayed_module_count)
-				md_lines.append("- PEB order: **%s**" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order))
+				md_lines.append("Total nr of modules loaded: %d" % len(mnproc.getPEB().getModules()))
+				md_lines.append("Nr of modules displayed after filters: %d" % len(modules))
+				md_lines.append("PEB order: %s" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order))
 				if sort_keys:
 					sort_desc = " -> ".join("%s (%s)" % (k, "descending" if r else "ascending") for k, r in sort_keys)
 					md_lines.append("Sort applied: %s" % sort_desc)
@@ -22933,7 +22735,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	pivotdistance - minimum distance a stackpivot needs to be
 	fast - Boolean indicating if you want to process less obvious gadgets as well
 	mode - internal use only
-	sortedprint - sort pointers before printing output to rop.md
+	sortedprint - sort pointers before printing output to rop.txt
 	technique - create all chains if empty. otherwise, create virtualalloc or virtualprotect chain (based on what is specified)
 	
 	Return:
@@ -23121,8 +22923,8 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 						thisopcode = dbg.disasmBackward(endingtypeptr,depth+1)
 						thisptr = thisopcode.getAddress()
 					except:
-						mndbg.dbgp("Unable to backward disassemble at 0x%0x, depth %d, skipping location" % (endingtypeptr, depth+1), errormode=False)
-						mndbg.dbgp(safeTracebackText(), errormode=False)
+						dbg.log("        ** Unable to backward disassemble at 0x%0x, depth %d, skipping location\n" % (endingtypeptr, depth+1))
+						mndbg.dbgp(traceback.format_exc(), errormode=False)
 						thisopcode = ""
 						thisptr = 0
 
@@ -23221,7 +23023,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 							startptr = startptr+1
 						except Exception as ropex:
 							mndbg.dbgp("Error while looking for gadgets: %s" % str(ropex), errormode=False)
-							mndbg.dbgp(safeTracebackText(), errormode=False)
+							mndbg.dbgp(traceback.format_exc(), errormode=False)
 							interruptMona()
 							continue
 				else:
@@ -26404,7 +26206,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 	routinedefs["VirtualAlloc"] 			= virtualalloc
 	# only run these on older systems
 	osver=dbg.getOsVersion()
-	if not (osver == "6" or osver == "7" or osver == "8" or osver == "10" or osver == "11" or osver == "vista" or osver == "win7" or osver == "2008server" or osver == "win8" or osver == "win8.1" or osver == "win10" or osver == "win11"):
+	if not (osver == "6" or osver == "7" or osver == "8" or osver == "10" or osver == "11" or osver == "vista" or osver == "win7" or osver == "2008server" or osver == "win8" or osver == "win8.1" or osver == "win10"):
 		routinedefs["SetInformationProcess"]	= setinformationprocess
 		routinedefs["SetProcessDEPPolicy"]		= setprocessdeppolicy	
 	
@@ -31498,7 +31300,6 @@ class MnAI(object):
 		self.reachability_target_address = 0
 		self.rop_target_modules = None
 		self.template_file = ""
-		self.template_placeholders = set()
 		self.prebuilt_prompt = ""
 		self.heapdynamics_files = []
 		self.additional_context_files = []
@@ -31511,12 +31312,6 @@ class MnAI(object):
 		self.raw_response_logfile_path = ""
 		self.offline_logfile_path = ""
 		self.available_model_ids = []
-		self.upload_requested = False
-		self.openai_upload_requested = False
-		self.provider_uploaded_files = []
-		self.openai_uploaded_files = []
-		self.referenced_file_ids = []
-		self.last_request_context = None
 
 	def logInfo(self, message):
 		"""Write a top-level informational message using the standard AI output prefix."""
@@ -31554,108 +31349,6 @@ class MnAI(object):
 			return "default"
 		return source_name
 
-	def getRequestedTemplatePlaceholders(self):
-		"""Return normalized placeholder names requested by the active q9 template."""
-		mndbg.dbgp(get_current_function_name())
-		if self.question_type != "9" or self.prebuilt_prompt != "":
-			return set()
-		return set(self.template_placeholders)
-
-	def buildContextCollectionPlan(self):
-		"""Return a generic collection plan for the active profile or q9 template."""
-		mndbg.dbgp(get_current_function_name())
-		return _buildAIContextCollectionPlan(
-			self.effective_question_type,
-			requested_placeholders=self.getRequestedTemplatePlaceholders()
-		)
-
-	def needsFunctionContext(self):
-		"""Return True when function-level code context should be collected."""
-		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type in ["2", "3", "3b"]:
-			return True
-		return len(self.getRequestedTemplatePlaceholders() & (_TEMPLATE_FUNCTION_PLACEHOLDERS | _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS)) > 0
-
-	def needsControlledDataContext(self):
-		"""Return True when controlled-chunk reachability context should be collected."""
-		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type in ["3", "3b"]:
-			return True
-		return len(self.getRequestedTemplatePlaceholders() & _TEMPLATE_CONTROLLED_DATA_PLACEHOLDERS) > 0
-
-	def needsRopModuleContext(self):
-		"""Return True when q8-style ROP module scope data should be collected."""
-		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type == "8":
-			return True
-		return len(self.getRequestedTemplatePlaceholders() & _TEMPLATE_ROP_PLACEHOLDERS) > 0
-
-	def usesHeapAnalysisTarget(self):
-		"""Return True when -a should also feed heap-analysis target context."""
-		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type == "1":
-			return True
-		return "heap_analysis_target" in self.getRequestedTemplatePlaceholders()
-
-	def usesAdditionalCodeTarget(self):
-		"""Return True when -a should be treated as an additional code/function target."""
-		mndbg.dbgp(get_current_function_name())
-		if self.effective_question_type == "2":
-			return True
-		requested_placeholders = self.getRequestedTemplatePlaceholders()
-		return len(requested_placeholders & (_TEMPLATE_FUNCTION_PLACEHOLDERS | set(["analysis_target", "additional_function", "additional_function_note", "function_analyses"]))) > 0
-
-	def parseControlledChunkInputs(self):
-		"""Resolve controlled-chunk and optional target inputs when the request needs them."""
-		mndbg.dbgp(get_current_function_name())
-		self.controlled_chunk_address = 0
-		self.reachability_target_address = 0
-		if not self.needsControlledDataContext():
-			return True
-		if "c" not in self.args or type(self.args["c"]).__name__.lower() == "bool":
-			self.logError("This request requires -c <controlled chunk address>")
-			return False
-		self.controlled_chunk_address, chunk_ok = getAddyArg(self.args["c"])
-		if not chunk_ok or self.controlled_chunk_address <= 0:
-			self.logError("Please specify a valid controlled chunk address with -c")
-			return False
-		if "t" in self.args:
-			if type(self.args["t"]).__name__.lower() == "bool":
-				self.logError("Please specify a valid target address with -t")
-				return False
-			self.reachability_target_address, target_ok = getAddyArg(self.args["t"])
-			if not target_ok or self.reachability_target_address <= 0:
-				self.logError("Please specify a valid target address with -t")
-				return False
-			self.target_address = self.reachability_target_address
-			self.target_address_source = "-t"
-			mndbg.dbgp("tellme: using controlled chunk %s and reachability target %s" % (
-				PTR_PRINT % self.controlled_chunk_address,
-				PTR_PRINT % self.reachability_target_address,
-			))
-		else:
-			mndbg.dbgp("tellme: using controlled chunk %s in discovery mode (no -t target)" % (
-				PTR_PRINT % self.controlled_chunk_address,
-			))
-		return True
-
-	def parseControlFlowFollowDepth(self):
-		"""Parse generic control-flow follow depth from -d for code-flow aware requests."""
-		mndbg.dbgp(get_current_function_name())
-		self.q2_follow_depth = 2
-		if not self.needsFunctionContext() or "d" not in self.args:
-			return True
-		if type(self.args["d"]).__name__.lower() == "bool":
-			self.logError("Please specify a numeric depth with -d <1-4>")
-			return False
-		follow_depth, depth_ok = getIntArg(self.args["d"])
-		if not depth_ok or follow_depth < 1 or follow_depth > 4:
-			self.logError("Invalid -d value '%s'. Please specify a number between 1 and 4." % self.args["d"])
-			return False
-		self.q2_follow_depth = follow_depth
-		mndbg.dbgp("tellme: using control-flow follow depth %d from -d" % self.q2_follow_depth)
-		return True
-
 	def _getEngineOptionDefinitions(self):
 		"""Return engine-specific configuration option metadata."""
 		mndbg.dbgp(get_current_function_name())
@@ -31684,7 +31377,7 @@ class MnAI(object):
 				{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
 				{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
 				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "8192"},
+				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "4096"},
 			]
 		if engine == "ollama":
 			return [
@@ -32023,6 +31716,27 @@ class MnAI(object):
 		self.logAvailableModels(models=models, error_mode=False)
 		return True
 
+	def validateCpbArgument(self):
+		"""Validate -cpb syntax early so tellme does not continue with a silently ignored badchar filter."""
+		mndbg.dbgp(get_current_function_name())
+		if "cpb" not in self.args:
+			return True
+		if type(self.args["cpb"]).__name__.lower() == "bool":
+			self.logError("Please specify badchars with -cpb <bytes>")
+			self.logErrorDetail("Example: -cpb '\\x00\\x0a\\x0d'")
+			return False
+		strb, badcharsok = cpbArgToBytes(self.args["cpb"])
+		if not badcharsok:
+			self.logError("Unable to parse -cpb value '%s'" % self.args["cpb"])
+			self.logErrorDetail("Use \\xNN byte syntax, for example: -cpb '\\x00\\x20\\x0a\\x0d\\x3f'")
+			self.logErrorDetail("Ranges are also supported, for example: -cpb '\\x00..\\x05\\x20\\x3f'")
+			return False
+		mndbg.dbgp("tellme: validated -cpb value '%s' -> %s" % (
+			self.args["cpb"],
+			_renderBadchars(strb)
+		))
+		return True
+
 	def parseTargetAddress(self):
 		"""Resolve an optional analysis target address from -a and map it to the active question profile."""
 		mndbg.dbgp(get_current_function_name())
@@ -32038,17 +31752,49 @@ class MnAI(object):
 			return False
 
 		self.target_address_source = "-a"
-		if self.usesHeapAnalysisTarget():
+		if self.effective_question_type == "1":
 			self.heap_target_address = self.target_address
-			mndbg.dbgp("tellme: using heap analysis target %s from -a" % (PTR_PRINT % self.heap_target_address))
-		if self.usesAdditionalCodeTarget():
+			mndbg.dbgp("tellme: using heap analysis target %s from -a for q1" % (PTR_PRINT % self.heap_target_address))
+		else:
 			self.additional_target_address = self.target_address
-			mndbg.dbgp("tellme: using additional code target %s from -a" % (PTR_PRINT % self.additional_target_address))
+			mndbg.dbgp("tellme: using additional q2 target %s from -a" % (PTR_PRINT % self.additional_target_address))
 		return True
 
 	def parseQ3ChunkAndTarget(self):
 		"""Resolve q3-specific controlled-chunk and optional reachability target addresses."""
-		return self.parseControlledChunkInputs()
+		mndbg.dbgp(get_current_function_name())
+		self.controlled_chunk_address = 0
+		self.reachability_target_address = 0
+		if self.effective_question_type != "3":
+			return True
+		if "c" not in self.args or type(self.args["c"]).__name__.lower() == "bool":
+			self.logError("Question profile '-q 3' requires -c <controlled chunk address>")
+			return False
+		self.controlled_chunk_address, chunk_ok = getAddyArg(self.args["c"])
+		if not chunk_ok or self.controlled_chunk_address <= 0:
+			self.logError("Please specify a valid controlled chunk address with -c")
+			return False
+		if "t" in self.args:
+			if type(self.args["t"]).__name__.lower() == "bool":
+				self.logError("Please specify a valid target address with -t")
+				return False
+			self.reachability_target_address, target_ok = getAddyArg(self.args["t"])
+			if not target_ok or self.reachability_target_address <= 0:
+				self.logError("Please specify a valid target address with -t")
+				return False
+			self.target_address = self.reachability_target_address
+			self.target_address_source = "-t"
+			mndbg.dbgp("tellme: using controlled chunk %s and reachability target %s for q3" % (
+				PTR_PRINT % self.controlled_chunk_address,
+				PTR_PRINT % self.reachability_target_address,
+			))
+		else:
+			self.target_address = 0
+			self.target_address_source = ""
+			mndbg.dbgp("tellme: using controlled chunk %s for q3 discovery mode (no -t target)" % (
+				PTR_PRINT % self.controlled_chunk_address,
+			))
+		return True
 
 	def parseTemplateSelection(self):
 		"""Load and validate a request template when question profile 9 is selected."""
@@ -32071,27 +31817,16 @@ class MnAI(object):
 			return False
 
 		self.effective_question_type = _guessTemplateQuestionType(self.template_file)
-		self.template_placeholders = set()
 		mndbg.dbgp("tellme: using template file %s for q9" % self.template_file)
 		if self.prebuilt_prompt != "":
 			mndbg.dbgp("tellme: q9 will reuse the prebuilt request prompt from %s" % self.template_file)
 			self.logInfo("Using prebuilt request from: %s" % self.template_file)
-		else:
-			try:
-				self.template_placeholders = _loadTemplatePlaceholderNames(self.template_file)
-			except Exception as e:
-				self.logError("Unable to read template placeholders from %s" % self.template_file)
-				self.logErrorDetail(str(e))
-				return False
 		if self.effective_question_type != "":
 			mndbg.dbgp("tellme: inferred base question type '%s' from template name" % self.effective_question_type)
-			if self.target_address > 0 and self.heap_target_address == 0 and self.target_address_source == "-a" and self.usesHeapAnalysisTarget():
+			if self.target_address > 0 and self.heap_target_address == 0 and self.target_address_source == "-a" and self.effective_question_type == "1":
 				self.heap_target_address = self.target_address
-				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for the active template" % (PTR_PRINT % self.heap_target_address))
-		if self.target_address > 0 and self.additional_target_address == 0 and self.target_address_source == "-a" and self.usesAdditionalCodeTarget():
-			self.additional_target_address = self.target_address
-			mndbg.dbgp("tellme: treating -a target %s as an additional code target for the active template" % (PTR_PRINT % self.additional_target_address))
-		if self.prebuilt_prompt == "":
+				mndbg.dbgp("tellme: treating -a target %s as heap analysis target for ai.q1 template" % (PTR_PRINT % self.heap_target_address))
+		elif self.prebuilt_prompt == "":
 			self.logInfo("Using request template: %s" % self.template_file)
 		return True
 
@@ -32102,30 +31837,41 @@ class MnAI(object):
 			return True
 		default_template_path = _ensureDefaultTemplate(self.question_type, self.mona_config)
 		if default_template_path != "":
-			self.logInfo("Template created at %s " % default_template_path)
-			self.logInfoDetail("(won't be used unless you run -q 9 -f %s)" % default_template_path)
+			self.logInfo("Template created at %s (won't be used unless you run -q 9 -f %s)" % (
+				default_template_path,
+				default_template_path
+			))
 		return True
 
 	def parseQ2FollowDepth(self):
 		"""Parse q2/q3 call/jump follow depth from -d."""
-		return self.parseControlFlowFollowDepth()
+		mndbg.dbgp(get_current_function_name())
+		self.q2_follow_depth = 2
+		if self.effective_question_type not in ["2", "3", "3b"] or "d" not in self.args:
+			return True
+		if type(self.args["d"]).__name__.lower() == "bool":
+			self.logError("Please specify a numeric depth with -d <1-4> for '-q %s'" % self.effective_question_type)
+			return False
+		follow_depth, depth_ok = getIntArg(self.args["d"])
+		if not depth_ok:
+			self.logError("Invalid -d value '%s' for '-q %s'. Please specify a number between 1 and 4." % (
+				self.args["d"], self.effective_question_type
+			))
+			return False
+		if follow_depth < 1 or follow_depth > 4:
+			self.logError("Invalid -d value '%s' for '-q %s'. Please specify a number between 1 and 4." % (
+				self.args["d"], self.effective_question_type
+			))
+			return False
+		self.q2_follow_depth = follow_depth
+		mndbg.dbgp("tellme: using q%s control-flow follow depth %d from -d" % (
+			self.effective_question_type, self.q2_follow_depth
+		))
+		return True
 
 	def parseRequestSettings(self):
-		"""Resolve API key, model, timeout, token budget, upload mode, and test overrides for the request."""
+		"""Resolve API key, model, timeout, token budget, and test overrides for the request."""
 		mndbg.dbgp(get_current_function_name())
-		self.upload_requested = ("upload" in self.args)
-		self.openai_upload_requested = self.upload_requested
-		self.referenced_file_ids = []
-		if "id" in self.args:
-			if type(self.args["id"]).__name__.lower() == "bool":
-				self.logError("Please specify one or more file IDs with -id <id1,id2,...>")
-				return False
-			self.referenced_file_ids = _splitFileIdArgument(self.args["id"])
-			if len(self.referenced_file_ids) == 0:
-				self.logError("Please specify one or more valid file IDs with -id <id1,id2,...>")
-				return False
-			self.logInfo("Referencing %d existing provider file ID(s)." % len(self.referenced_file_ids))
-			self.logInfoDetail(", ".join(self.referenced_file_ids))
 		if "maxsize" in self.args:
 			if type(self.args["maxsize"]).__name__.lower() == "bool":
 				self.logError("Please specify a size value with -maxsize <kilobytes>")
@@ -32174,6 +31920,7 @@ class MnAI(object):
 				mndbg.dbgp("tellme: extending default timeout for q8 to %.1fs" % self.timeout_seconds)
 			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
 			mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
+				
 				self.engine, self.timeout_seconds, self.timeout_source
 			))
 			mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
@@ -32182,9 +31929,6 @@ class MnAI(object):
 		else:
 			self.model = getDefaultAIModel("openai")
 			mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
-		if len(self.referenced_file_ids) > 0 and self.engine not in ["openai", "anthropic"]:
-			self.logError("The -id flag is currently only supported with the openai and anthropic engines.")
-			return False
 
 		if "model" in self.args:
 			if type(self.args["model"]).__name__.lower() == "bool":
@@ -32210,15 +31954,6 @@ class MnAI(object):
 				mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
 					self.engine, json.dumps(self.api_options, sort_keys=True)
 				))
-		if self.upload_requested:
-			if self.engine not in ["openai", "anthropic"]:
-				self.logError("The -upload flag is currently only supported with the openai and anthropic engines.")
-				return False
-			self.logInfo("%s upload mode requested." % self.engine.capitalize())
-			self.logInfo("Mona will upload the saved request file plus any -l/-p files")
-			self.logInfoDetail("instead of embedding them in the submitted text prompt.")
-			self.logInfoDetail("This is useful for large contexts that would exceed")
-			self.logInfoDetail("model input limits if included in the prompt.")
 		return True
 
 	def validateProviderConfiguration(self):
@@ -32271,79 +32006,39 @@ class MnAI(object):
 			return False
 		return True
 
-	def _resolveContextFileArgs(self):
-		"""Resolve and validate raw -l context file arguments before any context collection starts."""
-		mndbg.dbgp(get_current_function_name())
-		context_files = []
-		if "l" not in self.args:
-			return True, context_files
-		if type(self.args["l"]).__name__.lower() == "bool":
-			self.logError("Please specify at least one context file with -l <file1,file2,...>")
-			return False, []
-		for raw_file in str(self.args["l"]).replace('"', "").replace("'", "").split(","):
-			raw_file = raw_file.strip()
-			if raw_file == "":
-				continue
-			context_file = getAbsolutePath(raw_file)
-			if not os.path.isfile(context_file):
-				self.logError("Unable to find/read context file %s" % context_file)
-				return False, []
-			context_files.append(context_file)
-		if len(context_files) == 0:
-			self.logError("Please specify at least one valid context file with -l")
-			return False, []
-		return True, context_files
-
-	def _resolvePocFileArg(self):
-		"""Resolve and validate the raw -p PoC file argument before any context collection starts."""
-		mndbg.dbgp(get_current_function_name())
-		if "p" not in self.args:
-			return True, ""
-		if type(self.args["p"]).__name__.lower() == "bool":
-			self.logError("Please specify a PoC file with -p <file>")
-			return False, ""
-		poc_file = getAbsolutePath(str(self.args["p"]).replace('"', "").replace("'", "").strip())
-		if not os.path.isfile(poc_file):
-			self.logError("Unable to find/read PoC file %s" % poc_file)
-			return False, ""
-		return True, poc_file
-
-	def validateInputFiles(self):
-		"""Fail fast on invalid -l/-p file arguments before request preparation continues."""
-		mndbg.dbgp(get_current_function_name())
-		context_ok, _context_files = self._resolveContextFileArgs()
-		if not context_ok:
-			return False
-		poc_ok, _poc_file = self._resolvePocFileArg()
-		if not poc_ok:
-			return False
-		return True
-
 	def parseContextFiles(self):
 		"""Classify optional context files into heapdynamics logs and generic attachments."""
 		mndbg.dbgp(get_current_function_name())
 		self.heapdynamics_files = []
 		self.additional_context_files = []
-		context_ok, context_files = self._resolveContextFileArgs()
-		if not context_ok:
-			return False
-		for context_file in context_files:
-			looks_like_heapdynamics, _ = _isHeapdynamicsFile(context_file)
-			if looks_like_heapdynamics:
-				self.heapdynamics_files.append(context_file)
-			else:
-				self.additional_context_files.append(context_file)
-		if len(self.heapdynamics_files) == 0 and len(self.additional_context_files) == 0 and len(context_files) > 0:
-			self.logError("Please specify at least one valid context file with -l")
-			return False
+		if "l" in self.args:
+			if type(self.args["l"]).__name__.lower() == "bool":
+				self.logError("Please specify at least one context file with -l <file1,file2,...>")
+				return False
+			for raw_file in str(self.args["l"]).replace('"', "").replace("'", "").split(","):
+				raw_file = raw_file.strip()
+				if raw_file == "":
+					continue
+				context_file = getAbsolutePath(raw_file)
+				if not os.path.isfile(context_file):
+					self.logError("Unable to find/read context file %s" % context_file)
+					return False
+				looks_like_heapdynamics, _ = _isHeapdynamicsFile(context_file)
+				if looks_like_heapdynamics:
+					self.heapdynamics_files.append(context_file)
+				else:
+					self.additional_context_files.append(context_file)
+			if len(self.heapdynamics_files) == 0 and len(self.additional_context_files) == 0:
+				self.logError("Please specify at least one valid context file with -l")
+				return False
+			if len(self.heapdynamics_files) > 0:
+				mndbg.dbgp("tellme: using heapdynamics files %s" % ", ".join(self.heapdynamics_files))
+			if len(self.additional_context_files) > 0:
+				mndbg.dbgp("tellme: using additional context files %s" % ", ".join(self.additional_context_files))
 		if len(self.heapdynamics_files) > 0:
-			mndbg.dbgp("tellme: using heapdynamics files %s" % ", ".join(self.heapdynamics_files))
-		if len(self.additional_context_files) > 0:
-			mndbg.dbgp("tellme: using additional context files %s" % ", ".join(self.additional_context_files))
-		if len(self.heapdynamics_files) > 0:
-			self.logInfo("Including %s in analysis" % ", ".join(self.heapdynamics_files))
+			self.logInfo("Will check if %s contains useful information" % ", ".join(self.heapdynamics_files))
 		else:
-			self.logInfo("Including c:\\alloc.txt in analysis")
+			self.logInfo("Will check if c:\\alloc.txt contains useful information")
 		if len(self.additional_context_files) > 0:
 			self.logInfo("Will read additional context from: %s" % ", ".join(self.additional_context_files))
 		return True
@@ -32352,20 +32047,23 @@ class MnAI(object):
 		"""Resolve an optional PoC/trigger file to add to the request context."""
 		mndbg.dbgp(get_current_function_name())
 		self.poc_file = ""
-		poc_ok, poc_file = self._resolvePocFileArg()
-		if not poc_ok:
-			return False
-		self.poc_file = poc_file
-		if self.poc_file == "":
+		if "p" not in self.args:
 			return True
+		if type(self.args["p"]).__name__.lower() == "bool":
+			self.logError("Please specify a PoC file with -p <file>")
+			return False
+		self.poc_file = getAbsolutePath(str(self.args["p"]).replace('"', "").replace("'", "").strip())
+		if not os.path.isfile(self.poc_file):
+			self.logError("Unable to find/read PoC file %s" % self.poc_file)
+			return False
 		mndbg.dbgp("tellme: using poc file %s" % self.poc_file)
-		self.logInfo("Including PoC/trigger from: %s" % self.poc_file)
+		self.logInfo("Will read PoC/trigger from: %s" % self.poc_file)
 		return True
 
 	def parseRopModuleSelection(self):
 		"""Resolve q8-specific module, IAT, and section scope information."""
 		mndbg.dbgp(get_current_function_name())
-		if not self.needsRopModuleContext():
+		if self.effective_question_type != "8":
 			return True
 		try:
 			self.rop_target_modules = _collectRopTargetModules(self.args)
@@ -32385,15 +32083,16 @@ class MnAI(object):
 	def validateCurrentInstruction(self):
 		"""Resolve q2/q3 code locations and keep enough state to report invalid locations in the prompt."""
 		mndbg.dbgp(get_current_function_name())
-		if not self.needsFunctionContext() or self.prebuilt_prompt != "":
+		if self.effective_question_type not in ["2", "3"] or self.prebuilt_prompt != "":
 			return True
 		regs = getAllRegisters()
 		self.current_pc_address = regs.get(PROGRAM_COUNTER, 0)
-		if self.target_address == 0 and not self.needsControlledDataContext():
+		if self.effective_question_type == "2" and self.target_address == 0:
 			self.target_address = self.current_pc_address
 			self.target_address_source = PROGRAM_COUNTER.upper()
 		has_instr, instr_reason = tellMeHasCurrentInstruction(self.current_pc_address)
-		mndbg.dbgp("tellme: current-instruction check at %s: %s (%s)" % (
+		mndbg.dbgp("tellme: q%s current-instruction check at %s: %s (%s)" % (
+			self.effective_question_type,
 			PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "0x0",
 			str(has_instr),
 			instr_reason
@@ -32404,7 +32103,7 @@ class MnAI(object):
 			self.logInfoDetail("The request will report that invalid location and continue with any additional -a target.")
 		if self.additional_target_address > 0:
 			addy_ok, addy_reason = tellMeHasCurrentInstruction(self.additional_target_address)
-			mndbg.dbgp("tellme: additional -a target check at %s: %s (%s)" % (
+			mndbg.dbgp("tellme: q2 -a target check at %s: %s (%s)" % (
 				PTR_PRINT % self.additional_target_address,
 				str(addy_ok),
 				addy_reason
@@ -32414,220 +32113,12 @@ class MnAI(object):
 				self.logInfoDetail("Reason: %s" % addy_reason)
 		return True
 
-	def enrichContextWithFunctionAnalysis(self, context, function_context_cache=None, function_context_active_keys=None):
-		"""Add generic function-level code-flow context to the collected request state."""
-		mndbg.dbgp(get_current_function_name())
-		if function_context_cache is None:
-			function_context_cache = {}
-		if function_context_active_keys is None:
-			function_context_active_keys = set()
-		total_steps = 2 if self.additional_target_address > 0 and self.additional_target_address != self.current_pc_address else 1
-		current_step = 1
-		self.logInfo("[%d/%d] Extending request context with function-level code flow analysis..." % (
-			current_step, total_steps
-		))
-		context["analysis_target"] = {
-			"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
-			"source": PROGRAM_COUNTER.upper()
-		}
-		if "function_analyses" not in context or not isinstance(context.get("function_analyses"), list):
-			context["function_analyses"] = []
-		try:
-			self.logInfoDetail("Step %d/%d: collecting current %s function context" % (
-				current_step, total_steps, PROGRAM_COUNTER.upper()
-			))
-			if not isinstance(context.get("current_function"), dict) or len(context.get("current_function", {})) == 0:
-				context["current_function"] = collectAICurrentFunctionContext(
-					self.current_pc_address,
-					follow_depth=self.q2_follow_depth,
-					context_cache=function_context_cache,
-					active_keys=function_context_active_keys
-				)
-			context["current_function"]["source"] = PROGRAM_COUNTER.upper()
-			if "near_entry_execution_context" in context["current_function"]:
-				self.logInfo("Including near-entry execution context for the current %s function analysis." % PROGRAM_COUNTER.upper())
-				self.logInfoDetail(
-					"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
-						context["current_function"].get("function_start", "unknown"),
-						context["current_function"].get("offset_from_function_start", "unknown"),
-						context["current_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
-					)
-				)
-			if context["current_function"] not in context["function_analyses"]:
-				context["function_analyses"].append(context["current_function"])
-		except Exception as e:
-			context["current_function_error"] = str(e)
-			mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
-		if self.additional_target_address > 0:
-			if self.additional_target_address == self.current_pc_address:
-				context["additional_function_note"] = "The -a address matches the current %s value, so only one function analysis was collected." % PROGRAM_COUNTER.upper()
-			else:
-				try:
-					current_step = 2
-					self.logInfo("[%d/%d] Collecting additional -a function context..." % (
-						current_step, total_steps
-					))
-					self.logInfoDetail("Step %d/%d: collecting additional -a function context" % (
-						current_step, total_steps
-					))
-					context["additional_function"] = collectAICurrentFunctionContext(
-						self.additional_target_address,
-						follow_depth=self.q2_follow_depth,
-						context_cache=function_context_cache,
-						active_keys=function_context_active_keys
-					)
-					context["additional_function"]["source"] = "-a"
-					if "near_entry_execution_context" in context["additional_function"]:
-						self.logInfo("Including near-entry execution context for the -a function analysis.")
-						self.logInfoDetail(
-							"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
-								context["additional_function"].get("function_start", "unknown"),
-								context["additional_function"].get("offset_from_function_start", "unknown"),
-								context["additional_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
-							)
-						)
-					context["function_analyses"].append(context["additional_function"])
-				except Exception as e:
-					context["additional_function_error"] = str(e)
-					mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
-		return context
-
-	def enrichContextWithControlledDataAnalysis(self, context, function_context_cache=None, function_context_active_keys=None):
-		"""Add controlled-chunk reachability context to the collected request state."""
-		mndbg.dbgp(get_current_function_name())
-		if function_context_cache is None:
-			function_context_cache = {}
-		if function_context_active_keys is None:
-			function_context_active_keys = set()
-		total_steps = 7
-		q3_startmoment = time.time()
-		def _format_major_step_elapsed(startmoment):
-			try:
-				elapsed_seconds = max(0, int(round(time.time() - startmoment)))
-			except Exception:
-				elapsed_seconds = 0
-			return str(datetime.timedelta(seconds=elapsed_seconds))
-		def _log_step_header(step_number, title_text, first_step=False):
-			if not first_step:
-				dbg.log("")
-			self.logInfo("<b>[%d/%d] %s</b>" % (
-				step_number,
-				total_steps,
-				title_text
-			))
-		def _log_major_step_start(step_number, label):
-			completed_steps = max(0, step_number - 1)
-			eta = get_eta(q3_startmoment, completed_steps, total_steps) if completed_steps > 0 else "calculating eta..."
-			self.logInfoDetail("<b>Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
-				step_number,
-				total_steps,
-				label,
-				_format_major_step_elapsed(q3_startmoment),
-				eta
-			))
-		def _log_major_step_complete(step_number, label):
-			eta = get_eta(q3_startmoment, step_number, total_steps) if step_number < total_steps else "complete"
-			self.logInfoDetail("<b>Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
-				step_number,
-				total_steps,
-				label,
-				_format_major_step_elapsed(q3_startmoment),
-				eta
-			))
-		current_step = 1
-		step_label = "reachability target setup" if self.reachability_target_address > 0 else "controlled-data goal setup"
-		_log_step_header(current_step, "Extending request context with chunk, stack, and control-flow analysis...", first_step=True)
-		_log_major_step_start(current_step, step_label)
-		context["q3_goal"] = "targeted_reachability" if self.reachability_target_address > 0 else "discovery_chunk_write_or_control_sink"
-		context["analysis_target"] = {
-			"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
-			"source": PROGRAM_COUNTER.upper()
-		}
-		if self.reachability_target_address > 0:
-			self.logInfoDetail("Step 1/%d: collecting target address disassembly and function context" % total_steps)
-			context["reachability_target"] = _buildReachabilityTargetContext(self.reachability_target_address)
-		_log_major_step_complete(current_step, step_label)
-		current_step = 2
-		step_label = "controlled chunk dump and reference matching"
-		_log_step_header(current_step, "Dumping controlled chunk and matching live references...")
-		_log_major_step_start(current_step, step_label)
-		context["controlled_chunk"] = _buildControlledChunkContext(self.controlled_chunk_address)
-		context["controlled_chunk_references"] = _collectControlledChunkReferences(context["controlled_chunk"], getAllRegisters())
-		_log_major_step_complete(current_step, step_label)
-		current_step = 3
-		step_label = "current function control-flow collection"
-		_log_step_header(current_step, "Collecting current %s function code flow. Hang on, this may take a while" % PROGRAM_COUNTER.upper())
-		_log_major_step_start(current_step, step_label)
-		if not isinstance(context.get("current_function"), dict) or len(context.get("current_function", {})) == 0:
-			context["current_function"] = collectAICurrentFunctionContext(
-				self.current_pc_address,
-				follow_depth=self.q2_follow_depth,
-				context_cache=function_context_cache,
-				active_keys=function_context_active_keys
-			)
-		context["current_function"]["source"] = PROGRAM_COUNTER.upper()
-		_log_major_step_complete(current_step, step_label)
-		if self.reachability_target_address > 0:
-			current_step = 4
-			step_label = "target function context collection"
-			_log_step_header(current_step, "Collecting target function context...")
-			_log_major_step_start(current_step, step_label)
-			if not isinstance(context.get("target_function"), dict) or len(context.get("target_function", {})) == 0:
-				context["target_function"] = collectAICurrentFunctionContext(
-					self.reachability_target_address,
-					follow_depth=1,
-					context_cache=function_context_cache,
-					active_keys=function_context_active_keys
-				)
-			context["target_function"]["source"] = "-t"
-			_log_major_step_complete(current_step, step_label)
-		current_step = 5
-		step_label = "caller-side resume path analysis"
-		_log_step_header(current_step, "Walking caller-side resume paths from the call stack...")
-		_log_major_step_start(current_step, step_label)
-		return_resume = _collectReturnResumeContext(
-			context.get("call_stack", {}),
-			max_frames=self.q2_follow_depth,
-			follow_depth=self.q2_follow_depth,
-			function_context_cache=function_context_cache,
-			function_context_active_keys=function_context_active_keys
-		)
-		for key, value in return_resume.items():
-			context[key] = value
-		_log_major_step_complete(current_step, step_label)
-		current_step = 6
-		step_label = "controlled-object callee extraction"
-		_log_step_header(current_step, "Extracting first-hop controlled-object callees and callee-side write sinks...")
-		_log_major_step_start(current_step, step_label)
-		context["controlled_object_callees"] = _collectControlledObjectCallees(
-			context.get("current_function", {}),
-			context.get("caller_function", {}),
-			context.get("caller_chain", []),
-			context.get("controlled_chunk_references", {})
-		)
-		_log_major_step_complete(current_step, step_label)
-		current_step = 7
-		step_label = "reachable candidate flattening"
-		_log_step_header(current_step, "Flattening reachable branch/call/jump candidates...")
-		_log_major_step_start(current_step, step_label)
-		context["reachable_functions"] = _collectReachableFunctions(
-			context.get("current_function", {}),
-			context.get("caller_function", {}),
-			context.get("caller_chain", [])
-		)
-		_log_major_step_complete(current_step, step_label)
-		self.logInfoDetail("Step %d/%d: controlled-data context enrichment complete" % (
-			current_step, total_steps
-		))
-		return context
-
 	def getRequestContext(self):
 		"""Collect debugger context and enrich it with function or ROP metadata when needed."""
 		mndbg.dbgp(get_current_function_name())
 		global _q3_control_flow_disasm_cache
 		global _q3_control_flow_uf_cache
 		if self.question_type == "9" and self.prebuilt_prompt != "":
-			self.last_request_context = None
 			return None
 		if mnproc is None:
 			mndbg.dbgp("tellme: initializing shared process context")
@@ -32637,8 +32128,7 @@ class MnAI(object):
 			return None
 
 		self.logInfo("Collecting context and preparing request...")
-		collection_plan = self.buildContextCollectionPlan()
-		if self.needsControlledDataContext():
+		if self.effective_question_type in ["3", "3b"]:
 			_q3_control_flow_disasm_cache = {}
 			_q3_control_flow_uf_cache = {}
 		function_context_cache = {}
@@ -32649,99 +32139,199 @@ class MnAI(object):
 			additional_context_files=self.additional_context_files,
 			poc_file=self.poc_file,
 			heap_target_address=self.heap_target_address,
-			ai_args=self.args,
-			collection_plan=collection_plan
+			ai_args=self.args
 		)
-		if self.needsRopModuleContext() and self.rop_target_modules is not None:
+		if self.effective_question_type == "8" and self.rop_target_modules is not None:
 			context["rop_target_modules"] = self.rop_target_modules
 		self.logInfoDetail("Done")
-		if self.needsControlledDataContext():
-			context = self.enrichContextWithControlledDataAnalysis(
-				context,
-				function_context_cache=function_context_cache,
-				function_context_active_keys=function_context_active_keys
-			)
-		elif self.needsFunctionContext():
-			context = self.enrichContextWithFunctionAnalysis(
-				context,
-				function_context_cache=function_context_cache,
-				function_context_active_keys=function_context_active_keys
-			)
-		self.last_request_context = context
-		return context
 
-	def getInlineContextFilePaths(self):
-		"""Return deduplicated local file paths whose contents were embedded into the inline request."""
-		mndbg.dbgp(get_current_function_name())
-		file_paths = []
-		seen_paths = set()
-
-		def _add_file(path_value):
-			path_value = ensure_text(path_value).strip()
-			if path_value == "":
-				return
-			normalized_path = os.path.normcase(os.path.abspath(path_value))
-			if normalized_path in seen_paths:
-				return
-			seen_paths.add(normalized_path)
-			file_paths.append(path_value)
-
-		for context_file in self.heapdynamics_files:
-			_add_file(context_file)
-		explicit_heapdynamics_paths = set([
-			os.path.normcase(os.path.abspath(path_value))
-			for path_value in self.heapdynamics_files
-			if ensure_text(path_value).strip() != ""
-		])
-		context_heapdynamics = {}
-		if isinstance(self.last_request_context, dict):
-			context_heapdynamics = self.last_request_context.get("heapdynamics", [])
-		for heapdynamics_info in context_heapdynamics:
-			if not isinstance(heapdynamics_info, dict):
-				continue
-			implicit_file_path = ensure_text(heapdynamics_info.get("file", "")).strip()
-			if implicit_file_path == "":
-				continue
-			normalized_implicit_path = os.path.normcase(os.path.abspath(implicit_file_path))
-			if normalized_implicit_path in explicit_heapdynamics_paths:
-				continue
-			if len(heapdynamics_info.get("matched_entries", [])) == 0 and len(heapdynamics_info.get("matched_registers", [])) == 0:
-				continue
-			_add_file(implicit_file_path)
-		for context_file in self.additional_context_files:
-			_add_file(context_file)
-		_add_file(self.poc_file)
-		return file_paths
-
-	def warnLargeInlineFileContext(self, prompt_bytes):
-		"""Warn when local file-backed context is embedded inline into a potentially large cloud-provider request."""
-		mndbg.dbgp(get_current_function_name())
-		if self.engine not in ["openai", "anthropic"]:
-			return
-		if self.upload_requested:
-			return
-		file_paths = self.getInlineContextFilePaths()
-		if len(file_paths) == 0:
-			return
-		total_file_bytes = 0
-		accessible_files = []
-		for file_path in file_paths:
+		if self.effective_question_type == "2":
+			total_steps = 2 if self.additional_target_address > 0 and self.additional_target_address != self.current_pc_address else 1
+			current_step = 1
+			self.logInfo("[%d/%d] Extending q2 context with function-level code flow analysis..." % (
+				current_step, total_steps
+			))
+			context["analysis_target"] = {
+				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
+				"source": PROGRAM_COUNTER.upper()
+			}
+			context["function_analyses"] = []
 			try:
-				file_size = os.path.getsize(file_path)
-			except Exception:
-				continue
-			total_file_bytes += file_size
-			accessible_files.append(file_path)
-			threshold_bytes = 512 * 1024
-		if prompt_bytes < threshold_bytes and total_file_bytes < threshold_bytes:
-			return
-		self.logError("Large inline request warning: file-backed context is being embedded directly into the %s request." % self.engine)
-		self.logErrorDetail("Prompt size : %d bytes (%.2f KB)" % (prompt_bytes, float(prompt_bytes) / 1024.0))
-		self.logErrorDetail("File input  : %d file(s), %d bytes (%.2f KB) total" % (
-			len(accessible_files), total_file_bytes, float(total_file_bytes) / 1024.0
-		))
-		self.logErrorDetail("Threshold   : %d bytes (%.2f KB)" % (threshold_bytes, float(threshold_bytes) / 1024.0))
-		self.logErrorDetail("If this request is too large for the engine, retry with -upload so Mona sends the files separately.")
+				self.logInfoDetail("Step %d/%d: collecting current %s function context" % (
+					current_step, total_steps, PROGRAM_COUNTER.upper()
+				))
+				context["current_function"] = collectAICurrentFunctionContext(
+					self.current_pc_address,
+					follow_depth=self.q2_follow_depth,
+					context_cache=function_context_cache,
+					active_keys=function_context_active_keys
+				)
+				context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+				if "near_entry_execution_context" in context["current_function"]:
+					self.logInfo("Including near-entry execution context for the current %s function analysis." % PROGRAM_COUNTER.upper())
+					self.logInfoDetail(
+						"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
+							context["current_function"].get("function_start", "unknown"),
+							context["current_function"].get("offset_from_function_start", "unknown"),
+							context["current_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
+						)
+					)
+				context["function_analyses"].append(context["current_function"])
+			except Exception as e:
+				context["current_function_error"] = str(e)
+				mndbg.dbgp("tellme: failed to collect current function context:\n%s" % traceback.format_exc(), errormode=False)
+			if self.additional_target_address > 0:
+				if self.additional_target_address == self.current_pc_address:
+					context["additional_function_note"] = "The -a address matches the current %s value, so only one function analysis was collected." % PROGRAM_COUNTER.upper()
+				else:
+					try:
+						current_step = 2
+						self.logInfo("[%d/%d] Collecting additional -a function context..." % (
+							current_step, total_steps
+						))
+						self.logInfoDetail("Step %d/%d: collecting additional -a function context" % (
+							current_step, total_steps
+						))
+						context["additional_function"] = collectAICurrentFunctionContext(
+							self.additional_target_address,
+							follow_depth=self.q2_follow_depth,
+							context_cache=function_context_cache,
+							active_keys=function_context_active_keys
+						)
+						context["additional_function"]["source"] = "-a"
+						if "near_entry_execution_context" in context["additional_function"]:
+							self.logInfo("Including near-entry execution context for the -a function analysis.")
+							self.logInfoDetail(
+								"Function start: %s, requested offset: %s, stack preview: first 100 bytes from %s" % (
+									context["additional_function"].get("function_start", "unknown"),
+									context["additional_function"].get("offset_from_function_start", "unknown"),
+									context["additional_function"].get("near_entry_execution_context", {}).get("stack_pointer", "the current stack pointer")
+								)
+							)
+						context["function_analyses"].append(context["additional_function"])
+					except Exception as e:
+						context["additional_function_error"] = str(e)
+						mndbg.dbgp("tellme: failed to collect additional function context:\n%s" % traceback.format_exc(), errormode=False)
+		if self.effective_question_type in ["3", "3b"]:
+			total_steps = 7
+			q3_startmoment = time.time()
+			def _format_major_step_elapsed(startmoment):
+				try:
+					elapsed_seconds = max(0, int(round(time.time() - startmoment)))
+				except Exception:
+					elapsed_seconds = 0
+				return str(datetime.timedelta(seconds=elapsed_seconds))
+			def _log_q3_step_header(step_number, title_text, first_step=False):
+				if not first_step:
+					dbg.log("")
+				self.logInfo("<b>[%d/%d] %s</b>" % (
+					step_number,
+					total_steps,
+					title_text
+				))
+			def _log_q3_major_step_start(step_number, label):
+				completed_steps = max(0, step_number - 1)
+				eta = get_eta(q3_startmoment, completed_steps, total_steps) if completed_steps > 0 else "calculating eta..."
+				self.logInfoDetail("<b>Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
+					step_number,
+					total_steps,
+					label,
+					_format_major_step_elapsed(q3_startmoment),
+					eta
+				))
+			def _log_q3_major_step_complete(step_number, label):
+				eta = get_eta(q3_startmoment, step_number, total_steps) if step_number < total_steps else "complete"
+				self.logInfoDetail("<b>Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
+					step_number,
+					total_steps,
+					label,
+					_format_major_step_elapsed(q3_startmoment),
+					eta
+				))
+			current_step = 1
+			step_label = "reachability target setup" if self.reachability_target_address > 0 else "q3 goal setup"
+			_log_q3_step_header(current_step, "Extending q3 context with chunk, stack, and control-flow analysis...", first_step=True)
+			_log_q3_major_step_start(current_step, step_label)
+			context["q3_goal"] = "targeted_reachability" if self.reachability_target_address > 0 else "discovery_chunk_write_or_control_sink"
+			context["analysis_target"] = {
+				"address": PTR_PRINT % self.current_pc_address if isinstance(self.current_pc_address, int) and self.current_pc_address > 0 else "",
+				"source": PROGRAM_COUNTER.upper()
+			}
+			if self.reachability_target_address > 0:
+				self.logInfoDetail("Step 1/%d: collecting target address disassembly and function context" % total_steps)
+				context["reachability_target"] = _buildReachabilityTargetContext(self.reachability_target_address)
+			_log_q3_major_step_complete(current_step, step_label)
+			current_step = 2
+			step_label = "controlled chunk dump and reference matching"
+			_log_q3_step_header(current_step, "Dumping controlled chunk and matching live references...")
+			_log_q3_major_step_start(current_step, step_label)
+			context["controlled_chunk"] = _buildControlledChunkContext(self.controlled_chunk_address)
+			context["controlled_chunk_references"] = _collectControlledChunkReferences(context["controlled_chunk"], getAllRegisters())
+			_log_q3_major_step_complete(current_step, step_label)
+			current_step = 3
+			step_label = "current function control-flow collection"
+			_log_q3_step_header(current_step, "Collecting current %s function code flow. Hang on, this may take a while" % PROGRAM_COUNTER.upper())
+			_log_q3_major_step_start(current_step, step_label)
+			context["current_function"] = collectAICurrentFunctionContext(
+				self.current_pc_address,
+				follow_depth=self.q2_follow_depth,
+				context_cache=function_context_cache,
+				active_keys=function_context_active_keys
+			)
+			context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+			_log_q3_major_step_complete(current_step, step_label)
+			if self.reachability_target_address > 0:
+				current_step = 4
+				step_label = "target function context collection"
+				_log_q3_step_header(current_step, "Collecting target function context...")
+				_log_q3_major_step_start(current_step, step_label)
+				context["target_function"] = collectAICurrentFunctionContext(
+					self.reachability_target_address,
+					follow_depth=1,
+					context_cache=function_context_cache,
+					active_keys=function_context_active_keys
+				)
+				context["target_function"]["source"] = "-t"
+				_log_q3_major_step_complete(current_step, step_label)
+			current_step = 5
+			step_label = "caller-side resume path analysis"
+			_log_q3_step_header(current_step, "Walking caller-side resume paths from the call stack...")
+			_log_q3_major_step_start(current_step, step_label)
+			return_resume = _collectReturnResumeContext(
+				context.get("call_stack", {}),
+				max_frames=self.q2_follow_depth,
+				follow_depth=self.q2_follow_depth,
+				function_context_cache=function_context_cache,
+				function_context_active_keys=function_context_active_keys
+			)
+			for key, value in return_resume.items():
+				context[key] = value
+			_log_q3_major_step_complete(current_step, step_label)
+			current_step = 6
+			step_label = "controlled-object callee extraction"
+			_log_q3_step_header(current_step, "Extracting first-hop controlled-object callees and callee-side write sinks...")
+			_log_q3_major_step_start(current_step, step_label)
+			context["controlled_object_callees"] = _collectControlledObjectCallees(
+				context.get("current_function", {}),
+				context.get("caller_function", {}),
+				context.get("caller_chain", []),
+				context.get("controlled_chunk_references", {})
+			)
+			_log_q3_major_step_complete(current_step, step_label)
+			current_step = 7
+			step_label = "reachable candidate flattening"
+			_log_q3_step_header(current_step, "Flattening reachable branch/call/jump candidates...")
+			_log_q3_major_step_start(current_step, step_label)
+			context["reachable_functions"] = _collectReachableFunctions(
+				context.get("current_function", {}),
+				context.get("caller_function", {}),
+				context.get("caller_chain", [])
+			)
+			_log_q3_major_step_complete(current_step, step_label)
+			self.logInfoDetail("Step %d/%d: q3 context enrichment complete" % (
+				current_step, total_steps
+			))
+		return context
 
 	def buildRequestPrompt(self):
 		"""Build or reuse the final prompt text that will be saved or sent to the provider."""
@@ -32755,17 +32345,11 @@ class MnAI(object):
 			if context is None and not (self.question_type == "9" and self.prebuilt_prompt != ""):
 				return False
 			if self.question_type == "9":
-				self.prompt = buildAIPromptFromTemplateFile(
-					self.template_file,
-					context,
-					question_type=self.effective_question_type,
-					maxsize_kb=self.max_request_kb
-				)
+				self.prompt = buildAIPromptFromTemplateFile(self.template_file, context, question_type=self.question_type)
 			else:
 				self.prompt = buildAIPrompt(self.question_type, context, maxsize_kb=self.max_request_kb)
 			prompt_bytes = len(self.prompt.encode("utf-8")) if isinstance(self.prompt, text_type) else len(self.prompt)
 			self.logInfoDetail("Request size: %.2f KB" % (float(prompt_bytes) / 1024.0))
-			self.warnLargeInlineFileContext(prompt_bytes)
 			if self.engine == "openaiagents" and self.max_tokens_source == "default":
 				derived_max_tokens, estimated_input_tokens = deriveOpenAIAgentsMaxTokensFromPrompt(self.prompt)
 				self.max_tokens = derived_max_tokens
@@ -32820,11 +32404,10 @@ class MnAI(object):
 		"""Prepare the OpenAI client or HTTP fallback path for provider requests."""
 		mndbg.dbgp(get_current_function_name())
 		openai_client_class = None
-		openai_sdk_version = ""
 		openai_import_error = ""
 		openai_use_http_fallback = False
 		if self.engine == "openai":
-			openai_client_class, openai_sdk_version, openai_import_error = _importOpenAI()
+			openai_client_class, _openai_version, openai_import_error = _importOpenAI()
 			if openai_client_class is None:
 				openai_use_http_fallback = True
 				self.logError("OpenAI SDK import failed.")
@@ -32836,26 +32419,8 @@ class MnAI(object):
 						self.logErrorDetail("On this interpreter, the OpenAI module may work only once per WinDBG process.")
 						self.logErrorDetail("The direct HTTPS fallback avoids that import path for this request.")
 					self.logErrorDetail("OpenAI import error: %s" % openai_import_error.splitlines()[-1])
-				self.logInfo("OpenAI: Falling back to direct HTTPS request.")
-		return openai_client_class, openai_use_http_fallback, openai_sdk_version
-
-	def getAnthropicRequestMode(self):
-		"""Prepare the Anthropic client or HTTP fallback path for provider requests."""
-		mndbg.dbgp(get_current_function_name())
-		anthropic_client_class = None
-		anthropic_sdk_version = ""
-		anthropic_import_error = ""
-		anthropic_use_http_fallback = False
-		if self.engine == "anthropic":
-			anthropic_client_class, anthropic_sdk_version, anthropic_import_error = _importAnthropic()
-			if anthropic_client_class is None:
-				anthropic_use_http_fallback = True
-				self.logError("Anthropic SDK import failed.")
-				self.logErrorDetail("Python executable: %s" % sys.executable)
-				if anthropic_import_error.strip() != "":
-					self.logErrorDetail("Anthropic import error: %s" % anthropic_import_error.splitlines()[-1])
-				self.logInfo("Anthropic: Falling back to direct HTTPS request.")
-		return anthropic_client_class, anthropic_use_http_fallback, anthropic_sdk_version
+					self.logInfo("OpenAI: Falling back to direct HTTPS request.")
+		return openai_client_class, openai_use_http_fallback
 
 	def writeRequestLog(self, request_id=""):
 		"""Write the outgoing request to disk and remember the generated file path."""
@@ -32868,8 +32433,7 @@ class MnAI(object):
 			request_id=request_id,
 			template_file=self.template_file,
 			target_address=self.target_address,
-			target_address_source=self.target_address_source,
-			referenced_file_ids=self.referenced_file_ids
+			target_address_source=self.target_address_source
 		)
 		return self.request_logfile_path
 
@@ -32910,8 +32474,7 @@ class MnAI(object):
 			ai_response_lines,
 			template_file=self.template_file,
 			target_address=self.target_address,
-			target_address_source=self.target_address_source,
-			uploaded_files=self.provider_uploaded_files
+			target_address_source=self.target_address_source
 		)
 		return ai_response_lines, self.response_logfile_path
 
@@ -32930,403 +32493,177 @@ class MnAI(object):
 		)
 		return self.raw_response_logfile_path
 
-	def getUploadFilePaths(self):
-		"""Return the deduplicated file list for provider upload mode, led by the saved request file."""
-		mndbg.dbgp(get_current_function_name())
-		file_paths = []
-		seen_paths = set()
-
-		def _add_file(path_value):
-			path_value = ensure_text(path_value).strip()
-			if path_value == "":
-				return
-			normalized_path = os.path.normcase(os.path.abspath(path_value))
-			if normalized_path in seen_paths:
-				return
-			seen_paths.add(normalized_path)
-			file_paths.append(path_value)
-
-		_add_file(self.request_logfile_path)
-		for context_file in self.heapdynamics_files:
-			_add_file(context_file)
-		explicit_heapdynamics_paths = set([
-			os.path.normcase(os.path.abspath(path_value))
-			for path_value in self.heapdynamics_files
-			if ensure_text(path_value).strip() != ""
-		])
-		context_heapdynamics = {}
-		if isinstance(self.last_request_context, dict):
-			context_heapdynamics = self.last_request_context.get("heapdynamics", [])
-		for heapdynamics_info in context_heapdynamics:
-			if not isinstance(heapdynamics_info, dict):
-				continue
-			implicit_file_path = ensure_text(heapdynamics_info.get("file", "")).strip()
-			if implicit_file_path == "":
-				continue
-			normalized_implicit_path = os.path.normcase(os.path.abspath(implicit_file_path))
-			if normalized_implicit_path in explicit_heapdynamics_paths:
-				continue
-			# Auto-discovered heap logs such as c:\alloc.txt are uploaded only when
-			# the collected context shows they actually produced relevant matches.
-			if len(heapdynamics_info.get("matched_entries", [])) == 0 and len(heapdynamics_info.get("matched_registers", [])) == 0:
-				continue
-			_add_file(implicit_file_path)
-		for context_file in self.additional_context_files:
-			_add_file(context_file)
-		_add_file(self.poc_file)
-		return file_paths
-
-	def submitProviderUploadRequest(self, openai_client_class, anthropic_client_class, attempt_timeout):
-		"""Upload the saved request plus supporting files, then submit a compact inline instruction."""
-		mndbg.dbgp(get_current_function_name())
-		upload_file_paths = self.getUploadFilePaths()
-		if len(upload_file_paths) == 0:
-			raise ValueError("%s upload mode could not find any files to upload" % self.engine.capitalize())
-
-		primary_request_name = os.path.basename(upload_file_paths[0])
-		supporting_names = [os.path.basename(path_value) for path_value in upload_file_paths[1:]]
-		self.logInfoDetail("Upload mode: preparing %d file(s) for %s" % (len(upload_file_paths), self.engine))
-		for file_index, file_path in enumerate(upload_file_paths, 1):
-			role_label = "request"
-			if file_index > 1:
-				role_label = "supporting"
-			self.logInfoDetail("  [%d/%d] %s file: %s" % (
-				file_index, len(upload_file_paths), role_label, file_path
-			))
-		if len(self.referenced_file_ids) > 0:
-			self.logInfoDetail("Referenced file IDs to include in the request:")
-			for file_index, file_id in enumerate(self.referenced_file_ids, 1):
-				self.logInfoDetail("  [%d/%d] %s" % (
-					file_index, len(self.referenced_file_ids), ensure_text(file_id).strip()
-				))
-
-		if self.engine == "openai":
-			self.provider_uploaded_files = []
-			try:
-				if openai_client_class is None:
-					raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
-				self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIWithFiles(
-					openai_client_class,
-					self.api_key,
-					self.model,
-					"",
-					upload_file_paths,
-					timeout_seconds=attempt_timeout,
-					options=self.api_options
-				)
-			except Exception as upload_err:
-				if not _shouldFallbackFromSDK(self.engine, upload_err):
-					raise
-				self.logInfo("OpenAI SDK upload path failed. Falling back to direct HTTPS upload.")
-				self.logInfoDetail(str(upload_err))
-				self.provider_uploaded_files = []
-				self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIDirectWithFiles(
-					self.api_key,
-					self.model,
-					"",
-					upload_file_paths,
-					timeout_seconds=attempt_timeout,
-					options=self.api_options
-				)
-		elif self.engine == "anthropic":
-			self.provider_uploaded_files = []
-			try:
-				if anthropic_client_class is None:
-					raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
-				self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicWithFiles(
-					anthropic_client_class,
-					self.api_key,
-					self.model,
-					"",
-					upload_file_paths,
-					timeout_seconds=attempt_timeout,
-					max_tokens=self.max_tokens,
-					options=self.api_options
-				)
-			except Exception as upload_err:
-				if not _shouldFallbackFromSDK(self.engine, upload_err):
-					raise
-				self.logInfo("Anthropic SDK upload path failed. Falling back to direct HTTPS upload.")
-				self.logInfoDetail(_describeProviderException(upload_err))
-				self.provider_uploaded_files = []
-				self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicDirectWithFiles(
-					self.api_key,
-					self.model,
-					"",
-					upload_file_paths,
-					timeout_seconds=attempt_timeout,
-					max_tokens=self.max_tokens,
-					options=self.api_options
-				)
-		else:
-			raise ValueError("Upload mode is not supported for engine '%s'" % self.engine)
-
-		if len(self.provider_uploaded_files) > 0:
-			merged_upload_file_ids = _mergeReferencedFileIds(
-				[item.get("id", "") for item in self.provider_uploaded_files],
-				self.referenced_file_ids
-			)
-			merged_anthropic_references = _mergeAnthropicReferencedFiles(
-				self.provider_uploaded_files,
-				self.referenced_file_ids
-			)
-			instruction_text = _buildUploadInstruction(
-				primary_request_name,
-				supporting_names,
-				uploaded_files=self.provider_uploaded_files,
-				referenced_file_ids=self.referenced_file_ids
-			)
-			self.logInfo("Upload complete. Waiting for %s to analyze the uploaded files." % self.engine)
-			if self.engine == "openai":
-				try:
-					if openai_client_class is None:
-						raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
-					self.response, self.request_id = callAIOpenAI(
-						openai_client_class,
-						self.api_key,
-						self.model,
-						instruction_text,
-						timeout_seconds=attempt_timeout,
-						options=self.api_options,
-						file_ids=merged_upload_file_ids
-					)
-				except Exception as request_err:
-					if not _shouldFallbackFromSDK(self.engine, request_err):
-						raise
-					self.logInfo("OpenAI SDK request path failed after upload. Falling back to direct HTTPS request.")
-					self.logInfoDetail(str(request_err))
-					self.response, self.request_id = callAIOpenAIDirect(
-						self.api_key,
-						self.model,
-						instruction_text,
-						timeout_seconds=attempt_timeout,
-						options=self.api_options,
-						file_ids=merged_upload_file_ids
-					)
-			elif self.engine == "anthropic":
-				try:
-					if anthropic_client_class is None:
-						raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
-					self.response, self.request_id = callAIAnthropicSDK(
-						anthropic_client_class,
-						self.api_key,
-						self.model,
-						instruction_text,
-						timeout_seconds=attempt_timeout,
-						max_tokens=self.max_tokens,
-						options=self.api_options,
-						referenced_files=merged_anthropic_references
-					)
-				except Exception as request_err:
-					if not _shouldFallbackFromSDK(self.engine, request_err):
-						raise
-					self.logInfo("Anthropic SDK request path failed after upload. Falling back to direct HTTPS request.")
-					self.logInfoDetail(_describeProviderException(request_err))
-					self.response, self.request_id = callAIAnthropic(
-						self.api_key,
-						self.model,
-						instruction_text,
-						timeout_seconds=attempt_timeout,
-						max_tokens=self.max_tokens,
-						options=self.api_options,
-						referenced_files=merged_anthropic_references
-					)
-
-			self.logInfoDetail("%s upload mode created %d remote file(s):" % (self.engine.capitalize(), len(self.provider_uploaded_files)))
-			for uploaded_file in self.provider_uploaded_files:
-				self.logInfoDetail("  %s -> %s" % (
-					ensure_text(uploaded_file.get("path", "")).strip(),
-					ensure_text(uploaded_file.get("id", "")).strip()
-				))
-		self.openai_uploaded_files = list(self.provider_uploaded_files)
-		return self.response
-
 	def getOpenAIAgentsBridgePaths(self):
-			"""Resolve stable bridge script/log paths plus unique output/status files for the current request."""
-			mndbg.dbgp(get_current_function_name())
-			if self.request_id == "":
-				self.request_id = generateAIRequestId()
-			self.bridge_script_path = getAbsolutePath("mona_openaiagents_bridge.py")
-			self.bridge_log_file_path = getAbsolutePath("tellme_openaiagents_bridge.log")
-			self.bridge_output_file_path = getAbsolutePath("tellme_response_%s.md" % self.request_id)
-			self.bridge_status_file_path = getAbsolutePath("tellme_%s.status.json" % self.request_id)
-			self.bridge_raw_request_file_path = getAbsolutePath("tellme_%s.bridge_request.json" % self.request_id)
-			self.bridge_raw_result_file_path = getAbsolutePath("tellme_%s.bridge_result.json" % self.request_id)
-			return self.bridge_script_path, self.bridge_log_file_path, self.bridge_output_file_path, self.bridge_status_file_path
+		"""Resolve stable bridge script/log paths plus unique output/status files for the current request."""
+		mndbg.dbgp(get_current_function_name())
+		if self.request_id == "":
+			self.request_id = generateAIRequestId()
+		self.bridge_script_path = getAbsolutePath("mona_openaiagents_bridge.py")
+		self.bridge_log_file_path = getAbsolutePath("tellme_openaiagents_bridge.log")
+		self.bridge_output_file_path = getAbsolutePath("tellme_response_%s.md" % self.request_id)
+		self.bridge_status_file_path = getAbsolutePath("tellme_%s.status.json" % self.request_id)
+		self.bridge_raw_request_file_path = getAbsolutePath("tellme_%s.bridge_request.json" % self.request_id)
+		self.bridge_raw_result_file_path = getAbsolutePath("tellme_%s.bridge_result.json" % self.request_id)
+		return self.bridge_script_path, self.bridge_log_file_path, self.bridge_output_file_path, self.bridge_status_file_path
 
 	def ensureOpenAIAgentsBridgeScript(self):
-			"""Write the OpenAI Agents bridge helper script to disk."""
-			mndbg.dbgp(get_current_function_name())
-			if self.bridge_script_path == "":
-				self.getOpenAIAgentsBridgePaths()
-			script_text = _getOpenAIAgentsBridgeScriptText()
-			with open(self.bridge_script_path, "wb") as fh:
-				fh.write(script_text.encode("utf-8"))
-			return self.bridge_script_path
+		"""Write the OpenAI Agents bridge helper script to disk."""
+		mndbg.dbgp(get_current_function_name())
+		if self.bridge_script_path == "":
+			self.getOpenAIAgentsBridgePaths()
+		script_text = _getOpenAIAgentsBridgeScriptText()
+		with open(self.bridge_script_path, "wb") as fh:
+			fh.write(script_text.encode("utf-8"))
+		return self.bridge_script_path
 
 	def ensureOpenAIAgentsBridgeRunning(self):
-			"""Start the local OpenAI Agents bridge when it is not already listening."""
-			mndbg.dbgp(get_current_function_name())
-			self.ensureOpenAIAgentsBridgeScript()
+		"""Start the local OpenAI Agents bridge when it is not already listening."""
+		mndbg.dbgp(get_current_function_name())
+		self.ensureOpenAIAgentsBridgeScript()
+		bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
+		if bridge_ok:
+			return True
+		bridge_host, bridge_port = _getLocalBridgeHostPort(self.api_url)
+		self.logInfo("Starting the OpenAI Agents bridge helper outside the debugger.")
+		self.logInfoDetail("Python    : %s" % self.bridge_python)
+		self.logInfoDetail("Script    : %s" % self.bridge_script_path)
+		self.logInfoDetail("Log       : %s" % self.bridge_log_file_path)
+		launch_command = list(self.bridge_python_command) + [
+			"-u",
+			self.bridge_script_path,
+			"--serve",
+			"--host",
+			bridge_host,
+			"--port",
+			str(bridge_port),
+			"--log-file",
+			self.bridge_log_file_path
+		]
+		try:
+			bridge_pid = mndbg.launchDetachedCommand(launch_command, output_path=self.bridge_log_file_path, redirect_output=False)
+			self.logInfoDetail("PID       : %s" % str(bridge_pid))
+		except Exception as e:
+			self.logError("Unable to launch the OpenAI Agents bridge helper.")
+			self.logErrorDetail(str(e))
+			self.logErrorDetail("Log       : %s" % self.bridge_log_file_path)
+			return False
+		for _ in xrange(0, 20):
+			time.sleep(0.25)
 			bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
 			if bridge_ok:
 				return True
-			bridge_host, bridge_port = _getLocalBridgeHostPort(self.api_url)
-			self.logInfo("Starting the OpenAI Agents bridge helper outside the debugger.")
-			self.logInfoDetail("Python    : %s" % self.bridge_python)
-			self.logInfoDetail("Script    : %s" % self.bridge_script_path)
-			self.logInfoDetail("Log       : %s" % self.bridge_log_file_path)
-			launch_command = list(self.bridge_python_command) + [
-				"-u",
-				self.bridge_script_path,
-				"--serve",
-				"--host",
-				bridge_host,
-				"--port",
-				str(bridge_port),
-				"--log-file",
-				self.bridge_log_file_path
-			]
-			try:
-				bridge_pid = mndbg.launchDetachedCommand(launch_command, output_path=self.bridge_log_file_path, redirect_output=False)
-				self.logInfoDetail("PID       : %s" % str(bridge_pid))
-			except Exception as e:
-				self.logError("Unable to launch the OpenAI Agents bridge helper.")
-				self.logErrorDetail(str(e))
-				self.logErrorDetail("Log       : %s" % self.bridge_log_file_path)
-				return False
-			for _ in xrange(0, 20):
-				time.sleep(0.25)
-				bridge_ok, _bridge_payload = checkOpenAIAgentsBridgeHealth(self.api_url, timeout_seconds=2.0)
-				if bridge_ok:
-					return True
-			self.logError("Unable to start the OpenAI Agents bridge helper.")
-			self.logErrorDetail("Check bridge log for bootstrap errors: %s" % self.bridge_log_file_path)
-			return False
+		self.logError("Unable to start the OpenAI Agents bridge helper.")
+		self.logErrorDetail("Check bridge log for bootstrap errors: %s" % self.bridge_log_file_path)
+		return False
 
 	def validateOpenAIAgentsBridgeDependencies(self):
-			"""Verify that the configured bridge Python can import the non-stdlib modules the bridge requires."""
-			mndbg.dbgp(get_current_function_name())
-			import_check_code = (
-				"import openai\n"
-				"import agents\n"
-				"from agents import Agent, Runner, ModelSettings, RunConfig\n"
-				"from openai.types.shared import Reasoning\n"
-				"print('OPENAI_SDK=%s' % getattr(openai, '__version__', 'unknown'))\n"
-				"print('OPENAI_AGENTS_SDK=%s' % getattr(agents, '__version__', 'unknown'))\n"
-				"print('OK')\n"
+		"""Verify that the configured bridge Python can import the non-stdlib modules the bridge requires."""
+		mndbg.dbgp(get_current_function_name())
+		import_check_code = (
+			"import agents\n"
+			"from agents import Agent, Runner, ModelSettings, RunConfig\n"
+			"from openai.types.shared import Reasoning\n"
+			"print('OK')\n"
+		)
+		try:
+			process = subprocess.Popen(
+				list(self.bridge_python_command) + ["-c", import_check_code],
+				stdout=subprocess.PIPE,
+				stderr=subprocess.STDOUT
 			)
-			try:
-				process = subprocess.Popen(
-					list(self.bridge_python_command) + ["-c", import_check_code],
-					stdout=subprocess.PIPE,
-					stderr=subprocess.STDOUT
-				)
-				output_data = process.communicate()[0]
-				output_text = ensure_text(output_data)
-				return_code = process.returncode
-			except Exception as e:
-				self.logError("Unable to validate the OpenAI Agents bridge Python environment.")
-				self.logErrorDetail("Python    : %s" % self.bridge_python)
-				self.logErrorDetail(str(e))
-				return False
-			if return_code != 0:
-				self.logError("The configured OpenAI Agents bridge Python environment is missing required libraries.")
-				self.logInfoDetail("Python    : %s" % self.bridge_python)
-				self.logInfoDetail("It must be able to import: agents, Agent/Runner/ModelSettings/RunConfig, and openai.types.shared.Reasoning")
-				self.logInfoDetail("")
-				self.logErrorDetail("Install the missing libraries with:")
-				for install_command in self._getBridgePythonInstallCommands():
-					self.logErrorDetail(install_command)
-				#for output_line in output_text.split("\n"):
-				#	output_line = output_line.strip()
-				#	if output_line != "":
-				#		self.logErrorDetail(output_line)
-				return False
-			openai_sdk_version = ""
-			openai_agents_sdk_version = ""
-			for output_line in output_text.split("\n"):
-				output_line = output_line.strip()
-				if output_line.startswith("OPENAI_SDK="):
-					openai_sdk_version = output_line.split("=", 1)[1].strip()
-				elif output_line.startswith("OPENAI_AGENTS_SDK="):
-					openai_agents_sdk_version = output_line.split("=", 1)[1].strip()
-			if openai_sdk_version != "":
-				self.logInfoDetail("Bridge OpenAI SDK : %s" % openai_sdk_version)
-			if openai_agents_sdk_version != "":
-				self.logInfoDetail("Bridge Agents SDK : %s" % openai_agents_sdk_version)
-			return True
+			output_data = process.communicate()[0]
+			output_text = ensure_text(output_data)
+			return_code = process.returncode
+		except Exception as e:
+			self.logError("Unable to validate the OpenAI Agents bridge Python environment.")
+			self.logErrorDetail("Python    : %s" % self.bridge_python)
+			self.logErrorDetail(str(e))
+			return False
+		if return_code != 0:
+			self.logError("The configured OpenAI Agents bridge Python environment is missing required libraries.")
+			self.logInfoDetail("Python    : %s" % self.bridge_python)
+			self.logInfoDetail("It must be able to import: agents, Agent/Runner/ModelSettings/RunConfig, and openai.types.shared.Reasoning")
+			self.logInfoDetail("")
+			self.logErrorDetail("Install the missing libraries with:")
+			for install_command in self._getBridgePythonInstallCommands():
+				self.logErrorDetail(install_command)
+			#for output_line in output_text.split("\n"):
+			#	output_line = output_line.strip()
+			#	if output_line != "":
+			#		self.logErrorDetail(output_line)
+			return False
+		return True
 
 	def submitOpenAIAgentsBridgeJob(self):
-			"""Queue the current request for asynchronous execution via the local OpenAI Agents bridge."""
-			mndbg.dbgp(get_current_function_name())
-			self.getOpenAIAgentsBridgePaths()
-			if not self.ensureOpenAIAgentsBridgeRunning():
-				return self.response
-			bridge_payload = {
-				"request_id": self.request_id,
-				"api_key": self.api_key,
-				"model": self.model,
-				"prompt": self.prompt,
-				"output_file": self.bridge_output_file_path,
-				"status_file": self.bridge_status_file_path,
-				"raw_request_file": self.bridge_raw_request_file_path,
-				"raw_result_file": self.bridge_raw_result_file_path,
-				"question_type": self.question_type,
-				"template_file": self.template_file,
-				"target_address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
-				"target_address_source": self.target_address_source,
-				"reasoning_effort": self.reasoning_effort,
-				"verbosity": self.response_verbosity,
-				"max_turns": self.max_turns,
-				"max_tokens": self.max_tokens
-			}
-			try:
-				bridge_response = submitOpenAIAgentsBridgeRequest(self.api_url, bridge_payload, timeout_seconds=min(self.timeout_seconds, 10.0))
-			except Exception as e:
-				logAIProviderError(self.engine, e)
-				return self.response
-			self.writeRequestLog(request_id=self.request_id)
-			self.response = "The OpenAI Agents bridge accepted the request and will write the result to %s." % self.bridge_output_file_path
-			dbg.log("")
-			self.logInfo("OpenAI Agents bridge request accepted.")
-			self.logInfoDetail("Request id : %s" % self.request_id)
-			self.logInfoDetail("Bridge URL : %s" % self.api_url)
-			self.logInfoDetail("Status     : %s" % ensure_text(bridge_response.get("status", "queued")).strip())
-			self.logInfoDetail("Request    : %s" % self.request_logfile_path)
-			self.logInfoDetail("Output     : %s" % self.bridge_output_file_path)
-			self.logInfoDetail("Status file: %s" % self.bridge_status_file_path)
-			self.logInfoDetail("Raw request: %s" % self.bridge_raw_request_file_path)
-			self.logInfoDetail("Raw result : %s" % self.bridge_raw_result_file_path)
-			self.logInfoDetail("Bridge log : %s" % self.bridge_log_file_path)
-			self.logInfoDetail("The bridge runs outside the debugger and waits for the final result there.")
+		"""Queue the current request for asynchronous execution via the local OpenAI Agents bridge."""
+		mndbg.dbgp(get_current_function_name())
+		self.getOpenAIAgentsBridgePaths()
+		if not self.ensureOpenAIAgentsBridgeRunning():
 			return self.response
+		bridge_payload = {
+			"request_id": self.request_id,
+			"api_key": self.api_key,
+			"model": self.model,
+			"prompt": self.prompt,
+			"output_file": self.bridge_output_file_path,
+			"status_file": self.bridge_status_file_path,
+			"raw_request_file": self.bridge_raw_request_file_path,
+			"raw_result_file": self.bridge_raw_result_file_path,
+			"question_type": self.question_type,
+			"template_file": self.template_file,
+			"target_address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
+			"target_address_source": self.target_address_source,
+			"reasoning_effort": self.reasoning_effort,
+			"verbosity": self.response_verbosity,
+			"max_turns": self.max_turns,
+			"max_tokens": self.max_tokens
+		}
+		try:
+			bridge_response = submitOpenAIAgentsBridgeRequest(self.api_url, bridge_payload, timeout_seconds=min(self.timeout_seconds, 10.0))
+		except Exception as e:
+			logAIProviderError(self.engine, e)
+			return self.response
+		self.writeRequestLog(request_id=self.request_id)
+		self.response = "The OpenAI Agents bridge accepted the request and will write the result to %s." % self.bridge_output_file_path
+		dbg.log("")
+		self.logInfo("OpenAI Agents bridge request accepted.")
+		self.logInfoDetail("Request id : %s" % self.request_id)
+		self.logInfoDetail("Bridge URL : %s" % self.api_url)
+		self.logInfoDetail("Status     : %s" % ensure_text(bridge_response.get("status", "queued")).strip())
+		self.logInfoDetail("Request    : %s" % self.request_logfile_path)
+		self.logInfoDetail("Output     : %s" % self.bridge_output_file_path)
+		self.logInfoDetail("Status file: %s" % self.bridge_status_file_path)
+		self.logInfoDetail("Raw request: %s" % self.bridge_raw_request_file_path)
+		self.logInfoDetail("Raw result : %s" % self.bridge_raw_result_file_path)
+		self.logInfoDetail("Bridge log : %s" % self.bridge_log_file_path)
+		self.logInfoDetail("The bridge runs outside the debugger and waits for the final result there.")
+		return self.response
 
 	def handleUnexpectedPayloadFallback(self, err):
-			"""Preserve raw provider output when text extraction fails instead of treating it as a hard error."""
-			mndbg.dbgp(get_current_function_name())
-			if ensure_text(getattr(err, "type", "")).strip() != "UnexpectedPayloadError":
-				return False
-			raw_payload = getattr(err, "body", None)
-			if raw_payload in [None, ""]:
-				raw_payload = {"error": {"message": _getProviderErrorMessage(err)}}
-			if getattr(err, "request_id", ""):
-				self.request_id = err.request_id
-			self.writeRawResponseLog(raw_payload)
-			response_summary = _summarizeUnexpectedAIResponse(raw_payload)
-			if response_summary != "":
-				self.response = "%s\nThe raw response was saved to %s." % (
-					response_summary,
-					self.raw_response_logfile_path
-				)
-			else:
-				self.response = (
-					"The provider returned a response in an unexpected format.\n"
-					"The raw response was saved to %s." % self.raw_response_logfile_path
-				)
-			self.logInfo("The provider returned a response, but its format was not recognized.")
-			self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
-			return True
+		"""Preserve raw provider output when text extraction fails instead of treating it as a hard error."""
+		mndbg.dbgp(get_current_function_name())
+		if ensure_text(getattr(err, "type", "")).strip() != "UnexpectedPayloadError":
+			return False
+		raw_payload = getattr(err, "body", None)
+		if raw_payload in [None, ""]:
+			raw_payload = {"error": {"message": _getProviderErrorMessage(err)}}
+		if getattr(err, "request_id", ""):
+			self.request_id = err.request_id
+		self.writeRawResponseLog(raw_payload)
+		response_summary = _summarizeUnexpectedAIResponse(raw_payload)
+		if response_summary != "":
+			self.response = "%s\nThe raw response was saved to %s." % (
+				response_summary,
+				self.raw_response_logfile_path
+			)
+		else:
+			self.response = (
+				"The provider returned a response in an unexpected format.\n"
+				"The raw response was saved to %s." % self.raw_response_logfile_path
+			)
+		self.logInfo("The provider returned a response, but its format was not recognized.")
+		self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
+		return True
 
 	def request(self, question_type=None, prompt=None):
 		"""Send the prepared request or save it offline, and keep the response text on the instance."""
@@ -33362,22 +32699,9 @@ class MnAI(object):
 				self.request_id = generateAIRequestId()
 			return self.submitOpenAIAgentsBridgeJob()
 
-		openai_client_class, openai_use_http_fallback, openai_sdk_version = self.getOpenAIRequestMode()
-		anthropic_client_class, anthropic_use_http_fallback, anthropic_sdk_version = self.getAnthropicRequestMode()
-		if self.engine == "openai" and not openai_use_http_fallback and openai_client_class is None:
-			return self.response
+		openai_client_class, openai_use_http_fallback = self.getOpenAIRequestMode()
 		self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
 		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
-		if self.engine == "openai":
-			if openai_sdk_version != "":
-				self.logInfoDetail("OpenAI SDK: %s" % openai_sdk_version)
-			elif openai_use_http_fallback:
-				self.logInfoDetail("OpenAI SDK: unavailable, using direct HTTPS fallback")
-		if self.engine == "anthropic":
-			if anthropic_sdk_version != "":
-				self.logInfoDetail("Anthropic SDK: %s" % anthropic_sdk_version)
-			elif anthropic_use_http_fallback:
-				self.logInfoDetail("Anthropic SDK: unavailable, using direct HTTPS fallback")
 		if self.engine in ["ollama", "customai"] and self.api_url != "":
 			self.logInfoDetail("URL       : %s" % self.api_url)
 		if self.engine in ["ollama", "customai"] and self.response_field != "":
@@ -33403,64 +32727,23 @@ class MnAI(object):
 			))
 			try:
 				if self.engine == "openai":
-					if self.upload_requested:
-						self.submitProviderUploadRequest(openai_client_class, anthropic_client_class, attempt_timeout)
-					elif openai_use_http_fallback:
+					if openai_use_http_fallback:
 						self.response, self.request_id = callAIOpenAIDirect(
-							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
+							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
 						)
 					else:
-						try:
-							self.response, self.request_id = callAIOpenAI(
-								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
-							)
-						except Exception as openai_sdk_err:
-							if not _shouldFallbackFromSDK(self.engine, openai_sdk_err):
-								raise
-							self.logInfo("OpenAI SDK request failed. Falling back to direct HTTPS request.")
-							self.logInfoDetail(str(openai_sdk_err))
-							self.response, self.request_id = callAIOpenAIDirect(
-								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
-							)
+						self.response, self.request_id = callAIOpenAI(
+							openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options
+						)
 				elif self.engine == "anthropic":
-					if self.upload_requested:
-						self.submitProviderUploadRequest(openai_client_class, anthropic_client_class, attempt_timeout)
-					elif anthropic_use_http_fallback:
-						self.response, self.request_id = callAIAnthropic(
-							self.api_key,
-							self.model,
-							self.prompt,
-							timeout_seconds=attempt_timeout,
-							max_tokens=self.max_tokens,
-							options=self.api_options,
-							referenced_files=self.referenced_file_ids
-						)
-					else:
-						try:
-							self.response, self.request_id = callAIAnthropicSDK(
-								anthropic_client_class,
-								self.api_key,
-								self.model,
-								self.prompt,
-								timeout_seconds=attempt_timeout,
-								max_tokens=self.max_tokens,
-								options=self.api_options,
-								referenced_files=self.referenced_file_ids
-							)
-						except Exception as anthropic_sdk_err:
-							if not _shouldFallbackFromSDK(self.engine, anthropic_sdk_err):
-								raise
-							self.logInfo("Anthropic SDK request failed. Falling back to direct HTTPS request.")
-							self.logInfoDetail(str(anthropic_sdk_err))
-							self.response, self.request_id = callAIAnthropic(
-								self.api_key,
-								self.model,
-								self.prompt,
-								timeout_seconds=attempt_timeout,
-								max_tokens=self.max_tokens,
-								options=self.api_options,
-								referenced_files=self.referenced_file_ids
-							)
+					self.response, self.request_id = callAIAnthropic(
+						self.api_key,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						max_tokens=self.max_tokens,
+						options=self.api_options
+					)
 				elif self.engine == "ollama":
 					self.response, self.request_id = callAIOllama(
 						self.api_url,
@@ -33530,12 +32813,7 @@ class MnAI(object):
 	def execute(self):
 		"""Run the full tellme workflow from argument parsing through request execution."""
 		mndbg.dbgp(get_current_function_name())
-		if not mndbg.validateCpbArgument(
-			self.args,
-			log_error=self.logError,
-			log_error_detail=self.logErrorDetail,
-			debug_label="tellme"
-		):
+		if not self.validateCpbArgument():
 			return ""
 		if not self.parseEngineSelection():
 			return ""
@@ -33546,26 +32824,19 @@ class MnAI(object):
 		if not self.parseQuestionProfile():
 			self.maybePrintAvailableModelsWhenIdle()
 			return ""
-		if not self.validateInputFiles():
-			return ""
 		if not self.validateProviderConfiguration():
 			return ""
 		if not self.parseTargetAddress():
 			return ""
-		try:
-			self.logInfo("Closing WinDBG log, if any, to prevent poluting any open log files.")
-			dbg.nativeCommand(".logclose")
-		except Exception:
-			pass
-		if not self.parseControlledChunkInputs():
+		if not self.parseQ3ChunkAndTarget():
 			return ""
 		if not self.parseTemplateSelection():
 			return ""
-		if not self.parseControlledChunkInputs():
+		if not self.parseQ3ChunkAndTarget():
 			return ""
 		if not self.ensureDefaultTemplates():
 			return ""
-		if not self.parseControlFlowFollowDepth():
+		if not self.parseQ2FollowDepth():
 			return ""
 		if not self.parseContextFiles():
 			return ""
@@ -34684,319 +33955,6 @@ def procUpdate(args):
 			mndbg.dbgp("All download attempts failed for %s. Last error: %s" % (label, last_error))
 		return False, ""
 
-	def _module_imports_succeed(import_names):
-		import_names = import_names or []
-		if len(import_names) == 0:
-			return False
-		for import_name in import_names:
-			import_name = ensure_text(import_name).strip()
-			if import_name == "":
-				return False
-			try:
-				__import__(import_name)
-			except Exception as e:
-				mndbg.dbgp("Optional package probe failed for import '%s': %s" % (import_name, str(e)), errormode=False)
-				return False
-		return True
-
-	def _get_optional_upgrade_targets():
-		targets = []
-		for package_info in MONA_OPTIONAL_UPGRADE_PACKAGES:
-			pip_name = ensure_text(package_info.get("pip_name", "")).strip()
-			label = ensure_text(package_info.get("label", pip_name)).strip() or pip_name
-			import_names = package_info.get("import_names", [])
-			if pip_name == "":
-				continue
-			is_loaded = _module_imports_succeed(import_names)
-			targets.append({
-				"pip_name": pip_name,
-				"label": label,
-				"import_names": list(import_names),
-				"is_loaded": is_loaded
-			})
-			if not is_loaded:
-				mndbg.dbgp("Optional package '%s' is not importable in this Python, skipping pip upgrade" % pip_name)
-		return targets
-
-	def _quote_windbg_command_argument(value):
-		value = ensure_text(value)
-		if value == "":
-			return "\"\""
-		if re.search(r'[\s"]', value):
-			return "\"%s\"" % value.replace("\"", "\\\"")
-		return value
-
-	def _run_windbg_pip_command(command_arguments):
-		command_arguments = [ensure_text(arg).strip() for arg in (command_arguments or []) if ensure_text(arg).strip() != ""]
-		if len(command_arguments) == 0:
-			return 1, "missing pykd.pip arguments"
-		try:
-			command_text = "!pykd.pip %s" % " ".join([_quote_windbg_command_argument(arg) for arg in command_arguments])
-			mndbg.dbgp("Running WinDBG pip command: %s" % command_text)
-			output_text = ensure_text(dbg.nativeCommand(command_text)).strip()
-			error_markers = [
-				"ERROR:",
-				"Exception:",
-				"No matching distribution found",
-				"Could not find a version that satisfies the requirement"
-			]
-			for marker in error_markers:
-				if marker.lower() in output_text.lower():
-					return 1, output_text
-			return 0, output_text
-		except Exception:
-			return 1, safeTracebackText()
-
-	def _run_update_subprocess(command_array):
-		popen_kwargs = {}
-		if os.name == "nt":
-			try:
-				startupinfo = subprocess.STARTUPINFO()
-				startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-				popen_kwargs["startupinfo"] = startupinfo
-			except Exception:
-				pass
-			if hasattr(subprocess, "CREATE_NO_WINDOW"):
-				popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-		devnull_handle = None
-		try:
-			devnull_handle = open(os.devnull, "rb")
-			process = subprocess.Popen(
-				command_array,
-				stdout=subprocess.PIPE,
-				stderr=subprocess.STDOUT,
-				stdin=devnull_handle,
-				**popen_kwargs
-			)
-			output_data = process.communicate()[0]
-			return process.returncode, ensure_text(output_data).strip()
-		finally:
-			if devnull_handle is not None:
-				devnull_handle.close()
-
-	def _get_installed_package_version(target):
-		pip_name = ensure_text(target.get("pip_name", "")).strip()
-		import_name = ""
-		if len(target.get("import_names", [])) > 0:
-			import_name = ensure_text(target["import_names"][0]).strip()
-		if import_name == "":
-			return "", "missing import name"
-		if mndbg.isWinDBG():
-			try:
-				version_text = ""
-				try:
-					module = __import__(import_name)
-					version_text = ensure_text(getattr(module, "__version__", "")).strip()
-				except Exception:
-					version_text = ""
-				if version_text == "":
-					try:
-						try:
-							from importlib import metadata as importlib_metadata
-						except Exception:
-							import importlib_metadata
-						version_text = ensure_text(importlib_metadata.version(pip_name)).strip()
-					except Exception:
-						version_text = ""
-				if version_text == "":
-					try:
-						import pkg_resources
-						version_text = ensure_text(pkg_resources.get_distribution(pip_name).version).strip()
-					except Exception:
-						version_text = ""
-				if version_text == "":
-					return "", "unable to resolve package version"
-				return version_text, ""
-			except Exception:
-				return "", safeTracebackText()
-		version_probe_code = (
-			"import sys\n"
-			"pip_name = sys.argv[1]\n"
-			"import_name = sys.argv[2]\n"
-			"version = ''\n"
-			"try:\n"
-			"    module = __import__(import_name)\n"
-			"    version = getattr(module, '__version__', '')\n"
-			"except Exception:\n"
-			"    version = ''\n"
-			"if version is None:\n"
-			"    version = ''\n"
-			"version = str(version).strip()\n"
-			"if version == '':\n"
-			"    try:\n"
-			"        try:\n"
-			"            from importlib import metadata as importlib_metadata\n"
-			"        except Exception:\n"
-			"            import importlib_metadata\n"
-			"        version = str(importlib_metadata.version(pip_name)).strip()\n"
-			"    except Exception:\n"
-			"        version = ''\n"
-			"if version == '':\n"
-			"    try:\n"
-			"        import pkg_resources\n"
-			"        version = str(pkg_resources.get_distribution(pip_name).version).strip()\n"
-			"    except Exception:\n"
-			"        version = ''\n"
-			"sys.stdout.write(version)\n"
-		)
-		return_code, output_text = _run_update_subprocess([
-			sys.executable,
-			"-c",
-			version_probe_code,
-			pip_name,
-			import_name
-		])
-		if return_code != 0:
-			return "", output_text
-		return output_text.strip(), ""
-
-	def _upgrade_optional_installed_packages(simulation_mode=False):
-		dbg.log("")
-		dbg.log("[+] Checking pip package updates", highlight=1)
-		targets = _get_optional_upgrade_targets()
-		if len(targets) == 0:
-			dbg.log("[+] No optional Python packages are configured for update checks", highlight=1)
-			return
-		dbg.log("[+] Optional Python package refresh", highlight=1)
-		if mndbg.isWinDBG():
-			dbg.log("    Backend: !pykd.pip")
-		else:
-			dbg.log("    Python : %s" % sys.executable)
-		dbg.log("    Targets: %s" % ", ".join([target["pip_name"] for target in targets]))
-		results = []
-		if simulation_mode:
-			dbg.log("    [*] Simulation mode enabled - not upgrading packages")
-			for target in targets:
-				if not target.get("is_loaded", False):
-					results.append({
-						"pip_name": target["pip_name"],
-						"label": target["label"],
-						"before_version": "<not installed>",
-						"after_version": "<not installed>",
-						"status": "not installed",
-						"error": ""
-					})
-					continue
-				before_version, before_error = _get_installed_package_version(target)
-				if before_version == "":
-					before_version = "<unknown>"
-				results.append({
-					"pip_name": target["pip_name"],
-					"label": target["label"],
-					"before_version": before_version,
-					"after_version": before_version,
-					"status": "simulation",
-					"error": before_error
-				})
-			dbg.log("    Versions:", highlight=1)
-			for result in results:
-				status_text = result["status"]
-				if status_text == "simulation" and result["error"] != "":
-					status_text = "%s, probe error" % status_text
-				dbg.log("        [*] %s: %s -> %s (%s)" % (
-					result["pip_name"],
-					result["before_version"],
-					result["after_version"],
-					status_text
-				), highlight=1)
-			return
-		for target in targets:
-			if not target.get("is_loaded", False):
-				results.append({
-					"pip_name": target["pip_name"],
-					"label": target["label"],
-					"before_version": "<not installed>",
-					"after_version": "<not installed>",
-					"status": "not installed",
-					"error": ""
-				})
-				continue
-			before_version, before_error = _get_installed_package_version(target)
-			if before_version == "":
-				before_version = "<unknown>"
-			dbg.log("    [+] Upgrading %s (%s)" % (target["label"], target["pip_name"]))
-			try:
-				if mndbg.isWinDBG():
-					return_code, output_text = _run_windbg_pip_command(["install", "--upgrade", target["pip_name"]])
-				else:
-					command_array = [sys.executable, "-m", "pip", "install", "--upgrade", target["pip_name"]]
-					mndbg.dbgp("Running optional package upgrade command: %s" % repr(command_array))
-					return_code, output_text = _run_update_subprocess(command_array)
-				if return_code != 0:
-					dbg.log("        [-] pip failed for %s" % target["pip_name"], highlight=1)
-					if output_text != "":
-						dbg.log("            %s" % output_text.splitlines()[-1], highlight=1)
-						mndbg.dbgp("pip output for %s:\n%s" % (target["pip_name"], output_text), errormode=False)
-					results.append({
-						"pip_name": target["pip_name"],
-						"label": target["label"],
-						"before_version": before_version,
-						"after_version": before_version,
-						"status": "pip failed",
-						"error": before_error
-					})
-					continue
-				after_version, after_error = _get_installed_package_version(target)
-				if after_version == "":
-					after_version = "<unknown>"
-				success_markers = [
-					"Successfully installed",
-					"Requirement already satisfied",
-					"Successfully uninstalled"
-				]
-				had_success_marker = False
-				for marker in success_markers:
-					if marker.lower() in output_text.lower():
-						had_success_marker = True
-						break
-				if had_success_marker:
-					dbg.log("        [+] pip completed for %s" % target["pip_name"], highlight=1)
-				else:
-					dbg.log("        [*] pip finished for %s - inspect debug log for full output" % target["pip_name"], highlight=1)
-				if output_text != "":
-					mndbg.dbgp("pip output for %s:\n%s" % (target["pip_name"], output_text))
-				updated = (before_version != after_version and before_version != "<unknown>" and after_version != "<unknown>")
-				status_text = "updated" if updated else "unchanged"
-				if after_error != "":
-					status_text = "updated?" if before_version != after_version else "version probe failed"
-				results.append({
-					"pip_name": target["pip_name"],
-					"label": target["label"],
-					"before_version": before_version,
-					"after_version": after_version,
-					"status": status_text,
-					"error": before_error or after_error
-				})
-			except Exception as e:
-				dbg.log("        [-] Unable to upgrade %s" % target["pip_name"], highlight=1)
-				dbg.log("            %s" % str(e), highlight=1)
-				mndbg.dbgp("Optional package upgrade failed for %s: %s" % (target["pip_name"], safeTracebackText()), errormode=False)
-				results.append({
-					"pip_name": target["pip_name"],
-					"label": target["label"],
-					"before_version": before_version,
-					"after_version": before_version,
-					"status": "upgrade error",
-					"error": before_error
-				})
-		dbg.log("    Versions:", highlight=1)
-		for result in results:
-			line_prefix = "+" if result["status"] == "updated" else "*"
-			line_text = "        [%s] %s: %s -> %s" % (
-				line_prefix,
-				result["pip_name"],
-				result["before_version"],
-				result["after_version"]
-			)
-			if result["status"] == "updated":
-				dbg.log(line_text, highlight=True)
-			else:
-				dbg.log(line_text)
-			if result["status"] not in ["updated", "unchanged"]:
-				dbg.log("            %s" % result["status"], highlight=1)
-			if result["error"] != "":
-				mndbg.dbgp("Version probe detail for %s: %s" % (result["pip_name"], result["error"]), errormode=False)
-
 	def _read_release_notes_sections(releasenotes_file):
 		sections = []
 		if not os.path.isfile(releasenotes_file):
@@ -35105,16 +34063,6 @@ def procUpdate(args):
 		except:
 			force_update = True
 
-	pip_update_enabled = True
-	try:
-		mona_config = MnConfig()
-		pip_update_value = ensure_text(mona_config.get("pip_update")).strip()
-		if pip_update_value != "":
-			pip_update_enabled = str_to_bool(pip_update_value)
-			mndbg.dbgp("Update diagnostics: config pip_update=%s -> enabled=%s" % (pip_update_value, str(pip_update_enabled)))
-	except Exception:
-		mndbg.dbgp("Update diagnostics: unable to read pip_update config:\n%s" % safeTracebackText(), errormode=False)
-
 	if simulate_only:
 		dbg.log("[+] Simulation mode enabled", highlight=1)
 	if force_update and not simulate_only:
@@ -35169,9 +34117,6 @@ def procUpdate(args):
 	releasenotes_path = os.path.abspath(os.path.join(mona_dir, "mona_releasenotes.txt"))
 	releasenotes_main = "https://github.com/corelan/mona3/raw/refs/heads/main/mona_releasenotes.txt"
 	releasenotes_backup = "https://www.corelan.be/mona3/mona_releasenotes.txt"
-	logo_path = os.path.abspath(os.path.join(mona_dir, "monav3.png"))
-	logo_main = "https://github.com/corelan/mona3/raw/refs/heads/main/monav3.png"
-	logo_backup = "https://www.corelan.be/mona3/monav3.png"
 
 	mndbg.dbgp("Release notes will be stored at %s" % releasenotes_path)
 
@@ -35187,17 +34132,6 @@ def procUpdate(args):
 		mndbg.dbgp("Release notes downloaded successfully from %s" % notes_url)
 	else:
 		mndbg.dbgp("Release notes could not be downloaded from main or backup URL")
-
-	ok_logo, logo_url = _download_with_fallback(
-		logo_main,
-		logo_backup,
-		logo_path,
-		"monav3.png"
-	)
-	if ok_logo:
-		mndbg.dbgp("monav3.png downloaded successfully from %s" % logo_url)
-	else:
-		mndbg.dbgp("monav3.png could not be downloaded from main or backup URL")
 
 	release_notes_targets = []
 	seen_release_headers = {}
@@ -35347,12 +34281,6 @@ def procUpdate(args):
 			mndbg.dbgp("Release notes were not downloaded, so nothing will be shown")
 		else:
 			mndbg.dbgp("No release notes targets were collected, so no release notes section will be printed")
-
-	if pip_update_enabled:
-		_upgrade_optional_installed_packages(simulation_mode=simulate_only)
-	else:
-		dbg.log("")
-		dbg.log("[+] Skipping pip package updates because config setting pip_update is disabled", highlight=1)
 
 	return "Done"
 
@@ -36635,7 +35563,7 @@ def procLayout(args):
 
 	headers = ["Start", "End", "Size", "Type", "Description"]
 	types   = ["pointer", "pointer", "Size", "string", "string"]
-	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts, mdstyle=True, title="Results:")
+	print_dict_table(table_data, headers, types, itemsequence=table_seq, logobj=objfile, logfile=logfile, padding="    ", key_col=table_starts, mdstyle=True)
 
 	dbg.log("")
 	dbg.log("    Total: %d entities" % len(table_seq))
@@ -36729,6 +35657,29 @@ def _procHeapByAddr(refvalue):
 					break
 		except Exception:
 			pass
+		if found_result is not None:
+			break
+		# -- search in LFH subsegments --
+		if mHeap.usesLFH():
+			try:
+				fe = mHeap.getFrontEndAllocator()
+				for ss in fe.getAllSubSegments():
+					r = ss.getRange()
+					if r[0] == 0 or not (r[0] <= refvalue < r[1]):
+						continue
+					ud = ss.getUserData()
+					if ud is None or ud.corrupted:
+						continue
+					lfh_chunks = ud.getChunks()
+					sorted_lfh = sorted(lfh_chunks, key=lambda c: c.chunkptr)
+					for idx, chunk in enumerate(sorted_lfh):
+						if chunk.chunkptr <= refvalue < chunk.chunkptr + chunk.size * HEAPGRANULARITY:
+							found_result = ("lfh", mHeap, sorted_lfh, idx, ss)
+							break
+					if found_result is not None:
+						break
+			except Exception:
+				pass
 		if found_result is not None:
 			break
 		# -- search in VA blocks --
@@ -36867,6 +35818,29 @@ def _procHeapByAddr(refvalue):
 		_print_one_chunk(ctext, curr_chunk, mH, va_blks, lfh_r, lfh_s)
 		_print_one_chunk(ntext,  next_chunk, mH, va_blks, lfh_r, lfh_s)
 
+	elif kind == "lfh":
+		_, _, sorted_chunks, idx, subseg = found_result
+		prev_chunk = sorted_chunks[idx - 1] if idx > 0 else None
+		curr_chunk = sorted_chunks[idx]
+		next_chunk = sorted_chunks[idx + 1] if idx < len(sorted_chunks) - 1 else None
+		lfh_addr_str = PTR_PRINT % mH.getLFHAddress()
+		ss_addr_str = PTR_PRINT % subseg.address
+		dbg.log("[+] Found LFH chunk at %s  (heap %s)" % (PTR_PRINT % curr_chunk.chunkptr, PTR_PRINT % mH.heapbase))
+		dbg.log("    LFH @ %s, SubSegment @ %s, BucketIndex: %d, BlockSize: 0x%x" % (
+			lfh_addr_str, ss_addr_str, subseg.SizeIndex, subseg.BlockSize * HEAPGRANULARITY))
+		dbg.log("")
+
+		ptext = "<b>Previous</b> Chunk"
+		ctext = "<b>* Current</b> Chunk"
+		ntext = "<b>Next</b> Chunk"
+		if not mndbg.isWinDBG():
+			ptext = stripTags(ptext)
+			ctext = stripTags(ctext)
+			ntext = stripTags(ntext)
+		_print_one_chunk(ptext, prev_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk(ctext, curr_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk(ntext, next_chunk, mH, va_blks, lfh_r, lfh_s)
+
 	elif kind == "va":
 		_, _, vaaddr, vainfo = found_result
 		busy_off   = archValue(0x018, 0x030)
@@ -36889,6 +35863,500 @@ def _procHeapByAddr(refvalue):
 		dbg.log("    Context              : VABlock @ %s (CommitSize: 0x%x, ReserveSize: 0x%x)" % (
 			PTR_PRINT % vaaddr, vainfo["commit_size"], vainfo["reserve_size"]))
 		dbg.log("")
+
+
+def _resolveVtable(userptr, usersize):
+	"""Attempt to resolve vtable pointer at the start of a chunk's user data.
+
+	Uses MnPointer.belongsTo() to check if the first pointer-sized value points
+	into a loaded module. On WinDBG, additionally resolves the symbol name via dps.
+
+	Returns: string describing the vtable (e.g., "mshtml!CElement::`vftable'") or "".
+	"""
+	if usersize < PTR_SIZE:
+		return ""
+	try:
+		first_ptr = struct.unpack(PTR_FMT, dbg.readMemory(userptr, PTR_SIZE))[0]
+		if first_ptr == 0:
+			return ""
+		ptr_obj = MnPointer(first_ptr)
+		modname = ptr_obj.belongsTo(modulesOnly=True)
+		if modname == "":
+			return ""
+		if mndbg.isWinDBG():
+			try:
+				output = dbg.nativeCommand("dps %s L 1" % (PTR_PRINT % first_ptr))
+				for line in output.split("\n"):
+					if "vftable" in line.lower() or "::" in line:
+						parts = line.split()
+						if len(parts) >= 3:
+							return " ".join(parts[2:])
+			except:
+				pass
+		return modname
+	except:
+		return ""
+
+
+def _heapShowLFH(mHeap, showdata=False, expand=False):
+	"""Display LFH (FrontEnd Allocator) information for a heap."""
+	dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
+	if not mHeap.usesLFH():
+		dbg.log("    LFH is not active for this heap")
+		return
+
+	fe = mHeap.getFrontEndAllocator()
+	dbg.log("    LFH Address: %s" % (PTR_PRINT % fe.address))
+	active_buckets = fe.getActiveBuckets()
+	total, busy, free = fe.getUtilization()
+	dbg.log("    Active Buckets: %d" % len(active_buckets))
+	dbg.log("    Total Blocks: %d (Busy: %d, Free: %d)" % (total, busy, free))
+	dbg.log("")
+
+	for bucket in active_buckets:
+		subsegments = bucket.getSubSegments()
+		dbg.log("    Bucket[%d] BlockSize: 0x%x (%d) - %d subsegment%s" % (
+			bucket.bucket_index,
+			bucket.block_size_bytes,
+			bucket.block_size_bytes,
+			len(subsegments),
+			"" if len(subsegments) == 1 else "s"))
+		if bucket.corrupted:
+			dbg.log("      *** CORRUPTED: %s ***" % bucket.corruption_reason, highlight=True)
+			continue
+		for ss in subsegments:
+			if ss.corrupted:
+				dbg.log("      SubSegment %s *** CORRUPTED: %s ***" % (
+					PTR_PRINT % ss.address, ss.corruption_reason), highlight=True)
+				continue
+			dbg.log("      SubSegment %s  UserBlocks: %s  Blocks: %d (Busy: %d, Free: %d)" % (
+				PTR_PRINT % ss.address,
+				PTR_PRINT % ss.UserBlocks,
+				ss.BlockCount,
+				ss.getBusyCount(),
+				ss.getFreeCount()))
+			if expand:
+				ud = ss.getUserData()
+				if ud and not ud.corrupted:
+					chunks = ud.getChunks()
+					table_data = {}
+					table_seq = []
+					for chunk in chunks:
+						state = chunk.getState()
+						vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
+						key = PTR_PRINT % chunk.chunkptr
+						table_data[key] = [
+							chunk.size * HEAPGRANULARITY,
+							chunk.userptr,
+							chunk.usersize,
+							state.upper(),
+							vtable_info,
+						]
+						table_seq.append(key)
+					headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
+					types = ["string", "size", "pointer", "size", "string", "string"]
+					print_dict_table(table_data, headers, types, padding="        ", itemsequence=table_seq)
+	dbg.log("")
+
+
+def _heapShowFreeList(mHeap):
+	"""Display BackEnd Allocator free list information."""
+	dbg.log("[+] BackEnd Allocator : FreeLists")
+	backend = mHeap.getBackEndAllocator()
+	free_chunks = backend.getFreeChunks()
+	if len(free_chunks) == 0:
+		dbg.log("    No free chunks on the free list")
+	else:
+		dbg.log("    %d free chunk%s:" % (len(free_chunks), "" if len(free_chunks) == 1 else "s"))
+		table_data = {}
+		table_seq = []
+		for addr in sorted(free_chunks.keys()):
+			chunk = free_chunks[addr]
+			key = PTR_PRINT % addr
+			table_data[key] = [
+				chunk.prevsize * HEAPGRANULARITY,
+				chunk.size * HEAPGRANULARITY,
+				chunk.unused,
+				chunk.userptr,
+				chunk.usersize,
+			]
+			table_seq.append(key)
+		headers = ["_HEAP_ENTRY", "PrevSize", "Size", "Unused", "UserPtr", "UserSize"]
+		types = ["string", "size", "size", "size", "pointer", "size"]
+		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+	dbg.log("")
+
+
+def _heapShowVABlocks(mHeap):
+	"""Display VirtualAllocdBlocks information."""
+	dbg.log("[+] VirtualAllocdBlocks")
+	backend = mHeap.getBackEndAllocator()
+	va_blocks = backend.getVABlocks()
+	if len(va_blocks) == 0:
+		dbg.log("    No VirtualAllocdBlocks for this heap")
+	else:
+		dbg.log("    %d VirtualAllocdBlock%s:" % (len(va_blocks), "" if len(va_blocks) == 1 else "s"))
+		table_data = {}
+		table_seq = []
+		for va_addr in sorted(va_blocks.keys()):
+			va_info = va_blocks[va_addr]
+			key = PTR_PRINT % va_addr
+			table_data[key] = [va_info["commit_size"], va_info["reserve_size"]]
+			table_seq.append(key)
+		headers = ["_HEAP_ENTRY", "CommitSize", "ReserveSize"]
+		types = ["string", "size", "size"]
+		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+	dbg.log("")
+
+
+def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle=None, stat_info=None):
+	"""Display segment list and optionally enumerate chunks."""
+	heapbase = mHeap.heapbase
+	backend = mHeap.getBackEndAllocator()
+	segments = backend.getSegments()
+
+	hline = "Segment List for heap %s:" % (PTR_PRINT % heapbase)
+	dbg.log(hline)
+	dbg.log("-" * len(hline))
+
+	for seg_obj in segments:
+		try:
+			segstart = seg_obj.BaseAddress
+			segend = seg_obj.LastValidEntry
+			first_entry = seg_obj.FirstEntry
+			segsize = segend - segstart
+		except:
+			continue
+
+		tolog = "Segment %s - %s (FirstEntry: %s - LastValidEntry: %s): %s bytes" % (
+			PTR_PRINT % segstart, PTR_PRINT % segend,
+			PTR_PRINT % first_entry, PTR_PRINT % segend,
+			PTR_PRINT % segsize)
+		dbg.log(tolog)
+		if logfile:
+			try:
+				logfile.write(tolog, loghandle)
+			except:
+				pass
+
+		if searchtype == "chunks" or (stat_info is not None):
+			datablocks = seg_obj.getChunks()
+			tolog = "    Nr of chunks : %d " % len(datablocks)
+			dbg.log(tolog)
+			if logfile:
+				try:
+					logfile.write(tolog, loghandle)
+				except:
+					pass
+
+			if len(datablocks) > 0:
+				if stat_info is None:
+					table_data = {}
+					table_seq = []
+					for chunk in datablocks:
+						flagtxt = getHeapFlag(chunk.flag)
+						if "virtallocd" in flagtxt.lower():
+							flagtxt += " (LFH)"
+							flagtxt = flagtxt.replace("Virtallocd", "Internal")
+						key = PTR_PRINT % chunk.chunkptr
+						table_data[key] = [
+							chunk.prevsize * HEAPGRANULARITY,
+							chunk.size * HEAPGRANULARITY,
+							chunk.unused,
+							chunk.userptr,
+							chunk.usersize,
+							flagtxt,
+						]
+						table_seq.append(key)
+					headers = ["_HEAP_ENTRY", "PrevSize", "Size", "Unused", "UserPtr", "UserSize", "Flags"]
+					types = ["string", "size", "size", "size", "pointer", "size", "string"]
+					print_dict_table(table_data, headers, types, padding="    ",
+									 itemsequence=table_seq, logobj=logfile, logfile=loghandle)
+				else:
+					segstatinfo = {}
+					for chunk in datablocks:
+						usersize = chunk.usersize
+						if usersize not in segstatinfo:
+							segstatinfo[usersize] = 1
+						else:
+							segstatinfo[usersize] += 1
+
+					stat_info[segstart] = segstatinfo
+					orderedsizes = sorted(segstatinfo.keys(), reverse=True)
+					totalalloc = sum(segstatinfo.values())
+					tolog = "    Segment Statistics:"
+					dbg.log(tolog)
+					if logfile:
+						try:
+							logfile.write(tolog, loghandle)
+						except:
+							pass
+					for thissize in orderedsizes:
+						nrblocks = segstatinfo[thissize]
+						percentage = (float(nrblocks) / float(totalalloc)) * 100
+						tolog = "    Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize, thissize, nrblocks, percentage)
+						dbg.log(tolog)
+						if logfile:
+							try:
+								logfile.write(tolog, loghandle)
+							except:
+								pass
+					tolog = "    Total chunks : %d" % totalalloc
+					dbg.log(tolog)
+					if logfile:
+						try:
+							logfile.write(tolog, loghandle)
+						except:
+							pass
+					dbg.log("")
+			dbg.log("")
+
+
+def _heapShowUCR(mHeap):
+	"""Display UCR descriptor information."""
+	heapbase = mHeap.heapbase
+	backend = mHeap.getBackEndAllocator()
+	hline = "UCR information for heap %s:" % (PTR_PRINT % heapbase)
+	dbg.log("")
+	dbg.log(hline)
+	dbg.log("-" * len(hline))
+
+	try:
+		heap_ucrs = backend.getUCRDescriptors()
+		dbg.log("  Heap-wide UCRList (%d entr%s, size-sorted):" % (
+			len(heap_ucrs), "y" if len(heap_ucrs) == 1 else "ies"))
+		if heap_ucrs:
+			for i, ucr in enumerate(heap_ucrs):
+				dbg.log("    [%d] %s - %s  size: %s  (%d page%s)" % (
+					i,
+					PTR_PRINT % ucr.address,
+					PTR_PRINT % ucr.end,
+					PTR_PRINT % ucr.size,
+					ucr.size >> 12,
+					"" if (ucr.size >> 12) == 1 else "s",
+				))
+		else:
+			dbg.log("    (none)")
+
+		dbg.log("")
+		for seg_obj in backend.getSegments():
+			seg_end = seg_obj.BaseAddress + seg_obj.NumberOfPages * 0x1000
+			seg_ucrs = seg_obj.getUCRDescriptors()
+			dbg.log("  Segment %s - %s (%d UCR%s):" % (
+				PTR_PRINT % seg_obj.BaseAddress,
+				PTR_PRINT % seg_end,
+				len(seg_ucrs),
+				"" if len(seg_ucrs) == 1 else "s",
+			))
+			if seg_ucrs:
+				for i, ucr in enumerate(seg_ucrs):
+					dbg.log("    [%d] %s - %s  size: %s  (%d page%s)" % (
+						i,
+						PTR_PRINT % ucr.address,
+						PTR_PRINT % ucr.end,
+						PTR_PRINT % ucr.size,
+						ucr.size >> 12,
+						"" if (ucr.size >> 12) == 1 else "s",
+					))
+			else:
+				dbg.log("    (no UCRs)")
+	except Exception as e:
+		dbg.log("  [-] Failed to enumerate UCRs: %s" % str(e))
+
+
+def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstringlength=32, logfile=None, loghandle=None):
+	"""Display heap layout with content analysis (strings, objects, BSTRs)."""
+	heapbase = mHeap.heapbase
+	backend = mHeap.getBackEndAllocator()
+	segments = backend.getSegments()
+
+	mnproc.vtableCache = dbg.getKnowledge("vtableCache")
+	if mnproc.vtableCache is None:
+		mnproc.vtableCache = {}
+
+	nr_filter_matches = 0
+	minstringlen = minstringlength
+
+	for seg_obj in segments:
+		try:
+			segstart = seg_obj.BaseAddress
+			segend = seg_obj.LastValidEntry
+		except:
+			continue
+		datablocks = seg_obj.getChunks()
+		tolog = "----- Heap %s, Segment %s - %s -----" % (
+			PTR_PRINT % heapbase, PTR_PRINT % segstart, PTR_PRINT % segend)
+		dbg.log(tolog)
+		if logfile:
+			logfile.write(tolog, loghandle)
+
+		sortedblocks = sorted(datablocks, key=lambda c: c.chunkptr)
+		for thischunk in sortedblocks:
+			block = thischunk.chunkptr
+			blocksize = thischunk.size * HEAPGRANULARITY
+			usersize = thischunk.usersize
+			unused = thischunk.unused
+			flags = getHeapFlag(thischunk.flag)
+
+			try:
+				blockmem = dbg.readMemory(block, blocksize)
+			except:
+				continue
+
+			asciistrings = getAllStringOffsets(blockmem, minstringlen)
+			remaining = {}
+			curpos = 0
+			for stringpos in asciistrings:
+				if stringpos > curpos:
+					remaining[curpos] = stringpos - curpos
+				curpos = asciistrings[stringpos]
+			if curpos < blocksize:
+				remaining[curpos] = blocksize
+
+			unicodestrings = {}
+			for remstart in remaining:
+				remend = remaining[remstart]
+				thisunicodestrings = getAllUnicodeStringOffsets(blockmem[remstart:remend], minstringlen, remstart)
+				for tus in thisunicodestrings:
+					unicodestrings[tus] = thisunicodestrings[tus]
+
+			bstr = {}
+			tomove = []
+			for unicodeoffset in unicodestrings:
+				delta = unicodeoffset
+				size = (unicodestrings[unicodeoffset] - unicodeoffset) / 2
+				if delta >= 4:
+					maybesize = struct.unpack('<L', blockmem[delta - 3:delta + 1])[0]
+					if maybesize == (size * 2):
+						tomove.append(unicodeoffset)
+						bstr[unicodeoffset] = unicodestrings[unicodeoffset]
+			for todel in tomove:
+				del unicodestrings[todel]
+
+			orderedobj = []
+			objects = {}
+			if mndbg.isWinDBG():
+				nrlines = int(float(blocksize) / 4)
+				cmd2run = "dds 0x%08x L 0x%x" % ((block + thischunk.headersize), nrlines)
+				output = dbg.nativeCommand(cmd2run)
+				outputlines = output.split("\n")
+				for line in outputlines:
+					if line.find("::") > -1 and line.find("vftable") > -1:
+						parts = line.split(" ")
+						if len(parts) > 3:
+							objectptr = hexStrToInt(parts[0])
+							objectinfo = " ".join(parts[2:])
+							parts2 = line.split("::")
+							parts2name = "::".join(parts2[:-1])
+							parts3 = parts2name.split(" ")
+							objconstr = parts3[3] if len(parts3) > 3 else ""
+							if objectptr not in objects:
+								objects[objectptr - block] = [objectinfo, objconstr]
+			else:
+				vtable_info = _resolveVtable(thischunk.userptr, usersize)
+				if vtable_info:
+					objects[thischunk.headersize] = [vtable_info, ""]
+
+			for ascstring in asciistrings:
+				orderedobj.append(ascstring)
+			for unicodestring in unicodestrings:
+				orderedobj.append(unicodestring)
+			for bstrobj in bstr:
+				orderedobj.append(bstrobj)
+			for obj in objects:
+				orderedobj.append(obj)
+			orderedobj.sort()
+
+			tolog = "Chunk %s (Usersize 0x%x, ChunkSize 0x%x) : %s" % (
+				PTR_PRINT % block, usersize, usersize + unused, flags)
+			if showdata:
+				dbg.log(tolog)
+			if logfile:
+				logfile.write(tolog, loghandle)
+
+			previousptr = block
+			showinlog = False
+			for ptr in orderedobj:
+				ptrtype = ""
+				blockinfo = ""
+				alldata = ""
+				infoptr = block + ptr
+				endptr = 0
+
+				if ptr in asciistrings:
+					ptrtype = "String"
+					dataend = asciistrings[ptr]
+					data = blockmem[ptr:dataend]
+					alldata = data
+					ptrbytes = len(data)
+					if ptrbytes > 100:
+						data = data[0:100] + b"..."
+					blockinfo = "%s (0x%x/%d bytes) : %s" % (ptrtype, ptrbytes, ptrbytes, data)
+					endptr = infoptr + ptrbytes - 1
+				elif ptr in bstr:
+					ptrtype = "BSTR"
+					dataend = bstr[ptr]
+					data = blockmem[ptr:dataend].replace(b"\x00", b"")
+					alldata = data
+					ptrchars = len(data)
+					ptrbytes = ptrchars * 2
+					infoptr = block + ptr - 3
+					if ptrchars > 100:
+						data = data[0:100] + b"..."
+					blockinfo = "%s 0x%x/%d bytes (0x%x/%d chars) : %s" % (ptrtype, ptrbytes + 6, ptrbytes + 6, ptrchars, ptrchars, data)
+					endptr = infoptr + ptrbytes + 6
+				elif ptr in unicodestrings:
+					ptrtype = "Unicode"
+					dataend = unicodestrings[ptr]
+					data = blockmem[ptr:dataend].replace(b"\x00", b"")
+					alldata = ""
+					ptrchars = len(data)
+					ptrbytes = ptrchars * 2
+					if ptrchars > 100:
+						data = data[0:100] + b"..."
+					blockinfo = "%s (0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype, ptrbytes, ptrbytes, ptrchars, ptrchars, data)
+					endptr = infoptr + ptrbytes + 2
+				elif ptr in objects:
+					ptrtype = "Object"
+					data = objects[ptr][0]
+					alldata = data
+					blockinfo = "%s : %s" % (ptrtype, data)
+					endptr = infoptr
+
+				slackspace = infoptr - previousptr
+				if slackspace >= 0:
+					if endptr != infoptr:
+						tolog = "  +%04x @ %08x->%08x : %s" % (slackspace, infoptr, endptr, blockinfo)
+					else:
+						tolog = "  +%04x @ %08x           : %s" % (slackspace, infoptr, blockinfo)
+				else:
+					tolog = "        @ %08x           : %s" % (infoptr, blockinfo)
+
+				if filterafter == "" or (filterafter != "" and filterafter in str(alldata)):
+					showinlog = True
+					if filterafter != "":
+						nr_filter_matches += 1
+				if showinlog:
+					if showdata:
+						dbg.log(tolog)
+					if logfile:
+						logfile.write(tolog, loghandle)
+
+				previousptr = endptr if endptr > 0 else infoptr
+
+	if filterafter != "":
+		tolog = "Nr of filter matches: %d" % nr_filter_matches
+		if showdata:
+			dbg.log("")
+			dbg.log(tolog)
+		if logfile:
+			logfile.write("", loghandle)
+			logfile.write(tolog, loghandle)
+
+	try:
+		dbg.addKnowledge("vtableCache", mnproc.vtableCache)
+	except Exception:
+		pass
 
 
 def procHeap(args):
@@ -36974,7 +36442,7 @@ def procHeap(args):
 
 	heapbase = 0
 	searchtype = ""
-	searchtypes = ["lal","lfh","all","segments", "chunks", "layout", "fea", "bea", "ucr"]
+	searchtypes = ["lal","lfh","all","segments", "chunks", "layout", "fea", "bea", "ucr", "search"]
 	error = False
 	filterafter = ""
 	
@@ -37077,16 +36545,10 @@ def procHeap(args):
 		statinfo = {}
 		logfile_b = ""
 		thislog_b = ""
-		logfile_l = ""
-		logfile_l = ""
 
 		if searchtype == "chunks" or searchtype == "all":
 			logfile_b = MnLog("heapchunks.md")
 			thislog_b = logfile_b.reset()
-
-		if searchtype == "layout" or searchtype == "all":
-			logfile_l = MnLog("heaplayout.md")
-			thislog_l = logfile_l.reset()
 
 		for heapbase in heap_to_query:
 			mHeap = MnHeap(heapbase)
@@ -37156,610 +36618,145 @@ def procHeap(args):
 						dbg.log("")
 
 			if searchtype == "lfh" or (searchtype == "all" and g_win7_mode):
-				dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
-				dbg.log("     ** Not implemented yet **")
-				
+				_heapShowLFH(mHeap, showdata=showdata, expand=expand)
+
 			if searchtype == "freelist" or searchtype == "all":
-				dbg.log("[+] BackEnd Allocator : FreeLists")
-				dbg.log("     ** Not implemented yet **")
+				_heapShowFreeList(mHeap)
 
 			if searchtype == "layout" or searchtype == "all":
-				segments = getSegmentsForHeap(heapbase)
-
-				sortedsegments = []
-				# read vtableCache from knowledge
-				mnproc.vtableCache = dbg.getKnowledge("vtableCache")
-				if mnproc.vtableCache is None:
-					mnproc.vtableCache = {}
-
-				for seg in segments:
-					sortedsegments.append(seg)
-				if not g_win7_mode:
-					sortedsegments.sort()
-				segmentcnt = 0
-				minstringlen = minstringlength
-				blockmem = []
-				nr_filter_matches = 0
-
-				vablocks = []
-				# VirtualAllocdBlocks
-				vachunks = mHeap.getVirtualAllocdBlocks()
-				infoblocks = {}
-				infoblocks["segments"] = sortedsegments
-				if expand:
-					infoblocks["virtualallocdblocks"] = [vachunks]
-
-				# Build {FirstEntry: seg_obj} using the cached PEB heap (same pattern as MnPointer)
-				_layout_seg_by_fe = {}
-				try:
-					_layout_cached_heap = mnproc.getPEB().getHeapObject(heapbase)
-					_layout_seg_by_fe = {s.FirstEntry: s for s in _layout_cached_heap.getSegments()}
-				except Exception:
-					pass
-
-				for infotype in infoblocks:
-					heapdata = infoblocks[infotype]
-					for thisdata in heapdata:
-						if infotype == "segments":
-							seg = thisdata
-							segmentcnt += 1
-							segstart = segments[seg][0]
-							segend = segments[seg][1]
-							FirstEntry = segments[seg][2]
-							LastValidEntry = segments[seg][3]
-							_layout_seg_obj = _layout_seg_by_fe.get(FirstEntry)
-							if _layout_seg_obj is not None:
-								datablocks = _layout_seg_obj.getChunks()
-							else:
-								datablocks = walkSegment(FirstEntry, LastValidEntry, heapbase)
-							tolog = "----- Heap 0x%08x%s, Segment 0x%08x - 0x%08x (%d/%d) -----" % (heapbase,heapbase_extra,segstart,segend,segmentcnt,len(sortedsegments))
-
-						if infotype == "virtualallocdblocks":
-							datablocks = heapdata[0]
-							tolog = "----- Heap 0x%08x%s, VirtualAllocdBlocks : %d" % (heapbase,heapbase_extra,len(datablocks))
-
-						logfile_l.write(" ",thislog_l)								
-						dbg.log(tolog)
-						logfile_l.write(tolog,thislog_l)
-
-						sortedblocks = []
-						for block in datablocks:
-							sortedblocks.append(block)
-						sortedblocks.sort()								
-
-						# for each block, try to get info
-						# object ?
-						# BSTR ?
-						# str ?
-						for block in sortedblocks:
-							showinlog = False
-							thischunk = datablocks[block]
-							if infotype == "virtualallocdblocks":
-								vainfo = thischunk
-								unused = 0
-								headersize = 0
-								flags = ""
-								userptr = block
-								psize = 0
-								selfsize = vainfo["commit_size"]
-								blocksize = selfsize
-								usersize = selfsize
-								extratxt = ""
-								nextblock = 0
-							else:
-								unused = thischunk.unused
-								headersize = thischunk.headersize
-								flags = getHeapFlag(thischunk.flag)
-								userptr = thischunk.userptr
-								psize = thischunk.prevsize * HEAPGRANULARITY
-								blocksize = thischunk.size * HEAPGRANULARITY
-								selfsize = blocksize
-								usersize = thischunk.usersize
-								extratxt = ""
-							# read block into memory
-							blockmem = dbg.readMemory(block,blocksize)
-
-							# first, find all strings (ascii, unicode and BSTR)
-							asciistrings = {}
-							unicodestrings = {}
-							bstr = {}
-							objects = {}
-							asciistrings = getAllStringOffsets(blockmem,minstringlen)
-
-							# determine remaining subsets of the original block
-							remaining = {}
-							curpos = 0
-							for stringpos in asciistrings:
-								if stringpos > curpos:
-									remaining[curpos] = stringpos - curpos
-									curpos = asciistrings[stringpos]
-							if curpos < blocksize:
-								remaining[curpos] = blocksize
-
-							# search for unicode in remaining subsets only - tx for the regex help Turboland !
-							for remstart in remaining:
-								remend = remaining[remstart]
-								thisunicodestrings = getAllUnicodeStringOffsets(blockmem[remstart:remend],minstringlen,remstart)
-								# append results to master list
-								for tus in thisunicodestrings:
-									unicodestrings[tus] = thisunicodestrings[tus]
-
-							# check each unicode, maybe it's a BSTR
-							tomove = []
-							for unicodeoffset in unicodestrings:
-								delta = unicodeoffset
-								size = (unicodestrings[unicodeoffset] - unicodeoffset)/2
-								if delta >= 4:
-									maybesize = struct.unpack('<L',blockmem[delta-3:delta+1])[0] # it's an offset, remember ?
-									if maybesize == (size*2):
-										tomove.append(unicodeoffset)
-										bstr[unicodeoffset] = unicodestrings[unicodeoffset]
-							for todel in tomove:
-								del unicodestrings[todel]
-
-							# get objects too
-							# find all unique objects
-							# again, just store offset
-							objects = {}
-							orderedobj = []
-							if mndbg.isWinDBG():
-								nrlines = int(float(blocksize) / 4)
-								cmd2run = "dds 0x%08x L 0x%x" % ((block + headersize),nrlines)
-								output = dbg.nativeCommand(cmd2run)
-								outputlines = output.split("\n")
-								for line in outputlines:
-									if line.find("::") > -1 and line.find("vftable") > -1:
-										parts = line.split(" ")
-										objconstr = ""
-										if len(parts) > 3:
-											objectptr = hexStrToInt(parts[0])
-											cnt = 2
-											objectinfo = ""
-											while cnt < len(parts):
-												objectinfo += parts[cnt] + " "
-												cnt += 1
-											parts2 = line.split("::")
-											parts2name = ""
-											pcnt = 0
-											while pcnt < len(parts2)-1:
-												parts2name = parts2name + "::" + parts2[pcnt]
-												pcnt += 1
-											parts3 = parts2name.split(" ")
-											if len(parts3) > 3:
-												objconstr = parts3[3]
-											if not objectptr in objects:
-												objects[objectptr-block] = [objectinfo,objconstr]
-											objsize = 0
-											if findvtablesize:
-												if not objconstr in mnproc.vtableCache:
-													cmd2run = "u %s::CreateElement L 12" % objconstr
-													objoutput = dbg.nativeCommand(cmd2run)
-													if not "HeapAlloc" in objoutput:
-														cmd2run = "x %s::operator*" % objconstr
-														oplist = dbg.nativeCommand(cmd2run)
-														oplines = oplist.split("\n")
-														oppat = "%s::operator" % objconstr
-														for opline in oplines:
-															if oppat in opline and not "del" in opline:
-																lineparts = opline.split(" ")
-																cmd2run = "uf %s" % lineparts[0]
-																objoutput = dbg.nativeCommand(cmd2run)
-																break
-													if "HeapAlloc" in objoutput:
-														objlines = objoutput.split("\n")
-														lineindex = 0
-														for objline in objlines:
-															if "HeapAlloc" in objline:
-																if lineindex >= 3:
-																	sizeline = objlines[lineindex-3]
-																	if "push" in sizeline:
-																		sizelineparts = sizeline.split("push")
-																		if len(sizelineparts) > 1:
-																			sizevalue = sizelineparts[len(sizelineparts)-1].replace(" ","").replace("h","")
-																			try:
-																				objsize = hexStrToInt(sizevalue)
-																				# adjust allocation granulariy
-																				remainsize = objsize - ((objsize / 8) * 8)
-																				while remainsize != 0:
-																					objsize += 1
-																					remainsize = objsize - ((objsize / 8) * 8)
-																			except:
-																				#print traceback.format_exc()
-																				objsize = 0
-																		break
-															lineindex += 1
-												mnproc.vtableCache[objconstr] = objsize
-											else:
-												objsize = mnproc.vtableCache[objconstr]
-							# remove object entries that belong to the same object
-							allobjects = []
-							objectstodelete = []
-							for optr in objects:
-								allobjects.append(optr)
-							allobjects.sort()
-							skipuntil = 0
-							for optr in allobjects:
-								if optr < skipuntil:
-									objectstodelete.append(optr)
-								else:
-									objname = objects[optr][1]
-									objsize = 0
-									try:
-										objsize = mnproc.vtableCache[objname]
-									except:
-										objsize = 0
-									skipuntil = optr + objsize
-							# remove vtable lines that are too close to each other
-							minvtabledistance = 0x0c
-							prevvname = ""
-							prevptr = 0
-							thisvname = ""
-							for optr in allobjects:
-								thisvname = objects[optr][1]
-								if thisvname == prevvname and (optr - prevptr) <= minvtabledistance:
-									if not optr in objectstodelete:
-										objectstodelete.append(optr)
-								else:
-									prevptr = optr
-									prevvname = thisvname
+				if "a" in args and type(args["a"]).__name__.lower() != "bool" and searchtype == "layout":
+					layout_addr = hexStrToInt(args["a"].replace("0x","").replace("0X",""))
+					layout_count = 5
+					if "n" in args and type(args["n"]).__name__.lower() != "bool":
+						try:
+							layout_count = int(args["n"])
+						except:
+							layout_count = 5
+					before, target, after = mHeap.getChunksAround(layout_addr, layout_count)
+					dbg.log("[+] Layout around 0x%08x (+/- %d chunks):" % (layout_addr, layout_count))
+					dbg.log("")
+					table_data = {}
+					table_seq = []
+					def _add_layout_row(chunk, marker=""):
+						vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
+						key = "%s%s" % (marker, PTR_PRINT % chunk.chunkptr)
+						table_data[key] = [
+							chunk.size * HEAPGRANULARITY,
+							chunk.userptr,
+							chunk.usersize,
+							chunk.getState(),
+							vtable_info,
+						]
+						table_seq.append(key)
+					for chunk in before:
+						_add_layout_row(chunk)
+					if target:
+						_add_layout_row(target, ">> ")
+					else:
+						key = ">> " + (PTR_PRINT % layout_addr)
+						table_data[key] = [0, 0, 0, "NOT FOUND", ""]
+						table_seq.append(key)
+					for chunk in after:
+						_add_layout_row(chunk)
+					headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
+					types = ["string", "size", "pointer", "size", "string", "string"]
+					print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+					dbg.log("")
+				else:
+					logfile_l = MnLog("heaplayout.md")
+					thislog_l = logfile_l.reset()
+					_heapShowLayout(mHeap, showdata=showdata, expand=expand,
+									filterafter=filterafter, minstringlength=minstringlength,
+									logfile=logfile_l, loghandle=thislog_l)
 
 
-							for vtableptr in objectstodelete:
-								del objects[vtableptr]
-
-							for obj in objects:
-								orderedobj.append(obj)
-
-							for ascstring in asciistrings:
-								orderedobj.append(ascstring)
-
-							for unicodestring in unicodestrings:
-								orderedobj.append(unicodestring)
-
-							for bstrobj in bstr:
-								orderedobj.append(bstrobj)
-
-							orderedobj.sort()
-
-							# print out details for this chunk
-							chunkprefix = ""
-							fieldname1 = "Usersize"
-							fieldname2 = "ChunkSize"
-							if infotype == "virtualallocdblocks":
-								chunkprefix = "VA "
-								fieldname1 = "CommitSize"
-							tolog = "%sChunk 0x%08x (%s 0x%x, %s 0x%x) : %s" % (chunkprefix,block,fieldname1,usersize,fieldname2,usersize+unused,flags)
-							if showdata:
-								dbg.log(tolog)
-							logfile_l.write(tolog,thislog_l)
-
-							previousptr = block
-							previoussize = 0
-							showinlog = False
-							for ptr in orderedobj:
-								ptrtype = ""
-								ptrinfo = ""
-								data = ""
-								alldata = ""
-								blockinfo = ""
-								ptrbytes = 0
-								endptr = 0
-								datasize = 0
-								ptrchars = 0
-								infoptr = block + ptr
-								endptr = 0
-								if ptr in asciistrings:
-									ptrtype = "String"
-									dataend = asciistrings[ptr]
-									data = blockmem[ptr:dataend]
-									alldata = data
-									ptrbytes = len(data)
-									ptrchars = ptrbytes
-									datasize = ptrbytes
-									if ptrchars > 100:
-										data = data[0:100]+b"..."
-									blockinfo = "%s (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
-									infoptr = block + ptr
-									endptr = infoptr + ptrchars -  1  # need -1
-								elif ptr in bstr:
-									ptrtype = "BSTR"
-									dataend = bstr[ptr]
-									data = blockmem[ptr:dataend].replace(b"\x00",b"")
-									alldata = data
-									ptrchars = len(data)
-									ptrbytes = ptrchars*2
-									datasize = ptrbytes+6
-									infoptr = block + ptr - 3
-									if ptrchars > 100:
-										data = data[0:100]+b"..."
-									blockinfo = "%s 0x%x/%d bytes (Data : 0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes+6,ptrbytes+6,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
-									endptr = infoptr + ptrbytes + 6
-								elif ptr in unicodestrings:
-									ptrtype = "Unicode"
-									dataend = unicodestrings[ptr]
-									data = blockmem[ptr:dataend].replace(b"\x00",b"")
-									alldata = ""
-									ptrchars = len(data)
-									ptrbytes = ptrchars * 2
-									datasize = ptrbytes
-									if ptrchars > 100:
-										data = data[0:100]+b"..."
-									blockinfo = "%s (0x%x/%d bytes, 0x%x/%d chars) : %s" % (ptrtype,ptrbytes,ptrbytes,ptrchars,ptrchars,data)
-									endptr = infoptr + ptrbytes + 2
-								elif ptr in objects:
-									ptrtype = "Object"
-									data = objects[ptr][0]
-									vtablename = objects[ptr][1]
-									datasize = 0
-									if vtablename in mnproc.vtableCache:
-										datasize = mnproc.vtableCache[vtablename]
-									alldata = data
-									if datasize > 0:
-										blockinfo = "%s (0x%x bytes): %s" % (ptrtype,datasize,data)
-									else:
-										blockinfo = "%s : %s" % (ptrtype,data)
-									endptr = infoptr + datasize
-
-								# calculate delta
-								slackspace = infoptr - previousptr
-								if endptr > 0 and not ptrtype=="Object":
-									if slackspace >= 0:
-										tolog = "  +%04x @ %08x->%08x : %s" % (slackspace,infoptr,endptr,blockinfo)
-									else:
-										tolog = "       @ %08x->%08x : %s" % (infoptr,endptr,blockinfo)
-								else:
-									if slackspace >= 0:
-										if endptr != infoptr:
-											tolog = "  +%04x @ %08x->%08x : %s" % (slackspace,infoptr,endptr,blockinfo)
-										else:
-											tolog = "  +%04x @ %08x           : %s" % (slackspace,infoptr,blockinfo)
-									else:
-										tolog = "        @ %08x           : %s" % (infoptr,blockinfo)
-
-								if filterafter == "" or (filterafter != "" and filterafter in alldata):
-									showinlog = True  # keep this for the entire block
-									if (filterafter != ""):
-										nr_filter_matches += 1
-								if showinlog:
-									if showdata:
-										dbg.log(tolog)
-									logfile_l.write(tolog,thislog_l)
-								
-								previousptr = endptr
-								previoussize = datasize
-
-				# save vtableCache again
-				if filterafter != "":
-					tolog = "Nr of filter matches: %d" % nr_filter_matches
-					if showdata:
-						dbg.log("")
-						dbg.log(tolog)
-					logfile_l.write("",thislog_l)
-					logfile_l.write(tolog,thislog_l)
-				try:
-					dbg.addKnowledge("vtableCache",mnproc.vtableCache)
-				except Exception:
-					pass
-
-
-			if searchtype in ["segments","all","chunks"] or "stat" in args:
-				segments = getSegmentsForHeap(heapbase)
-				hline = "Segment List for heap %s:" % (PTR_PRINT % heapbase)
-				dbg.log(hline)
-				dbg.log("-" * len(hline))
-				sortedsegments = []
-				for seg in segments:
-					sortedsegments.append(seg)
-				if not g_win7_mode:
-					sortedsegments.sort()
-				vablocks = []
-				# VirtualAllocdBlocks
-				vachunks = mHeap.getVirtualAllocdBlocks()
-				infoblocks = {}
-				infoblocks["segments"] = sortedsegments
-				if searchtype in ["all","chunks"]:
-					infoblocks["virtualallocdblocks"] = [vachunks]
-
-				# Build {FirstEntry: seg_obj} using the cached PEB heap so getChunks()
-				# shares the same MnNTSegmentBase objects (and _chunks cache) used by
-				# MnPointer.showHeapBlockInfo() / MnProc.getAllSorted().
-				_seg_by_fe = {}
-				try:
-					_cached_nt_heap = mnproc.getPEB().getHeapObject(heapbase)
-					_seg_by_fe = {s.FirstEntry: s for s in _cached_nt_heap.getSegments()}
-				except Exception:
-					pass
-
-				for infotype in infoblocks:
-					heapdata = infoblocks[infotype]
-					for thisdata in heapdata:
-						tolog = ""
-						if infotype == "segments":
-							# 0 : segmentstart
-							# 1 : segmentend
-							# 2 : firstentry
-							# 3 : lastentry
-							seg = thisdata
-							segstart = segments[seg][0]
-							segend = segments[seg][1]
-							segsize = segend-segstart
-							FirstEntry = segments[seg][2]
-							LastValidEntry = segments[seg][3]
-							tolog = "Segment %s - %s (FirstEntry: %s - LastValidEntry: %s): %s bytes" % (PTR_PRINT % segstart, PTR_PRINT % segend, PTR_PRINT % FirstEntry, PTR_PRINT % LastValidEntry, PTR_PRINT % segsize)
-						if infotype == "virtualallocdblocks":
-							vablocks = heapdata
-							tolog = "Heap : %s%s : VirtualAllocdBlocks : %d " % (PTR_PRINT % heapbase, heapbase_extra, len(vachunks))
-						#dbg.log("")
-						dbg.log(tolog)
-						if searchtype == "chunks" or "stat" in args:
-							try:
-								logfile_b.write("Heap: %s%s" % (PTR_PRINT % heapbase, heapbase_extra),thislog_b)
-								#logfile_b.write("",thislog_b)
-								logfile_b.write(tolog,thislog_b)
-							except:
-								pass
-							if infotype == "segments":
-								_seg_obj = _seg_by_fe.get(FirstEntry)
-								if _seg_obj is not None:
-									datablocks = _seg_obj.getChunks()
-								else:
-									datablocks = walkSegment(FirstEntry, LastValidEntry, heapbase)
-							else:
-								datablocks = heapdata[0]
-							tolog = "    Nr of chunks : %d " % len(datablocks)
-							dbg.log(tolog)
-							try:
-								logfile_b.write(tolog,thislog_b)
-							except:
-
-								pass
-							if len(datablocks) > 0:
-								tolog = "    _HEAP_ENTRY  psize   size  unused  UserPtr   UserSize"
-								dbg.log(tolog)
-								try:
-									logfile_b.write(tolog,thislog_b)
-								except:
-									pass
-								sortedblocks = []
-								for block in datablocks:
-									sortedblocks.append(block)
-								sortedblocks.sort()
-								nextblock = 0
-								segstatinfo = {}
-								for block in sortedblocks:
-									showinlog = False
-									thischunk = datablocks[block]
-									if infotype == "virtualallocdblocks":
-										vainfo = thischunk
-										unused = 0
-										headersize = 0
-										flagtxt = "VirtualAllocd"
-										userptr = block
-										psize = 0
-										selfsize = vainfo["commit_size"]
-										blocksize = selfsize
-										usersize = selfsize
-										extratxt = " (0x%x bytes committed, 0x%x reserved)" % (vainfo["commit_size"], vainfo["reserve_size"])
-										nextblock = 0
-									else:
-										unused = thischunk.unused
-										headersize = thischunk.headersize
-										flagtxt = getHeapFlag(thischunk.flag)
-										if "virtallocd" in flagtxt.lower():
-											flagtxt += " (LFH)"
-											flagtxt = flagtxt.replace("Virtallocd","Internal")
-										userptr = thischunk.userptr
-										psize = thischunk.prevsize * HEAPGRANULARITY
-										blocksize = thischunk.size * HEAPGRANULARITY
-										selfsize = blocksize
-										usersize = thischunk.usersize
-										extratxt = ""
-										nextblock = block + blocksize
-
-									if not "stat" in args:
-										tolog = "       %08x  %05x  %05x   %05x  %08x  %08x (%d) (%s) %s" % (block,psize,selfsize,unused,userptr,usersize,usersize,flagtxt,extratxt)
-										dbg.log(tolog)
-										logfile_b.write(tolog,thislog_b)
-									else:
-										if not usersize in segstatinfo:
-											segstatinfo[usersize] = 1
-										else: 
-											segstatinfo[usersize] += 1
-								
-								if nextblock > 0 and nextblock < LastValidEntry:
-									if not "stat" in args:
-										nextblock -= headersize
-										restbytes = LastValidEntry - nextblock
-										tolog = "       0x%08x - 0x%08x (end of segment) : 0x%x (%d) uncommitted bytes" % (nextblock,LastValidEntry,restbytes,restbytes)
-										dbg.log(tolog)
-										logfile_b.write(tolog,thislog_b)
-								if "stat" in args:
-									statinfo[segstart] = segstatinfo
-									# show statistics
-									orderedsizes = []
-									totalalloc = 0
-									for thissize in segstatinfo:
-										orderedsizes.append(thissize)
-										totalalloc += segstatinfo[thissize] 
-									orderedsizes.sort(reverse=True)
-									tolog = "    Segment Statistics:"
-									dbg.log(tolog)
-									try:
-										logfile_b.write(tolog,thislog_b)
-									except:
-										pass
-									for thissize in orderedsizes:
-										nrblocks = segstatinfo[thissize]
-										percentage = (float(nrblocks) / float(totalalloc)) * 100
-										tolog = "    Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize,thissize,nrblocks,percentage)
-
-										dbg.log(tolog)
-										try:
-											logfile_b.write(tolog,thislog_b)
-										except:
-											pass
-									tolog = "    Total chunks : %d" % totalalloc
-									dbg.log(tolog)
-									try:
-										logfile_b.write(tolog,thislog_b)
-									except:
-										pass
-									tolog = ""
-									try:
-										logfile_b.write(tolog,thislog_b)
-									except:
-										pass
-									dbg.log("")
-								dbg.log("")
+			if searchtype in ["segments", "all", "chunks"] or "stat" in args:
+				stat_info = {} if "stat" in args else None
+				_heapShowSegments(mHeap, searchtype, showdata=showdata,
+								  logfile=logfile_b if searchtype in ["chunks", "all"] else None,
+								  loghandle=thislog_b if searchtype in ["chunks", "all"] else None,
+								  stat_info=stat_info)
+				if searchtype in ["all", "chunks"]:
+					_heapShowVABlocks(mHeap)
+				if stat_info:
+					statinfo.update(stat_info)
 
 			if searchtype == "ucr":
-				hline = "UCR information for heap %s%s:" % (PTR_PRINT % heapbase, heapbase_extra)
-				dbg.log("")
-				dbg.log(hline)
-				dbg.log("-" * len(hline))
-				try:
-					_nt_heap = mnproc.getPEB().getHeapObject(heapbase)
+				_heapShowUCR(mHeap)
 
-					heap_ucrs = _nt_heap.getUCRDescriptors()
-					dbg.log("  Heap-wide UCRList (%d entr%s, size-sorted):" % (
-						len(heap_ucrs), "y" if len(heap_ucrs) == 1 else "ies"))
-					if heap_ucrs:
-						for i, ucr in enumerate(heap_ucrs):
-							dbg.log("    [%d] %s - %s  size: %s  (%d page%s)" % (
-								i,
-								PTR_PRINT % ucr.address,
-								PTR_PRINT % ucr.end,
-								PTR_PRINT % ucr.size,
-								ucr.size >> 12,
-								"" if (ucr.size >> 12) == 1 else "s",
-							))
+			if searchtype == "search":
+				if "s" not in args or type(args["s"]).__name__.lower() == "bool":
+					dbg.log("Please specify a search value with -s <hex_value|pointer>", highlight=1)
+				else:
+					search_val = args["s"].replace('"','').replace("'","")
+					search_size = None
+					search_parent = None
+					search_offset = None
+					search_busy = True
+
+					if search_val.startswith("0x") or search_val.startswith("0X"):
+						search_val = hexStrToInt(search_val)
 					else:
-						dbg.log("    (none)")
+						try:
+							search_val = hexStrToInt(search_val)
+						except:
+							search_val = search_val.encode('latin-1') if isinstance(search_val, str) else search_val
 
-					dbg.log("")
-					for seg_obj in _nt_heap.getSegments():
-						seg_end  = seg_obj.BaseAddress + seg_obj.NumberOfPages * 0x1000
-						seg_ucrs = seg_obj.getUCRDescriptors()
-						dbg.log("  Segment %s - %s (%d UCR%s):" % (
-							PTR_PRINT % seg_obj.BaseAddress,
-							PTR_PRINT % seg_end,
-							len(seg_ucrs),
-							"" if len(seg_ucrs) == 1 else "s",
-						))
-						if seg_ucrs:
-							for i, ucr in enumerate(seg_ucrs):
-								dbg.log("    [%d] %s - %s  size: %s  (%d page%s)" % (
-									i,
-									PTR_PRINT % ucr.address,
-									PTR_PRINT % ucr.end,
-									PTR_PRINT % ucr.size,
-									ucr.size >> 12,
-									"" if (ucr.size >> 12) == 1 else "s",
-								))
+					if "p" in args and type(args["p"]).__name__.lower() != "bool":
+						pval = args["p"].lower().strip()
+						if pval == "lfh":
+							search_parent = ChunkParent.LFH
+						elif pval == "segment":
+							search_parent = ChunkParent.SEGMENT
+						elif pval == "vadblock":
+							search_parent = ChunkParent.VADBLOCK
+
+					if "offset" in args and type(args["offset"]).__name__.lower() != "bool":
+						oval = args["offset"].replace('"','').replace("'","")
+						if oval.startswith("0x") or oval.startswith("0X"):
+							search_offset = hexStrToInt(oval)
 						else:
-							dbg.log("    (no UCRs)")
-				except Exception as e:
-					dbg.log("  [-] Failed to enumerate UCRs: %s" % str(e))
+							search_offset = int(oval)
+
+					if "free" in args:
+						search_busy = False
+
+					dbg.log("[+] Searching heap 0x%08x for value 0x%x..." % (heapbase, search_val if isinstance(search_val, int) else 0))
+					results = mHeap.searchChunks(
+						search_val,
+						size=search_size,
+						parent_filter=search_parent,
+						busy_only=search_busy,
+						offset_filter=search_offset
+					)
+					if len(results) > 0:
+						dbg.log("[+] Found %d match(es):" % len(results))
+						table_data = {}
+						table_seq = []
+						for chunk, offset in results:
+							state = chunk.getState()
+							parent_str = ""
+							if hasattr(chunk, 'parent') and chunk.parent:
+								parent_str = chunk.parent
+							vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
+							key = PTR_PRINT % chunk.chunkptr
+							if key in table_data:
+								key = "%s+0x%x" % (key, offset)
+							table_data[key] = [
+								chunk.userptr,
+								chunk.usersize,
+								"0x%x" % offset,
+								state,
+								parent_str,
+								vtable_info,
+							]
+							table_seq.append(key)
+						headers = ["ChunkPtr", "UserPtr", "UserSize", "Offset", "State", "Parent", "VTable"]
+						types = ["string", "pointer", "size", "string", "string", "string", "string"]
+						print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+					else:
+						dbg.log("[-] No matches found.")
+					dbg.log("")
 
 
 		if "stat" in args and len(statinfo) > 0:
@@ -41647,17 +40644,12 @@ Mona uses the following parameters:
    excluded_modules
    author
    alias
-   pip_update
 
 The exclude_modules parameter takes a comma-separated list of module names. 
 You can add items to the parameter using the -add option, and remove items using -del
 
 The alias variable allow you to set the command you're using to launch mona.
 This will affect clickable links and help output.
-
-The pip_update variable controls whether 'mona up' also refreshes already-installed
-optional Python packages such as keystone-engine, openai, anthropic, and openai-agents.
-Accepted values are case-insensitive and include true/false, yes/no, on/off, and 1/0.
 
   For example, in WinDBG(X):
     !load pykd
@@ -41673,7 +40665,7 @@ Accepted values are case-insensitive and include true/false, yes/no, on/off, and
 Mandatory argument :  -r <reg>  where reg is a valid register"""
 	
 	ropfuncUsage = """Default module criteria : non aslr, non rebase, non os
-Output will be written to ropfunc.md"""
+Output will be written to ropfunc.txt"""
 	
 	modulesUsage = """Shows information about the loaded modules.
 Check the global options above to filter modules as needed.
@@ -41729,7 +40721,7 @@ Optional parameters :
     -f \"file1,file2,..filen\"    : use mona generated rop files as input instead of searching in memory
     -rva                        : use RVA's in rop chain
     -s <technique>              : only create a ROP chain for the selected technique (options: virtualalloc, virtualprotect)    
-    -sort                       : sort the output in rop.md (sort on pointer value)"""
+    -sort                       : sort the output in rop.txt (sort on pointer value)"""
 	
 	jopUsage="""Default module criteria : non aslr,non rebase,non os
 Optional parameters : 
@@ -41750,7 +40742,7 @@ contain the output of the same mona command.
 Mandatory argument : -f \"file1,file2,...filen\"
 Put all filenames between one set of double quotes, and separate files with comma's.
 You can specify a foldername as well with -f, all files in the root of that folder will be part of the compare.
-Output will be written to filecompare.md and filecompare_not.md (not matching pointers)
+Output will be written to filecompare.txt and filecompare_not.txt (not matching pointers)
 Optional parameters : 
     -contains \"INSTRUCTION\"  (will only list if instruction is found)
     -nostrict (will also list pointer is instructions don't match in all files)
@@ -41758,7 +40750,7 @@ Optional parameters :
                       When using -range, the -contains and -nostrict options will be ignored
     -ptronly : only show matching pointers (slightly faster). Doesn't work when 'range' is used"""
 
-	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.md
+	patcreateUsage="""Create a cyclic pattern of a given size. Output will be written to pattern.txt
 in ascii, hex and unescape() javascript format
 
 Mandatory argument : size (numberic value)
@@ -41961,7 +40953,7 @@ Optional arguments:
          Example: -s \\x01 -e \\x7f to have all bytes from 0x01 to 0x7f
                   -s \\xff -e \\x7f to have all bytes from 0xff to 0x7f in reverse
     -r : show array backwards (reversed), starting at \\xff
-    Output will be written to bytearray.md (raw bytes + Python 2/3 code),
+    Output will be written to bytearray.txt (raw bytes + Python 2/3 code),
     and binary output will be written to bytearray.bin"""
 	
 	headerUsage = """Convert contents of a binary file to code that can be run to produce the file
@@ -41973,8 +40965,6 @@ Optional argument:
     -t <type>     : specify type of output. Valid choices are 'python' (default) or 'ruby' """
 	
 	updateUsage = """Update mona to the latest version
-	Also refreshes already-installed optional Python packages (keystone-engine, openai,
-	anthropic, openai-agents) unless config setting 'pip_update' is set to false.
 	Optional argument:
 	     -simul    	  : Check for updates and simulate updating. Will show release notes if available.	
 	     -force    	  : Always overwrite local file(s) with downloaded copy if version/revision info is present.
@@ -42077,24 +41067,36 @@ Standalone argument (mutually exclusive with -h / -t):
                    within the chunk's allocated range (hex, register, expression).
 
 Mandatory arguments (heap-level queries):
-    -h <address> : base address of the heap to query
+    -h <address> : base address of the heap to query (or 'default' for default process heap)
     -t <type> : where type is 'segments', 'chunks', 'layout',
                 'fea' (let mona determine the frontend allocator),
-                'lal' (force display of LAL FEA, only on XP/2003),
-                'lfh' (force display of LFH FEA (Vista/Win7/...)),
+                'lfh' (force display of LFH FEA, shows bucket/subsegment info),
                 'bea' (backend allocator, mona will automatically determine what it is),
                 'ucr' (show uncommitted ranges per segment and heap-wide UCRList),
+                'search' (search chunk user data for a value, requires -s),
                 'all' (show all information)
-    Note: 'layout' will show all heap chunks and their vtables & strings. Use on WinDBG for maximum results.
+
+Search arguments (use with -t search):
+    -s <value>     : hex value or pointer to search for in chunk user data
+    -p <parent>    : filter by parent type: 'lfh', 'segment', or 'vadblock'
+    -offset <n>    : only check at this byte offset within user data (e.g. 0 for vtable)
+    -free          : include free chunks in the search (default: busy only)
+
+Layout positional view (use with -t layout):
+    -a <address>   : center the layout view around this address (show surrounding chunks)
+    -n <count>     : number of chunks to show before/after the target (default: 5)
+    Note: 'layout' will show all heap chunks and their vtables & strings.
+          Use on WinDBG for maximum results (vtable symbol resolution via dps).
 
 Optional arguments:
-    -expand : Works only in combination with 'layout', will include VA/LFH/... chunks in the search.
-              VA/LFH chunks may be very big, so this might slow down the search.
-    -stat : show statistics (also works in combination with -h heap, -t segments or -t chunks
+    -expand : show individual block details for LFH buckets (block-level view with vtable info)
+    -stat : show statistics (also works in combination with -h heap, -t segments or -t chunks)
     -size <nr> : only show strings of at least the specified size. Works in combination with 'layout'
     -after <data> : only show current & next chunk layout entries when an entry contains this data
                     (Only works in combination with 'layout')
-    -v : show data / write verbose info to the Log window"""
+    -v : show data / write verbose info to the Log window
+    -fast : skip vtable size calculation (faster but less info)
+    -clearcache : clear the vtable cache"""
 	
 	getiatUsage = """Show IAT entries from selected module(s)
 
@@ -42358,9 +41360,9 @@ Optional arguments:
 
 	Supported engines:
 	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
-	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; prefers the OpenAI Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id)
+	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; requires the OpenAI Python SDK)
 	    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
-	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; prefers the Anthropic Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces)
+	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces; no Anthropic Python SDK required)
     - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
     - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
 
@@ -42382,11 +41384,11 @@ Configuration:
 	       __LAUNCHCMD__ config -set openaiagents.verbosity low
 	       __LAUNCHCMD__ config -set openaiagents.max_turns 8
 	       __LAUNCHCMD__ config -set openaiagents.max_tokens 8192
-       __LAUNCHCMD__ config -set mona.ai.engine anthropic
+	       __LAUNCHCMD__ config -set mona.ai.engine anthropic
        __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
        __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
        __LAUNCHCMD__ config -set anthropic.timeout 300
-       __LAUNCHCMD__ config -set anthropic.max_tokens 8192
+       __LAUNCHCMD__ config -set anthropic.max_tokens 4096
        __LAUNCHCMD__ config -set mona.ai.engine ollama
        __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
        __LAUNCHCMD__ config -set ollama.model llama3
@@ -42492,17 +41494,6 @@ Official model docs:
 	                   and only reports the final request size. If you set -maxsize, mona will try to reduce lower-priority
 	                   evidence to stay within that target and will record any reductions under [omitted_sections]
 	    -submit      : Skip the confirmation prompt and submit the AI request immediately
-	    -upload      : OpenAI and Anthropic. Upload the saved request file plus any -l/-p files and submit a short
-	                   inline instruction that tells the model to use the uploaded request file as the authoritative prompt source.
-	                   Mona asks the model to echo the unique file ID for each uploaded file so you can reuse them later with -id.
-	                   Mona also prints the provider-assigned file IDs right after upload and writes them into tellme_response.md.
-	                   If this flag is not set, tellme embeds the rendered request and any extra file contents directly in the text prompt.
-	                   Mona tries the provider SDK first and falls back to direct HTTPS if the SDK is unavailable or fails.
-	    -id <ids>    : Comma- or space-separated file ID(s) to reference in a later request, for example:
-	                   -id file-abc123,file-def456
-	                   This works with any request profile, including -q 9 templates.
-	                   Use the file IDs printed by Mona after upload or the Uploaded file IDs section in tellme_response.md.
-	                   Mona passes the IDs through as-is, so make sure they belong to the provider you selected.
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
 	                   2 = analyse the current __PC__ function, plus an optional extra function from -a
@@ -42512,7 +41503,7 @@ Official model docs:
 	                   8 = analyse ROP primitive quality and feasibility
 	                   9 = load a request template from -f <file>
 	                   Running -q 1, -q 2, -q 3, or -q 8 also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
-	                   otherwise in the same folder as mona.ini
+	                   otherwise next to mona.ini
 	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this adds an extra heap target.
@@ -42578,16 +41569,13 @@ Official model docs:
 	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
 	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
-	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py -upload
-	    __LAUNCHCMD__ tellme -e anthropic -q 1 -l alloc.txt,triage.txt -p poc.py -upload
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -id file-abc123,file-def456
 	    __LAUNCHCMD__ tellme -e openai -model gpt-5-mini -q 1
 	    __LAUNCHCMD__ tellme -e anthropic -model claude-sonnet-4-6 -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 1 -submit
 	    __LAUNCHCMD__ tellme -e openai -q 1 -timeout 120
 	    __LAUNCHCMD__ tellme -e openai -q 1 -maxsize 300
 	    __LAUNCHCMD__ tellme -e openai -q 1 -cpb '\\x00\\x0a\\x0d'
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.md
+	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.txt
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -cpb '\\x00\\x0a\\x0d'
 	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
@@ -42596,11 +41584,9 @@ Official model docs:
 
 	Debugger context variables:
 	    [debugger]                 = debugger backend name
-	    [debugger_flavor]          = debugger flavor or front-end name
 	    [processname]              = debugged process image name
 	    [architecture]             = target architecture
 	    [pointer_size]             = pointer width in bytes
-	    [python_version]           = Python runtime version used to build the request
 	    [timestamp]                = local timestamp when the request was built
 	    [registers]                = current register set and values
 	    [program_counter]          = current instruction pointer
@@ -42612,11 +41598,9 @@ Official model docs:
 	    [pc_memory]                = raw bytes near the current instruction pointer
 	    [stack_memory]             = raw bytes near the current stack pointer
 	    [modules]                  = crash-focused module summary used by default for -q 1
-	    [modules_mini]             = explicit alias of the compact q1 module summary
 	    [modules_full]             = full loaded module listing
 	    [call_stack]               = WinDBG call stack output
 	    [windbg_analyze]           = compact !analyze -v crash summary used by default for -q 1
-	    [windbg_analyze_mini]      = explicit alias of the compact q1 !analyze -v summary
 	    [windbg_analyze_full]      = full raw !analyze -v output
 	    [findmsp]                  = cyclic-pattern analysis results
 	                                 For q1, and for q9 templates that still resolve live debugger context,
@@ -42630,7 +41614,6 @@ Official model docs:
 	    [heap_details]             = heap, segment, VAD, and chunk summary
 	    [heap_analysis_target]     = extra heap-focused target from -a when using -q 1
 	    [heapdynamics]             = focused heapdynamics matches used by default for -q 1
-	    [heapdynamics_mini]        = explicit alias of the focused q1 heapdynamics matches
 	    [heapdynamics_full]        = larger raw heapdynamics context, including file-backed evidence when retained
 	    [evidence]                 = deduplicated shared heap and alloc/free evidence records
 	    [size_budget]              = final q1 request size and optional requested -maxsize target
@@ -42658,13 +41641,13 @@ Official model docs:
 	    [post_return_constraints]  = q3 caller-side instructions likely to consume return values or persistent state
 	    [reachable_functions]      = q3 flattened reachable call/jump targets from the current and caller-side code paths
 	    [rop_target_modules]       = q8 module, IAT, and compact return-ending windows for ROP analysis
+	    current_function.control_flow_follow_depth = q2/q3 call/jump follow depth used for nested target analysis
+	    Error variables may also appear when collection fails
 	For -q 1, -q 2, -q 3, and -q 8, the final request sent to the AI uses the structured 'variables' object.
 	For -q 1 specifically, compact variables are used by default, but larger *_full variables are still kept unless
 	you explicitly request shrinking with -maxsize.
 	For -q 9, mona reads the template file and replaces placeholders such as [registers] and [pc_disasm]
 	with the actual debugger values before submitting the resulting prompt.
-	For -q 9, q3/q8 placeholders such as [controlled_chunk], [return_resume_analysis], or [rop_target_modules]
-	trigger the corresponding live context collection as well.
 	Unknown placeholders are reported and left unchanged instead of aborting prompt generation.
 
 	Request generation notes:
