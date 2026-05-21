@@ -17377,11 +17377,11 @@ class MnNTHeap(MnHeap):
 			except:
 				return False
 
-		# Probe 1: Win8/8.1 — Counters at +0x1e0 (x86) / +0x210 (x64)
-		if _looks_like_counters(_COUNTERS_WIN8):
-			return MnNT8Heap
-
-		# Probe 2: Win10/Win11 — Counters at +0x1f4 (x86) / +0x238 (x64)
+		# Probe 1: Win10/Win11 — Counters at +0x1f4 (x86) / +0x238 (x64)
+		# Checked first: Win8 Counters (0x1e0) can coincidentally overlap with Win10
+		# heap data and produce a false positive, but Win10 Counters (0x1f4) fall
+		# inside Win8's _HEAP_COUNTERS struct (field 5 onwards) which holds counts,
+		# not page-aligned sizes — so a Win8 heap will not pass this probe.
 		if _looks_like_counters(_COUNTERS_WIN10):
 			try:
 				internal_flags = struct.unpack('<B', dbg.readMemory(address + _INTERNAL_FLAGS, 1))[0]
@@ -17400,6 +17400,10 @@ class MnNTHeap(MnHeap):
 			except:
 				pass
 			return MnNT10Heap
+
+		# Probe 2: Win8/8.1 — Counters at +0x1e0 (x86) / +0x210 (x64)
+		if _looks_like_counters(_COUNTERS_WIN8):
+			return MnNT8Heap
 
 		# Both probes inconclusive — fall back to osver string
 		if osver in ("11", "win11"):
@@ -18160,10 +18164,17 @@ class MnNTVistaHeap(MnNTHeap):
 	def usesLFH(self):
 		"""Check if this NT heap has LFH enabled.
 
-		Return: bool, True if FrontEndHeapType == 0x2
+		Return: bool, True if FrontEndHeapType == 0x2 or FrontEndHeap pointer is non-zero
 		"""
+		frontendheap = self.getFrontEndHeap()
 		frontendheaptype = self.getFrontEndHeapType()
-		return frontendheaptype == 0x2
+		mndbg.dbgp("usesLFH: heap=0x%x  FrontEndHeap=0x%x (off=0x%x)  FrontEndHeapType=0x%x (off=0x%x)  class=%s" % (
+			self.heapbase,
+			frontendheap, self._offset("FrontEndHeap"),
+			frontendheaptype, self._offset("FrontEndHeapType"),
+			type(self).__name__,
+		))
+		return frontendheaptype == 0x2 or frontendheap != 0
 
 	def getFrontEndHeapUsageData(self):
 		"""Read the FrontEndHeapUsageData array (Vista/Win7).
@@ -37819,6 +37830,19 @@ def _resolveVtable(userptr, usersize):
 def _heapShowLFH(mHeap, showdata=False, expand=False):
 	"""Display LFH (FrontEnd Allocator) information for a heap."""
 	dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
+	try:
+		_parseOsVersion()
+		fe_off  = mHeap._offset("FrontEndHeap")
+		fet_off = mHeap._offset("FrontEndHeapType")
+		fe_val  = mHeap.getFrontEndHeap()
+		fet_val = mHeap.getFrontEndHeapType()
+		mndbg.dbgp("_heapShowLFH: class=%s build=%s FrontEndHeap=+0x%03x/0x%08x FrontEndHeapType=+0x%03x/0x%02x" % (
+			type(mHeap).__name__,
+			g_os_version["build"] if g_os_version else "?",
+			fe_off, fe_val, fet_off, fet_val,
+		))
+	except Exception as e:
+		mndbg.dbgp("_heapShowLFH: diagnostic failed: %s" % str(e))
 	if not mHeap.usesLFH():
 		dbg.log("    LFH is not active for this heap")
 		return
