@@ -18465,6 +18465,7 @@ class MnNT10Heap(MnNT8Heap):
 
 	def _offset(self, name):
 		if name in self._BUILD_OFFSETS:
+			_parseOsVersion()
 			build = g_os_version["build"] if g_os_version else 0
 			lo, hi = self._BUILD_OFFSETS[name][17763]
 			vals = hi if build >= 17763 else lo
