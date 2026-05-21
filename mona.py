@@ -37970,7 +37970,7 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 				if stat_info is None:
 					table_data = {}
 					table_seq = []
-					for chunk in datablocks:
+					for chunk in datablocks.values():
 						flagtxt = getHeapFlag(chunk.flag)
 						if "virtallocd" in flagtxt.lower():
 							flagtxt += " (LFH)"
@@ -37991,7 +37991,7 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 									 itemsequence=table_seq, logobj=logfile, logfile=loghandle)
 				else:
 					segstatinfo = {}
-					for chunk in datablocks:
+					for chunk in datablocks.values():
 						usersize = chunk.usersize
 						if usersize not in segstatinfo:
 							segstatinfo[usersize] = 1
@@ -38107,7 +38107,7 @@ def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstri
 		if logfile:
 			logfile.write(tolog, loghandle)
 
-		sortedblocks = sorted(datablocks, key=lambda c: c.chunkptr)
+		sortedblocks = sorted(datablocks.values(), key=lambda c: c.chunkptr)
 		for thischunk in sortedblocks:
 			block = thischunk.chunkptr
 			blocksize = thischunk.size * HEAPGRANULARITY
