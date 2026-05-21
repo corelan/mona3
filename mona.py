@@ -19779,7 +19779,7 @@ class MnNTBackEndAllocator(object):
 			return self._chunks
 		self._chunks = {}
 		for seg in self.getSegments():
-			for chunk in seg.getChunks():
+			for chunk in seg.getChunks().values():
 				self._chunks[chunk.chunkptr] = chunk
 		return self._chunks
 
@@ -38359,7 +38359,7 @@ def procHeap(args):
 
 	heapbase = 0
 	searchtype = ""
-	searchtypes = ["lal","lfh","all","segments", "chunks", "layout", "fea", "bea", "ucr", "search"]
+	searchtypes = ["lfh","all","segments", "chunks", "layout", "fea", "bea", "ucr", "search"]
 	error = False
 	filterafter = ""
 	
