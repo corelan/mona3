@@ -336,7 +336,7 @@ Next, ***attach*** WinDBG Classic to your target process.
 
 **Convenience**: ***Create an alias*** to avoid typing the full path every time:
 ```python
-!as !mona !py -3.9 C:\Tools\mona3\mona.py
+as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
 Now you can simply type `!mona` at the WinDBG Command Line.
 
@@ -363,7 +363,7 @@ Now you can simply type `!mona` at the WinDBG Command Line.
 
 **Convenience**: ***Create an alias*** to avoid typing the full path every time:
 ```python
-!as !mona !py -3.9 C:\Tools\mona3\mona.py
+as !mona !py -3.9 C:\Tools\mona3\mona.py
 ```
 Now you can simply type `!mona` at the WinDBG(X) Command Line as well.
 
