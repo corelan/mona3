@@ -32617,17 +32617,17 @@ def _printHeapContext(ctx):
 				# Free List position: 1-based rank within the single FreeLists list
 				# (all sizes), so it lines up with windbg's `!heap -f` view.
 				if pos is not None and pos[0] is not None:
-					dbg.log("    Free List Size           : %d" % pos[1])
-					dbg.log("    Free List Index          : %d" % pos[0])
+					dbg.log("    FreeList Size           : %d" % pos[1])
+					dbg.log("    FreeList Index          : %d" % pos[0])
 				# Size-class tracking lives in ListHints: the BlocksIndex.ListHints[]
 				# slot and the allocation size it serves.
 				if hints is not None and hints.usesHints():
 					b = hints.bucketForSize(chunk.size)
 					if b["dedicated"]:
-						dbg.log("    List Hints Index         : %d" % b["index"])
+						dbg.log("    ListHints Index         : %d" % b["index"])
 					else:
-						dbg.log("    List Hints Index         : non-dedicated (size exceeds ArraySize 0x%x)" % hints.ArraySize)
-					dbg.log("    List Hints Chunk Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
+						dbg.log("    ListHints Index         : non-dedicated (size exceeds ArraySize 0x%x)" % hints.ArraySize)
+					dbg.log("    ListHints Chunk Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
 
 	# --- Heap Details ---
 	dbg.log("")
