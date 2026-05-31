@@ -1074,8 +1074,9 @@ def clickSegmentWinDBG(segmentbase, heaptype="nt", displaytext=""):
 	return segmentstrout
 
 def clickListHeaps(displaytext=""):
-	"""Clickable link that lists all heaps via mona (`!mona heap`)."""
-	cmd = "%s heap" % getAliasName()
+	"""Clickable link that shows all heaps in the process layout map
+	(`!mona proclayout -t heap`)."""
+	cmd = "%s proclayout -t heap" % getAliasName()
 	if displaytext == "":
 		displaytext = cmd
 	if mndbg.isWinDBG():
@@ -32698,7 +32699,6 @@ def _printHeapContext(ctx):
 		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
 		dbg.log("    Flags                    : 0x%02x (%s)" % (
 			state_chunk.flag, getHeapFlag(state_chunk.flag)))
-		dbg.log("    Describe this chunk      : %s" % clickDescribeChunk(state_chunk.chunkptr))
 		dbg.log("    Show chunk neighbours    : %s" % clickShowChunkNeighbours(ctx["heap"], state_chunk.chunkptr))
 
 	# --- Allocator Details ---
