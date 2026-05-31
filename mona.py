@@ -19862,6 +19862,116 @@ class MnNT10FrontEndAllocator(MnNT8FrontEndAllocator):
 	_n_buckets = 129
 
 
+class MnNTFreeLists(object):
+	"""_HEAP.FreeLists -- the single doubly-linked list of free back-end chunks (Vista+).
+
+	The list head is the _HEAP.FreeLists _LIST_ENTRY.  Each free block embeds a
+	_LIST_ENTRY immediately after its _HEAP_ENTRY header (see _HEAP_FREE_ENTRY),
+	so a list node at address N corresponds to a chunk at N - header_size.
+
+	No per-Windows-version subclassing is needed: the version-varying part is the
+	location of FreeLists inside _HEAP, which the heap object resolves via
+	_offset("FreeLists").  The list/node layout itself is stable across Vista+.
+	"""
+
+	def __init__(self, heap):
+		self.heap = heap
+		self.head = heap.heapbase + heap._offset("FreeLists")
+		self._chunks = None
+
+	def getChunks(self):
+		"""Walk the free list and return {chunk_addr: MnChunk}. Cached."""
+		if self._chunks is not None:
+			return self._chunks
+		self._chunks = {}
+		hdr = archValue(8, 16)  # _HEAP_ENTRY size == offset of the embedded _LIST_ENTRY
+		try:
+			for node in MnListEntry(self.head).walk():
+				chunkptr = node - hdr
+				try:
+					c = self.heap.getHeapChunkHeaderAtAddress(chunkptr, hdr, "freelist")
+				except Exception:
+					c = None
+				if c is not None:
+					self._chunks[chunkptr] = c
+		except Exception as e:
+			mndbg.dbgp("MnNTFreeLists.getChunks: %s" % str(e))
+		return self._chunks
+
+	def getBins(self):
+		"""Group free chunks by size (granularity units): {size_units: [MnChunk]}."""
+		bins = {}
+		for c in self.getChunks().values():
+			bins.setdefault(c.size, []).append(c)
+		return bins
+
+
+class MnNTListHints(object):
+	"""_HEAP.BlocksIndex (_HEAP_LIST_LOOKUP) -- the size-indexed hint array layered
+	over the single _HEAP.FreeLists list (Win7+).
+
+	Vista has no BlocksIndex (legacy freelist[128] array); that case is detected
+	by a NULL BlocksIndex pointer and reported via usesHints() == False.  The
+	_HEAP_LIST_LOOKUP layout is stable across Win7+, so (as with MnNTFreeLists)
+	the only version-dependent input is the _HEAP.BlocksIndex offset, supplied by
+	the heap object -- no per-version subclassing required.
+	"""
+
+	# _HEAP_LIST_LOOKUP field offsets: (x86, x64)
+	_offsets = {
+		"ExtendedLookup": (0x000, 0x000),
+		"ArraySize":      (0x004, 0x008),
+		"BaseIndex":      (0x014, 0x018),
+		"ListHead":       (0x018, 0x020),
+		"ListHints":      (0x020, 0x030),
+	}
+
+	def __init__(self, heap):
+		self.heap = heap
+		self.head = heap.heapbase + heap._offset("FreeLists")
+		self.blocks_index = 0
+		self.ArraySize = 0
+		self.BaseIndex = 0
+		self.ListHints = 0
+		ai = MnPEB.getArch()
+		try:
+			self.blocks_index = readPtrSizeBytes(heap.heapbase + heap._offset("BlocksIndex"))
+			if self.blocks_index:
+				self.ArraySize = struct.unpack('<L', dbg.readMemory(self.blocks_index + self._offsets["ArraySize"][ai], 4))[0]
+				self.BaseIndex = struct.unpack('<L', dbg.readMemory(self.blocks_index + self._offsets["BaseIndex"][ai], 4))[0]
+				self.ListHints = readPtrSizeBytes(self.blocks_index + self._offsets["ListHints"][ai])
+		except Exception as e:
+			mndbg.dbgp("MnNTListHints.__init__: %s" % str(e))
+
+	def usesHints(self):
+		"""True on Win7+ (BlocksIndex present); False on Vista (legacy freelist[])."""
+		return self.blocks_index != 0
+
+	def bucketForSize(self, size_units):
+		"""Map a block size (granularity units) to its ListHints bucket.
+
+		Returns {index, dedicated, size_units, size_bytes}.  'dedicated' means the
+		size has its own ListHints entry; otherwise it is serviced from the
+		non-dedicated portion of the single free list.
+		"""
+		index = size_units - self.BaseIndex
+		return {
+			"index":      index,
+			"dedicated":  (0 <= index < self.ArraySize),
+			"size_units": size_units,
+			"size_bytes": size_units * HEAPGRANULARITY,
+		}
+
+	def getBySize(self, size_units):
+		"""Return the free chunks of a given size (granularity units)."""
+		return [c for c in self.heap.getBackEndAllocator().free_lists.getChunks().values()
+		        if c.size == size_units]
+
+	def getBins(self):
+		"""Group free chunks by size (granularity units): {size_units: [MnChunk]}."""
+		return self.heap.getBackEndAllocator().free_lists.getBins()
+
+
 class MnNTBackEndAllocator(object):
 	"""BackEnd allocator — owns segments, free lists, UCRs, and VA blocks.
 
@@ -19873,6 +19983,22 @@ class MnNTBackEndAllocator(object):
 		self._segments = None
 		self._chunks = None
 		self._va_blocks = None
+		self._free_lists = None
+		self._list_hints = None
+
+	@property
+	def free_lists(self):
+		"""MnNTFreeLists for this heap (lazy, cached)."""
+		if self._free_lists is None:
+			self._free_lists = MnNTFreeLists(self.heap)
+		return self._free_lists
+
+	@property
+	def list_hints(self):
+		"""MnNTListHints for this heap (lazy, cached)."""
+		if self._list_hints is None:
+			self._list_hints = MnNTListHints(self.heap)
+		return self._list_hints
 
 	def getSegments(self):
 		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
@@ -32358,6 +32484,16 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 	except Exception as e:
 		mndbg.dbgp("_resolveHeapContext: segment lookup failed: %s" % str(e))
 
+	# Free-list placement for a FREE back-end chunk, via the backend allocator's
+	# MnNTListHints (Win7+ size-indexed hints over the single FreeLists list) or
+	# the legacy Vista freelist[128] fallback when BlocksIndex is absent.
+	list_hints = None
+	if isinstance(chunk, MnChunk) and subsegment is None and chunk.getState() == ChunkState.FREE:
+		try:
+			list_hints = mheap.getBackEndAllocator().list_hints
+		except Exception as e:
+			mndbg.dbgp("_resolveHeapContext: list_hints failed: %s" % str(e))
+
 	va_index = None
 	if foundinva is not None:
 		try:
@@ -32381,6 +32517,7 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		"bucket":      bucket,
 		"seg_base":    seg_base,
 		"seg_size":    seg_size,
+		"list_hints":  list_hints,
 		"va":          foundinva,
 		"va_index":    va_index,
 	}
@@ -32452,16 +32589,26 @@ def _printHeapContext(ctx):
 				dbg.log("    SubSegment Size          : 0x%x (%d bytes)" % (ctx["ss_size"], ctx["ss_size"]))
 		else:
 			dbg.log("    Allocator                : Back End Allocator (Segment)")
-			# The ListHints/free-list index is only meaningful for a free chunk;
-			# a busy chunk is not linked on any free list.
-			if chunk.getState() == ChunkState.FREE:
+			# Free-list placement is only meaningful for a free chunk; a busy
+			# chunk is not linked on any free list.
+			hints = ctx["list_hints"]
+			if chunk.getState() != ChunkState.FREE:
+				dbg.log("    (chunk is busy - not currently on a free list)")
+			elif hints is not None and hints.usesHints():
+				# Win7+: one FreeLists list, size-indexed ListHints hint array.
+				b = hints.bucketForSize(chunk.size)
+				dbg.log("    Free List                : single (FreeLists @ %s)" % (PTR_PRINT % hints.head))
+				if b["dedicated"]:
+					dbg.log("    ListHints Bucket Index   : %d" % b["index"])
+					dbg.log("    ListHints Bucket Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
+				else:
+					dbg.log("    ListHints Bucket Index   : N/A (non-dedicated; size exceeds ArraySize 0x%x)" % hints.ArraySize)
+			else:
+				# Vista legacy freelist[128]: dedicated lists 1..127, [0] = non-dedicated.
 				fl_idx  = chunk.size if chunk.size <= 127 else 0
 				fl_size = fl_idx * HEAPGRANULARITY if fl_idx > 0 else total_size
-				dbg.log("    Free List Index          : %d" % fl_idx)
-				dbg.log("    ListHints Bucket Index   : %d" % fl_idx)
-				dbg.log("    ListHints Bucket Size    : 0x%x (%d bytes)" % (fl_size, fl_size))
-			else:
-				dbg.log("    (chunk is busy - not currently on a free list)")
+				dbg.log("    Free List Index          : %d%s" % (fl_idx, "" if fl_idx else " (non-dedicated)"))
+				dbg.log("    Free List Size           : 0x%x (%d bytes)" % (fl_size, fl_size))
 
 	# --- Heap Details ---
 	dbg.log("")
