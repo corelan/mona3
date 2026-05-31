@@ -32170,11 +32170,15 @@ def procAssemble(args):
 	
 # ----- info: show information about an address ----- #
 
-def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchunk):
-	"""Print a structured Heap Details block using information already gathered by showHeapBlockInfo.
+def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundinchunk):
+	"""Resolve everything needed to describe *address* within a heap.
+
+	Performs all the memory lookups (owning heap, chunk, LFH subsegment/bucket,
+	VA block) and returns a context dict, or None if the address is not in any
+	heap.  No output is produced here -- see _printHeapContext.
 
 	Arguments mirror the return value of showHeapBlockInfo():
-	    foundinheap    - int, heap base address
+	    foundinheap    - int, heap base address (or None)
 	    foundinsegment - int, segment base address (or None)
 	    foundinva      - int, VA block start address (or None)
 	    foundinchunk   - MnChunk / vainfo dict (or None)
@@ -32182,12 +32186,12 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 	MnProc.ensure()
 
 	if not foundinheap:
-		# showHeapBlockInfo found no chunk (e.g. address is in a segment header area).
-		# Scan the cached heap/segment list to identify the owning heap.
+		# showHeapBlockInfo found no chunk (e.g. address is in a segment header
+		# area). Scan the heap/segment list to identify the owning heap.
 		for _mh in mnproc.getPEB().getNTHeaps():
 			for _seg in _mh.getSegments():
-				_s = getattr(_seg, "BaseAddress", None) or getattr(_seg, "segmentstart", 0)
-				_e = getattr(_seg, "LastValidEntry", None) or getattr(_seg, "segmentend", 0)
+				_s = getattr(_seg, "BaseAddress", 0)
+				_e = getattr(_seg, "LastValidEntry", 0)
 				if _s and _s <= address < _e:
 					foundinheap = _mh.heapbase
 					break
@@ -32201,126 +32205,149 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 				break
 
 	if not foundinheap:
-		return
+		return None
 
 	mheap = mnproc.getPEB().getHeapObject(foundinheap)
 
-	# If showHeapBlockInfo missed the chunk (e.g. LFH slot or address past a UCR),
+	# If showHeapBlockInfo missed the chunk (LFH slot or address past a UCR),
 	# try the heap's own findChunk() which searches LFH first then segments.
-	if not isinstance(foundinchunk, MnChunk):
+	chunk = foundinchunk if isinstance(foundinchunk, MnChunk) else None
+	if chunk is None:
 		try:
 			_fc = mheap.findChunk(address)
 			if isinstance(_fc, MnChunk):
-				foundinchunk = _fc
-		except Exception:
-			pass
+				chunk = _fc
+		except Exception as e:
+			mndbg.dbgp("_resolveHeapContext: findChunk failed: %s" % str(e))
 
-	dbg.log("")
-	dbg.log("[+] Heap Details:")
-	_heap_label = ""
+	is_default = False
 	try:
-		if foundinheap == mnproc.getPEB().ProcessHeap:
-			_heap_label = " (Default Process Heap)"
-	except Exception:
-		pass
-	dbg.log("    Heap Base Address        : %s%s" % (PTR_PRINT % foundinheap, _heap_label))
+		is_default = (foundinheap == mnproc.getPEB().ProcessHeap)
+	except Exception as e:
+		mndbg.dbgp("_resolveHeapContext: ProcessHeap check failed: %s" % str(e))
 
-	fea_type = 0
+	fea_enabled = False
 	try:
-		fea_type = mheap.getFrontEndHeapType()
-	except Exception:
-		pass
-	dbg.log("    Front End Allocator      : %s" % (
-		"Enabled (LFH)" if fea_type == 2 else "Disabled"))
+		fea_enabled = (mheap.getFrontEndHeapType() == 2)
+	except Exception as e:
+		mndbg.dbgp("_resolveHeapContext: getFrontEndHeapType failed: %s" % str(e))
 
-	is_chunk = isinstance(foundinchunk, MnChunk)
-	dbg.log("    Is Chunk                 : %s" % ("Yes" if is_chunk else "No"))
-
-	if is_chunk:
-		chunk = foundinchunk
-
-		# Determine allocator type before printing sizes so LFH slots show slot
-		# dimensions rather than the BEA container chunk's fields.
-		is_lfh = False
+	# Resolve the owning LFH subsegment (floor lookup over UserBlocks). A
+	# non-None result is itself the authoritative "this is an LFH slot" signal,
+	# so there is no separate getLFHRanges scan.
+	subsegment = None
+	if fea_enabled:
 		try:
-			for lfh_start, lfh_end in mheap.getLFHRanges():
-				if lfh_start <= address < lfh_end:
-					is_lfh = True
-					break
-		except Exception:
-			pass
+			subsegment = mheap.getFrontEndAllocator().getSubSegmentForAddress(address)
+		except Exception as e:
+			mndbg.dbgp("_resolveHeapContext: getSubSegmentForAddress failed: %s" % str(e))
+	bucket = getattr(subsegment, "parent_bucket", None) if subsegment is not None else None
 
-		# Resolve the LFH subsegment by address (floor lookup over UserBlocks).
-		# This is authoritative; the chunk's parent_ref can point to the wrong
-		# subsegment when findChunk walked blocks with a mis-decoded stride.
-		lfh_ss = None
-		if is_lfh:
-			try:
-				lfh_ss = mheap.getFrontEndAllocator().getSubSegmentForAddress(address)
-			except Exception:
-				pass
-
-		# Sizes: use slot dimensions from the subsegment when available.
-		if is_lfh and lfh_ss is not None:
-			block_bytes = lfh_ss.BlockSize * HEAPGRANULARITY
-			hdr_bytes   = archValue(8, 16)
-			dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (block_bytes, block_bytes))
-			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (block_bytes - hdr_bytes, block_bytes - hdr_bytes))
-		else:
-			total_size = chunk.size * HEAPGRANULARITY
-			dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (total_size, total_size))
-			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (chunk.usersize, chunk.usersize))
-
-		dbg.log("    Chunk State              : %s" % chunk.getState().upper())
-		dbg.log("    Allocator                : %s" % (
-			"Front End Allocator (LFH)" if is_lfh else "Back End Allocator (Segment)"))
-
-		if is_lfh:
-			dbg.log("")
-			dbg.log("    Front End Allocator:")
-			if lfh_ss is not None:
-				# Navigate parent chain: subsegment → bucket (most specific source).
-				lfh_bucket = getattr(lfh_ss, 'parent_bucket', None)
-				if lfh_bucket is not None:
-					bucket_idx  = lfh_bucket.bucket_index
-					block_bytes = lfh_bucket.block_size_bytes
-				else:
-					bucket_idx  = lfh_ss.SizeIndex
-					block_bytes = lfh_ss.BlockSize * HEAPGRANULARITY
-				hdr_bytes   = archValue(8, 16)
-				bucket_max  = block_bytes - hdr_bytes
-				bucket_min  = max(1, bucket_max - HEAPGRANULARITY + 1)
-				dbg.log("      LFH Bucket Index       : %d" % bucket_idx)
-				dbg.log("      LFH Bucket Size Range  : 0x%x - 0x%x (%d - %d bytes)" % (bucket_min, bucket_max, bucket_min, bucket_max))
-			else:
-				dbg.log("      LFH Bucket Index       : ?")
-				dbg.log("      LFH Bucket Size Range  : ?")
-		else:
-			total_size = chunk.size * HEAPGRANULARITY
-			fl_idx  = chunk.size if chunk.size <= 127 else 0
-			fl_size = fl_idx * HEAPGRANULARITY if fl_idx > 0 else total_size
-			dbg.log("")
-			dbg.log("    FreeList/ListHints:")
-			if foundinsegment:
-				dbg.log("      Segment Base Address   : %s" % (PTR_PRINT % foundinsegment))
-			dbg.log("      Free List Index        : %d" % fl_idx)
-			dbg.log("      ListHints Bucket Index : %d" % fl_idx)
-			dbg.log("      ListHints Bucket Size  : 0x%x (%d bytes)" % (fl_size, fl_size))
-
+	va_index = None
 	if foundinva is not None:
-		va_index = None
 		try:
 			for idx, vaptr in enumerate(mheap.getVABlocks()):
 				if vaptr == foundinva:
 					va_index = idx
 					break
-		except Exception:
-			pass
-		dbg.log("")
-		dbg.log("    VABlock Index            : %s" % (str(va_index) if va_index is not None else "?"))
-		dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % foundinva))
+		except Exception as e:
+			mndbg.dbgp("_resolveHeapContext: VA index lookup failed: %s" % str(e))
 
-	_identifyHeapStructureHeader(address, foundinheap, mheap)
+	return {
+		"heap":        foundinheap,
+		"mheap":       mheap,
+		"is_default":  is_default,
+		"fea_enabled": fea_enabled,
+		"chunk":       chunk,
+		"subsegment":  subsegment,
+		"bucket":      bucket,
+		"segment":     foundinsegment,
+		"va":          foundinva,
+		"va_index":    va_index,
+	}
+
+
+def _printHeapContext(ctx):
+	"""Print the '[+] Heap Details' block from a resolved context dict.
+
+	Pure formatting -- all lookups happen in _resolveHeapContext.
+	"""
+	chunk      = ctx["chunk"]
+	subsegment = ctx["subsegment"]
+	bucket     = ctx["bucket"]
+	is_lfh     = subsegment is not None
+	hdr_bytes  = archValue(8, 16)
+
+	dbg.log("")
+	dbg.log("[+] Heap Details:")
+	dbg.log("    Heap Base Address        : %s%s" % (
+		PTR_PRINT % ctx["heap"], " (Default Process Heap)" if ctx["is_default"] else ""))
+	dbg.log("    Front End Allocator      : %s" % (
+		"Enabled (LFH)" if ctx["fea_enabled"] else "Disabled"))
+
+	is_chunk = isinstance(chunk, MnChunk)
+	dbg.log("    Is Chunk                 : %s" % ("Yes" if is_chunk else "No"))
+
+	if is_chunk:
+		# Resolve block geometry once. For an LFH slot use the slot/bucket
+		# dimensions; otherwise use the chunk's own decoded header.
+		if is_lfh:
+			if bucket is not None:
+				bucket_idx  = bucket.bucket_index
+				block_bytes = bucket.block_size_bytes
+			else:
+				bucket_idx  = subsegment.SizeIndex
+				block_bytes = subsegment.BlockSize * HEAPGRANULARITY
+			total_size = block_bytes
+			user_size  = block_bytes - hdr_bytes
+		else:
+			total_size = chunk.size * HEAPGRANULARITY
+			user_size  = chunk.usersize
+
+		dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (total_size, total_size))
+		dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_size, user_size))
+		dbg.log("    Chunk State              : %s" % chunk.getState().upper())
+		dbg.log("    Allocator                : %s" % (
+			"Front End Allocator (LFH)" if is_lfh else "Back End Allocator (Segment)"))
+
+		if is_lfh:
+			bucket_max = block_bytes - hdr_bytes
+			bucket_min = max(1, bucket_max - HEAPGRANULARITY + 1)
+			dbg.log("")
+			dbg.log("    Front End Allocator:")
+			dbg.log("      LFH Bucket Index       : %d" % bucket_idx)
+			dbg.log("      LFH Bucket Size Range  : 0x%x - 0x%x (%d - %d bytes)" % (
+				bucket_min, bucket_max, bucket_min, bucket_max))
+		else:
+			dbg.log("")
+			dbg.log("    FreeList/ListHints:")
+			if ctx["segment"]:
+				dbg.log("      Segment Base Address   : %s" % (PTR_PRINT % ctx["segment"]))
+			# The ListHints/free-list index is only meaningful for a free chunk;
+			# a busy chunk is not linked on any free list.
+			if chunk.getState() == ChunkState.FREE:
+				fl_idx  = chunk.size if chunk.size <= 127 else 0
+				fl_size = fl_idx * HEAPGRANULARITY if fl_idx > 0 else total_size
+				dbg.log("      Free List Index        : %d" % fl_idx)
+				dbg.log("      ListHints Bucket Index : %d" % fl_idx)
+				dbg.log("      ListHints Bucket Size  : 0x%x (%d bytes)" % (fl_size, fl_size))
+			else:
+				dbg.log("      (chunk is busy - not currently on a free list)")
+
+	if ctx["va"] is not None:
+		dbg.log("")
+		dbg.log("    VABlock Index            : %s" % (
+			str(ctx["va_index"]) if ctx["va_index"] is not None else "?"))
+		dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % ctx["va"]))
+
+
+def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchunk):
+	"""Print a structured Heap Details block for *address* (see showHeapBlockInfo)."""
+	ctx = _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundinchunk)
+	if ctx is None:
+		return
+	_printHeapContext(ctx)
+	_identifyHeapStructureHeader(address, ctx["heap"], ctx["mheap"])
 
 
 def _identifyHeapStructureHeader(address, heapbase, mheap):
