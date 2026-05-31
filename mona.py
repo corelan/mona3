@@ -32195,7 +32195,13 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 
 	dbg.log("")
 	dbg.log("[+] Heap Details:")
-	dbg.log("    Heap Base Address        : %s" % (PTR_PRINT % foundinheap))
+	_heap_label = ""
+	try:
+		if foundinheap == mnproc.getPEB().ProcessHeap:
+			_heap_label = " (Default Process Heap)"
+	except Exception:
+		pass
+	dbg.log("    Heap Base Address        : %s%s" % (PTR_PRINT % foundinheap, _heap_label))
 
 	fea_type = 0
 	try:
@@ -32228,11 +32234,12 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 			"Front End Allocator (LFH)" if is_lfh else "Back End Allocator (Segment)"))
 
 		if is_lfh:
-			bucket_size = chunk.size * HEAPGRANULARITY
+			bucket_max = chunk.size * HEAPGRANULARITY - chunk.headersize
+			bucket_min = max(1, bucket_max - HEAPGRANULARITY + 1)
 			dbg.log("")
 			dbg.log("    Front End Allocator:")
 			dbg.log("      LFH Bucket Index       : %d" % chunk.size)
-			dbg.log("      LFH Bucket Size        : 0x%x (%d bytes)" % (bucket_size, bucket_size))
+			dbg.log("      LFH Bucket Size Range  : 0x%x - 0x%x (%d - %d bytes)" % (bucket_min, bucket_max, bucket_min, bucket_max))
 		else:
 			fl_idx  = chunk.size if chunk.size <= 127 else 0
 			fl_size = fl_idx * HEAPGRANULARITY if fl_idx > 0 else total_size
@@ -32244,7 +32251,6 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 			dbg.log("      ListHints Bucket Index : %d" % fl_idx)
 			dbg.log("      ListHints Bucket Size  : 0x%x (%d bytes)" % (fl_size, fl_size))
 
-	dbg.log("")
 	if foundinva is not None:
 		va_index = None
 		try:
@@ -32254,11 +32260,9 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 					break
 		except Exception:
 			pass
+		dbg.log("")
 		dbg.log("    VABlock Index            : %s" % (str(va_index) if va_index is not None else "?"))
 		dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % foundinva))
-	else:
-		dbg.log("    VABlock Index            : N/A")
-		dbg.log("    VABlock Base Address     : N/A")
 
 	_identifyHeapStructureHeader(address, foundinheap, mheap)
 
