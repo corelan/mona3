@@ -19223,6 +19223,29 @@ class MnNTLFHSubSegmentBase(object):
 			return None
 		slot = first + idx * block_bytes
 		hdr_off = archValue(0, 8)
+
+		# --- TEMP DIAGNOSTIC: dump raw bytes so the LFH busy/free mechanism can
+		# be reversed from a live target (classic-LFH headers are NOT decodable
+		# with the plain _HEAP.Encoding key). ---
+		try:
+			ub = self.UserBlocks
+			ud_raw   = dbg.readMemory(ub, 0x20)
+			slot_raw = dbg.readMemory(slot, 0x10)
+			addr_raw = dbg.readMemory(address & ~0x7, 0x10)
+			mndbg.dbgp("getChunkAt.DIAG: UserBlocks=0x%x BlockSize=0x%x(%d gran) BlockCount=%d Depth=%d FreeEntryOffset=0x%x key=0x%x" % (
+				ub, block_bytes, self.BlockSize, self.BlockCount, self.Depth, self.FreeEntryOffset, key))
+			mndbg.dbgp("getChunkAt.DIAG: addr=0x%x first=0x%x idx=%d slot=0x%x" % (address, first, idx, slot))
+			mndbg.dbgp("getChunkAt.DIAG: UserData[0x00..0x20] = %s" % bin2hex(ud_raw))
+			mndbg.dbgp("getChunkAt.DIAG: slot[0x00..0x10]      = %s" % bin2hex(slot_raw))
+			mndbg.dbgp("getChunkAt.DIAG: addr&~7[0x00..0x10]   = %s" % bin2hex(addr_raw))
+			# candidate _RTL_BITMAP at UserBlocks+0x14 (x86): SizeOfBitMap + Buffer + inline bits
+			bm_size = struct.unpack('<L', ud_raw[0x14:0x18])[0]
+			bm_buf  = struct.unpack('<L', ud_raw[0x18:0x1c])[0]
+			mndbg.dbgp("getChunkAt.DIAG: bitmap? SizeOfBitMap=0x%x Buffer=0x%x EncodedOffsets@0x10=0x%x Sig@0x0c=0x%x" % (
+				bm_size, bm_buf, struct.unpack('<L', ud_raw[0x10:0x14])[0], struct.unpack('<L', ud_raw[0x0c:0x10])[0]))
+		except Exception as e:
+			mndbg.dbgp("getChunkAt.DIAG: dump failed: %s" % str(e))
+
 		try:
 			raw = decodeHeapHeader(slot + hdr_off, 8, key) if key else dbg.readMemory(slot + hdr_off, 8)
 			size     = struct.unpack('<H', raw[0:2])[0]
