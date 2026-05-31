@@ -32619,22 +32619,18 @@ def _printHeapContext(ctx):
 			if chunk.getState() != ChunkState.FREE:
 				dbg.log("    (chunk is busy - not currently on a free list)")
 			else:
-				# Which (size-based) free list this chunk belongs to.
+				# Free List Chunk Position: ordinal within this size's free list.
+				if pos is not None and pos[0] is not None:
+					dbg.log("    Free List Chunk Position : %d of %d" % (pos[0], pos[1]))
+				# Size-class tracking lives in ListHints: the BlocksIndex.ListHints[]
+				# slot and the allocation size it serves.
 				if hints is not None and hints.usesHints():
 					b = hints.bucketForSize(chunk.size)
 					if b["dedicated"]:
-						dbg.log("    Free List Index          : %d (size 0x%x / %d bytes)" % (
-							b["index"], b["size_bytes"], b["size_bytes"]))
+						dbg.log("    List Hints Index         : %d" % b["index"])
 					else:
-						dbg.log("    Free List Index          : non-dedicated (size 0x%x exceeds ArraySize 0x%x)" % (
-							chunk.size * HEAPGRANULARITY, hints.ArraySize))
-				else:
-					# Vista legacy freelist[128]: dedicated lists 1..127, [0] = non-dedicated.
-					fl_idx = chunk.size if chunk.size <= 127 else 0
-					dbg.log("    Free List Index          : %d%s" % (fl_idx, "" if fl_idx else " (non-dedicated)"))
-				# Position of this chunk within that size's free list.
-				if pos is not None and pos[0] is not None:
-					dbg.log("    Free List Element        : %d of %d" % (pos[0], pos[1]))
+						dbg.log("    List Hints Index         : non-dedicated (size exceeds ArraySize 0x%x)" % hints.ArraySize)
+					dbg.log("    List Hints Chunk Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
 
 	# --- Heap Details ---
 	dbg.log("")
