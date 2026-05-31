@@ -32329,11 +32329,20 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 	# For an LFH address, decode the individual slot so its BUSY/FREE state is
 	# correct (the chunk from showHeapBlockInfo is the always-busy container).
 	lfh_chunk = None
+	ss_segment = None
 	if subsegment is not None:
 		try:
 			lfh_chunk = subsegment.getChunkAt(address)
 		except Exception as e:
 			mndbg.dbgp("_resolveHeapContext: getChunkAt failed: %s" % str(e))
+		# The subsegment's UserBlocks region is a back-end allocation living in
+		# one of the heap's segments -- find which one.
+		try:
+			seg = mheap.getBackEndAllocator().getSegmentForAddress(subsegment.UserBlocks)
+			if seg is not None:
+				ss_segment = getattr(seg, "BaseAddress", None)
+		except Exception as e:
+			mndbg.dbgp("_resolveHeapContext: subsegment segment lookup failed: %s" % str(e))
 
 	va_index = None
 	if foundinva is not None:
@@ -32353,6 +32362,7 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		"chunk":       chunk,
 		"lfh_chunk":   lfh_chunk,
 		"subsegment":  subsegment,
+		"ss_segment":  ss_segment,
 		"bucket":      bucket,
 		"segment":     foundinsegment,
 		"va":          foundinva,
@@ -32401,6 +32411,8 @@ def _printHeapContext(ctx):
 			total_size = chunk.size * HEAPGRANULARITY
 			user_size  = chunk.usersize
 
+		dbg.log("    Chunk Base Address       : %s" % (PTR_PRINT % state_chunk.chunkptr))
+		dbg.log("    Chunk UserPtr            : %s" % (PTR_PRINT % state_chunk.userptr))
 		dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (total_size, total_size))
 		dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_size, user_size))
 		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
@@ -32415,6 +32427,9 @@ def _printHeapContext(ctx):
 			dbg.log("      LFH Bucket Index       : %d" % bucket_idx)
 			dbg.log("      LFH Bucket Size Range  : 0x%x - 0x%x (%d - %d bytes)" % (
 				bucket_min, bucket_max, bucket_min, bucket_max))
+			dbg.log("      SubSegment Address     : %s" % (PTR_PRINT % subsegment.address))
+			if ctx["ss_segment"]:
+				dbg.log("      Segment Base Address   : %s" % (PTR_PRINT % ctx["ss_segment"]))
 		else:
 			dbg.log("")
 			dbg.log("    FreeList/ListHints:")
