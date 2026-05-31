@@ -19159,115 +19159,36 @@ class MnNTLFHSubSegmentBase(object):
 			return (0, 0)
 		return (self.UserBlocks, self.UserBlocks + self.BlockCount * self.BlockSize * HEAPGRANULARITY)
 
-	def getEncodingKey(self):
-		"""Walk up to the parent heap for the _HEAP.Encoding XOR key (0 if none)."""
-		try:
-			b = self.parent_bucket
-			if b and b.parent_lfh and b.parent_lfh.heap:
-				return b.parent_lfh.heap.getEncodingKey()
-		except Exception:
-			pass
-		return 0
-
-	def getFirstBlockAddr(self, key=None):
-		"""Locate the first user block within UserBlocks.
-
-		On Win8+ a busy bitmap sits between the _HEAP_USERDATA_HEADER and the
-		first block, so the offset is not simply the header size and the
-		EncodedOffsets field has proven unreliable to decode.  Instead, scan
-		candidate (8-aligned) offsets and accept the first one whose decoded
-		_HEAP_ENTRY.Size equals this subsegment's BlockSize -- validated across
-		two consecutive blocks to avoid a false hit.
-		"""
-		if key is None:
-			key = self.getEncodingKey()
-		ud = self.getUserData()
-		header_size = ud.header_size if ud is not None else archValue(0x10, 0x20)
-		block_bytes = self.BlockSize * HEAPGRANULARITY
-		base = self.UserBlocks
-		hdr_off = archValue(0, 8)
-		for off in range(header_size, header_size + 0x100, HEAPGRANULARITY):
-			ok = True
-			for n in range(min(2, self.BlockCount)):
-				cand = base + off + n * block_bytes
-				try:
-					raw = decodeHeapHeader(cand + hdr_off, 8, key) if key else dbg.readMemory(cand + hdr_off, 8)
-					if struct.unpack('<H', raw[0:2])[0] != self.BlockSize:
-						ok = False
-						break
-				except Exception:
-					ok = False
-					break
-			if ok:
-				return base + off
-		return base + header_size
-
 	def getChunkAt(self, address):
-		"""Return the decoded MnChunk for the LFH slot containing address, or None.
+		"""Return an MnChunk for the LFH slot containing *address*, or None.
 
-		The slot's _HEAP_ENTRY is decoded with the heap key, so its BUSY/FREE
-		state reflects the individual block -- not the always-busy UserBlocks
-		container chunk that a segment walk would report.
+		The slot's BUSY/FREE state comes from the _HEAP_USERDATA_HEADER
+		BusyBitmap (Win8+), not from the per-block _HEAP_ENTRY (which is
+		LFH-key-encoded and not decodable with the plain heap key).  The
+		container chunk a segment walk would report is always busy, so this is
+		the only way to see a freed LFH slot.
 		"""
 		if not self.isValid():
 			return None
-		block_bytes = self.BlockSize * HEAPGRANULARITY
-		if block_bytes == 0:
+		ud = self.getUserData()
+		if ud is None or ud.corrupted:
 			return None
-		key   = self.getEncodingKey()
-		first = self.getFirstBlockAddr(key)
-		if address < first:
+		info = ud.getBlockBitmapInfo(address)
+		if info is None:
 			return None
-		idx = (address - first) // block_bytes
-		if idx >= self.BlockCount:
-			return None
-		slot = first + idx * block_bytes
-		hdr_off = archValue(0, 8)
-
-		# --- TEMP DIAGNOSTIC: dump raw bytes so the LFH busy/free mechanism can
-		# be reversed from a live target (classic-LFH headers are NOT decodable
-		# with the plain _HEAP.Encoding key). ---
-		try:
-			ub = self.UserBlocks
-			ud_raw   = dbg.readMemory(ub, 0x20)
-			slot_raw = dbg.readMemory(slot, 0x10)
-			addr_raw = dbg.readMemory(address & ~0x7, 0x10)
-			mndbg.dbgp("getChunkAt.DIAG: UserBlocks=0x%x BlockSize=0x%x(%d gran) BlockCount=%d Depth=%d FreeEntryOffset=0x%x key=0x%x" % (
-				ub, block_bytes, self.BlockSize, self.BlockCount, self.Depth, self.FreeEntryOffset, key))
-			mndbg.dbgp("getChunkAt.DIAG: addr=0x%x first=0x%x idx=%d slot=0x%x" % (address, first, idx, slot))
-			mndbg.dbgp("getChunkAt.DIAG: UserData[0x00..0x20] = %s" % bin2hex(ud_raw))
-			mndbg.dbgp("getChunkAt.DIAG: slot[0x00..0x10]      = %s" % bin2hex(slot_raw))
-			mndbg.dbgp("getChunkAt.DIAG: addr&~7[0x00..0x10]   = %s" % bin2hex(addr_raw))
-			# candidate _RTL_BITMAP at UserBlocks+0x14 (x86): SizeOfBitMap + Buffer + inline bits
-			bm_size = struct.unpack('<L', ud_raw[0x14:0x18])[0]
-			bm_buf  = struct.unpack('<L', ud_raw[0x18:0x1c])[0]
-			mndbg.dbgp("getChunkAt.DIAG: bitmap? SizeOfBitMap=0x%x Buffer=0x%x EncodedOffsets@0x10=0x%x Sig@0x0c=0x%x" % (
-				bm_size, bm_buf, struct.unpack('<L', ud_raw[0x10:0x14])[0], struct.unpack('<L', ud_raw[0x0c:0x10])[0]))
-		except Exception as e:
-			mndbg.dbgp("getChunkAt.DIAG: dump failed: %s" % str(e))
-
-		try:
-			raw = decodeHeapHeader(slot + hdr_off, 8, key) if key else dbg.readMemory(slot + hdr_off, 8)
-			size     = struct.unpack('<H', raw[0:2])[0]
-			flag     = struct.unpack('<B', raw[2:3])[0]
-			tag      = struct.unpack('<B', raw[3:4])[0]
-			prevsize = struct.unpack('<H', raw[4:6])[0]
-			segid    = struct.unpack('<B', raw[6:7])[0]
-			unused   = struct.unpack('<B', raw[7:8])[0]
-		except Exception as e:
-			mndbg.dbgp("getChunkAt: decode failed at 0x%x: %s" % (slot, str(e)))
-			return None
+		block_start, state = info
 		heap_base = 0
 		try:
 			heap_base = self.parent_bucket.parent_lfh.heap.heapbase
 		except Exception:
 			pass
-		chunk = MnChunk(slot, "chunk", HEAPGRANULARITY, heap_base, 0,
-		                size, prevsize, segid, flag, unused, tag)
+		# Size from the (reliable) subsegment block size; flag from the bitmap.
+		flag = 0x01 if state == ChunkState.BUSY else 0x00
+		chunk = MnChunk(block_start, "chunk", HEAPGRANULARITY, heap_base, 0,
+		                self.BlockSize, 0, 0, flag, 0, 0)
 		chunk.parent = ChunkParent.LFH
 		chunk.parent_ref = self
-		mndbg.dbgp("getChunkAt: addr=0x%x first=0x%x idx=%d slot=0x%x size=0x%x flag=0x%x unused=0x%x state=%s" % (
-			address, first, idx, slot, size, flag, unused, chunk.getState()))
+		mndbg.dbgp("getChunkAt: addr=0x%x block_start=0x%x state=%s" % (address, block_start, state))
 		return chunk
 
 
@@ -19390,6 +19311,52 @@ class MnNTUserDataBase(object):
 			return False
 		return True
 
+	# _HEAP_USERDATA_HEADER BusyBitmap layout (Win8+/Win10/11): (x86, x64).
+	#   Signature (0xF0E0D0C0) | BusyBitmap _RTL_BITMAP { SizeOfBitMap; Buffer }
+	# Bit set = slot busy, clear = free; bits past BlockCount are sentinel-masked.
+	_bitmap_offsets = {
+		"Signature":    (0x0c, 0x14),
+		"SizeOfBitMap": (0x14, 0x1c),
+		"Buffer":       (0x18, 0x20),
+	}
+
+	def getBlockBitmapInfo(self, address):
+		"""Locate the block containing *address* and read its BusyBitmap state.
+
+		Returns (block_start, ChunkState) or None.  Key-free: relies only on the
+		_HEAP_USERDATA_HEADER BusyBitmap, not on the (LFH-key-encoded, hence
+		undecodable here) per-block _HEAP_ENTRY headers.
+		"""
+		ss = self.parent_subsegment
+		if ss is None:
+			return None
+		block_bytes = ss.BlockSize * HEAPGRANULARITY
+		block_count = ss.BlockCount
+		if block_bytes == 0 or block_count == 0:
+			return None
+		ai = MnPEB.getArch()
+		try:
+			sig = struct.unpack('<L', dbg.readMemory(self.address + self._bitmap_offsets["Signature"][ai], 4))[0]
+			if sig != 0xF0E0D0C0:
+				return None
+			buf = readPtrSizeBytes(self.address + self._bitmap_offsets["Buffer"][ai])
+			if buf == 0:
+				return None
+			bitmap_dwords = (block_count + 31) // 32
+			first_block   = buf + bitmap_dwords * 4
+			if address < first_block:
+				return None
+			idx = (address - first_block) // block_bytes
+			if idx >= block_count:
+				return None
+			block_start = first_block + idx * block_bytes
+			dword = struct.unpack('<L', dbg.readMemory(buf + (idx // 32) * 4, 4))[0]
+			busy  = (dword >> (idx % 32)) & 1
+			return (block_start, ChunkState.BUSY if busy else ChunkState.FREE)
+		except Exception as e:
+			mndbg.dbgp("getBlockBitmapInfo: %s" % str(e))
+			return None
+
 	def _getEncodingKey(self):
 		"""Walk up parent chain to find the encoding key."""
 		try:
@@ -19455,10 +19422,15 @@ class MnNTVistaUserData(MnNTUserDataBase):
 	"""_HEAP_USERDATA_HEADER on Vista/7.
 
 	Stride computed from parent subsegment BlockSize * HEAPGRANULARITY.
-	No EncodedOffsets field.
+	No EncodedOffsets field, and no BusyBitmap -- Vista/7 track free blocks via
+	an in-band 16-bit next-free-offset chain (AggregateExchg.FreeEntryOffset).
 	"""
 	_header_size_x86 = 0x10
 	_header_size_x64 = 0x20
+
+	def getBlockBitmapInfo(self, address):
+		# Vista/7 has no BusyBitmap; per-slot state needs the free-offset chain.
+		return None
 
 
 class MnNT8UserData(MnNTUserDataBase):
