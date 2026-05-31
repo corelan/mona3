@@ -32215,12 +32215,10 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 	dbg.log("    Is Chunk                 : %s" % ("Yes" if is_chunk else "No"))
 
 	if is_chunk:
-		chunk      = foundinchunk
-		total_size = chunk.size * HEAPGRANULARITY
-		dbg.log("    Chunk Size (total)       : 0x%x (%d bytes)" % (total_size, total_size))
-		dbg.log("    Chunk Size (user data)   : 0x%x (%d bytes)" % (chunk.usersize, chunk.usersize))
-		dbg.log("    Chunk State              : %s" % chunk.getState().upper())
+		chunk = foundinchunk
 
+		# Determine allocator type before printing sizes so LFH slots show slot
+		# dimensions rather than the BEA container chunk's fields.
 		is_lfh = False
 		try:
 			for lfh_start, lfh_end in mheap.getLFHRanges():
@@ -32230,17 +32228,56 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 		except Exception:
 			pass
 
+		# Resolve the LFH subsegment. Check the chunk's own parent chain first
+		# (populated when findChunk returns an LFH slot from fea.getChunks());
+		# fall back to searching all subsegments when the chunk is a BEA container.
+		lfh_ss = None
+		if is_lfh:
+			if getattr(chunk, 'parent', None) == ChunkParent.LFH:
+				lfh_ss = getattr(chunk, 'parent_ref', None)
+			if lfh_ss is None:
+				try:
+					lfh_ss = mheap.getFrontEndAllocator().getSubSegmentForAddress(address)
+				except Exception:
+					pass
+
+		# Sizes: use slot dimensions from the subsegment when available.
+		if is_lfh and lfh_ss is not None:
+			block_bytes = lfh_ss.BlockSize * HEAPGRANULARITY
+			hdr_bytes   = archValue(8, 16)
+			dbg.log("    Chunk Size (total)       : 0x%x (%d bytes)" % (block_bytes, block_bytes))
+			dbg.log("    Chunk Size (user data)   : 0x%x (%d bytes)" % (block_bytes - hdr_bytes, block_bytes - hdr_bytes))
+		else:
+			total_size = chunk.size * HEAPGRANULARITY
+			dbg.log("    Chunk Size (total)       : 0x%x (%d bytes)" % (total_size, total_size))
+			dbg.log("    Chunk Size (user data)   : 0x%x (%d bytes)" % (chunk.usersize, chunk.usersize))
+
+		dbg.log("    Chunk State              : %s" % chunk.getState().upper())
 		dbg.log("    Allocator                : %s" % (
 			"Front End Allocator (LFH)" if is_lfh else "Back End Allocator (Segment)"))
 
 		if is_lfh:
-			bucket_max = chunk.size * HEAPGRANULARITY - chunk.headersize
-			bucket_min = max(1, bucket_max - HEAPGRANULARITY + 1)
 			dbg.log("")
 			dbg.log("    Front End Allocator:")
-			dbg.log("      LFH Bucket Index       : %d" % chunk.size)
-			dbg.log("      LFH Bucket Size Range  : 0x%x - 0x%x (%d - %d bytes)" % (bucket_min, bucket_max, bucket_min, bucket_max))
+			if lfh_ss is not None:
+				# Navigate parent chain: subsegment → bucket (most specific source).
+				lfh_bucket = getattr(lfh_ss, 'parent_bucket', None)
+				if lfh_bucket is not None:
+					bucket_idx  = lfh_bucket.bucket_index
+					block_bytes = lfh_bucket.block_size_bytes
+				else:
+					bucket_idx  = lfh_ss.SizeIndex
+					block_bytes = lfh_ss.BlockSize * HEAPGRANULARITY
+				hdr_bytes   = archValue(8, 16)
+				bucket_max  = block_bytes - hdr_bytes
+				bucket_min  = max(1, bucket_max - HEAPGRANULARITY + 1)
+				dbg.log("      LFH Bucket Index       : %d" % bucket_idx)
+				dbg.log("      LFH Bucket Size Range  : 0x%x - 0x%x (%d - %d bytes)" % (bucket_min, bucket_max, bucket_min, bucket_max))
+			else:
+				dbg.log("      LFH Bucket Index       : ?")
+				dbg.log("      LFH Bucket Size Range  : ?")
 		else:
+			total_size = chunk.size * HEAPGRANULARITY
 			fl_idx  = chunk.size if chunk.size <= 127 else 0
 			fl_size = fl_idx * HEAPGRANULARITY if fl_idx > 0 else total_size
 			dbg.log("")
