@@ -1110,26 +1110,11 @@ def clickListFreeList(heapbase, displaytext=""):
 		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
 	return cmd
 
-def clickDescribeChunk(address, displaytext=""):
-	"""Clickable link that dumps the chunk's _HEAP_ENTRY header at its base
-	address (`dt _HEAP_ENTRY <base>`).
-
-	Only meaningful for back-end (segment) chunks -- an LFH slot's _HEAP_ENTRY is
-	LFH-key-encoded and would render as garbage, so use clickDescribeSubSegment
-	for LFH chunks instead.
-	"""
-	cmd = "dt _HEAP_ENTRY %s" % (PTR_PRINT % address)
-	if displaytext == "":
-		displaytext = cmd
-	if mndbg.isWinDBG():
-		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
-	return cmd
-
-def clickDescribeSubSegment(address, displaytext=""):
-	"""Clickable link that dumps the _HEAP_SUBSEGMENT owning an LFH slot
-	(`dt _HEAP_SUBSEGMENT <addr>`) -- the structure that actually describes the
-	slot's geometry and free state, since the per-slot header is encoded."""
-	cmd = "dt _HEAP_SUBSEGMENT %s" % (PTR_PRINT % address)
+def clickDumpContent(address, length=0x64, displaytext=""):
+	"""Clickable link that dumps the first *length* bytes (default 0x64 = 100) of
+	content at *address*.  Uses windbg `db`, which renders a hexdump with hex
+	bytes and ASCII side by side."""
+	cmd = "db %s L0x%x" % (PTR_PRINT % address, length)
 	if displaytext == "":
 		displaytext = cmd
 	if mndbg.isWinDBG():
@@ -32711,16 +32696,13 @@ def _printHeapContext(ctx):
 		dbg.log("    Chunk Base Address       : %s" % (PTR_PRINT % state_chunk.chunkptr))
 		dbg.log("    Chunk UserPtr            : %s" % (PTR_PRINT % state_chunk.userptr))
 		dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (total_size, total_size))
-		dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_size, user_size))
+		# A free chunk has no live user data, so only report user-data size when busy.
+		if state_chunk.getState() != ChunkState.FREE:
+			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_size, user_size))
 		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
 		dbg.log("    Flags                    : 0x%02x (%s)" % (
 			state_chunk.flag, getHeapFlag(state_chunk.flag)))
-		# LFH slot headers are key-encoded, so describe the owning subsegment
-		# (real geometry/state); back-end chunks describe their own _HEAP_ENTRY.
-		if is_lfh and subsegment is not None:
-			dbg.log("    Describe subsegment      : %s" % clickDescribeSubSegment(subsegment.address))
-		else:
-			dbg.log("    Describe this chunk      : %s" % clickDescribeChunk(state_chunk.chunkptr))
+		dbg.log("    Dump content (100 bytes) : %s" % clickDumpContent(state_chunk.userptr))
 		dbg.log("    Show chunk neighbours    : %s" % clickShowChunkNeighbours(ctx["heap"], state_chunk.chunkptr))
 
 	# --- Allocator Details ---
