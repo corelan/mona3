@@ -17316,6 +17316,51 @@ class MnNTHeap(MnHeap):
 		"""Return the arch-appropriate _HEAP byte offset for *name* using this instance's version."""
 		return self._offsets[name][MnPEB.getArch()]
 
+	# _HEAP.Flags bits -> name.  Documented RtlCreateHeap creation flags plus the
+	# common debug/validation flags injected via gflags / PageHeap.  Stable across
+	# NT heap versions, so it lives on the shared base.
+	_FLAG_NAMES = [
+		(0x00000001, "HEAP_NO_SERIALIZE"),
+		(0x00000002, "HEAP_GROWABLE"),
+		(0x00000004, "HEAP_GENERATE_EXCEPTIONS"),
+		(0x00000008, "HEAP_ZERO_MEMORY"),
+		(0x00000010, "HEAP_REALLOC_IN_PLACE_ONLY"),
+		(0x00000020, "HEAP_TAIL_CHECKING_ENABLED"),
+		(0x00000040, "HEAP_FREE_CHECKING_ENABLED"),
+		(0x00000080, "HEAP_DISABLE_COALESCE_ON_FREE"),
+		(0x00000100, "HEAP_CREATE_ALIGN_16"),
+		(0x00000200, "HEAP_CREATE_ENABLE_TRACING"),
+		(0x00040000, "HEAP_CREATE_ENABLE_EXECUTE"),
+		(0x01000000, "HEAP_FLAG_PAGE_ALLOCS"),
+		(0x02000000, "HEAP_PROTECTION_ENABLED"),
+		(0x04000000, "HEAP_BREAK_WHEN_OUT_OF_VM"),
+		(0x08000000, "HEAP_NO_ALIGNMENT"),
+		(0x10000000, "HEAP_SKIP_VALIDATION_CHECKS"),
+		(0x20000000, "HEAP_VALIDATE_ALL_ENABLED"),
+		(0x40000000, "HEAP_VALIDATE_PARAMETERS_ENABLED"),
+		(0x80000000, "HEAP_LOCK_USER_ALLOCATED"),
+	]
+
+	def getFlags(self):
+		"""Return the raw _HEAP.Flags value, or None if it cannot be read."""
+		try:
+			return struct.unpack('<L', dbg.readMemory(self.heapbase + self._offset("Flags"), 4))[0]
+		except Exception as e:
+			mndbg.dbgp("getFlags: %s" % str(e))
+			return None
+
+	def getFlagsText(self, flags=None):
+		"""Decode _HEAP.Flags into a comma-separated name list ("None" if no known bits)."""
+		if flags is None:
+			flags = self.getFlags()
+		if flags is None:
+			return "?"
+		matched = [name for bit, name in self._FLAG_NAMES if flags & bit]
+		leftover = flags & ~sum(bit for bit, _ in self._FLAG_NAMES if flags & bit)
+		if leftover:
+			matched.append("unknown:0x%x" % leftover)
+		return ", ".join(matched) if matched else "None"
+
 	@classmethod
 	def _getSignatureProbes(cls):
 		if cls._SIGNATURE_PROBES is None:
@@ -32454,11 +32499,7 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 	except Exception as e:
 		mndbg.dbgp("_resolveHeapContext: getFrontEndHeapType failed: %s" % str(e))
 
-	heap_flags = None
-	try:
-		heap_flags = struct.unpack('<L', dbg.readMemory(foundinheap + mheap._offset("Flags"), 4))[0]
-	except Exception as e:
-		mndbg.dbgp("_resolveHeapContext: heap Flags read failed: %s" % str(e))
+	heap_flags = mheap.getFlags()
 
 	# Resolve the owning LFH subsegment (floor lookup over UserBlocks). A
 	# non-None result is itself the authoritative "this is an LFH slot" signal,
@@ -32635,7 +32676,8 @@ def _printHeapContext(ctx):
 	dbg.log("    Heap Base Address        : %s%s" % (
 		PTR_PRINT % ctx["heap"], " (Default Process Heap)" if ctx["is_default"] else ""))
 	if ctx["heap_flags"] is not None:
-		dbg.log("    Heap Flags               : 0x%x" % ctx["heap_flags"])
+		dbg.log("    Heap Flags               : 0x%x (%s)" % (
+			ctx["heap_flags"], ctx["mheap"].getFlagsText(ctx["heap_flags"])))
 	dbg.log("    Front End Allocator      : %s" % (
 		"Enabled (LFH)" if ctx["fea_enabled"] else "Disabled"))
 	if ctx["seg_base"]:
