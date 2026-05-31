@@ -32157,10 +32157,30 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 	    foundinva      - int, VA block start address (or None)
 	    foundinchunk   - MnChunk / vainfo dict (or None)
 	"""
+	MnProc.ensure()
+
+	if not foundinheap:
+		# showHeapBlockInfo found no chunk (e.g. address is in a segment header area).
+		# Scan the cached heap/segment list to identify the owning heap.
+		for _mh in mnproc.getPEB().getNTHeaps():
+			for _seg in _mh.getSegments():
+				_s = getattr(_seg, "BaseAddress", None) or getattr(_seg, "segmentstart", 0)
+				_e = getattr(_seg, "LastValidEntry", None) or getattr(_seg, "segmentend", 0)
+				if _s and _s <= address < _e:
+					foundinheap = _mh.heapbase
+					break
+			if not foundinheap:
+				for _vaptr, _vainfo in _mh.getVABlocks().items():
+					if _vaptr <= address <= _vaptr + _vainfo["commit_size"]:
+						foundinheap = _mh.heapbase
+						foundinva   = _vaptr
+						break
+			if foundinheap:
+				break
+
 	if not foundinheap:
 		return
 
-	MnProc.ensure()
 	mheap = mnproc.getPEB().getHeapObject(foundinheap)
 
 	dbg.log("")
