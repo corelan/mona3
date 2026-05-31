@@ -32526,15 +32526,24 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 
 	# Heap segment containing this address (covers both back-end chunks and the
 	# LFH UserBlocks region, since the latter is itself a back-end allocation).
+	# Reserve = NumberOfPages * page; Commit = (NumberOfPages - UnCommitted) * page.
 	seg_base = foundinsegment
-	seg_size = None
+	seg_reserve = None
+	seg_commit = None
 	try:
 		seg = mheap.getBackEndAllocator().getSegmentForAddress(address)
 		if seg is not None:
 			seg_base = getattr(seg, "BaseAddress", seg_base)
-			seg_end  = getattr(seg, "LastValidEntry", None)
-			if seg_base and seg_end:
-				seg_size = seg_end - seg_base
+			pages    = getattr(seg, "NumberOfPages", None)
+			uc_pages = getattr(seg, "NumberOfUnCommittedPages", None)
+			if pages is not None:
+				seg_reserve = pages * 0x1000
+				if uc_pages is not None:
+					seg_commit = (pages - uc_pages) * 0x1000
+			else:
+				seg_end = getattr(seg, "LastValidEntry", None)
+				if seg_base and seg_end:
+					seg_reserve = seg_end - seg_base
 	except Exception as e:
 		mndbg.dbgp("_resolveHeapContext: segment lookup failed: %s" % str(e))
 
@@ -32578,7 +32587,8 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		"ss_size":     ss_size,
 		"bucket":      bucket,
 		"seg_base":    seg_base,
-		"seg_size":    seg_size,
+		"seg_reserve": seg_reserve,
+		"seg_commit":  seg_commit,
 		"list_hints":  list_hints,
 		"freelist_pos": freelist_pos,
 		"va":          foundinva,
@@ -32643,7 +32653,7 @@ def _printHeapContext(ctx):
 				str(ctx["va_index"]) if ctx["va_index"] is not None else "?"))
 			dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % ctx["va"]))
 			if ctx["va_commit"] is not None:
-				dbg.log("    VABlock Size             : 0x%x (%d bytes) committed" % (
+				dbg.log("    VABlock Size             : 0x%x (%d bytes)" % (
 					ctx["va_commit"], ctx["va_commit"]))
 			if ctx["va_reserve"] is not None:
 				dbg.log("    VABlock Reserve          : 0x%x (%d bytes)" % (
@@ -32694,8 +32704,10 @@ def _printHeapContext(ctx):
 		"Enabled (LFH)" if ctx["fea_enabled"] else "Disabled"))
 	if ctx["seg_base"]:
 		dbg.log("    Segment Base Address     : %s" % (PTR_PRINT % ctx["seg_base"]))
-	if ctx["seg_size"]:
-		dbg.log("    Segment Size             : 0x%x (%d bytes)" % (ctx["seg_size"], ctx["seg_size"]))
+	if ctx["seg_reserve"]:
+		dbg.log("    Segment Reserve Size     : 0x%x (%d bytes)" % (ctx["seg_reserve"], ctx["seg_reserve"]))
+	if ctx["seg_commit"] is not None:
+		dbg.log("    Segment Commit Size      : 0x%x (%d bytes)" % (ctx["seg_commit"], ctx["seg_commit"]))
 
 
 def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchunk):
@@ -32888,7 +32900,8 @@ def procInfo(args):
 		
 		strataddress = dbg.readString(address)
 		if len(strataddress) > 0:
-			dbg.log("    String at %s: %s" % (PTR_PRINT % address, strataddress))
+			shown = strataddress[:20] + ("..." if len(strataddress) > 20 else "")
+			dbg.log("    String at %s: %s" % (PTR_PRINT % address, shown))
 
 	try:
 		dbg.log("")
