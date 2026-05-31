@@ -32147,6 +32147,141 @@ def procAssemble(args):
 	assemble(opcodes,encoder)
 	
 # ----- info: show information about an address ----- #
+
+def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchunk):
+	"""Print a structured Heap Details block using information already gathered by showHeapBlockInfo.
+
+	Arguments mirror the return value of showHeapBlockInfo():
+	    foundinheap    - int, heap base address
+	    foundinsegment - int, segment base address (or None)
+	    foundinva      - int, VA block start address (or None)
+	    foundinchunk   - MnChunk / vainfo dict (or None)
+	"""
+	if not foundinheap:
+		return
+
+	MnProc.ensure()
+	mheap = mnproc.getPEB().getHeapObject(foundinheap)
+
+	dbg.log("")
+	dbg.log("[+] Heap Details:")
+	dbg.log("    Heap Base Address        : %s" % (PTR_PRINT % foundinheap))
+
+	fea_type = 0
+	try:
+		fea_type = mheap.getFrontEndHeapType()
+	except Exception:
+		pass
+	dbg.log("    Front End Allocator      : %s" % (
+		"Enabled (LFH)" if fea_type == 2 else "Disabled"))
+
+	is_chunk = isinstance(foundinchunk, MnChunk)
+	dbg.log("    Is Chunk                 : %s" % ("Yes" if is_chunk else "No"))
+
+	if is_chunk:
+		chunk      = foundinchunk
+		total_size = chunk.size * HEAPGRANULARITY
+		dbg.log("    Chunk Size (total)       : 0x%x (%d bytes)" % (total_size, total_size))
+		dbg.log("    Chunk Size (user data)   : 0x%x (%d bytes)" % (chunk.usersize, chunk.usersize))
+		dbg.log("    Chunk State              : %s" % chunk.getState().upper())
+
+		is_lfh = False
+		try:
+			for lfh_start, lfh_end in mheap.getLFHRanges():
+				if lfh_start <= address < lfh_end:
+					is_lfh = True
+					break
+		except Exception:
+			pass
+
+		dbg.log("    Allocator                : %s" % (
+			"Front End Allocator (LFH)" if is_lfh else "Back End Allocator (Segment)"))
+
+		if is_lfh:
+			bucket_size = chunk.size * HEAPGRANULARITY
+			dbg.log("")
+			dbg.log("    Front End Allocator:")
+			dbg.log("      LFH Bucket Index       : %d" % chunk.size)
+			dbg.log("      LFH Bucket Size        : 0x%x (%d bytes)" % (bucket_size, bucket_size))
+		else:
+			fl_idx  = chunk.size if chunk.size <= 127 else 0
+			fl_size = fl_idx * HEAPGRANULARITY if fl_idx > 0 else total_size
+			dbg.log("")
+			dbg.log("    FreeList/ListHints:")
+			if foundinsegment:
+				dbg.log("      Segment Base Address   : %s" % (PTR_PRINT % foundinsegment))
+			dbg.log("      Free List Index        : %d" % fl_idx)
+			dbg.log("      ListHints Bucket Index : %d" % fl_idx)
+			dbg.log("      ListHints Bucket Size  : 0x%x (%d bytes)" % (fl_size, fl_size))
+
+	dbg.log("")
+	if foundinva is not None:
+		va_index = None
+		try:
+			for idx, vaptr in enumerate(mheap.getVABlocks()):
+				if vaptr == foundinva:
+					va_index = idx
+					break
+		except Exception:
+			pass
+		dbg.log("    VABlock Index            : %s" % (str(va_index) if va_index is not None else "?"))
+		dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % foundinva))
+	else:
+		dbg.log("    VABlock Index            : N/A")
+		dbg.log("    VABlock Base Address     : N/A")
+
+	_identifyHeapStructureHeader(address, foundinheap, mheap)
+
+
+def _identifyHeapStructureHeader(address, heapbase, mheap):
+	"""If *address* is the first byte of a well-known heap internal structure, describe it."""
+
+	if address == heapbase:
+		dbg.log("")
+		dbg.log("    [!] Address is the start of a _HEAP header")
+		dbg.log("        Structure : _HEAP")
+		dbg.log("        Address   : %s (heap base)" % (PTR_PRINT % heapbase))
+		return
+
+	try:
+		for seg in mheap.getSegments():
+			seg_addr = getattr(seg, "address", 0)
+			seg_base = getattr(seg, "BaseAddress", 0)
+			if address != 0 and address in (seg_addr, seg_base):
+				dbg.log("")
+				dbg.log("    [!] Address is the start of a _HEAP_SEGMENT header")
+				dbg.log("        Structure : _HEAP_SEGMENT")
+				dbg.log("        Address   : %s" % (PTR_PRINT % address))
+				dbg.log("        Parent    : _HEAP at %s" % (PTR_PRINT % heapbase))
+				return
+	except Exception:
+		pass
+
+	try:
+		lfh_addr = mheap.getLFHAddress()
+		if lfh_addr != 0 and address == lfh_addr:
+			dbg.log("")
+			dbg.log("    [!] Address is the start of a _LFH_HEAP header")
+			dbg.log("        Structure : _LFH_HEAP")
+			dbg.log("        Address   : %s" % (PTR_PRINT % address))
+			dbg.log("        Parent    : _HEAP at %s" % (PTR_PRINT % heapbase))
+			return
+	except Exception:
+		pass
+
+	try:
+		for vaptr in mheap.getVABlocks():
+			if address == vaptr:
+				dbg.log("")
+				dbg.log("    [!] Address is the start of a _HEAP_VIRTUAL_ALLOC_ENTRY header")
+				dbg.log("        Structure : _HEAP_VIRTUAL_ALLOC_ENTRY")
+				dbg.log("        Address   : %s" % (PTR_PRINT % address))
+				dbg.log("        Parent    : _HEAP at %s" % (PTR_PRINT % heapbase))
+				return
+	except Exception:
+		pass
+
+
 def procInfo(args):
 	if not "a" in args:
 		dbg.log("Missing mandatory argument -a", highlight=1)
@@ -32272,7 +32407,8 @@ def procInfo(args):
 		if ptr.isInHeap():
 			dbg.log("    This address resides in the heap")
 			dbg.log("")
-			ptr.showHeapBlockInfo()
+			foundinheap, foundinsegment, foundinva, foundinchunk = ptr.showHeapBlockInfo()
+			_showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchunk)
 		else:
 			dbg.log("    Module: None")	
 		
