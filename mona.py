@@ -19632,6 +19632,39 @@ class MnNTFrontEndAllocatorBase(object):
 				return True
 		return False
 
+	def getSubSegmentForAddress(self, addr):
+		"""Return the subsegment whose UserBlocks region contains addr, or None.
+
+		Uses the heap's getLFHRanges() (from _walkLFHSubSegmentRanges) to
+		identify the correct UserBlocks base, then matches by UserBlocks address.
+		This avoids false positives from overlapping ranges across subsegments.
+		"""
+		target_ub = None
+		try:
+			for ub, end in self.heap.getLFHRanges():
+				if ub <= addr < end:
+					target_ub = ub
+					break
+		except Exception:
+			pass
+
+		if target_ub is not None:
+			for ss in self.getAllSubSegments():
+				if ss.UserBlocks == target_ub:
+					return ss
+
+		# Fallback: smallest range containing addr.
+		best_ss = None
+		best_range = 0
+		for ss in self.getAllSubSegments():
+			start, end = ss.getRange()
+			if start and start <= addr < end:
+				r = end - start
+				if best_ss is None or r < best_range:
+					best_range = r
+					best_ss = ss
+		return best_ss
+
 
 class MnNTVistaFrontEndAllocator(MnNTFrontEndAllocatorBase):
 	"""FrontEnd allocator for Vista/7.
