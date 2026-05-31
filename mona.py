@@ -19905,6 +19905,24 @@ class MnNTFreeLists(object):
 			bins.setdefault(c.size, []).append(c)
 		return bins
 
+	def getChunkPosition(self, chunkptr, size_units=None):
+		"""Ordinal position of chunkptr within the free list, in list-walk order.
+
+		When size_units is given, the position is counted among free chunks of
+		that size only (i.e. within that size's logical free list); otherwise it
+		is the position within the entire list.
+
+		Returns (position, count): position is 0-based or None if not found;
+		count is the number of chunks considered.
+		"""
+		chunks = list(self.getChunks().values())
+		if size_units is not None:
+			chunks = [c for c in chunks if c.size == size_units]
+		for i, c in enumerate(chunks):
+			if c.chunkptr == chunkptr:
+				return (i, len(chunks))
+		return (None, len(chunks))
+
 
 class MnNTListHints(object):
 	"""_HEAP.BlocksIndex (_HEAP_LIST_LOOKUP) -- the size-indexed hint array layered
@@ -32486,13 +32504,17 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 
 	# Free-list placement for a FREE back-end chunk, via the backend allocator's
 	# MnNTListHints (Win7+ size-indexed hints over the single FreeLists list) or
-	# the legacy Vista freelist[128] fallback when BlocksIndex is absent.
+	# the legacy Vista freelist[128] fallback when BlocksIndex is absent.  Also
+	# resolve the chunk's position within its size's free list.
 	list_hints = None
+	freelist_pos = None
 	if isinstance(chunk, MnChunk) and subsegment is None and chunk.getState() == ChunkState.FREE:
 		try:
-			list_hints = mheap.getBackEndAllocator().list_hints
+			backend = mheap.getBackEndAllocator()
+			list_hints = backend.list_hints
+			freelist_pos = backend.free_lists.getChunkPosition(chunk.chunkptr, chunk.size)
 		except Exception as e:
-			mndbg.dbgp("_resolveHeapContext: list_hints failed: %s" % str(e))
+			mndbg.dbgp("_resolveHeapContext: free-list placement failed: %s" % str(e))
 
 	va_index = None
 	if foundinva is not None:
@@ -32518,6 +32540,7 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		"seg_base":    seg_base,
 		"seg_size":    seg_size,
 		"list_hints":  list_hints,
+		"freelist_pos": freelist_pos,
 		"va":          foundinva,
 		"va_index":    va_index,
 	}
@@ -32592,23 +32615,26 @@ def _printHeapContext(ctx):
 			# Free-list placement is only meaningful for a free chunk; a busy
 			# chunk is not linked on any free list.
 			hints = ctx["list_hints"]
+			pos   = ctx["freelist_pos"]
 			if chunk.getState() != ChunkState.FREE:
 				dbg.log("    (chunk is busy - not currently on a free list)")
-			elif hints is not None and hints.usesHints():
-				# Win7+: one FreeLists list, size-indexed ListHints hint array.
-				b = hints.bucketForSize(chunk.size)
-				dbg.log("    Free List                : single (FreeLists @ %s)" % (PTR_PRINT % hints.head))
-				if b["dedicated"]:
-					dbg.log("    ListHints Bucket Index   : %d" % b["index"])
-					dbg.log("    ListHints Bucket Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
-				else:
-					dbg.log("    ListHints Bucket Index   : N/A (non-dedicated; size exceeds ArraySize 0x%x)" % hints.ArraySize)
 			else:
-				# Vista legacy freelist[128]: dedicated lists 1..127, [0] = non-dedicated.
-				fl_idx  = chunk.size if chunk.size <= 127 else 0
-				fl_size = fl_idx * HEAPGRANULARITY if fl_idx > 0 else total_size
-				dbg.log("    Free List Index          : %d%s" % (fl_idx, "" if fl_idx else " (non-dedicated)"))
-				dbg.log("    Free List Size           : 0x%x (%d bytes)" % (fl_size, fl_size))
+				# Which (size-based) free list this chunk belongs to.
+				if hints is not None and hints.usesHints():
+					b = hints.bucketForSize(chunk.size)
+					if b["dedicated"]:
+						dbg.log("    Free List Index          : %d (size 0x%x / %d bytes)" % (
+							b["index"], b["size_bytes"], b["size_bytes"]))
+					else:
+						dbg.log("    Free List Index          : non-dedicated (size 0x%x exceeds ArraySize 0x%x)" % (
+							chunk.size * HEAPGRANULARITY, hints.ArraySize))
+				else:
+					# Vista legacy freelist[128]: dedicated lists 1..127, [0] = non-dedicated.
+					fl_idx = chunk.size if chunk.size <= 127 else 0
+					dbg.log("    Free List Index          : %d%s" % (fl_idx, "" if fl_idx else " (non-dedicated)"))
+				# Position of this chunk within that size's free list.
+				if pos is not None and pos[0] is not None:
+					dbg.log("    Free List Element        : %d of %d" % (pos[0], pos[1]))
 
 	# --- Heap Details ---
 	dbg.log("")
