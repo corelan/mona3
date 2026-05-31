@@ -32553,11 +32553,15 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 			mndbg.dbgp("_resolveHeapContext: free-list placement failed: %s" % str(e))
 
 	va_index = None
+	va_commit = None
+	va_reserve = None
 	if foundinva is not None:
 		try:
-			for idx, vaptr in enumerate(mheap.getVABlocks()):
+			for idx, (vaptr, vainfo) in enumerate(mheap.getVABlocks().items()):
 				if vaptr == foundinva:
 					va_index = idx
+					va_commit = vainfo.get("commit_size")
+					va_reserve = vainfo.get("reserve_size")
 					break
 		except Exception as e:
 			mndbg.dbgp("_resolveHeapContext: VA index lookup failed: %s" % str(e))
@@ -32579,6 +32583,8 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		"freelist_pos": freelist_pos,
 		"va":          foundinva,
 		"va_index":    va_index,
+		"va_commit":   va_commit,
+		"va_reserve":  va_reserve,
 	}
 
 
@@ -32636,6 +32642,12 @@ def _printHeapContext(ctx):
 			dbg.log("    VABlock Index            : %s" % (
 				str(ctx["va_index"]) if ctx["va_index"] is not None else "?"))
 			dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % ctx["va"]))
+			if ctx["va_commit"] is not None:
+				dbg.log("    VABlock Size             : 0x%x (%d bytes) committed" % (
+					ctx["va_commit"], ctx["va_commit"]))
+			if ctx["va_reserve"] is not None:
+				dbg.log("    VABlock Reserve          : 0x%x (%d bytes)" % (
+					ctx["va_reserve"], ctx["va_reserve"]))
 		elif is_lfh:
 			bucket_max = block_bytes - hdr_bytes
 			bucket_min = max(1, bucket_max - HEAPGRANULARITY + 1)
