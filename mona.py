@@ -32183,6 +32183,16 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 
 	mheap = mnproc.getPEB().getHeapObject(foundinheap)
 
+	# If showHeapBlockInfo missed the chunk (e.g. LFH slot or address past a UCR),
+	# try the heap's own findChunk() which searches LFH first then segments.
+	if not isinstance(foundinchunk, MnChunk):
+		try:
+			_fc = mheap.findChunk(address)
+			if isinstance(_fc, MnChunk):
+				foundinchunk = _fc
+		except Exception:
+			pass
+
 	dbg.log("")
 	dbg.log("[+] Heap Details:")
 	dbg.log("    Heap Base Address        : %s" % (PTR_PRINT % foundinheap))
