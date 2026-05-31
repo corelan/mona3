@@ -1073,6 +1073,62 @@ def clickSegmentWinDBG(segmentbase, heaptype="nt", displaytext=""):
 			segmentstrout = "<link cmd=\"dt _SEGMENT_HEAP %s\">%s</link>" % (segmentbasestr, segment_display)
 	return segmentstrout
 
+def clickListHeaps(displaytext=""):
+	"""Clickable link that lists all heaps via mona (`!mona heap`)."""
+	cmd = "%s heap" % getAliasName()
+	if displaytext == "":
+		displaytext = cmd
+	if mndbg.isWinDBG():
+		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
+	return cmd
+
+def clickListLFH(heapbase, displaytext=""):
+	"""Clickable link that lists the LFH front-end for *heapbase*."""
+	cmd = "%s heap -h %s -t lfh" % (getAliasName(), PTR_PRINT % heapbase)
+	if displaytext == "":
+		displaytext = cmd
+	if mndbg.isWinDBG():
+		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
+	return cmd
+
+def clickListSegments(heapbase, displaytext=""):
+	"""Clickable link that lists the segments of *heapbase*."""
+	cmd = "%s heap -h %s -t segments" % (getAliasName(), PTR_PRINT % heapbase)
+	if displaytext == "":
+		displaytext = cmd
+	if mndbg.isWinDBG():
+		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
+	return cmd
+
+def clickListFreeList(heapbase, displaytext=""):
+	"""Clickable link that lists the back-end free list of *heapbase*."""
+	cmd = "%s heap -h %s -t bea" % (getAliasName(), PTR_PRINT % heapbase)
+	if displaytext == "":
+		displaytext = cmd
+	if mndbg.isWinDBG():
+		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
+	return cmd
+
+def clickDescribeChunk(address, displaytext=""):
+	"""Clickable link that describes the chunk at/containing *address* via
+	`!mona heap -a <address>` (-> _procHeapByAddr)."""
+	cmd = "%s heap -a %s" % (getAliasName(), PTR_PRINT % address)
+	if displaytext == "":
+		displaytext = cmd
+	if mndbg.isWinDBG():
+		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
+	return cmd
+
+def clickShowChunkNeighbours(heapbase, address, displaytext=""):
+	"""Clickable link that shows the heap layout centered on *address* -- the
+	chunk together with its neighbouring chunks."""
+	cmd = "%s heap -h %s -t layout -a %s" % (getAliasName(), PTR_PRINT % heapbase, PTR_PRINT % address)
+	if displaytext == "":
+		displaytext = cmd
+	if mndbg.isWinDBG():
+		return "<link cmd=\"%s\">%s</link>" % (cmd, displaytext)
+	return cmd
+
 def clickMnCommand(commandname=""):
 	commandstrout = commandname
 	if __DEBUGGERAPP__ == "WinDBG" and commandname != "":
@@ -32642,6 +32698,8 @@ def _printHeapContext(ctx):
 		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
 		dbg.log("    Flags                    : 0x%02x (%s)" % (
 			state_chunk.flag, getHeapFlag(state_chunk.flag)))
+		dbg.log("    Describe this chunk      : %s" % clickDescribeChunk(state_chunk.chunkptr))
+		dbg.log("    Show chunk neighbours    : %s" % clickShowChunkNeighbours(ctx["heap"], state_chunk.chunkptr))
 
 	# --- Allocator Details ---
 	if is_chunk or is_va:
@@ -32668,6 +32726,7 @@ def _printHeapContext(ctx):
 			dbg.log("    SubSegment Address       : %s" % (PTR_PRINT % subsegment.address))
 			if ctx["ss_size"]:
 				dbg.log("    SubSegment Size          : 0x%x (%d bytes)" % (ctx["ss_size"], ctx["ss_size"]))
+			dbg.log("    List LFH front-end       : %s" % clickListLFH(ctx["heap"]))
 		else:
 			dbg.log("    Allocator               : Back End Allocator (Segment)")
 			# Free-list placement is only meaningful for a free chunk; a busy
@@ -32691,6 +32750,7 @@ def _printHeapContext(ctx):
 					else:
 						dbg.log("    ListHints Index         : non-dedicated (size exceeds ArraySize 0x%x)" % hints.ArraySize)
 					dbg.log("    ListHints Chunk Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
+				dbg.log("    List back-end freelist  : %s" % clickListFreeList(ctx["heap"]))
 
 	# --- Heap Details ---
 	dbg.log("")
@@ -32708,6 +32768,8 @@ def _printHeapContext(ctx):
 		dbg.log("    Segment Reserve Size     : 0x%x (%d bytes)" % (ctx["seg_reserve"], ctx["seg_reserve"]))
 	if ctx["seg_commit"] is not None:
 		dbg.log("    Segment Commit Size      : 0x%x (%d bytes)" % (ctx["seg_commit"], ctx["seg_commit"]))
+	dbg.log("    List all heaps           : %s" % clickListHeaps())
+	dbg.log("    List heap segments       : %s" % clickListSegments(ctx["heap"]))
 
 
 def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchunk):
