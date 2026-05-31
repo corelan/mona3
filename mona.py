@@ -19150,14 +19150,102 @@ class MnNTLFHSubSegmentBase(object):
 		return MnNTVistaUserData(userblocks_addr, block_size_bytes, block_count, self)
 
 	def getRange(self):
-		"""Return (start, end) memory range covered by this subsegment's UserBlocks."""
+		"""Return (start, end) memory range covered by this subsegment's UserBlocks.
+
+		Uses UserBlocks directly (same as _walkLFHSubSegmentRanges) to avoid
+		dependence on EncodedOffsets / first_block_addr decoding.
+		"""
 		if not self.isValid():
 			return (0, 0)
+		return (self.UserBlocks, self.UserBlocks + self.BlockCount * self.BlockSize * HEAPGRANULARITY)
+
+	def getEncodingKey(self):
+		"""Walk up to the parent heap for the _HEAP.Encoding XOR key (0 if none)."""
+		try:
+			b = self.parent_bucket
+			if b and b.parent_lfh and b.parent_lfh.heap:
+				return b.parent_lfh.heap.getEncodingKey()
+		except Exception:
+			pass
+		return 0
+
+	def getFirstBlockAddr(self, key=None):
+		"""Locate the first user block within UserBlocks.
+
+		On Win8+ a busy bitmap sits between the _HEAP_USERDATA_HEADER and the
+		first block, so the offset is not simply the header size and the
+		EncodedOffsets field has proven unreliable to decode.  Instead, scan
+		candidate (8-aligned) offsets and accept the first one whose decoded
+		_HEAP_ENTRY.Size equals this subsegment's BlockSize -- validated across
+		two consecutive blocks to avoid a false hit.
+		"""
+		if key is None:
+			key = self.getEncodingKey()
 		ud = self.getUserData()
-		if ud is None or ud.corrupted:
-			return (0, 0)
-		end = ud.first_block_addr + (self.BlockCount * self.BlockSize * HEAPGRANULARITY)
-		return (self.UserBlocks, end)
+		header_size = ud.header_size if ud is not None else archValue(0x10, 0x20)
+		block_bytes = self.BlockSize * HEAPGRANULARITY
+		base = self.UserBlocks
+		hdr_off = archValue(0, 8)
+		for off in range(header_size, header_size + 0x100, HEAPGRANULARITY):
+			ok = True
+			for n in range(min(2, self.BlockCount)):
+				cand = base + off + n * block_bytes
+				try:
+					raw = decodeHeapHeader(cand + hdr_off, 8, key) if key else dbg.readMemory(cand + hdr_off, 8)
+					if struct.unpack('<H', raw[0:2])[0] != self.BlockSize:
+						ok = False
+						break
+				except Exception:
+					ok = False
+					break
+			if ok:
+				return base + off
+		return base + header_size
+
+	def getChunkAt(self, address):
+		"""Return the decoded MnChunk for the LFH slot containing address, or None.
+
+		The slot's _HEAP_ENTRY is decoded with the heap key, so its BUSY/FREE
+		state reflects the individual block -- not the always-busy UserBlocks
+		container chunk that a segment walk would report.
+		"""
+		if not self.isValid():
+			return None
+		block_bytes = self.BlockSize * HEAPGRANULARITY
+		if block_bytes == 0:
+			return None
+		key   = self.getEncodingKey()
+		first = self.getFirstBlockAddr(key)
+		if address < first:
+			return None
+		idx = (address - first) // block_bytes
+		if idx >= self.BlockCount:
+			return None
+		slot = first + idx * block_bytes
+		hdr_off = archValue(0, 8)
+		try:
+			raw = decodeHeapHeader(slot + hdr_off, 8, key) if key else dbg.readMemory(slot + hdr_off, 8)
+			size     = struct.unpack('<H', raw[0:2])[0]
+			flag     = struct.unpack('<B', raw[2:3])[0]
+			tag      = struct.unpack('<B', raw[3:4])[0]
+			prevsize = struct.unpack('<H', raw[4:6])[0]
+			segid    = struct.unpack('<B', raw[6:7])[0]
+			unused   = struct.unpack('<B', raw[7:8])[0]
+		except Exception as e:
+			mndbg.dbgp("getChunkAt: decode failed at 0x%x: %s" % (slot, str(e)))
+			return None
+		heap_base = 0
+		try:
+			heap_base = self.parent_bucket.parent_lfh.heap.heapbase
+		except Exception:
+			pass
+		chunk = MnChunk(slot, "chunk", HEAPGRANULARITY, heap_base, 0,
+		                size, prevsize, segid, flag, unused, tag)
+		chunk.parent = ChunkParent.LFH
+		chunk.parent_ref = self
+		mndbg.dbgp("getChunkAt: addr=0x%x first=0x%x idx=%d slot=0x%x size=0x%x flag=0x%x unused=0x%x state=%s" % (
+			address, first, idx, slot, size, flag, unused, chunk.getState()))
+		return chunk
 
 
 class MnNTVistaLFHSubSegment(MnNTLFHSubSegmentBase):
@@ -32243,6 +32331,15 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 			mndbg.dbgp("_resolveHeapContext: getSubSegmentForAddress failed: %s" % str(e))
 	bucket = getattr(subsegment, "parent_bucket", None) if subsegment is not None else None
 
+	# For an LFH address, decode the individual slot so its BUSY/FREE state is
+	# correct (the chunk from showHeapBlockInfo is the always-busy container).
+	lfh_chunk = None
+	if subsegment is not None:
+		try:
+			lfh_chunk = subsegment.getChunkAt(address)
+		except Exception as e:
+			mndbg.dbgp("_resolveHeapContext: getChunkAt failed: %s" % str(e))
+
 	va_index = None
 	if foundinva is not None:
 		try:
@@ -32259,6 +32356,7 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		"is_default":  is_default,
 		"fea_enabled": fea_enabled,
 		"chunk":       chunk,
+		"lfh_chunk":   lfh_chunk,
 		"subsegment":  subsegment,
 		"bucket":      bucket,
 		"segment":     foundinsegment,
@@ -32273,10 +32371,14 @@ def _printHeapContext(ctx):
 	Pure formatting -- all lookups happen in _resolveHeapContext.
 	"""
 	chunk      = ctx["chunk"]
+	lfh_chunk  = ctx["lfh_chunk"]
 	subsegment = ctx["subsegment"]
 	bucket     = ctx["bucket"]
 	is_lfh     = subsegment is not None
 	hdr_bytes  = archValue(8, 16)
+	# For LFH, the decoded slot carries the correct per-block BUSY/FREE state;
+	# fall back to the container chunk only if the slot could not be decoded.
+	state_chunk = lfh_chunk if (is_lfh and lfh_chunk is not None) else chunk
 
 	dbg.log("")
 	dbg.log("[+] Heap Details:")
@@ -32306,7 +32408,7 @@ def _printHeapContext(ctx):
 
 		dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (total_size, total_size))
 		dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_size, user_size))
-		dbg.log("    Chunk State              : %s" % chunk.getState().upper())
+		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
 		dbg.log("    Allocator                : %s" % (
 			"Front End Allocator (LFH)" if is_lfh else "Back End Allocator (Segment)"))
 
