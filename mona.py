@@ -32606,7 +32606,7 @@ def _printHeapContext(ctx):
 			if ctx["ss_size"]:
 				dbg.log("    SubSegment Size          : 0x%x (%d bytes)" % (ctx["ss_size"], ctx["ss_size"]))
 		else:
-			dbg.log("    Allocator                : Back End Allocator (Segment)")
+			dbg.log("    Allocator               : Back End Allocator (Segment)")
 			# Free-list placement is only meaningful for a free chunk; a busy
 			# chunk is not linked on any free list.
 			hints = ctx["list_hints"]
