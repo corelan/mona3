@@ -32512,7 +32512,7 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		try:
 			backend = mheap.getBackEndAllocator()
 			list_hints = backend.list_hints
-			freelist_pos = backend.free_lists.getChunkPosition(chunk.chunkptr, chunk.size)
+			freelist_pos = backend.free_lists.getChunkPosition(chunk.chunkptr)
 		except Exception as e:
 			mndbg.dbgp("_resolveHeapContext: free-list placement failed: %s" % str(e))
 
@@ -32619,9 +32619,10 @@ def _printHeapContext(ctx):
 			if chunk.getState() != ChunkState.FREE:
 				dbg.log("    (chunk is busy - not currently on a free list)")
 			else:
-				# Free List Chunk Position: ordinal within this size's free list.
+				# Free List position: 1-based rank within the single FreeLists list
+				# (all sizes), so it lines up with windbg's `!heap -f` view.
 				if pos is not None and pos[0] is not None:
-					dbg.log("    Free List Chunk Position : %d of %d" % (pos[0], pos[1]))
+					dbg.log("    Free List Chunk Position : %d of %d (entire free list)" % (pos[0] + 1, pos[1]))
 				# Size-class tracking lives in ListHints: the BlocksIndex.ListHints[]
 				# slot and the allocation size it serves.
 				if hints is not None and hints.usesHints():
