@@ -19905,19 +19905,14 @@ class MnNTFreeLists(object):
 			bins.setdefault(c.size, []).append(c)
 		return bins
 
-	def getChunkPosition(self, chunkptr, size_units=None):
-		"""Ordinal position of chunkptr within the free list, in list-walk order.
-
-		When size_units is given, the position is counted among free chunks of
-		that size only (i.e. within that size's logical free list); otherwise it
-		is the position within the entire list.
+	def getChunkPosition(self, chunkptr):
+		"""Ordinal position of chunkptr within the single free list, in physical
+		list order (Flink walk from the head -- the order getChunks() yields).
 
 		Returns (position, count): position is 0-based or None if not found;
-		count is the number of chunks considered.
+		count is the total number of free chunks in the list.
 		"""
 		chunks = list(self.getChunks().values())
-		if size_units is not None:
-			chunks = [c for c in chunks if c.size == size_units]
 		for i, c in enumerate(chunks):
 			if c.chunkptr == chunkptr:
 				return (i, len(chunks))
@@ -32622,7 +32617,7 @@ def _printHeapContext(ctx):
 				# Free List position: 1-based rank within the single FreeLists list
 				# (all sizes), so it lines up with windbg's `!heap -f` view.
 				if pos is not None and pos[0] is not None:
-					dbg.log("    Free List Chunk Position : %d of %d (entire free list)" % (pos[0] + 1, pos[1]))
+					dbg.log("    Free List Chunk Index : %d of %d" % (pos[0], pos[1]))
 				# Size-class tracking lives in ListHints: the BlocksIndex.ListHints[]
 				# slot and the allocation size it serves.
 				if hints is not None and hints.usesHints():
