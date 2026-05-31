@@ -19635,34 +19635,23 @@ class MnNTFrontEndAllocatorBase(object):
 	def getSubSegmentForAddress(self, addr):
 		"""Return the subsegment whose UserBlocks region contains addr, or None.
 
-		Uses the heap's getLFHRanges() (from _walkLFHSubSegmentRanges) to
-		identify the correct UserBlocks base, then matches by UserBlocks address.
-		This avoids false positives from overlapping ranges across subsegments.
+		Subsegments occupy distinct, non-overlapping memory regions, so the
+		owning subsegment is the one with the greatest UserBlocks base that is
+		still <= addr (a floor lookup), provided addr also falls before that
+		subsegment's computed end.  This is robust against a corrupt/oversized
+		BlockCount in a lower-address subsegment producing an overlapping range
+		that would otherwise win a naive first-match scan.
 		"""
-		target_ub = None
-		try:
-			for ub, end in self.heap.getLFHRanges():
-				if ub <= addr < end:
-					target_ub = ub
-					break
-		except Exception:
-			pass
-
-		if target_ub is not None:
-			for ss in self.getAllSubSegments():
-				if ss.UserBlocks == target_ub:
-					return ss
-
-		# Fallback: smallest range containing addr.
 		best_ss = None
-		best_range = 0
 		for ss in self.getAllSubSegments():
-			start, end = ss.getRange()
-			if start and start <= addr < end:
-				r = end - start
-				if best_ss is None or r < best_range:
-					best_range = r
-					best_ss = ss
+			ub = ss.UserBlocks
+			if ub == 0 or ub > addr:
+				continue
+			end = ub + ss.BlockCount * ss.BlockSize * HEAPGRANULARITY
+			if addr >= end:
+				continue
+			if best_ss is None or ub > best_ss.UserBlocks:
+				best_ss = ss
 		return best_ss
 
 
@@ -32261,29 +32250,26 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 		except Exception:
 			pass
 
-		# Resolve the LFH subsegment. Check the chunk's own parent chain first
-		# (populated when findChunk returns an LFH slot from fea.getChunks());
-		# fall back to searching all subsegments when the chunk is a BEA container.
+		# Resolve the LFH subsegment by address (floor lookup over UserBlocks).
+		# This is authoritative; the chunk's parent_ref can point to the wrong
+		# subsegment when findChunk walked blocks with a mis-decoded stride.
 		lfh_ss = None
 		if is_lfh:
-			if getattr(chunk, 'parent', None) == ChunkParent.LFH:
-				lfh_ss = getattr(chunk, 'parent_ref', None)
-			if lfh_ss is None:
-				try:
-					lfh_ss = mheap.getFrontEndAllocator().getSubSegmentForAddress(address)
-				except Exception:
-					pass
+			try:
+				lfh_ss = mheap.getFrontEndAllocator().getSubSegmentForAddress(address)
+			except Exception:
+				pass
 
 		# Sizes: use slot dimensions from the subsegment when available.
 		if is_lfh and lfh_ss is not None:
 			block_bytes = lfh_ss.BlockSize * HEAPGRANULARITY
 			hdr_bytes   = archValue(8, 16)
-			dbg.log("    Chunk Size (total)       : 0x%x (%d bytes)" % (block_bytes, block_bytes))
-			dbg.log("    Chunk Size (user data)   : 0x%x (%d bytes)" % (block_bytes - hdr_bytes, block_bytes - hdr_bytes))
+			dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (block_bytes, block_bytes))
+			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (block_bytes - hdr_bytes, block_bytes - hdr_bytes))
 		else:
 			total_size = chunk.size * HEAPGRANULARITY
-			dbg.log("    Chunk Size (total)       : 0x%x (%d bytes)" % (total_size, total_size))
-			dbg.log("    Chunk Size (user data)   : 0x%x (%d bytes)" % (chunk.usersize, chunk.usersize))
+			dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (total_size, total_size))
+			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (chunk.usersize, chunk.usersize))
 
 		dbg.log("    Chunk State              : %s" % chunk.getState().upper())
 		dbg.log("    Allocator                : %s" % (
