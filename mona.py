@@ -32702,7 +32702,7 @@ def _printHeapContext(ctx):
 		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
 		dbg.log("    Flags                    : 0x%02x (%s)" % (
 			state_chunk.flag, getHeapFlag(state_chunk.flag)))
-		dbg.log("    Dump content (100 bytes) : %s" % clickDumpContent(state_chunk.userptr))
+		dbg.log("    Dump content             : %s" % clickDumpContent(state_chunk.userptr, total_size))
 		dbg.log("    Show chunk neighbours    : %s" % clickShowChunkNeighbours(ctx["heap"], state_chunk.chunkptr))
 
 	# --- Allocator Details ---
