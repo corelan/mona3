@@ -20094,25 +20094,31 @@ class MnNTListHints(object):
 		"""True on Win7+ (BlocksIndex present); False on Vista (legacy freelist[])."""
 		return self.blocks_index != 0
 
+	def getInUseDwords(self):
+		"""Return the raw ListsInUseUlong bitmap as a list of dwords (one per 32
+		indices), or an empty list when there is no BlocksIndex."""
+		if not self.usesHints() or self.ListsInUseUlong == 0 or self.ArraySize == 0:
+			return []
+		ndwords = (self.ArraySize + 31) // 32
+		try:
+			return [struct.unpack('<L', dbg.readMemory(self.ListsInUseUlong + d * 4, 4))[0]
+			        for d in range(ndwords)]
+		except Exception as e:
+			mndbg.dbgp("MnNTListHints.getInUseDwords: %s" % str(e))
+			return []
+
 	def getInUseIndices(self):
 		"""Return the sorted ListHints indices flagged in-use by the ListsInUseUlong
 		bitmap (each set bit i means ListHints[i], i.e. size (i+BaseIndex), has at
 		least one free chunk).  Empty list when there is no BlocksIndex."""
-		if not self.usesHints() or self.ListsInUseUlong == 0 or self.ArraySize == 0:
-			return []
 		result = []
-		ndwords = (self.ArraySize + 31) // 32
-		try:
-			for d in range(ndwords):
-				val = struct.unpack('<L', dbg.readMemory(self.ListsInUseUlong + d * 4, 4))[0]
-				for bit in range(32):
-					idx = d * 32 + bit
-					if idx >= self.ArraySize:
-						break
-					if val & (1 << bit):
-						result.append(idx)
-		except Exception as e:
-			mndbg.dbgp("MnNTListHints.getInUseIndices: %s" % str(e))
+		for d, val in enumerate(self.getInUseDwords()):
+			for bit in range(32):
+				idx = d * 32 + bit
+				if idx >= self.ArraySize:
+					break
+				if val & (1 << bit):
+					result.append(idx)
 		return result
 
 	def bucketForSize(self, size_units):
@@ -38681,12 +38687,14 @@ def _heapShowFreeList(mHeap):
 		# the heap services them), annotating each entry with its own size.
 		hints = backend.list_hints
 		bins = backend.free_lists.getBins()
-		# ListsInUseUlong bitmap: which ListHints indices are flagged populated.
-		inuse = hints.getInUseIndices()
-		if inuse:
+		# ListsInUseUlong bitmap: raw value, then the populated ListHints indices.
+		dwords = hints.getInUseDwords()
+		if dwords:
 			dbg.log("")
-			dbg.log("    ListsInUse bitmap (BlocksIndex) - populated indices: %s" % (
-				", ".join(str(i) for i in inuse)))
+			dbg.log("    ListsInUse bitmap (BlocksIndex) @ %s:" % (PTR_PRINT % hints.ListsInUseUlong))
+			dbg.log("      Value        : %s" % " ".join("0x%08x" % d for d in dwords))
+			inuse = hints.getInUseIndices()
+			dbg.log("      Populated idx: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"))
 		if len(bins) > 0:
 			dbg.log("")
 			dbg.log("    FreeList by ListHints index (size class):")
