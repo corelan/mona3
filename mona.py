@@ -38618,24 +38618,39 @@ def _heapShowFreeList(mHeap):
 		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
 
 		# Grouped per ListHints index (size class), only the non-empty lists,
-		# ordered by index ascending.
+		# ordered by index ascending.  Dedicated sizes get one group each; every
+		# non-dedicated size is folded into a single combined list (which is how
+		# the heap services them), annotating each entry with its own size.
 		hints = backend.list_hints
 		bins = backend.free_lists.getBins()
 		if len(bins) > 0:
 			dbg.log("")
 			dbg.log("    FreeLists by ListHints index (size class):")
+			nondedicated = []   # list of (size_units, chunk)
 			for size_units in sorted(bins.keys()):
 				chunks = bins[size_units]
 				size_bytes = size_units * HEAPGRANULARITY
 				if hints.usesHints():
 					b = hints.bucketForSize(size_units)
-					idxlabel = ("%d" % b["index"]) if b["dedicated"] else "non-dedicated"
+					dedicated = b["dedicated"]
+					idx = b["index"]
 				else:
-					idxlabel = "%d" % (size_units if size_units <= 127 else 0)
-				dbg.log("      ListHints[%s] size 0x%x (%d bytes) : %d chunk%s" % (
-					idxlabel, size_bytes, size_bytes, len(chunks), "" if len(chunks) == 1 else "s"))
+					dedicated = (size_units <= 127)
+					idx = size_units
+				if not dedicated:
+					for c in chunks:
+						nondedicated.append((size_units, c))
+					continue
+				dbg.log("      ListHints[%d] size 0x%x (%d bytes) : %d chunk%s" % (
+					idx, size_bytes, size_bytes, len(chunks), "" if len(chunks) == 1 else "s"))
 				for c in chunks:
 					dbg.log("        %s" % (PTR_PRINT % c.chunkptr))
+			if nondedicated:
+				dbg.log("      ListHints[non-dedicated] : %d chunk%s" % (
+					len(nondedicated), "" if len(nondedicated) == 1 else "s"))
+				for size_units, c in sorted(nondedicated, key=lambda t: (t[0], t[1].chunkptr)):
+					sb = size_units * HEAPGRANULARITY
+					dbg.log("        0x%x (%d bytes)  %s" % (sb, sb, PTR_PRINT % c.chunkptr))
 	dbg.log("")
 
 
