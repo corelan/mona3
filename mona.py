@@ -19460,6 +19460,30 @@ class MnNTUserDataBase(object):
 			mndbg.dbgp("getBlockBitmapInfo: %s" % str(e))
 			return None
 
+	def getBusyBitmapBits(self):
+		"""Return the BusyBitmap as a list of 0/1 ints, one per block (1 = busy),
+		or None if it cannot be read.  Bit i corresponds to block index i."""
+		ss = self.parent_subsegment
+		if ss is None:
+			return None
+		block_count = ss.BlockCount
+		if block_count == 0:
+			return None
+		ai = MnPEB.getArch()
+		try:
+			sig = struct.unpack('<L', dbg.readMemory(self.address + self._bitmap_offsets["Signature"][ai], 4))[0]
+			if sig != 0xF0E0D0C0:
+				return None
+			buf = readPtrSizeBytes(self.address + self._bitmap_offsets["Buffer"][ai])
+			if buf == 0:
+				return None
+			ndwords = (block_count + 31) // 32
+			dwords = [struct.unpack('<L', dbg.readMemory(buf + d * 4, 4))[0] for d in range(ndwords)]
+			return [(dwords[i // 32] >> (i % 32)) & 1 for i in range(block_count)]
+		except Exception as e:
+			mndbg.dbgp("getBusyBitmapBits: %s" % str(e))
+			return None
+
 	def _getEncodingKey(self):
 		"""Walk up parent chain to find the encoding key."""
 		try:
@@ -19533,6 +19557,10 @@ class MnNTVistaUserData(MnNTUserDataBase):
 
 	def getBlockBitmapInfo(self, address):
 		# Vista/7 has no BusyBitmap; per-slot state needs the free-offset chain.
+		return None
+
+	def getBusyBitmapBits(self):
+		# Vista/7 has no BusyBitmap.
 		return None
 
 
@@ -20035,11 +20063,12 @@ class MnNTListHints(object):
 
 	# _HEAP_LIST_LOOKUP field offsets: (x86, x64)
 	_offsets = {
-		"ExtendedLookup": (0x000, 0x000),
-		"ArraySize":      (0x004, 0x008),
-		"BaseIndex":      (0x014, 0x018),
-		"ListHead":       (0x018, 0x020),
-		"ListHints":      (0x020, 0x030),
+		"ExtendedLookup":  (0x000, 0x000),
+		"ArraySize":       (0x004, 0x008),
+		"BaseIndex":       (0x014, 0x018),
+		"ListHead":        (0x018, 0x020),
+		"ListsInUseUlong": (0x01c, 0x028),
+		"ListHints":       (0x020, 0x030),
 	}
 
 	def __init__(self, heap):
@@ -20049,6 +20078,7 @@ class MnNTListHints(object):
 		self.ArraySize = 0
 		self.BaseIndex = 0
 		self.ListHints = 0
+		self.ListsInUseUlong = 0
 		ai = MnPEB.getArch()
 		try:
 			self.blocks_index = readPtrSizeBytes(heap.heapbase + heap._offset("BlocksIndex"))
@@ -20056,12 +20086,34 @@ class MnNTListHints(object):
 				self.ArraySize = struct.unpack('<L', dbg.readMemory(self.blocks_index + self._offsets["ArraySize"][ai], 4))[0]
 				self.BaseIndex = struct.unpack('<L', dbg.readMemory(self.blocks_index + self._offsets["BaseIndex"][ai], 4))[0]
 				self.ListHints = readPtrSizeBytes(self.blocks_index + self._offsets["ListHints"][ai])
+				self.ListsInUseUlong = readPtrSizeBytes(self.blocks_index + self._offsets["ListsInUseUlong"][ai])
 		except Exception as e:
 			mndbg.dbgp("MnNTListHints.__init__: %s" % str(e))
 
 	def usesHints(self):
 		"""True on Win7+ (BlocksIndex present); False on Vista (legacy freelist[])."""
 		return self.blocks_index != 0
+
+	def getInUseIndices(self):
+		"""Return the sorted ListHints indices flagged in-use by the ListsInUseUlong
+		bitmap (each set bit i means ListHints[i], i.e. size (i+BaseIndex), has at
+		least one free chunk).  Empty list when there is no BlocksIndex."""
+		if not self.usesHints() or self.ListsInUseUlong == 0 or self.ArraySize == 0:
+			return []
+		result = []
+		ndwords = (self.ArraySize + 31) // 32
+		try:
+			for d in range(ndwords):
+				val = struct.unpack('<L', dbg.readMemory(self.ListsInUseUlong + d * 4, 4))[0]
+				for bit in range(32):
+					idx = d * 32 + bit
+					if idx >= self.ArraySize:
+						break
+					if val & (1 << bit):
+						result.append(idx)
+		except Exception as e:
+			mndbg.dbgp("MnNTListHints.getInUseIndices: %s" % str(e))
+		return result
 
 	def bucketForSize(self, size_units):
 		"""Map a block size (granularity units) to its ListHints bucket.
@@ -38566,6 +38618,12 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 				ss.BlockCount,
 				ss.getBusyCount(),
 				ss.getFreeCount()))
+			# BusyBitmap (1 = busy slot, 0 = free), bit index = block index.
+			ud_bm = ss.getUserData()
+			if ud_bm and not ud_bm.corrupted:
+				bits = ud_bm.getBusyBitmapBits()
+				if bits is not None:
+					dbg.log("        BusyBitmap (1=busy): %s" % "".join(str(b) for b in bits))
 			if expand:
 				ud = ss.getUserData()
 				if ud and not ud.corrupted:
@@ -38592,9 +38650,9 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 
 def _heapShowFreeList(mHeap):
 	"""Display BackEnd Allocator free list information."""
-	dbg.log("[+] BackEnd Allocator : FreeLists")
+	dbg.log("[+] BackEnd Allocator : FreeList")
 	backend = mHeap.getBackEndAllocator()
-	# Walk the actual FreeLists linked list (physical Flink order) so the order
+	# Walk the actual FreeList linked list (physical Flink order) so the order
 	# here matches the Free List Index reported by `!mona info -a`.
 	free_chunks = backend.free_lists.getChunks()
 	if len(free_chunks) == 0:
@@ -38623,9 +38681,15 @@ def _heapShowFreeList(mHeap):
 		# the heap services them), annotating each entry with its own size.
 		hints = backend.list_hints
 		bins = backend.free_lists.getBins()
+		# ListsInUseUlong bitmap: which ListHints indices are flagged populated.
+		inuse = hints.getInUseIndices()
+		if inuse:
+			dbg.log("")
+			dbg.log("    ListsInUse bitmap (BlocksIndex) - populated indices: %s" % (
+				", ".join(str(i) for i in inuse)))
 		if len(bins) > 0:
 			dbg.log("")
-			dbg.log("    FreeLists by ListHints index (size class):")
+			dbg.log("    FreeList by ListHints index (size class):")
 			nondedicated = []   # list of (size_units, chunk)
 			for size_units in sorted(bins.keys()):
 				chunks = bins[size_units]
