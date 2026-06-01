@@ -38616,6 +38616,26 @@ def _heapShowFreeList(mHeap):
 		headers = ["_HEAP_ENTRY", "PrevSize", "Size", "Unused", "UserPtr", "UserSize"]
 		types = ["string", "size", "size", "size", "pointer", "size"]
 		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+
+		# Grouped per ListHints index (size class), only the non-empty lists,
+		# ordered by index ascending.
+		hints = backend.list_hints
+		bins = backend.free_lists.getBins()
+		if len(bins) > 0:
+			dbg.log("")
+			dbg.log("    FreeLists by ListHints index (size class):")
+			for size_units in sorted(bins.keys()):
+				chunks = bins[size_units]
+				size_bytes = size_units * HEAPGRANULARITY
+				if hints.usesHints():
+					b = hints.bucketForSize(size_units)
+					idxlabel = ("%d" % b["index"]) if b["dedicated"] else "non-dedicated"
+				else:
+					idxlabel = "%d" % (size_units if size_units <= 127 else 0)
+				dbg.log("      ListHints[%s] size 0x%x (%d bytes) : %d chunk%s" % (
+					idxlabel, size_bytes, size_bytes, len(chunks), "" if len(chunks) == 1 else "s"))
+				for c in chunks:
+					dbg.log("        %s" % (PTR_PRINT % c.chunkptr))
 	dbg.log("")
 
 
