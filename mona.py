@@ -38650,7 +38650,7 @@ def _heapShowFreeList(mHeap):
 					len(nondedicated), "" if len(nondedicated) == 1 else "s"))
 				for size_units, c in sorted(nondedicated, key=lambda t: (t[0], t[1].chunkptr)):
 					sb = size_units * HEAPGRANULARITY
-					dbg.log("        0x%x (%d bytes)  %s" % (sb, sb, PTR_PRINT % c.chunkptr))
+					dbg.log("        %s  0x%x (%d bytes)" % (PTR_PRINT % c.chunkptr, sb, sb))
 	dbg.log("")
 
 
