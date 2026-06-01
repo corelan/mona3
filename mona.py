@@ -38694,7 +38694,7 @@ def _heapShowFreeList(mHeap):
 			dbg.log("    ListsInUse bitmap (BlocksIndex) @ %s:" % (PTR_PRINT % hints.ListsInUseUlong))
 			dbg.log("      Value        : %s" % " ".join("0x%08x" % d for d in dwords))
 			inuse = hints.getInUseIndices()
-			dbg.log("      Populated idx: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"))
+			dbg.log("      Populated indexes: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"))
 		if len(bins) > 0:
 			dbg.log("")
 			dbg.log("    FreeList by ListHints index (size class):")
