@@ -38594,15 +38594,16 @@ def _heapShowFreeList(mHeap):
 	"""Display BackEnd Allocator free list information."""
 	dbg.log("[+] BackEnd Allocator : FreeLists")
 	backend = mHeap.getBackEndAllocator()
-	free_chunks = backend.getFreeChunks()
+	# Walk the actual FreeLists linked list (physical Flink order) so the order
+	# here matches the Free List Index reported by `!mona info -a`.
+	free_chunks = backend.free_lists.getChunks()
 	if len(free_chunks) == 0:
 		dbg.log("    No free chunks on the free list")
 	else:
 		dbg.log("    %d free chunk%s:" % (len(free_chunks), "" if len(free_chunks) == 1 else "s"))
 		table_data = {}
 		table_seq = []
-		for addr in sorted(free_chunks.keys()):
-			chunk = free_chunks[addr]
+		for addr, chunk in free_chunks.items():
 			key = PTR_PRINT % addr
 			table_data[key] = [
 				chunk.prevsize * HEAPGRANULARITY,
