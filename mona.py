@@ -17895,7 +17895,10 @@ class MnNTHeap(MnHeap):
 			use_ptr_array = True
 			n_buckets = 129
 		else:
-			lfh_cls = MnNTVistaLFH
+			# Vista vs Win7 differ only in _LFH_HEAP.LocalData offset; pick the
+			# build-correct class so this legacy walk reads LocalData from the
+			# same place as the FrontEndAllocator path.
+			lfh_cls = self._getLFHClass() if hasattr(self, "_getLFHClass") else MnNTVistaLFH
 			ss_blocksize_off  = (0x010, 0x018)
 			ss_blockcount_off = (0x014, 0x01c)
 			use_ptr_array = False
@@ -18143,6 +18146,50 @@ class MnNTVistaHeap(MnNTHeap):
 	def __init__(self, address, walk_level=WalkLevel.HEAP):
 		super(MnNTVistaHeap, self).__init__(address, walk_level)
 		self.heap_version = HeapVersion.VISTA
+
+	def _getLFHClass(self):
+		"""Return the version-correct _LFH_HEAP class (Vista vs Win7), cached.
+
+		Win7's _LFH_HEAP inserts SizeInCache at +0x040, shifting LocalData to
+		+0x310/+0x3f0 (vs Vista's +0x300/+0x3e0). Picked structurally not by OS
+		build: _HEAP_LOCAL_DATA.LowFragHeap back-points to the LFH base, so the
+		candidate whose LocalData offset yields that match wins.
+		"""
+		if getattr(self, "_lfh_class_cached", None) is not None:
+			return self._lfh_class_cached
+
+		ai = MnPEB.getArch()
+		lfh_addr = self.getLFHAddress()
+		lowfrag_off = archValue(0x00c, 0x018)   # _HEAP_LOCAL_DATA.LowFragHeap
+		cls = None
+		if lfh_addr:
+			for candidate in (MnNT7LFH, MnNTVistaLFH):
+				ld_off = candidate._offsets["LocalData"][ai]
+				try:
+					backptr = readPtrSizeBytes(lfh_addr + ld_off + lowfrag_off)
+				except Exception:
+					backptr = 0
+				if backptr == lfh_addr:
+					cls = candidate
+					break
+
+		if cls is None:
+			# Probe inconclusive (unreadable memory) -- fall back to OS build.
+			_parseOsVersion()
+			build = g_os_version["build"] if g_os_version else 0
+			cls = MnNT7LFH if build >= 7600 else MnNTVistaLFH
+
+		self._lfh_class_cached = cls
+		return cls
+
+	def getFrontEndAllocator(self):
+		"""Return the FrontEndAllocator, selecting Vista vs Win7 LFH via _getLFHClass()."""
+		if not hasattr(self, '_frontend') or self._frontend is None:
+			if self._getLFHClass() is MnNT7LFH:
+				self._frontend = MnNT7FrontEndAllocator(self)
+			else:
+				self._frontend = MnNTVistaFrontEndAllocator(self)
+		return self._frontend
 
 	def getChunkHeaderDataOffset(self):
 		"""Return byte offset from chunk pointer to the compact _HEAP_ENTRY header.
@@ -18986,12 +19033,12 @@ class MnNTVistaSegment(MnNTSegmentBase):
 
 class MnNTVistaLFH:
 	"""
-	Represents _LFH_HEAP on Windows Vista/7.
+	Represents _LFH_HEAP on Windows Vista.
 	Lock is _RTL_CRITICAL_SECTION (0x18 bytes x86 / 0x28 bytes x64).
 	Buckets array has 128 entries.
 	"""
 
-	# _LFH_HEAP field offsets: (offset_x86, offset_x64)
+	# _LFH_HEAP field offsets: (offset_x86, offset_x64)  -- Windows Vista (6002)
 	_offsets = {
 		"SubSegmentZones":      (0x018, 0x028),
 		"ZoneBlockSize":        (0x020, 0x038),
@@ -19037,6 +19084,32 @@ class MnNTVistaLFH:
 			zones.append({"address": entry})
 			entry = readPtrSizeBytes(entry)
 		return zones
+
+
+class MnNT7LFH(MnNTVistaLFH):
+	"""_LFH_HEAP on Windows 7.
+
+	Like Vista but with a SizeInCache field inserted at +0x040, shifting
+	UserBlockCache/Buckets/LocalData up by 0x10. Inner LSI/subsegment layouts are
+	unchanged, so the Vista subsegment/userdata classes are reused.
+	"""
+
+	# _LFH_HEAP field offsets: (offset_x86, offset_x64)  -- Windows 7 (7601)
+	_offsets = {
+		"SubSegmentZones":      (0x018, 0x028),
+		"ZoneBlockSize":        (0x020, 0x038),
+		"Heap":                 (0x024, 0x040),
+		"SegmentChange":        (0x028, 0x048),
+		"SegmentCreate":        (0x02c, 0x04c),
+		"SegmentInsertInFree":  (0x030, 0x050),
+		"SegmentDelete":        (0x034, 0x054),
+		"CacheAllocs":          (0x038, 0x058),
+		"CacheFrees":           (0x03c, 0x05c),
+		"SizeInCache":          (0x040, 0x060),   # new on Win7
+		"UserBlockCache":       (0x050, 0x070),   # Vista 0x040/0x060 + 0x10
+		"Buckets":              (0x110, 0x1f0),   # Vista 0x100/0x1e0 + 0x10
+		"LocalData":            (0x310, 0x3f0),   # Vista 0x300/0x3e0 + 0x10
+	}
 
 
 class MnNT8LFH:
@@ -19223,6 +19296,7 @@ class MnNTLFHSubSegmentBase(object):
 		self.corrupted = False
 		self.corruption_reason = ""
 		self._user_data = None
+		self._free_indices = None
 
 		try:
 			ai = MnPEB.getArch()
@@ -19258,6 +19332,51 @@ class MnNTLFHSubSegmentBase(object):
 	def isValid(self):
 		return not self.corrupted and self.UserBlocks != 0 and self.BlockSize > 0
 
+	def getFreeBlockIndices(self):
+		"""Return the set of FREE block indices for this subsegment (Win7 LFH).
+
+		Win7 has no BusyBitmap; free slots form a singly-linked list rooted at
+		AggregateExchg.FreeEntryOffset (8-byte units from UserBlocks). Each free
+		block's next link is a plaintext WORD at block+sizeof(_HEAP_ENTRY); Depth
+		is the free count. Walk bounded by Depth, validated and cycle-guarded.
+		"""
+		if self._free_indices is not None:
+			return self._free_indices
+
+		free = set()
+		self._free_indices = free
+		if not self.isValid() or self.Depth == 0 or self.BlockCount == 0:
+			return free
+
+		gran     = HEAPGRANULARITY
+		stride   = self.BlockSize * gran
+		if stride == 0:
+			return free
+		hdr_size    = archValue(0x10, 0x20)      # _HEAP_USERDATA_HEADER
+		entry_sz    = archValue(0x08, 0x10)      # _HEAP_ENTRY; next link sits past it
+		first_block = self.UserBlocks + hdr_size
+
+		offset = self.FreeEntryOffset
+		seen   = set()
+		for _ in range(self.Depth):
+			if offset == 0 or offset in seen:
+				break
+			seen.add(offset)
+			block_addr = self.UserBlocks + offset * gran
+			if block_addr < first_block:
+				break
+			idx = (block_addr - first_block) // stride
+			if idx < 0 or idx >= self.BlockCount:
+				break
+			free.add(idx)
+			try:
+				offset = struct.unpack('<H', dbg.readMemory(block_addr + entry_sz, 2))[0]
+			except Exception:
+				break
+
+		self._free_indices = free
+		return free
+
 	def getUserData(self):
 		"""Lazy-construct and return the MnNTUserData for this subsegment."""
 		if self._user_data is None and self.isValid():
@@ -19282,33 +19401,47 @@ class MnNTLFHSubSegmentBase(object):
 	def getChunkAt(self, address):
 		"""Return an MnChunk for the LFH slot containing *address*, or None.
 
-		The slot's BUSY/FREE state comes from the _HEAP_USERDATA_HEADER
-		BusyBitmap (Win8+), not from the per-block _HEAP_ENTRY (which is
-		LFH-key-encoded and not decodable with the plain heap key).  The
-		container chunk a segment walk would report is always busy, so this is
-		the only way to see a freed LFH slot.
+		Location is pure arithmetic (never None for an in-range address, so an
+		LFH slot is never misreported as "no chunk"). State falls back across
+		versions: Win8+ BusyBitmap if present, else the Win7 free-offset chain.
 		"""
 		if not self.isValid():
 			return None
 		ud = self.getUserData()
 		if ud is None or ud.corrupted:
 			return None
-		info = ud.getBlockBitmapInfo(address)
-		if info is None:
+
+		# Location: arithmetic, version-independent, clamped into [0, BlockCount).
+		stride      = self.BlockSize * HEAPGRANULARITY
+		first_block = ud.first_block_addr
+		if stride == 0:
 			return None
-		block_start, state = info
+		idx = (address - first_block) // stride
+		if idx < 0:
+			idx = 0
+		elif idx >= self.BlockCount:
+			idx = self.BlockCount - 1
+		block_start = first_block + idx * stride
+
+		# State: BusyBitmap (Win8+) first, else Win7 free-offset chain.
+		info = ud.getBlockBitmapInfo(address)
+		if info is not None:
+			block_start, state = info
+		else:
+			state = ChunkState.FREE if idx in self.getFreeBlockIndices() else ChunkState.BUSY
+
 		heap_base = 0
 		try:
 			heap_base = self.parent_bucket.parent_lfh.heap.heapbase
 		except Exception:
 			pass
-		# Size from the (reliable) subsegment block size; flag from the bitmap.
 		flag = 0x01 if state == ChunkState.BUSY else 0x00
 		chunk = MnChunk(block_start, "chunk", HEAPGRANULARITY, heap_base, 0,
 		                self.BlockSize, 0, 0, flag, 0, 0)
 		chunk.parent = ChunkParent.LFH
 		chunk.parent_ref = self
-		mndbg.dbgp("getChunkAt: addr=0x%x block_start=0x%x state=%s" % (address, block_start, state))
+		mndbg.dbgp("getChunkAt: addr=0x%x block_start=0x%x idx=%d state=%s" % (
+			address, block_start, idx, state))
 		return chunk
 
 
@@ -19643,22 +19776,17 @@ class MnNTHeapBucket(object):
 	# _HEAP_BUCKET is always 4 bytes: BlockUnits(2) + SizeIndex(1) + Flags(1)
 	_BUCKET_SIZE = 4
 
-	# _HEAP_LOCAL_SEGMENT_INFO offsets vary by version -- set by parent LFH class
-	_lsi_offsets_vista = {
-		"Hint":             (0x000, 0x000),  # Vista: just Hint/Bucket ptr, simplified
-		"ActiveSubsegment": (0x004, 0x008),
-	}
-
-	_lsi_offsets_win8 = {
-		"LocalData":        (0x000, 0x000),
+	# _HEAP_LOCAL_SEGMENT_INFO field offsets: (offset_x86, offset_x64).
+	# Only ActiveSubsegment and CachedItems are read here, and per ntdll symbols
+	# these two fields sit at the same offsets on Vista, Win7, Win8, Win10 and
+	# Win11 (the struct's tail fields shift between versions, but those are not
+	# used).  So a single table is correct for every supported version -- the
+	# real per-version difference is *where the LSI lives* (inline SegmentInfo[]
+	# on Vista/7 vs a SegmentInfoArrays[] pointer array on Win8+), handled by the
+	# FrontEndAllocator's _resolveLSI(), not here.
+	_lsi_offsets = {
 		"ActiveSubsegment": (0x004, 0x008),
 		"CachedItems":      (0x008, 0x010),
-		"SListHeader":      (0x048, 0x090),
-		"Counters":         (0x050, 0x0a0),
-		"LastOpSequence":   (0x058, 0x0a8),
-		"BucketIndex":      (0x05c, 0x0ac),
-		"LastUsed":         (0x05e, 0x0ae),
-		"NoThrashCount":    (0x060, 0x0b0),
 	}
 
 	_CACHED_ITEMS_COUNT = 16
@@ -19694,19 +19822,18 @@ class MnNTHeapBucket(object):
 
 		if lsi_addr != 0 and not self.corrupted:
 			try:
-				active_ptr = readPtrSizeBytes(lsi_addr + self._lsi_offsets_win8["ActiveSubsegment"][ai])
+				active_ptr = readPtrSizeBytes(lsi_addr + self._lsi_offsets["ActiveSubsegment"][ai])
 				if active_ptr != 0:
 					self.active_subsegment = self._subsegment_class(active_ptr, parent_bucket=self)
-				# Read CachedItems[16] (only Win8+)
-				if "CachedItems" in self._lsi_offsets_win8:
-					cached_base = lsi_addr + self._lsi_offsets_win8["CachedItems"][ai]
-					ptrsize = archValue(4, 8)
-					for i in range(self._CACHED_ITEMS_COUNT):
-						ptr = readPtrSizeBytes(cached_base + i * ptrsize)
-						if ptr != 0:
-							ss = self._subsegment_class(ptr, parent_bucket=self)
-							if ss.isValid():
-								self.cached_items.append(ss)
+				# CachedItems[16] -- present on Vista/7/8+ alike.
+				cached_base = lsi_addr + self._lsi_offsets["CachedItems"][ai]
+				ptrsize = archValue(4, 8)
+				for i in range(self._CACHED_ITEMS_COUNT):
+					ptr = readPtrSizeBytes(cached_base + i * ptrsize)
+					if ptr != 0:
+						ss = self._subsegment_class(ptr, parent_bucket=self)
+						if ss.isValid():
+							self.cached_items.append(ss)
 			except Exception as e:
 				self.corrupted = True
 				self.corruption_reason = "Failed to read LSI at 0x%x: %s" % (lsi_addr, str(e))
@@ -19897,11 +20024,10 @@ class MnNTVistaFrontEndAllocator(MnNTFrontEndAllocatorBase):
 	_subsegment_class = MnNTVistaLFHSubSegment
 	_n_buckets = 128
 
-	# Vista _HEAP_LOCAL_SEGMENT_INFO size: (x86, x64)
-	_LSI_SIZE = (0x008, 0x010)
-
-	# Offset from _HEAP_LOCAL_DATA base to SegmentInfo[0]: (x86, x64)
-	_SEGINFO_OFFSET = (0x008, 0x010)
+	# _HEAP_LOCAL_SEGMENT_INFO array stride (struct size) and SegmentInfo[0]
+	# offset within _HEAP_LOCAL_DATA: (x86, x64). Same on Vista and Win7.
+	_LSI_SIZE = (0x064, 0x0b8)
+	_SEGINFO_OFFSET = (0x018, 0x030)
 
 	def _resolveLSI(self, bucket_index):
 		"""Vista/7: LSI is inline in _HEAP_LOCAL_DATA.SegmentInfo[bucket_index]."""
@@ -19912,6 +20038,13 @@ class MnNTVistaFrontEndAllocator(MnNTFrontEndAllocatorBase):
 		lsi_size = self._LSI_SIZE[ai]
 		seg_info_base = local_data + self._SEGINFO_OFFSET[ai]
 		return seg_info_base + (bucket_index * lsi_size)
+
+
+class MnNT7FrontEndAllocator(MnNTVistaFrontEndAllocator):
+	"""FrontEnd allocator for Windows 7. Same LSI geometry as Vista; only the
+	_LFH_HEAP outer offsets differ (MnNT7LFH)."""
+
+	_lfh_class = MnNT7LFH
 
 
 class MnNT8FrontEndAllocator(MnNTFrontEndAllocatorBase):
@@ -19970,13 +20103,13 @@ class MnNT8FrontEndAllocator(MnNTFrontEndAllocatorBase):
 		ptrsize = archValue(4, 8)
 		subsegments = []
 		try:
-			active_off = MnNTHeapBucket._lsi_offsets_win8["ActiveSubsegment"][ai]
+			active_off = MnNTHeapBucket._lsi_offsets["ActiveSubsegment"][ai]
 			active_ptr = readPtrSizeBytes(aff_lsi + active_off)
 			if active_ptr != 0:
 				ss = self._subsegment_class(active_ptr, parent_bucket=None)
 				if ss.isValid():
 					subsegments.append(ss)
-			cached_off = MnNTHeapBucket._lsi_offsets_win8["CachedItems"][ai]
+			cached_off = MnNTHeapBucket._lsi_offsets["CachedItems"][ai]
 			cached_base = aff_lsi + cached_off
 			for i in range(MnNTHeapBucket._CACHED_ITEMS_COUNT):
 				ptr = readPtrSizeBytes(cached_base + i * ptrsize)
@@ -21522,7 +21655,7 @@ class MnPointer:
 			start, end, category, description = region[0], region[1], region[2], region[3]
 			size  = end - start if end > start else 0
 			psize = "0x%x" % size
-			dbgp("  %s, category %s, description %s" % (PTR_PRINT % start, category, description) )	
+			mndbg.dbgp("  %s, category %s, description %s" % (PTR_PRINT % start, category, description) )	
 
 
 	def showObjectInfo(self):
