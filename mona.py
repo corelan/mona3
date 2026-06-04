@@ -26588,7 +26588,7 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 	if mapping:
 		for x, y in mapping:
 			if x != y:
-				first_broken_src = x
+				first_broken_src = ord(x)
 				break
 
 	for i, c in enumerate(chunks):
@@ -26630,7 +26630,7 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 			guessed_badchars.append(b)
 
 	# List bytes already omitted from the input
-	bytes_omitted_from_input = set(chr(i) for i in range(0, 256)) - set(cmp.x)
+	bytes_omitted_from_input = set(i for i in range(0, 256)) - set(cmp.x)
 	if bytes_omitted_from_input:
 		if not logsilent:
 			log(f"Bytes omitted from input: {bin2hex(sorted(set(list(bytes_omitted_from_input))))}")
