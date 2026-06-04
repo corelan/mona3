@@ -32834,11 +32834,57 @@ def _printHeapContext(ctx):
 	dbg.log("    List heap segments       : %s" % clickListSegments(ctx["heap"]))
 
 
+def tellmeHeapContext(address, ctx):
+	"""Emit 'tellme:' dbgp context lines summarizing a resolved heap classification,
+	so the AI integration has structured heap details to work with."""
+	try:
+		chunk      = ctx["chunk"]
+		subsegment = ctx["subsegment"]
+		bucket     = ctx["bucket"]
+		state_chunk = ctx["lfh_chunk"] if (subsegment is not None and ctx["lfh_chunk"] is not None) \
+		              else (chunk if isinstance(chunk, MnChunk) else None)
+		# switch-style: pick the allocator label from the first matching condition.
+		allocator = ("LFH (front-end)"          if subsegment is not None
+		             else "VirtualAllocdBlocks"  if ctx["va"] is not None
+		             else "back-end segment"     if isinstance(chunk, MnChunk)
+		             else "heap (no chunk)")
+
+		mndbg.dbgp("tellme: %s is in heap %s%s, allocator=%s" % (
+			PTR_PRINT % address, PTR_PRINT % ctx["heap"],
+			" (default process heap)" if ctx["is_default"] else "", allocator), errormode=False)
+		if ctx["heap_flags"] is not None:
+			mndbg.dbgp("tellme: heap Flags=0x%x (%s), FrontEndHeap=%s" % (
+				ctx["heap_flags"], ctx["mheap"].getFlagsText(ctx["heap_flags"]),
+				"LFH" if ctx["fea_enabled"] else "none"), errormode=False)
+		if state_chunk is not None:
+			mndbg.dbgp("tellme: chunk base=%s userptr=%s size=0x%x state=%s" % (
+				PTR_PRINT % state_chunk.chunkptr, PTR_PRINT % state_chunk.userptr,
+				state_chunk.size * HEAPGRANULARITY, state_chunk.getState().upper()), errormode=False)
+		if subsegment is not None:
+			mndbg.dbgp("tellme: LFH bucket index=%d subsegment=%s blocksize=0x%x blockcount=%d (busy=%d free=%d)" % (
+				bucket.bucket_index if bucket is not None else subsegment.SizeIndex,
+				PTR_PRINT % subsegment.address, subsegment.BlockSize * HEAPGRANULARITY,
+				subsegment.BlockCount, subsegment.getBusyCount(), subsegment.getFreeCount()), errormode=False)
+		pos = ctx["freelist_pos"]
+		if pos is not None and pos[0] is not None:
+			mndbg.dbgp("tellme: free chunk at position %d of %d on FreeLists" % (
+				pos[0], pos[1]), errormode=False)
+		if ctx["seg_base"]:
+			mndbg.dbgp("tellme: heap segment base=%s reserve=0x%x commit=0x%x" % (
+				PTR_PRINT % ctx["seg_base"], ctx["seg_reserve"] or 0, ctx["seg_commit"] or 0), errormode=False)
+		if ctx["va"] is not None:
+			mndbg.dbgp("tellme: VirtualAllocdBlock index=%s base=%s commit=0x%x reserve=0x%x" % (
+				str(ctx["va_index"]), PTR_PRINT % ctx["va"], ctx["va_commit"] or 0, ctx["va_reserve"] or 0), errormode=False)
+	except Exception as e:
+		mndbg.dbgp("tellme: heap context summary failed: %s" % str(e), errormode=False)
+
+
 def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchunk):
 	"""Print a structured Heap Details block for *address* (see showHeapBlockInfo)."""
 	ctx = _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundinchunk)
 	if ctx is None:
 		return
+	tellmeHeapContext(address, ctx)
 	_printHeapContext(ctx)
 	_identifyHeapStructureHeader(address, ctx["heap"], ctx["mheap"])
 
@@ -38600,6 +38646,8 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 	total, busy, free = fe.getUtilization()
 	dbg.log("    Active Buckets: %d" % len(active_buckets))
 	dbg.log("    Total Blocks: %d (Busy: %d, Free: %d)" % (total, busy, free))
+	mndbg.dbgp("tellme: heap %s LFH at %s: %d active buckets, %d blocks (busy=%d free=%d)" % (
+		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
 	dbg.log("")
 
 	for bucket in active_buckets:
@@ -38661,6 +38709,8 @@ def _heapShowFreeList(mHeap):
 	# Walk the actual FreeList linked list (physical Flink order) so the order
 	# here matches the Free List Index reported by `!mona info -a`.
 	free_chunks = backend.free_lists.getChunks()
+	mndbg.dbgp("tellme: heap %s back-end FreeList has %d free chunk(s)" % (
+		PTR_PRINT % mHeap.heapbase, len(free_chunks)), errormode=False)
 	if len(free_chunks) == 0:
 		dbg.log("    No free chunks on the free list")
 	else:
@@ -38731,6 +38781,8 @@ def _heapShowVABlocks(mHeap):
 	dbg.log("[+] VirtualAllocdBlocks")
 	backend = mHeap.getBackEndAllocator()
 	va_blocks = backend.getVABlocks()
+	mndbg.dbgp("tellme: heap %s has %d VirtualAllocdBlock(s)" % (
+		PTR_PRINT % mHeap.heapbase, len(va_blocks)), errormode=False)
 	if len(va_blocks) == 0:
 		dbg.log("    No VirtualAllocdBlocks for this heap")
 	else:
@@ -38754,6 +38806,8 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 	backend = mHeap.getBackEndAllocator()
 	segments = backend.getSegments()
 
+	mndbg.dbgp("tellme: heap %s has %d segment(s)" % (
+		PTR_PRINT % heapbase, len(segments)), errormode=False)
 	hline = "Segment List for heap %s:" % (PTR_PRINT % heapbase)
 	dbg.log(hline)
 	dbg.log("-" * len(hline))
