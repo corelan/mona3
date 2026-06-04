@@ -17631,21 +17631,38 @@ class MnNTHeap(MnHeap):
 				yield chunk
 
 	def findChunk(self, addr):
-		"""Given any address, locate the owning chunk.
+		"""Given any address, locate the owning chunk (MnChunk), or None.
 
-		Searches LFH first (fast path via index arithmetic), then segments.
-		Returns MnChunk if addr falls within a known chunk's range, None otherwise.
+		LFH is checked first, but ONLY via the lightweight getLFHRanges()
+		membership test followed by a targeted subsegment lookup.  We must not
+		enumerate every LFH block (getFrontEndAllocator().getChunks()) just to
+		find one address -- on some heaps that walks the full bucket/cached-item
+		table and dereferences invalid subsegment pointers, which is both very
+		slow and noisy.
 		"""
-		if self.usesLFH() and self.getFrontEndAllocator().contains(addr):
-			for chunk in self.getFrontEndAllocator().getChunks().values():
-				chunk_end = chunk.chunkptr + (chunk.size * HEAPGRANULARITY)
-				if chunk.chunkptr <= addr < chunk_end:
-					return chunk
+		if self.usesLFH():
+			in_lfh = False
+			try:
+				for (start, end) in self.getLFHRanges():
+					if start <= addr < end:
+						in_lfh = True
+						break
+			except Exception as e:
+				mndbg.dbgp("findChunk: getLFHRanges failed: %s" % str(e))
+			if in_lfh:
+				try:
+					ss = self.getFrontEndAllocator().getSubSegmentForAddress(addr)
+					if ss is not None:
+						c = ss.getChunkAt(addr)
+						if c is not None:
+							return c
+				except Exception as e:
+					mndbg.dbgp("findChunk: LFH slot lookup failed: %s" % str(e))
 
 		backend = self.getBackEndAllocator()
 		seg = backend.getSegmentForAddress(addr)
 		if seg:
-			for chunk in seg.getChunks():
+			for chunk in seg.getChunks().values():
 				chunk_end = chunk.chunkptr + (chunk.size * HEAPGRANULARITY)
 				if chunk.chunkptr <= addr < chunk_end:
 					return chunk
