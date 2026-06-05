@@ -17923,8 +17923,18 @@ class MnNTHeap(MnHeap):
 			except:
 				pass
 
-		lsi_active_off = (0x004, 0x008)
-		lsi_cached_off = (0x008, 0x010)
+		lsi_hint_off   = lfh_cls._lsi_offsets["Hint"]
+		lsi_active_off = lfh_cls._lsi_offsets["ActiveSubsegment"]
+		lsi_cached_off = lfh_cls._lsi_offsets["CachedItems"]
+		n_cached       = lfh_cls.CACHED_ITEMS_COUNT
+
+		def _walk_lsi(lsi_addr):
+			# Hint first: some buckets carry their only committed subsegment there.
+			_add_subsegment(readPtrSizeBytes(lsi_addr + lsi_hint_off[ai]))
+			_add_subsegment(readPtrSizeBytes(lsi_addr + lsi_active_off[ai]))
+			cached_base = lsi_addr + lsi_cached_off[ai]
+			for j in range(n_cached):
+				_add_subsegment(readPtrSizeBytes(cached_base + j * ptrsize))
 
 		if use_ptr_array:
 			sia_base = lfh_addr + lfh_cls._offsets["SegmentInfoArrays"][ai]
@@ -17936,25 +17946,16 @@ class MnNTHeap(MnHeap):
 				if lsi_ptr == 0:
 					continue
 				try:
-					_add_subsegment(readPtrSizeBytes(lsi_ptr + lsi_active_off[ai]))
-					cached_base = lsi_ptr + lsi_cached_off[ai]
-					for j in range(16):
-						_add_subsegment(readPtrSizeBytes(cached_base + j * ptrsize))
+					_walk_lsi(lsi_ptr)
 				except:
 					pass
 		else:
-			local_data_addr   = lfh_addr + lfh_cls._offsets["LocalData"][ai]
-			seg_info_base_off = (0x018, 0x030)
-			seg_info_stride   = (0x064, 0x0b8)
-			seg_info_base     = local_data_addr + seg_info_base_off[ai]
-			stride            = seg_info_stride[ai]
+			seg_info_base = lfh_addr + lfh_cls._offsets["LocalData"][ai] \
+			                + lfh_cls._localdata_offsets["SegmentInfo"][ai]
+			stride        = lfh_cls.LSI_STRIDE[ai]
 			for i in range(n_buckets):
-				lsi_addr = seg_info_base + i * stride
 				try:
-					_add_subsegment(readPtrSizeBytes(lsi_addr + lsi_active_off[ai]))
-					cached_base = lsi_addr + lsi_cached_off[ai]
-					for j in range(16):
-						_add_subsegment(readPtrSizeBytes(cached_base + j * ptrsize))
+					_walk_lsi(seg_info_base + i * stride)
 				except:
 					pass
 
@@ -19031,7 +19032,24 @@ class MnNTVistaSegment(MnNTSegmentBase):
 		self.end                           = self.BaseAddress + (self.NumberOfPages * 0x1000)
 
 
-class MnNTVistaLFH:
+class MnNTLFHBase(object):
+	"""Shared LSI constants for every NT version. _HEAP_LOCAL_SEGMENT_INFO has the
+	same field layout across Vista-Win11; only its container differs. Single
+	source of truth for every LSI walk."""
+
+	# _HEAP_LOCAL_SEGMENT_INFO field offsets: (x86, x64).
+	# Hint (+0x000) is the bucket's primary subsegment -- the field WinDBG's
+	# !heap -p treats as authoritative. A bucket whose only committed subsegment
+	# lives in Hint (Active/CachedItems both null) is invisible without it.
+	_lsi_offsets = {
+		"Hint":             (0x000, 0x000),
+		"ActiveSubsegment": (0x004, 0x008),
+		"CachedItems":      (0x008, 0x010),
+	}
+	CACHED_ITEMS_COUNT = 16
+
+
+class MnNTVistaLFH(MnNTLFHBase):
 	"""
 	Represents _LFH_HEAP on Windows Vista.
 	Lock is _RTL_CRITICAL_SECTION (0x18 bytes x86 / 0x28 bytes x64).
@@ -19053,6 +19071,14 @@ class MnNTVistaLFH:
 		"Buckets":              (0x100, 0x1e0),
 		"LocalData":            (0x300, 0x3e0),
 	}
+
+	# Inline _HEAP_LOCAL_DATA.SegmentInfo[] geometry (Vista/7 only): (x86, x64).
+	# LSI_STRIDE is sizeof(_HEAP_LOCAL_SEGMENT_INFO); x86 0x64 pads to 0x68 (8-byte
+	# alignment from the embedded _SLIST_HEADER).
+	_localdata_offsets = {
+		"SegmentInfo":      (0x018, 0x030),
+	}
+	LSI_STRIDE = (0x068, 0x0b8)
 
 	def __init__(self, lfhbase):
 		self.address = lfhbase
@@ -19112,7 +19138,7 @@ class MnNT7LFH(MnNTVistaLFH):
 	}
 
 
-class MnNT8LFH:
+class MnNT8LFH(MnNTLFHBase):
 	"""
 	Represents _LFH_HEAP on Windows 8/8.1.
 	Lock changed to _RTL_SRWLOCK (4 bytes x86 / 8 bytes x64).
@@ -19168,7 +19194,7 @@ class MnNT8LFH:
 		return zones
 
 
-class MnNT10LFH:
+class MnNT10LFH(MnNTLFHBase):
 	"""
 	Represents _LFH_HEAP on Windows 10/11.
 	MemoryPolicies field inserted before Buckets (+0x1b8/+0x2a0).
@@ -19330,7 +19356,17 @@ class MnNTLFHSubSegmentBase(object):
 		return self.BlockCount - self.Depth
 
 	def isValid(self):
-		return not self.corrupted and self.UserBlocks != 0 and self.BlockSize > 0
+		"""True only for a structurally plausible _HEAP_SUBSEGMENT.
+
+		Inactive buckets hold sentinel/stale LSI pointers; read as a subsegment
+		they show BlockCount==0 with a huge Depth. Requiring BlockCount>0 and
+		Depth<=BlockCount rejects them (free count can't exceed slot count).
+		"""
+		if self.corrupted or self.UserBlocks == 0 or self.BlockSize == 0:
+			return False
+		if self.BlockCount == 0 or self.Depth > self.BlockCount:
+			return False
+		return True
 
 	def getFreeBlockIndices(self):
 		"""Return the set of FREE block indices for this subsegment (Win7 LFH).
@@ -19776,21 +19812,6 @@ class MnNTHeapBucket(object):
 	# _HEAP_BUCKET is always 4 bytes: BlockUnits(2) + SizeIndex(1) + Flags(1)
 	_BUCKET_SIZE = 4
 
-	# _HEAP_LOCAL_SEGMENT_INFO field offsets: (offset_x86, offset_x64).
-	# Only ActiveSubsegment and CachedItems are read here, and per ntdll symbols
-	# these two fields sit at the same offsets on Vista, Win7, Win8, Win10 and
-	# Win11 (the struct's tail fields shift between versions, but those are not
-	# used).  So a single table is correct for every supported version -- the
-	# real per-version difference is *where the LSI lives* (inline SegmentInfo[]
-	# on Vista/7 vs a SegmentInfoArrays[] pointer array on Win8+), handled by the
-	# FrontEndAllocator's _resolveLSI(), not here.
-	_lsi_offsets = {
-		"ActiveSubsegment": (0x004, 0x008),
-		"CachedItems":      (0x008, 0x010),
-	}
-
-	_CACHED_ITEMS_COUNT = 16
-
 	def __init__(self, bucket_index, bucket_addr, lsi_addr, parent_lfh, subsegment_class):
 		self.bucket_index = bucket_index
 		self.bucket_addr = bucket_addr
@@ -19800,6 +19821,11 @@ class MnNTHeapBucket(object):
 		self.corrupted = False
 		self.corruption_reason = ""
 		self._subsegments = None
+
+		# LSI field offsets come from the LFH class (single source of truth).
+		lfh_cls    = parent_lfh._lfh_class
+		lsi_off    = lfh_cls._lsi_offsets
+		n_cached   = lfh_cls.CACHED_ITEMS_COUNT
 
 		ai = MnPEB.getArch()
 		try:
@@ -19818,17 +19844,23 @@ class MnNTHeapBucket(object):
 
 		self.block_size_bytes = self.BlockUnits * HEAPGRANULARITY
 		self.active_subsegment = None
+		self.hint_subsegment = None
 		self.cached_items = []
 
 		if lsi_addr != 0 and not self.corrupted:
 			try:
-				active_ptr = readPtrSizeBytes(lsi_addr + self._lsi_offsets["ActiveSubsegment"][ai])
+				active_ptr = readPtrSizeBytes(lsi_addr + lsi_off["ActiveSubsegment"][ai])
 				if active_ptr != 0:
 					self.active_subsegment = self._subsegment_class(active_ptr, parent_bucket=self)
+				# Hint holds the bucket's primary subsegment; for some buckets it is
+				# the only place the committed subsegment is referenced.
+				hint_ptr = readPtrSizeBytes(lsi_addr + lsi_off["Hint"][ai])
+				if hint_ptr != 0:
+					self.hint_subsegment = self._subsegment_class(hint_ptr, parent_bucket=self)
 				# CachedItems[16] -- present on Vista/7/8+ alike.
-				cached_base = lsi_addr + self._lsi_offsets["CachedItems"][ai]
+				cached_base = lsi_addr + lsi_off["CachedItems"][ai]
 				ptrsize = archValue(4, 8)
-				for i in range(self._CACHED_ITEMS_COUNT):
+				for i in range(n_cached):
 					ptr = readPtrSizeBytes(cached_base + i * ptrsize)
 					if ptr != 0:
 						ss = self._subsegment_class(ptr, parent_bucket=self)
@@ -19842,12 +19874,26 @@ class MnNTHeapBucket(object):
 		return self.bucket_index == 128
 
 	def getSubSegments(self):
-		"""Return all valid subsegments (active + cached)."""
+		"""Valid subsegments (active + hint + cached), deduped by address.
+		Order matters: Active, then Hint, then CachedItems. Hint holds the
+		bucket's primary subsegment and is sometimes the only reference to a
+		committed subsegment (Active and CachedItems both null), so omitting it
+		drops otherwise-valid buckets. The same subsegment frequently appears in
+		more than one of these, hence the dedup."""
 		if self._subsegments is None:
 			self._subsegments = []
+			seen = set()
+			candidates = []
 			if self.active_subsegment and self.active_subsegment.isValid():
-				self._subsegments.append(self.active_subsegment)
-			self._subsegments.extend(self.cached_items)
+				candidates.append(self.active_subsegment)
+			if self.hint_subsegment and self.hint_subsegment.isValid():
+				candidates.append(self.hint_subsegment)
+			candidates.extend(self.cached_items)
+			for ss in candidates:
+				if ss.address in seen:
+					continue
+				seen.add(ss.address)
+				self._subsegments.append(ss)
 		return self._subsegments
 
 	def getTotalBlocks(self):
@@ -20024,20 +20070,17 @@ class MnNTVistaFrontEndAllocator(MnNTFrontEndAllocatorBase):
 	_subsegment_class = MnNTVistaLFHSubSegment
 	_n_buckets = 128
 
-	# _HEAP_LOCAL_SEGMENT_INFO array stride (struct size) and SegmentInfo[0]
-	# offset within _HEAP_LOCAL_DATA: (x86, x64). Same on Vista and Win7.
-	_LSI_SIZE = (0x064, 0x0b8)
-	_SEGINFO_OFFSET = (0x018, 0x030)
-
 	def _resolveLSI(self, bucket_index):
-		"""Vista/7: LSI is inline in _HEAP_LOCAL_DATA.SegmentInfo[bucket_index]."""
+		"""Vista/7: LSI is inline in _HEAP_LOCAL_DATA.SegmentInfo[bucket_index].
+
+		Geometry comes from the LFH class (single source of truth), so this and
+		_walkLFHSubSegmentRanges cannot drift apart.
+		"""
 		if self.lfh is None:
 			return 0
 		ai = MnPEB.getArch()
-		local_data = self.lfh.LocalData
-		lsi_size = self._LSI_SIZE[ai]
-		seg_info_base = local_data + self._SEGINFO_OFFSET[ai]
-		return seg_info_base + (bucket_index * lsi_size)
+		seg_info_base = self.lfh.LocalData + self._lfh_class._localdata_offsets["SegmentInfo"][ai]
+		return seg_info_base + (bucket_index * self._lfh_class.LSI_STRIDE[ai])
 
 
 class MnNT7FrontEndAllocator(MnNTVistaFrontEndAllocator):
@@ -20101,21 +20144,29 @@ class MnNT8FrontEndAllocator(MnNTFrontEndAllocatorBase):
 			return []
 		ai = MnPEB.getArch()
 		ptrsize = archValue(4, 8)
+		lsi_off = self._lfh_class._lsi_offsets
 		subsegments = []
+		seen = set()
 		try:
-			active_off = MnNTHeapBucket._lsi_offsets["ActiveSubsegment"][ai]
-			active_ptr = readPtrSizeBytes(aff_lsi + active_off)
+			active_ptr = readPtrSizeBytes(aff_lsi + lsi_off["ActiveSubsegment"][ai])
 			if active_ptr != 0:
 				ss = self._subsegment_class(active_ptr, parent_bucket=None)
-				if ss.isValid():
+				if ss.isValid() and ss.address not in seen:
+					seen.add(ss.address)
 					subsegments.append(ss)
-			cached_off = MnNTHeapBucket._lsi_offsets["CachedItems"][ai]
-			cached_base = aff_lsi + cached_off
-			for i in range(MnNTHeapBucket._CACHED_ITEMS_COUNT):
+			hint_ptr = readPtrSizeBytes(aff_lsi + lsi_off["Hint"][ai])
+			if hint_ptr != 0:
+				ss = self._subsegment_class(hint_ptr, parent_bucket=None)
+				if ss.isValid() and ss.address not in seen:
+					seen.add(ss.address)
+					subsegments.append(ss)
+			cached_base = aff_lsi + lsi_off["CachedItems"][ai]
+			for i in range(self._lfh_class.CACHED_ITEMS_COUNT):
 				ptr = readPtrSizeBytes(cached_base + i * ptrsize)
 				if ptr != 0:
 					ss = self._subsegment_class(ptr, parent_bucket=None)
-					if ss.isValid():
+					if ss.isValid() and ss.address not in seen:
+						seen.add(ss.address)
 						subsegments.append(ss)
 		except:
 			pass
