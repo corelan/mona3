@@ -1271,7 +1271,7 @@ def _safe_int(v):
 
 def getAvailableAIEngines(reason="", refresh=False):
 	mndbg.dbgp(get_current_function_name())
-	engines = ["openai", "openaiagents", "anthropic", "ollama", "customai"]
+	engines = ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai"]
 	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
@@ -1300,7 +1300,7 @@ def getDefaultAIEngineEnvName():
 
 def _isSupportedAIEngine(engine_value):
 	mndbg.dbgp(get_current_function_name())
-	return engine_value in ["openai", "openaiagents", "anthropic", "ollama", "customai"]
+	return engine_value in ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai"]
 
 
 def ensureDefaultAIEngineConfig(mona_config, available_engines):
@@ -1323,7 +1323,7 @@ def resolveAIEngine(engine_arg, mona_config, available_engines):
 	mndbg.dbgp(get_current_function_name())
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
-		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|ollama|customai>", False
+		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|openrouter|ollama|customai>", False
 	engine = _normalizeAIEngine(engine_arg)
 	if engine != "":
 		return engine, engine_source, "", False
@@ -4857,6 +4857,9 @@ def getAIModelAndKey(engine, mona_config):
 	elif engine == "anthropic":
 		env_key_name = "ANTHROPIC_API_KEY"
 		env_model_name = "ANTHROPIC_MODEL"
+	elif engine == "openrouter":
+		env_key_name = "OPENROUTER_API_KEY"
+		env_model_name = "OPENROUTER_MODEL"
 	elif engine == "ollama":
 		env_model_name = "OLLAMA_MODEL"
 	elif engine == "customai":
@@ -5079,6 +5082,8 @@ def getDefaultAIModel(engine):
 		return "gpt-5-mini"
 	if engine == "anthropic":
 		return "claude-sonnet-4-6"
+	if engine == "openrouter":
+		return "google/gemma-4-31b-it:free"
 	return ""
 
 
@@ -9633,6 +9638,83 @@ def _fetchOllamaModelsDirect(base_url, timeout_seconds=20.0):
 	return _extractModelIdsFromOllamaTagsPayload(response_data)
 
 
+def _fetchOpenRouterModelsDirect(api_key, timeout_seconds=20.0):
+	mndbg.dbgp(get_current_function_name())
+	request = urllib_Request(
+		"https://openrouter.ai/api/v1/models",
+		headers={
+			"authorization": "Bearer %s" % api_key,
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			if isinstance(raw_response, dict):
+				response_data = raw_response
+			elif isinstance(raw_response, list):
+				response_data = raw_response
+			else:
+				response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("request-id", "") or e.headers.get("x-request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+		if error_message == "":
+			error_message = "OpenRouter model list HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach OpenRouter models API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"OpenRouter model list setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	return _extractModelIdsFromListPayload(response_data)
+
+
 def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, refresh=False):
 	mndbg.dbgp(get_current_function_name())
 	cache_key = (engine, api_key, base_url)
@@ -9642,6 +9724,8 @@ def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, 
 		model_ids = _fetchOpenAIModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "anthropic":
 		model_ids = _fetchAnthropicModelsDirect(api_key, timeout_seconds=timeout_seconds)
+	elif engine == "openrouter":
+		model_ids = _fetchOpenRouterModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "ollama":
 		model_ids = _fetchOllamaModelsDirect(base_url, timeout_seconds=timeout_seconds)
 	else:
@@ -10516,6 +10600,120 @@ def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="
 			"response_keys": response_keys,
 			"response_preview": _previewAIResponseBody(response_data)
 		},
+		error_type="UnexpectedPayloadError"
+	)
+
+
+def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=8192, options=None):
+	"""Send a chat completion request to OpenRouter using their OpenAI-compatible API."""
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling OpenRouter model '%s' with timeout %.1fs" % (model, timeout_seconds))
+	request_body = {
+		"model": model,
+		"messages": [{"role": "user", "content": prompt}],
+		"max_tokens": max_tokens
+	}
+	if isinstance(options, dict) and len(options) > 0:
+		for opt_key, opt_value in options.items():
+			request_body[opt_key] = opt_value
+	request_data = json.dumps(request_body).encode("utf-8")
+	request = urllib_Request(
+		"https://openrouter.ai/api/v1/chat/completions",
+		data=request_data,
+		headers={
+			"content-type": "application/json",
+			"authorization": "Bearer %s" % api_key,
+			"user-agent": "mona-tellme/3.0",
+			"http-referer": "https://github.com/corelan/mona",
+			"x-title": "mona tellme"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			request_id = ""
+			try:
+				request_id = response.headers.get("x-request-id", "") or response.headers.get("request-id", "")
+			except Exception:
+				request_id = ""
+			try:
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			except Exception:
+				response_data = {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("x-request-id", "") or e.headers.get("request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+		if error_message == "":
+			error_message = "OpenRouter HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach OpenRouter API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"OpenRouter request setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	# Extract response text from OpenAI-compatible chat completions format
+	text = ""
+	if isinstance(response_data, dict):
+		if request_id == "":
+			request_id = ensure_text(response_data.get("id", "")).strip()
+		choices = response_data.get("choices", [])
+		if isinstance(choices, list) and len(choices) > 0:
+			first_choice = choices[0]
+			if isinstance(first_choice, dict):
+				message = first_choice.get("message", {})
+				if isinstance(message, dict):
+					text = ensure_text(message.get("content", "")).strip()
+	if text:
+		return text, request_id
+	raise AIProviderError(
+		"OpenRouter returned an empty or unexpected response payload",
+		request_id=request_id,
+		body={"raw_response": response_data, "response_preview": _previewAIResponseBody(response_data)},
 		error_type="UnexpectedPayloadError"
 	)
 
@@ -32017,6 +32215,13 @@ class MnAI(object):
 				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
 				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "8192"},
 			]
+		if engine == "openrouter":
+			return [
+				{"name": "key", "required": True, "env": "OPENROUTER_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "OPENROUTER_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "OPENROUTER_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OPENROUTER_MAX_TOKENS", "show_value": True, "default": "8192"},
+			]
 		if engine == "ollama":
 			return [
 				{"name": "url", "required": True, "env": "OLLAMA_URL", "show_value": True},
@@ -32157,7 +32362,7 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine_arg_raw = self.args.get("e", "")
 		if type(engine_arg_raw).__name__.lower() == "bool":
-			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|ollama|customai>")
+			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|openrouter|ollama|customai>")
 			return False
 
 		explicit_engine = _normalizeAIEngine(engine_arg_raw)
@@ -32189,7 +32394,7 @@ class MnAI(object):
 			self.logInfoDetail("[+] The OpenAI Agents engine will briefly validate the external Python bridge environment before submission.")
 			self.logInfoDetail("    You'll briefly see a py.exe window, that's perfectly normal. It should close automatically.")
 		if self.engine not in self.available_engines:
-			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openaiagents, anthropic, ollama, customai" % self.engine)
+			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openaiagents, anthropic, openrouter, ollama, customai" % self.engine)
 			return False
 		if self.engine != "offline" and self.engine not in self.available_provider_engines:
 			if self.isDefaultEngineSelection():
@@ -32235,7 +32440,7 @@ class MnAI(object):
 		if self.engine == "offline":
 			self.available_model_ids = []
 			return self.available_model_ids
-		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key == "":
+		if self.engine in ["openai", "openaiagents", "anthropic", "openrouter"] and self.api_key == "":
 			self.available_model_ids = []
 			return self.available_model_ids
 		if self.engine == "ollama" and self.api_url == "":
@@ -32286,13 +32491,23 @@ class MnAI(object):
 			return
 		log_func("")
 		log_func("Available %s models:" % self.engine)
-		for model_id in models:
-			log_func("  %s" % model_id)
+		# Sort alphabetically and print in 2 columns
+		sorted_models = sorted(models, key=lambda x: x.lower())
+		if len(sorted_models) > 0:
+			max_width = max(len(m) for m in sorted_models)
+			col_width = max_width + 4  # Add padding between columns
+			for i in range(0, len(sorted_models), 2):
+				left = sorted_models[i]
+				if i + 1 < len(sorted_models):
+					right = sorted_models[i + 1]
+					log_func("  %s%s" % (left.ljust(col_width), right))
+				else:
+					log_func("  %s" % left)
 
 	def tryLogAvailableModelsForMissingModel(self):
 		"""Try to show provider-visible model IDs after a missing-model configuration error."""
 		mndbg.dbgp(get_current_function_name())
-		if self.engine not in ["openai", "openaiagents", "anthropic", "ollama"]:
+		if self.engine not in ["openai", "openaiagents", "anthropic", "ollama", "openrouter"]:
 			return
 		try:
 			models = self.fetchAvailableModels(refresh=True, log_errors=False)
@@ -32558,7 +32773,7 @@ class MnAI(object):
 		if self.offline or self.engine == "offline":
 			return True
 
-		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key == "":
+		if self.engine in ["openai", "openaiagents", "anthropic", "openrouter"] and self.api_key == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
 					"No API key was found for the default engine '%s'. Falling back to offline mode." % self.engine,
@@ -33799,6 +34014,15 @@ class MnAI(object):
 						self.prompt,
 						timeout_seconds=attempt_timeout,
 						response_field=self.response_field or "response",
+						options=self.api_options
+					)
+				elif self.engine == "openrouter":
+					self.response, self.request_id = callAIOpenRouter(
+						self.api_key,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						max_tokens=self.max_tokens,
 						options=self.api_options
 					)
 				else:
