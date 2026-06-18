@@ -4524,6 +4524,12 @@ def _build_bridge_error_summary(job, error_text):
 		if max_tokens_value > 0:
 			troubleshooting_lines.append("Current openaiagents.max_tokens value: %d" % max_tokens_value)
 		troubleshooting_lines.append("Increase openaiagents.max_tokens and try again.")
+		# Add specific suggestions for how to increase max_tokens
+		truncation_note = _buildGenericTruncationNote("openaiagents", max_tokens=max_tokens_value, stop_reason="max_output_tokens")
+		if truncation_note != "":
+			for line in truncation_note.split("\n"):
+				if line.strip() not in ["", "[AI Response Note]", "This answer was likely cut off because the response hit the current max_tokens limit."]:
+					troubleshooting_lines.append(line)
 	return error_summary, troubleshooting_lines
 
 
@@ -4678,6 +4684,12 @@ def _run_job(job):
 		if _is_partial_output_useful(partial_output_text):
 			troubleshooting_lines.append("A partial answer was returned before the run stopped.")
 			troubleshooting_lines.append("Increase openaiagents.max_tokens if you want the full answer.")
+			# Add specific suggestions for how to increase max_tokens
+			truncation_note = _buildGenericTruncationNote("openaiagents", max_tokens=0, stop_reason="max_output_tokens")
+			if truncation_note != "":
+				for line in truncation_note.split("\n"):
+					if line.strip() not in ["", "[AI Response Note]", "This answer was likely cut off because the response hit the current max_tokens limit."]:
+						troubleshooting_lines.append(line)
 		if _ensure_text(job.get("raw_request_file", "")).strip() != "":
 			troubleshooting_lines.append("Raw request file: %s" % _ensure_text(job.get("raw_request_file", "")).strip())
 		if _ensure_text(job.get("raw_result_file", "")).strip() != "":
@@ -9754,9 +9766,18 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		mndbg.dbgp("tellme: OpenAI request id: %s" % request_id)
 	output_text = getattr(response, "output_text", "")
 	if output_text:
+		# Check for truncation and append note if needed
+		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=0)
+		if truncation_note != "":
+			output_text = "%s\n\n%s" % (output_text, truncation_note)
 		return output_text, request_id
 	try:
-		return str(response.output[0].content[0].text), request_id
+		output_text = str(response.output[0].content[0].text)
+		# Check for truncation and append note if needed
+		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=0)
+		if truncation_note != "":
+			output_text = "%s\n\n%s" % (output_text, truncation_note)
+		return output_text, request_id
 	except Exception:
 		raise AIProviderError(
 			"OpenAI returned an empty or unexpected response payload",
@@ -10169,19 +10190,84 @@ def _anthropicGetStopReason(message):
 	return ensure_text(getattr(message, "stop_reason", "")).strip()
 
 
+def _openaiGetStopReason(response):
+	"""Extract stop reason from OpenAI response object."""
+	mndbg.dbgp(get_current_function_name())
+	try:
+		# Try to get finish_reason from response.choices[0]
+		if hasattr(response, "choices") and len(response.choices) > 0:
+			return ensure_text(getattr(response.choices[0], "finish_reason", "")).strip()
+		# Fallback for dict-like responses
+		if isinstance(response, dict):
+			choices = response.get("choices", [])
+			if len(choices) > 0:
+				return ensure_text(choices[0].get("finish_reason", "")).strip()
+	except Exception:
+		pass
+	return ""
+
+
+def _buildGenericTruncationNote(engine, message=None, max_tokens=0, stop_reason=""):
+	"""Build truncation detection note for any AI engine with engine-specific suggestions."""
+	mndbg.dbgp(get_current_function_name())
+	engine = _ensure_text(engine).strip().lower()
+	
+	# Extract stop reason if message object is provided
+	if message is not None and stop_reason == "":
+		if engine == "anthropic":
+			stop_reason = _anthropicGetStopReason(message)
+		elif engine == "openai":
+			stop_reason = _openaiGetStopReason(message)
+	
+	# Check if response was truncated based on engine-specific indicators
+	truncated = False
+	if engine == "anthropic" and stop_reason == "max_tokens":
+		truncated = True
+	elif engine in ["openai", "openrouter"] and stop_reason == "length":
+		truncated = True
+	elif engine == "openaiagents" and stop_reason == "max_output_tokens":
+		truncated = True
+	
+	if not truncated:
+		return ""
+	
+	note_lines = [
+		"[AI Response Note]",
+		"This answer was likely cut off because the response hit the current max_tokens limit."
+	]
+	
+	if isinstance(max_tokens, int) and max_tokens > 0:
+		note_lines.append("Current %s.max_tokens value: %d." % (engine, max_tokens))
+	
+	note_lines.append("Increase %s.max_tokens if you want a longer answer." % engine)
+	
+	# Add specific suggestions for the current engine
+	note_lines.append("")
+	note_lines.append("To increase max_tokens for %s:" % engine)
+	
+	# Map environment variable names
+	env_var_map = {
+		"openai": "OPENAI_MAX_TOKENS",
+		"openaiagents": "OPENAI_MAX_TOKENS",
+		"anthropic": "ANTHROPIC_MAX_TOKENS",
+		"openrouter": "OPENROUTER_MAX_TOKENS"
+	}
+	env_var = env_var_map.get(engine, "")
+	
+	note_lines.append("1. Command line: !mona config -set %s.max_tokens 16384" % engine)
+	if env_var:
+		note_lines.append("2. Environment variable: set %s=16384" % env_var)
+	
+	return "\n".join(note_lines)
+
+
 def _anthropicBuildTruncationNote(message, max_tokens=0):
 	mndbg.dbgp(get_current_function_name())
 	stop_reason = _anthropicGetStopReason(message)
 	if stop_reason != "max_tokens":
 		return ""
-	note_lines = [
-		"[Anthropic note]",
-		"This answer was likely cut off because the response hit the current max_tokens limit."
-	]
-	if isinstance(max_tokens, int) and max_tokens > 0:
-		note_lines.append("Current anthropic.max_tokens value: %d." % max_tokens)
-	note_lines.append("Increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS if you want a longer answer.")
-	return "\n".join(note_lines)
+	# Use generic function for consistency
+	return _buildGenericTruncationNote("anthropic", message=message, max_tokens=max_tokens, stop_reason=stop_reason)
 
 
 def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
@@ -10698,6 +10784,7 @@ def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=81
 		)
 	# Extract response text from OpenAI-compatible chat completions format
 	text = ""
+	stop_reason = ""
 	if isinstance(response_data, dict):
 		if request_id == "":
 			request_id = ensure_text(response_data.get("id", "")).strip()
@@ -10708,7 +10795,13 @@ def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=81
 				message = first_choice.get("message", {})
 				if isinstance(message, dict):
 					text = ensure_text(message.get("content", "")).strip()
+				# Extract finish_reason for truncation detection
+				stop_reason = ensure_text(first_choice.get("finish_reason", "")).strip()
 	if text:
+		# Check for truncation and append note if needed
+		truncation_note = _buildGenericTruncationNote("openrouter", max_tokens=max_tokens, stop_reason=stop_reason)
+		if truncation_note != "":
+			text = "%s\n\n%s" % (text, truncation_note)
 		return text, request_id
 	raise AIProviderError(
 		"OpenRouter returned an empty or unexpected response payload",
