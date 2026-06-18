@@ -39440,7 +39440,13 @@ def _heapShowFreeList(mHeap):
 				for c in chunks:
 					dbg.log("        %s" % (PTR_PRINT % c.chunkptr))
 			if nondedicated:
-				dbg.log("      ListHints[non-dedicated] : %d chunk%s" % (
+				if hints.usesHints():
+					start_units = hints.BaseIndex + hints.ArraySize
+				else:
+					start_units = 128
+				start_bytes = start_units * HEAPGRANULARITY
+				dbg.log("      ListHints[non-dedicated] size >= 0x%x (>= %d bytes) : %d chunk%s" % (
+					start_bytes, start_bytes,
 					len(nondedicated), "" if len(nondedicated) == 1 else "s"))
 				for size_units, c in sorted(nondedicated, key=lambda t: (t[0], t[1].chunkptr)):
 					sb = size_units * HEAPGRANULARITY
