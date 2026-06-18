@@ -344,6 +344,33 @@ class MnDebugger:
 
 	def __init__(self):
 		self.dbg = dbglib.Debugger()
+		self._ntdll_build = None
+
+	def ntdllBuild(self):
+		"""Return the exact OS build number from ntdll's file-version resource.
+		Falls back to the PEB build (_parseOsVersion) when ntdll's version resource is unreadable.
+		Return: int build number, or 0 if nothing resolves.
+		"""
+		if self._ntdll_build is not None:
+			return self._ntdll_build
+		build = 0
+		try:
+			m = getModuleObj("ntdll")
+			if m is not None:
+				ver = m.moduleVersion
+				parts = str(ver).split(".")
+				if len(parts) >= 3:
+					build = int(parts[2])
+		except Exception:
+			build = 0
+		if build <= 0:
+			_parseOsVersion()
+			try:
+				build = int(g_os_version["build"])
+			except Exception:
+				build = 0
+		self._ntdll_build = build
+		return build
 
 	def _integerTypes(self):
 		try:
@@ -1496,6 +1523,15 @@ def _collectHeapDetails():
 		except Exception:
 			heap_entry["front_end_heap_type"] = ""
 
+		heap_entry["lfh_address"] = 0
+		heap_entry["lfh_active_buckets"] = 0
+		try:
+			if getattr(mHeap, "usesLFH", lambda: False)():
+				heap_entry["lfh_address"] = PTR_PRINT % mHeap.getLFHAddress()
+				heap_entry["lfh_active_buckets"] = len(mHeap.getFrontEndAllocator().getActiveBuckets())
+		except Exception as e:
+			mndbg.dbgp("_collectHeapDetails: LFH summary failed: %s" % str(e), errormode=False)
+
 		segments = getSegmentsForHeap(heapbase)
 		sortedsegments = []
 		for seg in segments:
@@ -1540,7 +1576,19 @@ def _collectHeapDetails():
 			if seg_obj is not None:
 				datablocks = seg_obj.getChunks()
 			else:
-				datablocks = walkSegment(FirstEntry, LastValidEntry, heapbase)
+				datablocks = {}
+				mndbg.dbgp("tellme: heap_details using direct chunk-walk fallback for segment %s (heap %s, first_entry %s)" % (
+					PTR_PRINT % segstart, PTR_PRINT % heapbase, PTR_PRINT % FirstEntry), errormode=False)
+				try:
+					fallback_heap = mnproc.getHeapObject(heapbase)
+					for chunk in MnChunk.walk(FirstEntry, LastValidEntry, fallback_heap, segstart):
+						if "virtall" not in getHeapFlag(chunk.flag).lower() and chunk.chunkptr not in datablocks and chunk.size > 0:
+							datablocks[chunk.chunkptr] = chunk
+					mndbg.dbgp("tellme: heap_details fallback walk for segment %s yielded %d chunk(s)" % (
+						PTR_PRINT % segstart, len(datablocks)), errormode=False)
+				except Exception as e:
+					mndbg.dbgp("tellme: heap_details segment chunk-walk fallback failed for %s: %s" % (
+						PTR_PRINT % segstart, str(e)), errormode=False)
 
 			sortedblocks = []
 			for block in datablocks:
@@ -1730,12 +1778,12 @@ def _getChunkPointerDump(chunk_address, chunk_size, label="chunk"):
 	return result
 
 
-def _describeChunkContext(chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+def _describeChunkContext(chunk, mheap, va_blks):
 	mndbg.dbgp(get_current_function_name())
 	for va, vi in va_blks.items():
 		if va <= chunk.chunkptr < va + vi["commit_size"]:
 			return "VABlock @ %s" % (PTR_PRINT % va)
-	if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts):
+	if getattr(chunk, "parent", ChunkParent.SEGMENT) == ChunkParent.LFH:
 		try:
 			return "LFH Subsegment (LFH @ %s)" % (PTR_PRINT % mheap.getLFHAddress())
 		except Exception:
@@ -1743,7 +1791,7 @@ def _describeChunkContext(chunk, mheap, va_blks, lfh_ranges, lfh_starts):
 	return "Segment @ %s" % (PTR_PRINT % chunk.segmentbase)
 
 
-def _serializeAdjacentChunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+def _serializeAdjacentChunk(label, chunk, mheap, va_blks):
 	mndbg.dbgp(get_current_function_name())
 	if chunk is None:
 		return OrderedDict([
@@ -1760,7 +1808,7 @@ def _serializeAdjacentChunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts
 	info["chunk_size"] = "0x%x" % chunk_size
 	info["state"] = getHeapFlag(chunk.flag)
 	info["heap"] = PTR_PRINT % mheap.heapbase
-	info["context"] = _describeChunkContext(chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+	info["context"] = _describeChunkContext(chunk, mheap, va_blks)
 	try:
 		info["first_8_bytes_at_user_ptr"] = bin2hex(dbg.readMemory(chunk.userptr, 8))
 	except Exception as e:
@@ -1824,23 +1872,15 @@ def _collectAdjacentChunkContext(refvalue):
 		va_blks = mheap.getVirtualAllocdBlocks()
 	except Exception:
 		pass
-	lfh_ranges = []
-	lfh_starts = []
-	try:
-		lfh_ranges = mheap.getLFHRanges()
-		lfh_starts = [r[0] for r in lfh_ranges]
-	except Exception:
-		pass
-
 	if kind == "seg":
 		_, _, sorted_chunks, idx = found_result
 		prev_chunk = sorted_chunks[idx - 1] if idx > 0 else None
 		curr_chunk = sorted_chunks[idx]
 		next_chunk = sorted_chunks[idx + 1] if idx < len(sorted_chunks) - 1 else None
 		info["chunks"] = [
-			_serializeAdjacentChunk("previous", prev_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
-			_serializeAdjacentChunk("current", curr_chunk, mheap, va_blks, lfh_ranges, lfh_starts),
-			_serializeAdjacentChunk("next", next_chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+			_serializeAdjacentChunk("previous", prev_chunk, mheap, va_blks),
+			_serializeAdjacentChunk("current", curr_chunk, mheap, va_blks),
+			_serializeAdjacentChunk("next", next_chunk, mheap, va_blks)
 		]
 	else:
 		_, _, vaaddr, vainfo = found_result
@@ -12941,20 +12981,6 @@ def decodeHeapHeader(headeraddress, headersize, key):
 		raw[i] ^= (key >> (i * 8)) & 0xFF
 	return bytes(raw)
 
-def walkSegment(FirstEntry,LastValidEntry,heapbase):
-	"""
-	Finds all chunks in a given segment
-
-	Arguments : Start and End of segment, and heapbase
-
-	Returns a dictionary of MnChunk objects
-	Key : chunk pointer
-
-	"""
-	mSegment = MnSegment(heapbase,FirstEntry,LastValidEntry)
-	return mSegment.walk()
-
-	
 def getStacks():
 	"""
 	Retrieves all stacks from all threads in the current application
@@ -13255,9 +13281,10 @@ class MnPEB:
 		self._modules_by_base = {}
 		self._raw_by_name     = {}
 		self._populating_ldr  = False
-		self._walk_params     = None   # (from_memory, peb_order) of last successful walk
+		self._walk_params     = None
 		self._nt_global_flag  = None
-		self._heaps           = None  # {heapbase: MnHeap} once populated
+		self._heaps           = None
+		self._lfh_key         = None
 
 		if walk_level & WalkLevel.MODULES:
 			self._walk_modules()
@@ -13625,6 +13652,127 @@ class MnPEB:
 	def getNTHeaps(self):
 		"""Return MnHeap objects whose type is NT."""
 		return [h for h in self.getHeaps() if h.getHeapType() == HeapType.NT]
+
+	def getLFHKey(self):
+		"""Recover and cache the process-global RtlpLFHKey (an ntdll global, identical across every
+		heap, so recovered ONCE at process scope). Returns the int key, or None if unrecoverable --
+		in which case callers MUST mark blocks "undecodable", never present raw header bytes as metadata.
+		"""
+		if self._lfh_key is not None:
+			return self._lfh_key if self._lfh_key is not False else None
+		self._lfh_key = False
+
+		try:
+			subsegs = self._collectLFHSubSegments()
+		except Exception as e:
+			mndbg.dbgp("getLFHKey: subsegment collection failed: %s" % str(e), errormode=False)
+			subsegs = []
+
+		def _confirm(key):
+			"""True if key validates against any witness subsegment's blocks."""
+			return key is not None and any(ss.keyValidates(key) for ss in subsegs)
+
+		# Symbol read -- cheapest + exact, when ntdll symbols are available.
+		sym_key = self._lfhKeyFromSymbol()
+		if sym_key is not None and _confirm(sym_key):
+			self._lfh_key = sym_key
+			mndbg.dbgp("getLFHKey: recovered RtlpLFHKey=0x%x (ntdll symbol, confirmed)" % sym_key,
+			           errormode=False)
+			return sym_key
+
+		# Inversion candidates (block cipher + EncodedOffsets)
+		candidates = []
+		try:
+			candidates = self._collectLFHKeyCandidates(subsegs)
+		except Exception as e:
+			mndbg.dbgp("getLFHKey: candidate collection failed: %s" % str(e), errormode=False)
+
+		for k in candidates:
+			if _confirm(k):
+				self._lfh_key = k
+				mndbg.dbgp("getLFHKey: recovered RtlpLFHKey=0x%x (inversion, confirmed)" % k,
+				           errormode=False)
+				return k
+
+		# Nothing confirmed (no readable witness blocks): fall back to majority consensus.
+		pool = list(candidates)
+		if sym_key is not None:
+			pool.append(sym_key)
+		if pool:
+			tally = {}
+			for k in pool:
+				tally[k] = tally.get(k, 0) + 1
+			best, votes = max(tally.items(), key=lambda kv: kv[1])
+			if votes >= 2:
+				self._lfh_key = best
+				mndbg.dbgp("getLFHKey: recovered RtlpLFHKey=0x%x (%d/%d votes, unconfirmed)" % (
+					best, votes, len(pool)), errormode=False)
+				return best
+
+		mndbg.dbgp("getLFHKey: RtlpLFHKey unrecoverable (%d candidates, sym=%s)" % (
+			len(candidates), "yes" if sym_key is not None else "no"), errormode=False)
+		return None
+
+	def _lfhKeyFromSymbol(self):
+		"""Read RtlpLFHKey straight from ntdll when its PDB symbols are loaded; None otherwise."""
+		try:
+			ntdll = getModuleObj("ntdll")
+			if ntdll is None:
+				return None
+			if not _hasSymbolsCached(ntdll):
+				return None
+			if not mndbg.isWinDBG():
+				return None
+			addr = 0
+			try:
+				addr = dbg.getAddress("ntdll!RtlpLFHKey")
+			except Exception:
+				addr = 0
+			if not addr:
+				return None
+			k = u32(addr) if PTR_SIZE == 4 else u64(addr)
+			return k if k else None
+		except Exception as e:
+			mndbg.dbgp("_lfhKeyFromSymbol: %s" % str(e), errormode=False)
+			return None
+
+	def _collectLFHSubSegments(self):
+		"""All valid, committed LFH subsegments across every NT heap -- the witnesses used both to
+		recover key candidates (by inversion) and to CONFIRM a candidate (symbol or inversion)."""
+		subsegs = []
+		for heap in self.getNTHeaps():
+			try:
+				if heap.getFrontEndHeapType() != 2:
+					continue
+				fe = heap.getFrontEndAllocator()
+				if fe is None:
+					continue
+				for ss in fe.getAllSubSegments():
+					if ss is not None and ss.isValid() and ss.BlockCount > 0:
+						subsegs.append(ss)
+			except Exception as e:
+				mndbg.dbgp("_collectLFHSubSegments: heap 0x%x skipped: %s" % (
+					getattr(heap, "heapbase", 0), str(e)), errormode=False)
+		return subsegs
+
+	def _collectLFHKeyCandidates(self, subsegs=None):
+		"""Gather RtlpLFHKey candidates. Returns a list of int key candidates (getLFHKey() confirms/votes)."""
+		if subsegs is None:
+			subsegs = self._collectLFHSubSegments()
+		if not subsegs:
+			return []
+		blocks_per_ss = 1 if len(subsegs) >= 2 else 8
+		candidates = []
+		for ss in subsegs:
+			candidates.extend(ss.recoverKeyCandidates(blocks_per_ss))
+			try:
+				eo = ss.recoverKeyFromEncodedOffsets()
+				if eo is not None:
+					candidates.append(eo)
+			except Exception as e:
+				mndbg.dbgp("_collectLFHKeyCandidates: EncodedOffsets vector failed: %s" % str(e),
+				           errormode=False)
+		return candidates
 
 	def getProcessHeap(self):
 		"""Return the MnHeap for the default process heap."""
@@ -14085,6 +14233,41 @@ def readPtrSizeBytes(ptr):
 		return 0
 	return struct.unpack(fmt, data)[0]
 
+# --- Guarded read primitives -----------------------------------------------------------------
+def _readScalar(ptr, size, fmt):
+	try:
+		data = dbg.readMemory(ptr, size)
+	except Exception:
+		return None
+	if not data or len(data) < size:
+		return None
+	try:
+		return struct.unpack(fmt, data[:size])[0]
+	except Exception:
+		return None
+
+def u8(ptr):
+	"""Read an unsigned byte at ptr, or None if unreadable."""
+	return _readScalar(ptr, 1, '<B')
+
+def u16(ptr):
+	"""Read an unsigned 16-bit value at ptr, or None if unreadable."""
+	return _readScalar(ptr, 2, '<H')
+
+def u32(ptr):
+	"""Read an unsigned 32-bit value at ptr, or None if unreadable."""
+	return _readScalar(ptr, 4, '<L')
+
+def u64(ptr):
+	"""Read an unsigned 64-bit value at ptr, or None if unreadable."""
+	return _readScalar(ptr, 8, '<Q')
+
+def readPtr(ptr):
+	"""Read a pointer-sized value at ptr, or None if unreadable.
+
+	Distinct from readPtrSizeBytes(), which returns 0 on a short read; readPtr() returns None so the
+	caller can tell an unreadable address from a real NULL pointer."""
+	return _readScalar(ptr, PTR_SIZE, PTR_FMT)
 
 def _extractFunctionMetadataFromUfOutput(uf_output):
 	mndbg.dbgp(get_current_function_name())
@@ -16545,339 +16728,6 @@ class MnModule: # TODO: Add getters
 	def getShortName(self):
 		return stripExtension(self.moduleKey)
 
-def getProcessHeapsInfo():
-	"""
-	Enumerates all process heaps by walking PEB->ProcessHeaps via
-	direct memory reads. Uses MnHeap for type detection and encoding.
-
-	Return:
-		Dict keyed by heap type ("NT", "Segment", "Unknown").
-		Each value is a dict keyed by heap base address, containing:
-		  NT entries:
-		    - "index"           : int, heap index in PEB.ProcessHeaps
-		    - "encode_enabled"  : bool, True if EncodeFlagMask != 0
-		    - "encode_flag_mask": int, EncodeFlagMask value
-		    - "encoding_raw"    : bytes or None, raw Encoding bytes
-		  Segment entries:
-		    - "index"           : int, heap index in PEB.ProcessHeaps
-		  Unknown entries:
-		    - "index"           : int, heap index in PEB.ProcessHeaps
-		    - "nt_signature"    : int or None, _HEAP.Signature value read
-		    - "seg_signature"   : int or None, _SEGMENT_HEAP.Signature value read
-	"""
-	results = {"NT": {}, "Segment": {}, "Unknown": {}}
-
-	# Read PEB address
-	try:
-		peb = mnproc.getPEB().address
-	except:
-		return results
-
-	# PEB.NumberOfHeaps (ULONG) and PEB.ProcessHeaps (PVOID*)
-	nrofheaps_off = archValue(0x88, 0xe8)
-	processheaps_off = archValue(0x90, 0xf0)
-	ptrsize = archValue(4, 8)
-
-	try:
-		nrofheaps = struct.unpack('<L', dbg.readMemory(peb + nrofheaps_off, 4))[0]
-		processheaps_ptr = readPtrSizeBytes(peb + processheaps_off)
-	except:
-		return results
-
-	seen_heap_addrs = set()
-
-	for idx in range(nrofheaps):
-		try:
-			heapaddr = readPtrSizeBytes(processheaps_ptr + (idx * ptrsize))
-		except:
-			continue
-		if heapaddr == 0:
-			break
-		if heapaddr in seen_heap_addrs:
-			continue
-		seen_heap_addrs.add(heapaddr)
-
-		mheap = MnHeap(heapaddr)
-		htype = mheap.getHeapType()
-
-		if htype == "NT":
-			encinfo = mheap.getEncodingInfo()
-			encinfo["index"] = idx
-			results["NT"][heapaddr] = encinfo
-		elif htype == "Segment":
-			results["Segment"][heapaddr] = {"index": idx}
-		else:
-			nt_sig = None
-			seg_sig = None
-			try:
-				nt_sig = mheap.getSignature()
-			except:
-				pass
-			try:
-				seg_sig = mheap.getSegmentHeapSignature()
-			except:
-				pass
-			results["Unknown"][heapaddr] = {"index": idx, "nt_signature": nt_sig, "seg_signature": seg_sig}
-
-	return results
-
-def getNTSegmentInfo(heapbase, segaddr, segstart, segend, firstentry, lastentry):
-	"""
-	Enumerates all chunks in a heap segment using MnSegment, grouping
-	them by heap flag state with size information for statistics.
-
-	Arguments:
-		heapbase   - int, base address of the owning _HEAP
-		segaddr    - int, address of the _HEAP_SEGMENT structure
-		segstart   - int, segment BaseAddress
-		segend     - int, end of segment (base + pages * 0x1000)
-		firstentry - int, FirstEntry pointer
-		lastentry  - int, LastValidEntry pointer
-
-	Return:
-		Dict with keys:
-		  - "base"       : int, segment BaseAddress
-		  - "end"        : int, end of committed region
-		  - "pages"      : int, (end - base) / 0x1000
-		  - "firstentry" : int, FirstEntry pointer
-		  - "lastentry"  : int, LastValidEntry pointer
-		  - "chunks"     : dict keyed by flag state string, e.g.:
-		      "Busy"     : [{"address": int, "size": int, "flag": int}, ...]
-		      "Free"     : [{"address": int, "size": int, "flag": int}, ...]
-		      "Last"     : [...]
-		      etc. (keys match getHeapFlag() output)
-		  - "total_chunks" : int, total number of chunks enumerated
-	"""
-	mseg = MnSegment(heapbase, segstart, segend, firstentry, lastentry)
-	try:
-		allchunks = mseg.getChunks()
-	except:
-		allchunks = {}
-
-	# Group chunks by flag state
-	chunks_by_state = {}
-	busy = 0
-	free_count = 0
-	max_free = 0
-	for chunkaddr, chunk in allchunks.items():
-		state = "BUSY" if (chunk.flag & 0x01) else "FREE"
-		csize = chunk.size * HEAPGRANULARITY
-		chunkinfo = {
-			"address": chunkaddr,
-			"size": csize,
-			"flag": chunk.flag,
-			"userptr": chunk.userptr,
-			"usersize": chunk.usersize,
-		}
-		if chunk.flag & 0x01:
-			busy += 1
-		else:
-			free_count += 1
-			if csize > max_free:
-				max_free = csize
-		if state not in chunks_by_state:
-			chunks_by_state[state] = []
-		chunks_by_state[state].append(chunkinfo)
-
-	return {
-		"base": segstart,
-		"end": segend,
-		"pages": (segend - segstart) // 0x1000,
-		"firstentry": firstentry,
-		"lastentry": lastentry,
-		"chunks": chunks_by_state,
-		"total_chunks": len(allchunks),
-		"busy_chunks": busy,
-		"free_chunks": free_count,
-		"max_free": max_free,
-	}
-
-def getNTHeapInfo(heapaddr):
-	"""
-	Enumerates Segments and VirtualAllocd Blocks for a single NT heap
-	using direct memory reads.
-
-	Arguments:
-		heapaddr - int, base address of an NT heap
-
-	Return:
-		Dict with keys:
-		  - "segments"  : dict keyed by segment address, each value is a dict:
-		      - "base"       : int, BaseAddress
-		      - "end"        : int, base + pages * 0x1000
-		      - "pages"      : int, NumberOfPages
-		      - "firstentry" : int, FirstEntry
-		      - "lastentry"  : int, LastValidEntry
-		      - "chunks"     : dict keyed by flag state (from getNTSegmentInfo)
-		      - "total_chunks": int
-		  - "va_blocks" : dict keyed by VA block address, each value is a dict:
-		      - "commit_size"  : int
-		      - "reserve_size" : int
-	"""
-	mheap = MnHeap(heapaddr)
-	result = {"segments": {}, "va_blocks": {}}
-
-	# --- Segments ---
-	try:
-		for seg in mheap.iterSegments():
-			result["segments"][seg.address] = getNTSegmentInfo(
-				heapaddr, seg.address,
-				seg.BaseAddress, seg.end,
-				seg.FirstEntry, seg.LastValidEntry,
-			)
-	except:
-		pass
-
-	# --- VirtualAllocd Blocks ---
-	try:
-		vablocks = mheap.getVirtualAllocdBlocks()
-		for vaaddr, vainfo in vablocks.items():
-			result["va_blocks"][vaaddr] = vainfo
-	except:
-		pass
-
-	# --- LFH subsegment ranges (for LFH chunk detection in procLayout) ---
-	try:
-		result["lfh_ranges"] = getLFHSubSegmentRanges(heapaddr)
-	except:
-		result["lfh_ranges"] = []
-
-	return result
-
-def _lfh_contains(addr, lfh_ranges, lfh_starts):
-	"""Return True if addr falls within any cached LFH subsegment range."""
-	if not lfh_starts:
-		return False
-	idx = bisect.bisect_right(lfh_starts, addr) - 1
-	if idx >= 0:
-		return addr < lfh_ranges[idx][1]
-	return False
-
-def getLFHSubSegmentRanges(heapaddr):
-	"""Walk LFH subsegments for *heapaddr*. Delegates to MnNTHeap._walkLFHSubSegmentRanges."""
-	try:
-		return MnHeap(heapaddr)._walkLFHSubSegmentRanges()
-	except Exception:
-		return []
-
-#---------------------------------------#
-#  Class for heap structures            #
-#---------------------------------------#
-"""
-_HEAP_ENTRY compact-header descriptor classes.
-
-Each class documents the byte layout of the 8-byte compact _HEAP_ENTRY
-header for a specific Windows version, and provides a parse() classmethod
-that extracts fields from a raw 8-byte buffer.
-
-On x86 the chunk pointer points directly to the compact header.
-On x64 (all versions including XP) the chunk pointer points to a 16-byte
-_HEAP_ENTRY: bytes 0-7 are PreviousBlockPrivateData (plain-text, unencoded),
-bytes 8-15 are the compact header (XOR-encoded on Vista+).  _DATA_OFFSET
-records this as (x86_offset, x64_offset) so callers can read the right bytes.
-
-Confirmed from PDB dumps in logs/:
-  XP x64   (logs/xp/64):   prefix @0, compact @8, layout == XP x86
-  Vista x64 (logs/vista/64): prefix @0, compact @8, layout == Vista x86
-  Win7 x64  (logs/7/64):   prefix @0, compact @8, layout == Vista x64 (confirmed native)
-  Win8 x64  (logs/8/64):   prefix @0, compact @8, layout == Vista x64
-  Win8.1 x64 (logs/8.1/64): prefix @0, compact @8, layout == Win8 x64
-  Win10 x64 (logs/10/64):  prefix @0, compact @8, layout == Vista x64
-
-Heap classes expose the appropriate descriptor via _chunk_entry_class.
-
-All offset tuples follow the (x86_value, x64_value) convention used throughout
-the codebase.  The compact header layout is arch-independent (field positions
-are the same on x86 and x64); the arch difference is only the pointer-width
-prefix captured by _DATA_OFFSET.  Tuples therefore always have equal elements,
-but the consistent form lets callers use cls._arch_index uniformly.
-"""
-
-class MnNTVistaChunkEntry:
-	"""
-	_HEAP_ENTRY compact header layout for Windows Vista / 7.
-
-	Vista introduced XOR encoding of the compact header (EncodeFlagMask / Encoding).
-	Win7 is byte-identical to Vista on both arches (confirmed from logs/7/32 and logs/7/64).
-
-	Key differences from XP:
-	  - Flags  moved from +0x005 (XP x86) / +0x00d (XP x64) → +0x002 / +0x00a
-	  - PreviousSize moved from +0x002 / +0x00a → +0x004 / +0x00c
-	  - SmallTagIndex moved from +0x004 / +0x00c → +0x003 / +0x00b
-	  - UnusedBytes moved from +0x006 / +0x00e → +0x007 / +0x00f
-	  - SegmentIndex (+0x007 XP) replaced by SegmentOffset (+0x006 / +0x00e)
-
-	_HEAP_ENTRY (x86, 8 bytes total)
-	+0x000 Size             : Uint2B
-	+0x002 Flags            : UChar
-	+0x003 SmallTagIndex    : UChar
-	+0x000 SubSegmentCode   : Ptr32 Void  (union)
-	+0x004 PreviousSize     : Uint2B
-	+0x006 SegmentOffset    : UChar       (overlaps LFHFlags)
-	+0x006 LFHFlags         : UChar
-	+0x007 UnusedBytes      : UChar
-	+0x000 AgregateCode     : Uint8B  (union)
-
-	_HEAP_ENTRY (x64, 16 bytes total)
-	+0x000 PreviousBlockPrivateData : Ptr64 Void  (plain-text prefix)
-	+0x008 Size             : Uint2B       (compact header starts here)
-	+0x00a Flags            : UChar
-	+0x00b SmallTagIndex    : UChar
-	+0x00c PreviousSize     : Uint2B
-	+0x00e SegmentOffset    : UChar
-	+0x00e LFHFlags         : UChar
-	+0x00f UnusedBytes      : UChar
-	+0x008 CompactHeader    : Uint8B  (union)
-	"""
-
-	_arch_index = 1 if arch == 64 else 0
-	_HEADER_SIZE = 8
-	_DATA_OFFSET = (0, 8)  # (x86, x64)
-
-	# Field offsets within the decoded 8-byte compact header: (x86, x64).
-	_offsets = {
-		"Size":          (0x000, 0x000),  # Uint2B
-		"Flags":         (0x002, 0x002),  # UChar  (was +0x005 on XP x86 / +0x00d on XP x64)
-		"SmallTagIndex": (0x003, 0x003),  # UChar  (was +0x004 / +0x00c)
-		"PreviousSize":  (0x004, 0x004),  # Uint2B (was +0x002 / +0x00a)
-		"SegmentOffset": (0x006, 0x006),  # UChar  (replaces XP's SegmentIndex; overlaps LFHFlags)
-		"UnusedBytes":   (0x007, 0x007),  # UChar  (was +0x006 / +0x00e)
-	}
-
-	@classmethod
-	def data_offset(cls):
-		return cls._DATA_OFFSET[cls._arch_index]
-
-	@classmethod
-	def parse(cls, raw_bytes):
-		ai = cls._arch_index
-		o = cls._offsets
-		return {
-			"Size":          struct.unpack('<H', raw_bytes[o["Size"][ai]:o["Size"][ai]+2])[0],
-			"Flags":         struct.unpack('<B', raw_bytes[o["Flags"][ai]:o["Flags"][ai]+1])[0],
-			"SmallTagIndex": struct.unpack('<B', raw_bytes[o["SmallTagIndex"][ai]:o["SmallTagIndex"][ai]+1])[0],
-			"PreviousSize":  struct.unpack('<H', raw_bytes[o["PreviousSize"][ai]:o["PreviousSize"][ai]+2])[0],
-			"SegmentOffset": struct.unpack('<B', raw_bytes[o["SegmentOffset"][ai]:o["SegmentOffset"][ai]+1])[0],
-			"UnusedBytes":   struct.unpack('<B', raw_bytes[o["UnusedBytes"][ai]:o["UnusedBytes"][ai]+1])[0],
-		}
-
-
-class MnNT8ChunkEntry(MnNTVistaChunkEntry):
-	"""
-	_HEAP_ENTRY compact header layout for Windows 8 / 8.1 / 10 / 11.
-
-	x86: Identical to Vista/7 — Code234 (Win8) and SubSegmentCode (Win8.1) are union
-	     aliases overlapping +0x000–0x003; Win10 ExtendedEntry/UnpackedEntry are outer
-	     union wrappers. Byte positions of Size, Flags, SmallTagIndex, PreviousSize,
-	     SegmentOffset, UnusedBytes are unchanged across all these versions.
-
-	x64: Identical to Vista/7 x64 in byte layout. SubSegmentCode (Win8.1) overlaps
-	     +0x008–0x00b; Win10 union wrappers do not shift any field offsets.
-
-	Inherits _offsets, parse(), and data_offset() unchanged from MnNTVistaChunkEntry.
-	"""
-
-
 class HeapType(object):
 	"""High-level heap implementation type."""
 	NT      = "NT"
@@ -16897,10 +16747,6 @@ class HeapVersion(object):
 class MnListEntry(object):
 	"""
 	Represents a Windows _LIST_ENTRY doubly-linked list head or node.
-
-	_LIST_ENTRY (x86)            _LIST_ENTRY (x64)
-	+0x000 Flink : Ptr32         +0x000 Flink : Ptr64
-	+0x004 Blink : Ptr32         +0x008 Blink : Ptr64
 	"""
 
 	_ptrsize = archValue(4, 8)
@@ -16916,20 +16762,26 @@ class MnListEntry(object):
 	def Blink(self):
 		return readPtrSizeBytes(self.address + self._ptrsize)
 
+	_MAX_NODES = 0x100000
+
 	def walk(self):
-		"""Yield the address of each node in the list, starting from Flink.
-
-		The list is circular: iteration stops when an entry address equals
-		this head's address, or a memory read fails.
-
-		Yields: int - address of each _LIST_ENTRY node (excluding the head)
-		"""
+		"""Yield the address of each node in the list, starting from Flink."""
 		head = self.address
+		self.truncated = False
+		seen = set()
 		try:
 			entry = self.Flink
-			while entry != head:
+			count = 0
+			while entry is not None and entry != 0 and entry != head:
+				if entry in seen or count >= MnListEntry._MAX_NODES:
+					self.truncated = True
+					mndbg.dbgp("MnListEntry.walk(0x%x): cycle/cap hit at 0x%x after %d nodes" %
+					           (head, entry, count))
+					return
+				seen.add(entry)
+				count += 1
 				yield entry
-				entry = readPtrSizeBytes(entry)
+				entry = readPtr(entry)
 		except Exception:
 			return
 
@@ -16943,9 +16795,6 @@ class MnHeap(object):
 	EncodeFlagMask = 0
 	Encoding = 0
 
-	# NT heap Signature (0xeeffeeff) probe offsets, one per era (x86, x64).
-	# Era 3 Win8+:    0x060 / 0x098
-	# Era 2 Vista/7:  0x064 / 0x0a0
 	_NT_SIGNATURE_OFFSETS = (
 		archValue(0x060, 0x098),
 		archValue(0x064, 0x0a0),
@@ -17065,9 +16914,8 @@ class MnHeap(object):
 			elif htype == "Segment":
 				self._corrupted = self.getSegmentHeapSignature() != 0xddeeddee
 			else:
-				# Unknown type means neither signature matched
 				self._corrupted = True
-		except:
+		except Exception:
 			self._corrupted = True
 		return self._corrupted
 
@@ -17115,7 +16963,7 @@ class MnHeap(object):
 		try:
 			sz = dbg.getTypeSize("ntdll!_HEAP")
 			return sz if sz else 0
-		except:
+		except Exception:
 			return 0
 
 	def getEncodingInfo(self):
@@ -17267,116 +17115,12 @@ class MnNTHeap(MnHeap):
 	"""
 	NT Heap implementation (_HEAP)
 	"""
- 
-	# _HEAP
-	# Windows XP
-	# ----------
-	# +0x000 Entry            : _HEAP_ENTRY
-	# +0x008 Signature        : Uint4B
-	# +0x00c Flags            : Uint4B
-	# +0x010 ForceFlags       : Uint4B
-	# +0x014 VirtualMemoryThreshold : Uint4B
-	# +0x018 SegmentReserve   : Uint4B
-	# +0x01c SegmentCommit    : Uint4B
-	# +0x020 DeCommitFreeBlockThreshold : Uint4B
-	# +0x024 DeCommitTotalFreeThreshold : Uint4B
-	# +0x028 TotalFreeSize    : Uint4B
-	# +0x02c MaximumAllocationSize : Uint4B
-	# +0x030 ProcessHeapsListIndex : Uint2B
-	# +0x032 HeaderValidateLength : Uint2B
-	# +0x034 HeaderValidateCopy : Ptr32 Void
-	# +0x038 NextAvailableTagIndex : Uint2B
-	# +0x03a MaximumTagIndex  : Uint2B
-	# +0x03c TagEntries       : Ptr32 _HEAP_TAG_ENTRY
-	# +0x040 UCRSegments      : Ptr32 _HEAP_UCR_SEGMENT
-	# +0x044 UnusedUnCommittedRanges : Ptr32 _HEAP_UNCOMMMTTED_RANGE
-	# +0x048 AlignRound       : Uint4B
-	# +0x04c AlignMask        : Uint4B
-	# +0x050 VirtualAllocdBlocks : _LIST_ENTRY
-	# +0x058 Segments         : [64] Ptr32 _HEAP_SEGMENT
-	# +0x158 u                : __unnamed
-	# +0x168 u2               : __unnamed
-	# +0x16a AllocatorBackTraceIndex : Uint2B
-	# +0x16c NonDedicatedListLength : Uint4B
-	# +0x170 LargeBlocksIndex : Ptr32 Void
-	# +0x174 PseudoTagEntries : Ptr32 _HEAP_PSEUDO_TAG_ENTRY
-	# +0x178 FreeLists        : [128] _LIST_ENTRY
-	# +0x578 LockVariable     : Ptr32 _HEAP_LOCK
-	# +0x57c CommitRoutine    : Ptr32     long 
-	# +0x580 FrontEndHeap     : Ptr32 Void
-	# +0x584 FrontHeapLockCount : Uint2B
-	# +0x586 FrontEndHeapType : UChar
-	# +0x587 LastSegmentIndex : UChar
-
-	# Windows 7
-	# ---------
-	# +0x000 Entry            : _HEAP_ENTRY
-	# +0x008 SegmentSignature : Uint4B
-	# +0x00c SegmentFlags     : Uint4B
-	# +0x010 SegmentListEntry : _LIST_ENTRY
-	# +0x018 Heap             : Ptr32 _HEAP
-	# +0x01c BaseAddress      : Ptr32 Void
-	# +0x020 NumberOfPages    : Uint4B
-	# +0x024 FirstEntry       : Ptr32 _HEAP_ENTRY
-	# +0x028 LastValidEntry   : Ptr32 _HEAP_ENTRY
-	# +0x02c NumberOfUnCommittedPages : Uint4B
-	# +0x030 NumberOfUnCommittedRanges : Uint4B
-	# +0x034 SegmentAllocatorBackTraceIndex : Uint2B
-	# +0x036 Reserved         : Uint2B
-	# +0x038 UCRSegmentList   : _LIST_ENTRY
-	# +0x040 Flags            : Uint4B
-	# +0x044 ForceFlags       : Uint4B
-	# +0x048 CompatibilityFlags : Uint4B
-	# +0x04c EncodeFlagMask   : Uint4B
-	# +0x050 Encoding         : _HEAP_ENTRY
-	# +0x058 PointerKey       : Uint4B
-	# +0x05c Interceptor      : Uint4B
-	# +0x060 VirtualMemoryThreshold : Uint4B
-	# +0x064 Signature        : Uint4B
-	# +0x068 SegmentReserve   : Uint4B
-	# +0x06c SegmentCommit    : Uint4B
-	# +0x070 DeCommitFreeBlockThreshold : Uint4B
-	# +0x074 DeCommitTotalFreeThreshold : Uint4B
-	# +0x078 TotalFreeSize    : Uint4B
-	# +0x07c MaximumAllocationSize : Uint4B
-	# +0x080 ProcessHeapsListIndex : Uint2B
-	# +0x082 HeaderValidateLength : Uint2B
-	# +0x084 HeaderValidateCopy : Ptr32 Void
-	# +0x088 NextAvailableTagIndex : Uint2B
-	# +0x08a MaximumTagIndex  : Uint2B
-	# +0x08c TagEntries       : Ptr32 _HEAP_TAG_ENTRY
-	# +0x090 UCRList          : _LIST_ENTRY
-	# +0x098 AlignRound       : Uint4B
-	# +0x09c AlignMask        : Uint4B
-	# +0x0a0 VirtualAllocdBlocks : _LIST_ENTRY
-	# +0x0a8 SegmentList      : _LIST_ENTRY
-	# +0x0b0 AllocatorBackTraceIndex : Uint2B
-	# +0x0b4 NonDedicatedListLength : Uint4B
-	# +0x0b8 BlocksIndex      : Ptr32 Void
-	# +0xcheckForRecentHeapVersiondex         : Ptr32 Void
-	# +0x0c0 PseudoTagEntries : Ptr32 _HEAP_PSEUDO_TAG_ENTRY
-	# +0x0c4 FreeLists        : _LIST_ENTRY
-	# +0x0cc LockVariable     : Ptr32 _HEAP_LOCK
-	# +0x0d0 CommitRoutine    : Ptr32     long 
-	# +0x0d4 FrontEndHeap     : Ptr32 Void
-	# +0x0d8 FrontHeapLockCount : Uint2B
-	# +0x0da FrontEndHeapType : UChar
-	# +0x0dc Counters         : _HEAP_COUNTERS
-	# +0x130 TuningParameters : _HEAP_TUNING_PARAMETERS	
-
-	# Signature (0xeeffeeff) probe offsets per era: (class, x86, x64)
-	#   Era 3 "Hardened" (8/8.1/10/11): 0x060, 0x098  — Counter probe refines to exact subclass
-	#   Era 2 "Encoded"  (Vista/7):     0x064, 0x0a0
-	#   Era 1 "Raw"      (XP):          0x008, 0x008
-	_SIGNATURE_PROBES = None  # built lazily after subclasses exist
+	_SIGNATURE_PROBES = None
 
 	def _offset(self, name):
 		"""Return the arch-appropriate _HEAP byte offset for *name* using this instance's version."""
 		return self._offsets[name][MnPEB.getArch()]
 
-	# _HEAP.Flags bits -> name.  Documented RtlCreateHeap creation flags plus the
-	# common debug/validation flags injected via gflags / PageHeap.  Stable across
-	# NT heap versions, so it lives on the shared base.
 	_FLAG_NAMES = [
 		(0x00000001, "HEAP_NO_SERIALIZE"),
 		(0x00000002, "HEAP_GROWABLE"),
@@ -17430,32 +17174,7 @@ class MnNTHeap(MnHeap):
 
 	@staticmethod
 	def _checkForRecentHeapVersion(address):
-		"""Return the correct Era-3 subclass (MnNT8Heap, MnNT10Heap, MnNT11Heap).
-
-		Follows the decision tree in heap_version_detection.md:
-
-		1. looks_like_counters at +0x1e0 (x86) / +0x210 (x64)?
-		      yes → Win8 / 8.1
-		2. looks_like_counters at +0x1f4 (x86) / +0x238 (x64)?
-		      yes → read InternalFlags byte at +0x1f3 (x86) / +0x233 (x64)
-		            bit 0 set → Win11, else → Win10
-		            if InternalFlags unreadable, fall back to:
-		            SegmentFlags bit 0x20 at +0x00c (x86) / +0x014 (x64)
-		              set → Win11 (Win11 memory manager sets this on heap
-		                    segments; not always present, so last resort)
-		              else → Win10
-
-		A valid Counters block satisfies all of:
-		  - TotalMemoryReserved and TotalMemoryCommitted both non-zero
-		  - both page-aligned (% 0x1000 == 0)
-		  - committed <= reserved
-		  - reserved <= 1 GB (0x40000000)
-
-		osver string is used only as a fallback when both probes are
-		inconclusive (e.g. memory read failure on a live target).
-
-		Return: class - one of MnNT8Heap, MnNT10Heap, MnNT11Heap
-		"""
+		"""Return the correct Era-3 subclass (MnNT8Heap, MnNT10Heap, MnNT11Heap)."""
 		_PAGE           = 0x1000
 		_MAX_RESERVE    = 0x40000000                  # 1 GB upper bound
 		_COUNTERS_WIN8  = archValue(0x1e0, 0x210)     # Win8/8.1 Counters offset
@@ -17477,30 +17196,23 @@ class MnNTHeap(MnHeap):
 				if reserved > _MAX_RESERVE:
 					return False
 				return True
-			except:
+			except Exception:
 				return False
 
 		# Probe 1: Win10/Win11 — Counters at +0x1f4 (x86) / +0x238 (x64)
-		# Checked first: Win8 Counters (0x1e0) can coincidentally overlap with Win10
-		# heap data and produce a false positive, but Win10 Counters (0x1f4) fall
-		# inside Win8's _HEAP_COUNTERS struct (field 5 onwards) which holds counts,
-		# not page-aligned sizes — so a Win8 heap will not pass this probe.
 		if _looks_like_counters(_COUNTERS_WIN10):
 			try:
 				internal_flags = struct.unpack('<B', dbg.readMemory(address + _INTERNAL_FLAGS, 1))[0]
 				if internal_flags & 0x01:
 					return MnNT11Heap
 				return MnNT10Heap
-			except:
+			except Exception:
 				pass
-			# InternalFlags unreadable — secondary cross-check: SegmentFlags bit 0x20
-			# set by the Win11 memory manager on heap segments (not always present,
-			# so only used here as a last resort before defaulting to MnNT10Heap).
 			try:
 				seg_flags = struct.unpack('<L', dbg.readMemory(address + _SEGMENT_FLAGS, 4))[0]
 				if seg_flags & 0x20:
 					return MnNT11Heap
-			except:
+			except Exception:
 				pass
 			return MnNT10Heap
 
@@ -17508,7 +17220,6 @@ class MnNTHeap(MnHeap):
 		if _looks_like_counters(_COUNTERS_WIN8):
 			return MnNT8Heap
 
-		# Both probes inconclusive — fall back to osver string
 		if osver in ("11", "win11"):
 			return MnNT11Heap
 		if osver in ("10", "win10"):
@@ -17516,17 +17227,11 @@ class MnNTHeap(MnHeap):
 		if osver in ("8", "win8", "8.1", "win8.1"):
 			return MnNT8Heap
 
-		return MnNT8Heap   # safe default
+		return MnNT8Heap
 
 	@staticmethod
 	def _detectHeapClass(address):
 		"""Probe raw memory at *address* and return the correct MnNTHeap subclass.
-
-		Tries each known Signature offset in era order (Era 3 → Era 2 → Era 1).
-		For Era 3 (Win8+) delegates to _checkForRecentHeapVersion() to narrow
-		down the exact subclass via Counter and InternalFlags probes.
-		Falls back to osver-based heuristics when Signature reads fail.
-
 		Return: class - a concrete MnNTHeap subclass
 		"""
 		_SIG = 0xeeffeeff
@@ -17534,13 +17239,11 @@ class MnNTHeap(MnHeap):
 			for target_cls, sig_offset in MnNTHeap._getSignatureProbes():
 				sig = struct.unpack('<I', dbg.readMemory(address + sig_offset, 4))[0]
 				if sig == _SIG:
-					# Era 3 matches Win8, Win10, and Win11 — refine further.
 					if target_cls is MnNT8Heap:
 						return MnNTHeap._checkForRecentHeapVersion(address)
 					return target_cls
-		except:
+		except Exception:
 			pass
-		# Signature probe failed — use osver for the best available guess
 		if osver in ("11", "win11"):
 			return MnNT11Heap
 		if osver in ("10", "win10"):
@@ -17567,22 +17270,144 @@ class MnNTHeap(MnHeap):
 		"""
 		return "NT"
 
-	def getSegments(self):
-		"""Return all segments for this heap as a list. Delegates to BackEndAllocator."""
-		return self.getBackEndAllocator().getSegments()
+	@property
+	def free_lists(self):
+		"""MnNTFreeLists for this heap (lazy, cached)."""
+		if getattr(self, '_free_lists', None) is None:
+			self._free_lists = MnNTFreeLists(self)
+		return self._free_lists
 
-	def getBackEndAllocator(self):
-		"""Return the BackEndAllocator for this heap. Lazy, cached."""
-		if not hasattr(self, '_backend') or self._backend is None:
-			self._backend = MnNTBackEndAllocator(self)
-		return self._backend
+	def getFreeLists(self):
+		"""The flat _HEAP.FreeLists model. Same object as the `free_lists` property."""
+		return self.free_lists
+
+	def getBlockIndex(self):
+		"""Head MnNTBlockIndex (_HEAP.BlocksIndex -> _HEAP_LIST_LOOKUP chain), or None when
+		BlocksIndex is NULL."""
+		if not hasattr(self, '_block_index'):
+			bi_ptr = 0
+			try:
+				bi_ptr = readPtrSizeBytes(self.heapbase + self._offset("BlocksIndex"))
+			except Exception as e:
+				mndbg.dbgp("getBlockIndex: BlocksIndex read failed: %s" % str(e))
+			self._block_index = MnNTBlockIndex(bi_ptr, self) if bi_ptr else None
+		return self._block_index
+
+	@property
+	def list_hints(self):
+		"""MnNTListHints (the head BlocksIndex node's ListHints array) for this heap, lazy/cached."""
+		if getattr(self, '_list_hints', None) is None:
+			bi = self.getBlockIndex()
+			self._list_hints = bi.list_hints if bi is not None else MnNTListHints(MnNTBlockIndex(0, self))
+		return self._list_hints
+
+	def getSegments(self):
+		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
+		if getattr(self, '_segments', None) is None:
+			self._segments = list(self.iterSegments())
+		return self._segments
+
+	def getSegmentForAddress(self, addr):
+		"""Which segment contains the given address. Returns None if not found."""
+		for seg in self.getSegments():
+			try:
+				if seg.BaseAddress <= addr < seg.LastValidEntry:
+					return seg
+			except Exception:
+				pass
+		return None
+
+	def getChunks(self):
+		"""All back-end segment chunks (walk all segments), keyed by address. parent=SEGMENT. Cached."""
+		if getattr(self, '_segment_chunks', None) is not None:
+			return self._segment_chunks
+		self._segment_chunks = {}
+		for seg in self.getSegments():
+			for chunk in seg.getChunks().values():
+				self._segment_chunks[chunk.chunkptr] = chunk
+		return self._segment_chunks
+
+	def getFreeChunks(self):
+		"""Back-end segment chunks with state FREE."""
+		return {a: c for a, c in self.getChunks().items() if c.getState() == ChunkState.FREE}
+
+	def getBusyChunks(self):
+		"""Back-end segment chunks with state BUSY."""
+		return {a: c for a, c in self.getChunks().items() if c.getState() == ChunkState.BUSY}
+
+	def getRanges(self):
+		"""Sorted list of (start, end) for all back-end segments."""
+		ranges = []
+		for seg in self.getSegments():
+			try:
+				ranges.append((seg.BaseAddress, seg.LastValidEntry))
+			except Exception:
+				pass
+		return sorted(ranges)
+
+	def containsBackEnd(self, addr):
+		"""Is addr within any back-end segment committed range (distinct from the LFH contains())."""
+		return self.getSegmentForAddress(addr) is not None
+
+	def chunkAt(self, addr):
+		"""The MnChunk whose _HEAP_ENTRY starts at exactly *addr*, or None. Used by the BlockIndex
+		hint resolution (ListHints Flink -> chunk = node - header_size). Tries the back-end segment
+		chunk map first, then a general findChunk() (which also covers LFH)."""
+		if not addr:
+			return None
+		c = self.getChunks().get(addr)
+		if c is not None:
+			return c
+		try:
+			c = self.findChunk(addr)
+		except Exception as e:
+			mndbg.dbgp("chunkAt: findChunk(0x%x) failed: %s" % (addr, str(e)))
+			c = None
+		return c if (c is not None and c.chunkptr == addr) else c
+
+	def lfhBucketAt(self, addr):
+		"""Resolve an address that points into the LFH front-end to its owning bucket (used by
+		MnNTListHints.activationFor when a ListHints Blink indicates LFH is active for a size class).
+		Returns the MnNTLFHBucket whose subsegment contains addr, or None."""
+		if not addr or not self.usesLFH():
+			return None
+		try:
+			ss = self.getFrontEndAllocator().getSubSegmentForAddress(addr)
+			if ss is not None:
+				return getattr(ss, "parent_bucket", None)
+		except Exception as e:
+			mndbg.dbgp("lfhBucketAt(0x%x): %s" % (addr, str(e)))
+		return None
+
+	def freeRunAt(self, chunk, size_units):
+		"""Starting from *chunk* (the ListHints hint for size class size_units), collect the run of
+		consecutive same-size free chunks on _HEAP.FreeLists."""
+		if chunk is None:
+			return []
+		run = []
+		fl_chunks = self.getFreeLists().getChunks()
+		ordered = list(fl_chunks.values())
+		start = None
+		for i, c in enumerate(ordered):
+			if c.chunkptr == chunk.chunkptr:
+				start = i
+				break
+		if start is None:
+			return [chunk] if chunk.size == size_units else []
+		for c in ordered[start:]:
+			if c.size != size_units:
+				break
+			run.append(c)
+		return run
+
+	def committedRegionSize(self, addr):
+		"""Committed region size (bytes) from *addr* to the end of its committed memory region. 0 if unknown."""
+		return MnNTUserBlockBase._committedRegionSizeFor(addr)
 
 	def getFrontEndAllocator(self):
-		"""Return the FrontEndAllocator for this heap. Lazy, cached.
-		Subclasses override to return the correct version-specific allocator.
-		"""
+		"""Return the front-end LFH allocator (an MnNTLFH*). Lazy cached."""
 		if not hasattr(self, '_frontend') or self._frontend is None:
-			self._frontend = MnNTVistaFrontEndAllocator(self)
+			self._frontend = MnNTVistaLFH(self)
 		return self._frontend
 
 	def getLFHChunks(self):
@@ -17593,7 +17418,7 @@ class MnNTHeap(MnHeap):
 
 	def getSegmentChunks(self):
 		"""All chunks from back-end segments (parent=SEGMENT). Returns {addr: MnChunk}."""
-		return self.getBackEndAllocator().getChunks()
+		return self.getChunks()
 
 	def getLFHSubSegmentChunks(self):
 		"""All chunks from LFH subsegments (parent=LFH). Returns {addr: MnChunk}."""
@@ -17602,26 +17427,37 @@ class MnNTHeap(MnHeap):
 		return {}
 
 	def getVABlockChunks(self):
-		"""All chunks from VirtualAllocdBlocks (parent=VADBLOCK). Returns {addr: MnChunk}."""
-		return self.getBackEndAllocator().getVABlocks()
+		"""Virtual-allocated blocks wrapped as MnChunk(parent=VADBLOCK), keyed by address."""
+		if getattr(self, '_va_chunks', None) is not None:
+			return self._va_chunks
+		self._va_chunks = {}
+		for vaptr in self.getVABlocks():
+			try:
+				vadblock = MnVirtualAllocdBlock(vaptr, heapbase=self.heapbase)
+				chunk = vadblock.getChunk()
+				self._va_chunks[chunk.chunkptr] = chunk
+			except Exception as e:
+				mndbg.dbgp("getVABlockChunks: wrap failed for VA 0x%x: %s" % (vaptr, str(e)), errormode=False)
+		return self._va_chunks
 
 	def getAllChunks(self):
-		"""Merged dict of all chunks across all parent types. Cached."""
+		"""Merged dict of all chunks across all parent types (segment + LFH + VA). Cached."""
 		if not hasattr(self, '_all_chunks') or self._all_chunks is None:
 			self._all_chunks = {}
-			self._all_chunks.update(self.getBackEndAllocator().getChunks())
+			self._all_chunks.update(self.getChunks())
 			if self.usesLFH():
 				self._all_chunks.update(self.getLFHChunks())
+			self._all_chunks.update(self.getVABlockChunks())
 		return self._all_chunks
 
 	def iterChunksByParent(self, parent_type):
 		"""Enumerate chunks filtered by ChunkParent type."""
 		if parent_type == ChunkParent.SEGMENT:
-			return self.getBackEndAllocator().getChunks()
+			return self.getChunks()
 		elif parent_type == ChunkParent.LFH:
 			return self.getFrontEndAllocator().getChunks()
 		elif parent_type == ChunkParent.VADBLOCK:
-			return self.getBackEndAllocator().getVABlocks()
+			return self.getVABlockChunks()
 		return {}
 
 	def iterChunksByState(self, state):
@@ -17631,15 +17467,7 @@ class MnNTHeap(MnHeap):
 				yield chunk
 
 	def findChunk(self, addr):
-		"""Given any address, locate the owning chunk (MnChunk), or None.
-
-		LFH is checked first, but ONLY via the lightweight getLFHRanges()
-		membership test followed by a targeted subsegment lookup.  We must not
-		enumerate every LFH block (getFrontEndAllocator().getChunks()) just to
-		find one address -- on some heaps that walks the full bucket/cached-item
-		table and dereferences invalid subsegment pointers, which is both very
-		slow and noisy.
-		"""
+		"""Given any address, locate the owning chunk (MnChunk), or None."""
 		if self.usesLFH():
 			in_lfh = False
 			try:
@@ -17659,8 +17487,7 @@ class MnNTHeap(MnHeap):
 				except Exception as e:
 					mndbg.dbgp("findChunk: LFH slot lookup failed: %s" % str(e))
 
-		backend = self.getBackEndAllocator()
-		seg = backend.getSegmentForAddress(addr)
+		seg = self.getSegmentForAddress(addr)
 		if seg:
 			for chunk in seg.getChunks().values():
 				chunk_end = chunk.chunkptr + (chunk.size * HEAPGRANULARITY)
@@ -17678,12 +17505,11 @@ class MnNTHeap(MnHeap):
 			if fe.contains(addr):
 				return (ChunkParent.LFH, {"allocator": fe})
 
-		backend = self.getBackEndAllocator()
-		seg = backend.getSegmentForAddress(addr)
+		seg = self.getSegmentForAddress(addr)
 		if seg:
 			return (ChunkParent.SEGMENT, {"segment": seg})
 
-		va_blocks = backend.getVABlocks()
+		va_blocks = self.getVABlocks()
 		for va_addr, va_info in va_blocks.items():
 			va_end = va_addr + va_info.get("reserve_size", 0)
 			if va_addr <= addr < va_end:
@@ -17693,9 +17519,8 @@ class MnNTHeap(MnHeap):
 
 	def getHeapStats(self):
 		"""Aggregate heap statistics."""
-		backend = self.getBackEndAllocator()
-		segments = backend.getSegments()
-		backend_chunks = backend.getChunks()
+		segments = self.getSegments()
+		backend_chunks = self.getChunks()
 		backend_busy = sum(1 for c in backend_chunks.values() if c.getState() == ChunkState.BUSY)
 		backend_free = len(backend_chunks) - backend_busy
 
@@ -17708,7 +17533,7 @@ class MnNTHeap(MnHeap):
 
 		return {
 			"segment_count": len(segments),
-			"va_block_count": len(backend.getVABlocks()),
+			"va_block_count": len(self.getVABlocks()),
 			"active_buckets": active_buckets,
 			"backend": {"total": len(backend_chunks), "busy": backend_busy, "free": backend_free},
 			"lfh": {"total": lfh_total, "busy": lfh_busy, "free": lfh_free},
@@ -17718,9 +17543,6 @@ class MnNTHeap(MnHeap):
 		"""Return chunks surrounding a given address in memory order.
 
 		Returns: (before: [MnChunk], target: MnChunk or None, after: [MnChunk])
-
-		Uses LFH fast path when addr falls inside an LFH subsegment (O(1) index
-		arithmetic within the subsegment block array).
 		"""
 		if self.usesLFH():
 			result = self._getChunksAroundLFH(addr, count)
@@ -17762,7 +17584,7 @@ class MnNTHeap(MnHeap):
 				r = ss.getRange()
 				if r[0] == 0 or not (r[0] <= addr < r[1]):
 					continue
-				ud = ss.getUserData()
+				ud = ss.getUserBlock()
 				if ud is None or ud.corrupted:
 					continue
 				if ud.block_size_bytes == 0:
@@ -17771,7 +17593,7 @@ class MnNTHeap(MnHeap):
 				if offset_in_region < 0:
 					continue
 				block_idx = offset_in_region // ud.block_size_bytes
-				all_blocks = ud.getChunks()
+				all_blocks = ud.getBlocks()
 				if not all_blocks:
 					continue
 				target = None
@@ -17788,7 +17610,7 @@ class MnNTHeap(MnHeap):
 				after_end = min(len(all_blocks), after_start + count)
 				after = all_blocks[after_start:after_end]
 				return (before, target, after)
-		except:
+		except Exception:
 			pass
 		return None
 
@@ -17853,7 +17675,7 @@ class MnNTHeap(MnHeap):
 							break
 						results.append((chunk, idx))
 						pos = idx + 1
-			except:
+			except Exception:
 				pass
 		return results
 
@@ -17871,96 +17693,13 @@ class MnNTHeap(MnHeap):
 		return self._lfh_ranges
 
 	def _walkLFHSubSegmentRanges(self):
-		"""Walk LFH subsegments using self as the heap. Returns sorted [(start, end)]."""
-		ptrsize = archValue(4, 8)
-		ai      = 1 if arch == 64 else 0
-		ranges  = []
-
+		"""Sorted [(start, end)] UserBlocks ranges for every LFH subsegment."""
 		if not self.usesLFH():
 			return []
-		lfh_addr = self.getLFHAddress()
-		if lfh_addr == 0:
+		fe = self.getFrontEndAllocator()
+		if fe is None or fe.address == 0:
 			return []
-
-		if isinstance(self, (MnNT10Heap, MnNT11Heap)):
-			lfh_cls = MnNT10LFH
-			ss_blocksize_off  = (0x014, 0x024)
-			ss_blockcount_off = (0x018, 0x028)
-			use_ptr_array = True
-			n_buckets = 129
-		elif isinstance(self, MnNT8Heap):
-			lfh_cls = MnNT8LFH
-			ss_blocksize_off  = (0x014, 0x024)
-			ss_blockcount_off = (0x018, 0x028)
-			use_ptr_array = True
-			n_buckets = 129
-		else:
-			# Vista vs Win7 differ only in _LFH_HEAP.LocalData offset; pick the
-			# build-correct class so this legacy walk reads LocalData from the
-			# same place as the FrontEndAllocator path.
-			lfh_cls = self._getLFHClass() if hasattr(self, "_getLFHClass") else MnNTVistaLFH
-			ss_blocksize_off  = (0x010, 0x018)
-			ss_blockcount_off = (0x014, 0x01c)
-			use_ptr_array = False
-			n_buckets = 128
-
-		ss_userblocks_off = (0x004, 0x008)
-		seen_ss = set()
-
-		def _add_subsegment(ssptr):
-			if ssptr == 0 or ssptr in seen_ss:
-				return
-			seen_ss.add(ssptr)
-			try:
-				ub = readPtrSizeBytes(ssptr + ss_userblocks_off[ai])
-				if ub == 0:
-					return
-				bs = struct.unpack('<H', dbg.readMemory(ssptr + ss_blocksize_off[ai], 2))[0]
-				bc = struct.unpack('<H', dbg.readMemory(ssptr + ss_blockcount_off[ai], 2))[0]
-				if bs == 0 or bc == 0:
-					return
-				ranges.append((ub, ub + bs * bc * HEAPGRANULARITY))
-			except:
-				pass
-
-		lsi_hint_off   = lfh_cls._lsi_offsets["Hint"]
-		lsi_active_off = lfh_cls._lsi_offsets["ActiveSubsegment"]
-		lsi_cached_off = lfh_cls._lsi_offsets["CachedItems"]
-		n_cached       = lfh_cls.CACHED_ITEMS_COUNT
-
-		def _walk_lsi(lsi_addr):
-			# Hint first: some buckets carry their only committed subsegment there.
-			_add_subsegment(readPtrSizeBytes(lsi_addr + lsi_hint_off[ai]))
-			_add_subsegment(readPtrSizeBytes(lsi_addr + lsi_active_off[ai]))
-			cached_base = lsi_addr + lsi_cached_off[ai]
-			for j in range(n_cached):
-				_add_subsegment(readPtrSizeBytes(cached_base + j * ptrsize))
-
-		if use_ptr_array:
-			sia_base = lfh_addr + lfh_cls._offsets["SegmentInfoArrays"][ai]
-			for i in range(n_buckets):
-				try:
-					lsi_ptr = readPtrSizeBytes(sia_base + i * ptrsize)
-				except:
-					continue
-				if lsi_ptr == 0:
-					continue
-				try:
-					_walk_lsi(lsi_ptr)
-				except:
-					pass
-		else:
-			seg_info_base = lfh_addr + lfh_cls._offsets["LocalData"][ai] \
-			                + lfh_cls._localdata_offsets["SegmentInfo"][ai]
-			stride        = lfh_cls.LSI_STRIDE[ai]
-			for i in range(n_buckets):
-				try:
-					_walk_lsi(seg_info_base + i * stride)
-				except:
-					pass
-
-		ranges.sort()
-		return ranges
+		return sorted(fe.getRanges())
 
 	def getSegmentByAddress(self, addr):
 		"""Return (segaddr, seginfo) for the NT heap segment whose range contains *addr*, or None.
@@ -18018,6 +17757,9 @@ class MnNTHeap(MnHeap):
 		Return: dict keyed by VA block address, each value is a dict:
 		  - "commit_size"  : int
 		  - "reserve_size" : int
+		  - "slack"        : int or None  (BusyBlock _HEAP_ENTRY.Size = aligned-requested, key-free decoded)
+		  - "extra_*"      : the _HEAP_ENTRY_EXTRA (ExtraStuff) fields --
+		                     "extra_alloc_bt_index", "extra_tag_index", "extra_settable"
 		"""
 		if len(self.VirtualAllocdBlocks) > 0:
 			mndbg.dbgp("getVirtualAllocdBlocks: return %d blocks from cache" % len(self.VirtualAllocdBlocks))
@@ -18030,11 +17772,16 @@ class MnNTHeap(MnHeap):
 		try:
 			head = MnListEntry(listhead)
 			for entry in head.walk():
-				vab = MnVirtualAllocdBlocks(entry)
-				mndbg.dbgp("getVirtualAllocdBlocks: entry=0x%x commit=0x%x reserve=0x%x" % (entry, vab.CommitSize, vab.ReserveSize))
+				vadblock = MnVirtualAllocdBlock(entry, heapbase=self.heapbase)
+				mndbg.dbgp("getVirtualAllocdBlocks: entry=0x%x commit=0x%x reserve=0x%x" % (entry, vadblock.CommitSize, vadblock.ReserveSize))
+				extra = vadblock.ExtraStuff
 				self.VirtualAllocdBlocks[entry] = {
-					"commit_size":  vab.CommitSize,
-					"reserve_size": vab.ReserveSize,
+					"commit_size":          vadblock.CommitSize,
+					"reserve_size":         vadblock.ReserveSize,
+					"slack":                vadblock.getChunk().va_slack,
+					"extra_alloc_bt_index": extra.AllocatorBackTraceIndex,
+					"extra_tag_index":      extra.TagIndex,
+					"extra_settable":       extra.Settable,
 				}
 		except Exception as e:
 			mndbg.dbgp("getVirtualAllocdBlocks: exception: %s" % str(e))
@@ -18064,30 +17811,13 @@ class MnNTHeap(MnHeap):
 		"""
 		return readPtrSizeBytes(self.heapbase+self._offset("FrontEndHeap"))
 
-	def getState(self):
-		"""Enumerate all segments and chunks in this NT heap.
-
-		Return: dict keyed by segment address, each value is a list
-		        of data blocks returned by walkSegment()
-		"""
-		statedata = {}
-		segments = self.getHeapSegmentList()
-		for seg in segments:
-			FirstEntry = segments[seg]["firstentry"]
-			LastValidEntry = segments[seg]["lastentry"]
-			datablocks = walkSegment(FirstEntry,LastValidEntry,self.heapbase)
-			statedata[seg] = datablocks
-		return statedata
-
 
 class MnNTVistaHeap(MnNTHeap):
 	"""
 	NT Heap implementation for Windows Vista / 7.
 	"""
 
-	_chunk_entry_class = MnNTVistaChunkEntry
  
- 	# _HEAP field offsets: (offset_x86, offset_x64)
 	_offsets = {
 		"Entry":                              (0x000, 0x000),
 		"SegmentSignature":                   (0x008, 0x010),
@@ -18149,33 +17879,21 @@ class MnNTVistaHeap(MnNTHeap):
 		self.heap_version = HeapVersion.VISTA
 
 	def _getLFHClass(self):
-		"""Return the version-correct _LFH_HEAP class (Vista vs Win7), cached.
-
-		Win7's _LFH_HEAP inserts SizeInCache at +0x040, shifting LocalData to
-		+0x310/+0x3f0 (vs Vista's +0x300/+0x3e0). Picked structurally not by OS
-		build: _HEAP_LOCAL_DATA.LowFragHeap back-points to the LFH base, so the
-		candidate whose LocalData offset yields that match wins.
-		"""
+		"""Return the version-correct _LFH_HEAP class (Vista vs Win7), cached."""
 		if getattr(self, "_lfh_class_cached", None) is not None:
 			return self._lfh_class_cached
 
-		ai = MnPEB.getArch()
 		lfh_addr = self.getLFHAddress()
-		lowfrag_off = archValue(0x00c, 0x018)   # _HEAP_LOCAL_DATA.LowFragHeap
 		cls = None
 		if lfh_addr:
 			for candidate in (MnNT7LFH, MnNTVistaLFH):
-				ld_off = candidate._offsets["LocalData"][ai]
-				try:
-					backptr = readPtrSizeBytes(lfh_addr + ld_off + lowfrag_off)
-				except Exception:
-					backptr = 0
+				ld_addr = candidate.fieldAt(lfh_addr, "LocalData")
+				backptr = candidate._localdata_class.lowFragHeapAt(ld_addr)
 				if backptr == lfh_addr:
 					cls = candidate
 					break
 
 		if cls is None:
-			# Probe inconclusive (unreadable memory) -- fall back to OS build.
 			_parseOsVersion()
 			build = g_os_version["build"] if g_os_version else 0
 			cls = MnNT7LFH if build >= 7600 else MnNTVistaLFH
@@ -18184,21 +17902,13 @@ class MnNTVistaHeap(MnNTHeap):
 		return cls
 
 	def getFrontEndAllocator(self):
-		"""Return the FrontEndAllocator, selecting Vista vs Win7 LFH via _getLFHClass()."""
+		"""Return the front-end LFH allocator, selecting Vista vs Win7 LFH via _getLFHClass()."""
 		if not hasattr(self, '_frontend') or self._frontend is None:
-			if self._getLFHClass() is MnNT7LFH:
-				self._frontend = MnNT7FrontEndAllocator(self)
-			else:
-				self._frontend = MnNTVistaFrontEndAllocator(self)
+			self._frontend = self._getLFHClass()(self)
 		return self._frontend
 
 	def getChunkHeaderDataOffset(self):
 		"""Return byte offset from chunk pointer to the compact _HEAP_ENTRY header.
-
-		On x86 the 8-byte _HEAP_ENTRY starts directly at the chunk pointer (offset 0).
-		On x64 (Vista native) the 16-byte _HEAP_ENTRY has PreviousBlockPrivateData
-		(8 bytes) at chunk_ptr+0; the compact header begins at chunk_ptr+8.
-
 		Return: int (0 for x86, 8 for x64).
 		"""
 		return archValue(0, 8)
@@ -18217,7 +17927,7 @@ class MnNTVistaHeap(MnNTHeap):
 		encoding_raw = None
 		try:
 			encoding_raw = dbg.readMemory(self.heapbase + encoding_offset, encoding_size)
-		except:
+		except Exception:
 			pass
 		return {
 			"encode_enabled": (self.EncodeFlagMask != 0),
@@ -18239,37 +17949,33 @@ class MnNTVistaHeap(MnNTHeap):
 		return self.Encoding
 
 	def getHeapChunkHeaderAtAddress(self,thischunk,headersize=8,type="chunk"):
-		"""Decode a heap chunk header (Win7+ format, with encoding).
+		"""Decode an encoded _HEAP_ENTRY at *thischunk* into an MnChunk (Vista/7+ format).
 
 		Arguments:
 			thischunk  - int, address of the chunk header
 			headersize - int, size of the header in bytes (default 8)
 			type       - str, one of "chunk", "lal", or "freelist"
 
-		Return: MnChunk object, or None if type is not recognized
+		The compact-header field offsets are owned by MnChunk (MnChunk.parseHeapEntry), not
+		duplicated here. For "lal"/"freelist" the embedded _LIST_ENTRY (Flink, and Blink for
+		freelist) follows the header, read plain (unencoded).
+
+		Return: MnChunk, or None for an unrecognized type.
 		"""
-		key = self.getEncodingKey()
-		fullheaderbin = ""
-		if type == "chunk" or type == "lal" or type == "freelist":
-			chunktype = "chunk"
-			fullheaderbin = decodeHeapHeader(thischunk,headersize,key)
-			if len(fullheaderbin) == headersize:
-				thissize = struct.unpack('<H',fullheaderbin[0:2])[0]
-				flag = struct.unpack('<B',fullheaderbin[2:3])[0]
-				tag = struct.unpack('<B',fullheaderbin[3:4])[0]
-				prevsize = struct.unpack('<H',fullheaderbin[4:6])[0]
-				segmentid = struct.unpack('<B',fullheaderbin[6:7])[0]
-				unused = struct.unpack('<B',fullheaderbin[7:8])[0]
-				flink = 0
-				blink = 0
-				if type == "lal" or type == "freelist":
-					flink = struct.unpack('<L',dbg.readMemory(thischunk+headersize,4))[0]
-				if type == "freelist":
-					blink = struct.unpack('<L',dbg.readMemory(thischunk+headersize+4,4))[0]
-				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,thissize,prevsize,segmentid,flag,unused,tag,flink,blink)
-			else:
-				return MnChunk(thischunk,chunktype,headersize,self.heapbase,0,0,0,0,0,0,0,0,0)
-		return None
+		if type not in ("chunk", "lal", "freelist"):
+			return None
+		fullheaderbin = decodeHeapHeader(thischunk, headersize, self.getEncodingKey())
+		if len(fullheaderbin) != headersize:
+			return MnChunk(thischunk,"chunk",headersize,self.heapbase,0,0,0,0,0,0,0,0,0)
+		hdr = MnChunk.parseHeapEntry(fullheaderbin)
+		flink = blink = 0
+		if type in ("lal", "freelist"):
+			flink = struct.unpack('<L', dbg.readMemory(thischunk+headersize, 4))[0]
+		if type == "freelist":
+			blink = struct.unpack('<L', dbg.readMemory(thischunk+headersize+4, 4))[0]
+		return MnChunk(thischunk,"chunk",headersize,self.heapbase,0,
+		               hdr["Size"],hdr["PreviousSize"],hdr["SegmentOffset"],
+		               hdr["Flags"],hdr["UnusedBytes"],hdr["SmallTagIndex"],flink,blink)
 
 	def iterSegments(self):
 		"""Walk _HEAP.SegmentList forward and yield one MnNTVistaSegment per entry.
@@ -18279,7 +17985,7 @@ class MnNTVistaHeap(MnNTHeap):
 
 		Yields: MnNTVistaSegment
 		"""
-		sle_offset = MnNTVistaSegment._offsets["SegmentListEntry"][MnPEB.getArch()]
+		sle_offset = MnNTVistaSegment.segmentListEntryOffset()
 		key        = self.getEncodingKey()
 		for entry in MnListEntry(self.heapbase + self._offset("SegmentList")).walk():
 			yield MnNTVistaSegment(entry - sle_offset, encoding_key=key)
@@ -18292,12 +17998,12 @@ class MnNTVistaHeap(MnNTHeap):
 		if len(self.SegmentList) > 0:
 			return self.SegmentList
 
-		sle_offset = MnNTVistaSegment._offsets["SegmentListEntry"][MnPEB.getArch()]
+		sle_offset = MnNTVistaSegment.segmentListEntryOffset()
 		try:
 			for entry in MnListEntry(self.heapbase + self._offset("SegmentList")).walk():
 				segaddr = entry - sle_offset
 				self.SegmentList[segaddr] = MnNTVistaSegment(segaddr)
-		except:
+		except Exception:
 			pass
 
 		return self.SegmentList
@@ -18308,7 +18014,7 @@ class MnNTVistaHeap(MnNTHeap):
 		Each entry's SegmentSignature is validated; on mismatch the entry is marked
 		corrupted and the walk stops (subsequent Flink values are untrustworthy).
 		"""
-		sle_offset = MnNTVistaSegment._offsets["SegmentListEntry"][MnPEB.getArch()]
+		sle_offset = MnNTVistaSegment.segmentListEntryOffset()
 		seglist    = MnListEntry(self.heapbase + self._offset("SegmentList"))
 		result = []
 		for seg_obj in self.getSegments():
@@ -18330,26 +18036,18 @@ class MnNTVistaHeap(MnNTHeap):
 		return result
 
 	def usesLFH(self):
-		"""Check if this NT heap has LFH enabled.
+		"""Check if this NT heap has the LFH front end active.
 
-		Return: bool, True if FrontEndHeapType == 0x2 or FrontEndHeap pointer is non-zero
+		Return: bool, True iff FrontEndHeapType == 0x2 (LFH).
 		"""
-		frontendheap = self.getFrontEndHeap()
 		frontendheaptype = self.getFrontEndHeapType()
-		mndbg.dbgp("usesLFH: heap=0x%x  FrontEndHeap=0x%x (off=0x%x)  FrontEndHeapType=0x%x (off=0x%x)  class=%s" % (
-			self.heapbase,
-			frontendheap, self._offset("FrontEndHeap"),
-			frontendheaptype, self._offset("FrontEndHeapType"),
-			type(self).__name__,
+		mndbg.dbgp("usesLFH: heap=0x%x  FrontEndHeapType=0x%x (off=0x%x)  class=%s" % (
+			self.heapbase, frontendheaptype, self._offset("FrontEndHeapType"), type(self).__name__,
 		))
-		return frontendheaptype == 0x2 or frontendheap != 0
+		return frontendheaptype == 0x2
 
 	def getFrontEndHeapUsageData(self):
 		"""Read the FrontEndHeapUsageData array (Vista/Win7).
-
-		This array contains per-bucket activation counters that track
-		how many allocations of each size class have been made.  When a
-		counter exceeds a threshold the LFH is activated for that bucket.
 
 		Return: list of 128 int counters, or empty list on failure.
 		"""
@@ -18360,7 +18058,7 @@ class MnNTVistaHeap(MnNTHeap):
 			for i in range(128):
 				val = struct.unpack('<H', data[i*2:(i+1)*2])[0]
 				counters.append(val)
-		except:
+		except Exception:
 			pass
 		return counters
 
@@ -18368,52 +18066,8 @@ class MnNTVistaHeap(MnNTHeap):
 class MnNT8Heap(MnNTVistaHeap):
 	"""
 	NT Heap implementation for Windows 8 / 8.1.
-
-	Inherits Win7 behaviour (XOR encoding, SegmentList, LFH).
-	Offset differences are captured in _offsets relative to MnNTVistaHeap.
-
-	_HEAP (Windows 8 x86 selected fields)
-	+0x000 Entry            : _HEAP_ENTRY
-	+0x008 SegmentSignature : Uint4B
-	+0x00c SegmentFlags     : Uint4B
-	+0x010 SegmentListEntry : _LIST_ENTRY
-	+0x018 Heap             : Ptr32 _HEAP
-	+0x01c BaseAddress      : Ptr32 Void
-	+0x020 NumberOfPages    : Uint4B
-	+0x024 FirstEntry       : Ptr32 _HEAP_ENTRY
-	+0x028 LastValidEntry   : Ptr32 _HEAP_ENTRY
-	+0x040 Flags            : Uint4B
-	+0x044 ForceFlags       : Uint4B
-	+0x048 CompatibilityFlags : Uint4B
-	+0x04c EncodeFlagMask   : Uint4B
-	+0x050 Encoding         : _HEAP_ENTRY
-	+0x060 Signature        : Uint4B
-	+0x09c VirtualAllocdBlocks : _LIST_ENTRY
-	+0x0a4 SegmentList      : _LIST_ENTRY
-	+0x0c8 FreeLists        : _LIST_ENTRY
-	+0x0d0 FrontEndHeap     : Ptr32 Void
-	+0x0d6 FrontEndHeapType : UChar
-
-	_HEAP (Windows 8 x64 selected fields)
-	+0x000 Entry            : _HEAP_ENTRY (16 bytes: +0 PreviousBlockPrivateData, +8 compact header)
-	+0x010 SegmentSignature : Uint4B
-	+0x018 SegmentListEntry : _LIST_ENTRY
-	+0x028 Heap             : Ptr64 _HEAP
-	+0x030 BaseAddress      : Ptr64 Void
-	+0x038 NumberOfPages    : Uint4B
-	+0x040 FirstEntry       : Ptr64 _HEAP_ENTRY
-	+0x048 LastValidEntry   : Ptr64 _HEAP_ENTRY
-	+0x07c EncodeFlagMask   : Uint4B
-	+0x080 Encoding         : _HEAP_ENTRY  (+0x088 = key bytes after PreviousBlockPrivateData)
-	+0x098 Signature        : Uint4B
-	+0x110 VirtualAllocdBlocks : _LIST_ENTRY
-	+0x120 SegmentList      : _LIST_ENTRY
-	+0x150 FreeLists        : _LIST_ENTRY
-	+0x170 FrontEndHeap     : Ptr64 Void
-	+0x17a FrontEndHeapType : UChar
 	"""
 
-	_chunk_entry_class = MnNT8ChunkEntry
 
 	_offsets = {
 		"Entry":                              (0x000, 0x000),
@@ -18480,19 +18134,11 @@ class MnNT8Heap(MnNTVistaHeap):
 
 	def getFrontEndAllocator(self):
 		if not hasattr(self, '_frontend') or self._frontend is None:
-			self._frontend = MnNT8FrontEndAllocator(self)
+			self._frontend = MnNT8LFH(self)
 		return self._frontend
 
 	def getEncodingKey(self):
 		"""Retrieve the Encoding key from the Win8+ NT heap header.
-
-		On Win8+ x64, _HEAP_ENTRY is 16 bytes.  The Encoding field
-		(at heapbase+0x080 on x64) is itself a _HEAP_ENTRY, so its
-		first 8 bytes are PreviousBlockPrivateData (not the key).
-		The actual 8-byte XOR key starts at heapbase+0x088.
-
-		On x86 the layout is unchanged from Win7 (8-byte _HEAP_ENTRY,
-		no PreviousBlockPrivateData prefix).
 
 		Return: int, 8-byte XOR key (0 when encoding is disabled).
 		"""
@@ -18500,23 +18146,12 @@ class MnNT8Heap(MnNTVistaHeap):
 		offset = archValue(0x4c, 0x7c)
 		self.EncodeFlagMask = struct.unpack('<L', dbg.readMemory(self.heapbase + offset, 4))[0]
 		if self.EncodeFlagMask == 0x100000:
-			# x86: Encoding _HEAP_ENTRY starts at +0x050 (8 bytes, no prefix)
-			# x64: Encoding _HEAP_ENTRY starts at +0x080 but first 8 bytes are
-			#      PreviousBlockPrivateData; key bytes begin at +0x088.
 			encoding_offset = archValue(0x50, 0x88)
 			self.Encoding = struct.unpack('<Q', dbg.readMemory(self.heapbase + encoding_offset, 8))[0]
 		return self.Encoding
 
 	def getChunkHeaderDataOffset(self):
 		"""Return the byte offset to the encoded compact header within a _HEAP_ENTRY.
-
-		On Win8+ x64 each _HEAP_ENTRY is 16 bytes: the first 8 bytes are
-		PreviousBlockPrivateData (stored in plain-text, not XOR-encoded).
-		The encoded compact header (Size, Flags, SmallTagIndex, PreviousSize,
-		SegmentOffset, UnusedBytes) begins at byte 8.
-
-		On x86 (all versions) and Win7 x64 _HEAP_ENTRY is 8 bytes with no
-		unencoded prefix, so the offset is 0.
 
 		Return: int (0 for x86, 8 for x64).
 		"""
@@ -18530,12 +18165,12 @@ class MnNT8Heap(MnNTVistaHeap):
 		if len(self.SegmentList) > 0:
 			return self.SegmentList
 
-		sle_offset = MnNTVistaSegment._offsets["SegmentListEntry"][MnPEB.getArch()]
+		sle_offset = MnNTVistaSegment.segmentListEntryOffset()
 		try:
 			for entry in MnListEntry(self.heapbase + self._offset("SegmentList")).walk():
 				segaddr = entry - sle_offset
 				self.SegmentList[segaddr] = MnNTVistaSegment(segaddr)
-		except:
+		except Exception:
 			pass
 
 		return self.SegmentList
@@ -18544,39 +18179,8 @@ class MnNT8Heap(MnNTVistaHeap):
 class MnNT10Heap(MnNT8Heap):
 	"""
 	NT Heap implementation for Windows 10.
-
-	Most fields are identical to Win8.  FrontEndHeap and FrontEndHeapType
-	shifted at build 17763 (RS5); FrontEndHeapUsageData also moved.
-	All other offsets are the same as Win8.
-
-	_HEAP (Windows 10 x86 selected fields, build >= 17763)
-	+0x000 Entry            : _HEAP_ENTRY
-	+0x008 SegmentSignature : Uint4B
-	+0x00c SegmentFlags     : Uint4B
-	+0x010 SegmentListEntry : _LIST_ENTRY
-	+0x018 Heap             : Ptr32 _HEAP
-	+0x01c BaseAddress      : Ptr32 Void
-	+0x020 NumberOfPages    : Uint4B
-	+0x024 FirstEntry       : Ptr32 _HEAP_ENTRY
-	+0x028 LastValidEntry   : Ptr32 _HEAP_ENTRY
-	+0x040 Flags            : Uint4B
-	+0x044 ForceFlags       : Uint4B
-	+0x048 CompatibilityFlags : Uint4B
-	+0x04c EncodeFlagMask   : Uint4B
-	+0x050 Encoding         : _HEAP_ENTRY
-	+0x060 Signature        : Uint4B
-	+0x09c VirtualAllocdBlocks : _LIST_ENTRY
-	+0x0a4 SegmentList      : _LIST_ENTRY
-	+0x0c0 FreeLists        : _LIST_ENTRY
-	+0x0d4 FrontEndHeap     : Ptr32 Void  (build < 17763)
-	+0x0e4 FrontEndHeap     : Ptr32 Void  (build >= 17763)
-	+0x0da FrontEndHeapType : UChar       (build < 17763)
-	+0x0ea FrontEndHeapType : UChar       (build >= 17763)
-	+0x0d8 FrontEndHeapUsageData : Ptr32  (build < 17763)
-	+0x0ec FrontEndHeapUsageData : Ptr32  (build >= 17763)
 	"""
 
-	_chunk_entry_class = MnNT8ChunkEntry
 
 	_offsets = {
 		"Entry":                              (0x000, 0x000),
@@ -18628,17 +18232,13 @@ class MnNT10Heap(MnNT8Heap):
 		"CommitRoutine":                      (0x0cc, 0x168),
 		"StackTraceInitVar":                  (0x0d0, 0x170),
 		"CommitLimitData":                    (0x0d4, 0x178),
-		# FrontEndHeap, FrontEndHeapType, FrontEndHeapUsageData are build-sensitive
-		# and resolved by _offset() below.
 		"Counters":                           (0x1f4, 0x238),
 		"TuningParameters":                   (0x250, 0x2b0),
 	}
 
-	# Build-sensitive field offsets: {field: {build_threshold: (x86, x64)}}
-	# Below the threshold use the lower value; at/above use the higher.
 	_BUILD_OFFSETS = {
-		"FrontEndHeap":         {17763: ((0x0d4, 0x178), (0x0e4, 0x198))},
-		"FrontEndHeapType":     {17763: ((0x0da, 0x182), (0x0ea, 0x1a2))},
+		"FrontEndHeap":         {17763: ((0x0d0, 0x170), (0x0e4, 0x198))},
+		"FrontEndHeapType":     {17763: ((0x0d6, 0x17a), (0x0ea, 0x1a2))},
 		"FrontEndHeapUsageData":{17763: ((0x0d8, 0x180), (0x0ec, 0x1a8))},
 	}
 
@@ -18657,7 +18257,7 @@ class MnNT10Heap(MnNT8Heap):
 
 	def getFrontEndAllocator(self):
 		if not hasattr(self, '_frontend') or self._frontend is None:
-			self._frontend = MnNT10FrontEndAllocator(self)
+			self._frontend = MnNT10LFH(self)
 		return self._frontend
 
 
@@ -18669,7 +18269,6 @@ class MnNT11Heap(MnNT10Heap):
 	Windows 10 across current Windows 11 releases.
 	"""
 
-	_chunk_entry_class = MnNT8ChunkEntry
 
 	def __init__(self, address, walk_level=WalkLevel.HEAP):
 		super(MnNT11Heap, self).__init__(address, walk_level)
@@ -18690,63 +18289,93 @@ class MnSegmentHeap(MnHeap):
 		return "Segment"
 
 
-class MnVirtualAllocdBlocks:
-	"""
-	Represents a single _HEAP_VIRTUAL_ALLOC_ENTRY node from the NT heap
-	VirtualAllocdBlocks doubly-linked list.
+class MnVirtualAllocdBlockExtraStuff(object):
+	"""Models the _HEAP_ENTRY_EXTRA embedded as the ExtraStuff member of a
+	_HEAP_VIRTUAL_ALLOC_ENTRY (see MnVirtualAllocdBlock)."""
 
-	Present in all NT heap versions (XP through Win11).  The PDB symbol
-	_HEAP_VIRTUAL_ALLOC_ENTRY is absent in XP/Vista/7 ntdll but the layout
-	is functionally identical — confirmed from Win8+ PDB dumps in
-	logs/8/32, logs/8/64, logs/10/32, logs/10/64.
-
-	_HEAP_VIRTUAL_ALLOC_ENTRY (x86)
-	+0x000 Entry       : _LIST_ENTRY  (Flink@+0, Blink@+4)
-	+0x008 ExtraStuff  : _HEAP_ENTRY_EXTRA
-	+0x010 CommitSize  : Uint4B
-	+0x014 ReserveSize : Uint4B
-	+0x018 BusyBlock   : _HEAP_ENTRY
-
-	_HEAP_VIRTUAL_ALLOC_ENTRY (x64)
-	+0x000 Entry       : _LIST_ENTRY  (Flink@+0, Blink@+8)
-	+0x010 ExtraStuff  : _HEAP_ENTRY_EXTRA
-	+0x020 CommitSize  : Uint8B
-	+0x028 ReserveSize : Uint8B
-	+0x030 BusyBlock   : _HEAP_ENTRY
-	"""
-
-	# Field offsets: (x86, x64)
 	_offsets = {
-		"Entry":       (0x000, 0x000),  # LIST_ENTRY (Flink = start of node)
-		"ExtraStuff":  (0x008, 0x010),  # _HEAP_ENTRY_EXTRA
-		"CommitSize":  (0x010, 0x020),  # Uint4B (x86) / Uint8B (x64)
-		"ReserveSize": (0x014, 0x028),  # Uint4B (x86) / Uint8B (x64)
-		"BusyBlock":   (0x018, 0x030),  # _HEAP_ENTRY
+		"AllocatorBackTraceIndex": (0x000, 0x000),
+		"TagIndex":                (0x002, 0x002),
+		"Settable":                (0x004, 0x008),
 	}
 
-	def __init__(self, entry_addr):
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_ENTRY_EXTRA field offset for *name*."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, extra_addr):
+		self.address = extra_addr
+		self.corrupted = False
+		self.corruption_reason = ""
+		try:
+			self.AllocatorBackTraceIndex = struct.unpack('<H', dbg.readMemory(extra_addr + self._offset("AllocatorBackTraceIndex"), 2))[0]
+			self.TagIndex                = struct.unpack('<H', dbg.readMemory(extra_addr + self._offset("TagIndex"), 2))[0]
+			self.Settable                = struct.unpack(archValue('<L', '<Q'), dbg.readMemory(extra_addr + self._offset("Settable"), archValue(4, 8)))[0]
+		except Exception as e:
+			self.corrupted = True
+			self.corruption_reason = "Failed to read _HEAP_ENTRY_EXTRA at 0x%x: %s" % (extra_addr, str(e))
+			self.AllocatorBackTraceIndex = 0
+			self.TagIndex = 0
+			self.Settable = 0
+
+	def isValid(self):
+		"""False when the struct could not be read (mirrors MnNTUserBlockBase.isValid)."""
+		return not self.corrupted
+
+
+class MnVirtualAllocdBlock(object):
+	"""
+	Represents a single _HEAP_VIRTUAL_ALLOC_ENTRY node from the NT heap
+	VirtualAllocdBlocks doubly-linked list."""
+
+	_offsets = {
+		"Entry":       (0x000, 0x000),
+		"ExtraStuff":  (0x008, 0x010),
+		"CommitSize":  (0x010, 0x020),
+		"ReserveSize": (0x014, 0x028),
+		"BusyBlock":   (0x018, 0x030),
+	}
+
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_VIRTUAL_ALLOC_ENTRY field offset."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, entry_addr, heapbase=0):
 		self.address = entry_addr
-		self.CommitSize  = readPtrSizeBytes(entry_addr + self._offsets["CommitSize"][MnPEB.getArch()])
-		self.ReserveSize = readPtrSizeBytes(entry_addr + self._offsets["ReserveSize"][MnPEB.getArch()])
-		self.BusyBlock   = entry_addr + self._offsets["BusyBlock"][MnPEB.getArch()]
+		self.heapbase = heapbase
+		self.CommitSize  = readPtrSizeBytes(entry_addr + self._offset("CommitSize"))
+		self.ReserveSize = readPtrSizeBytes(entry_addr + self._offset("ReserveSize"))
+		self.BusyBlockAddr = entry_addr + self._offset("BusyBlock")
+		self._extra_stuff = None
+		self._busy_block = None
+
+	@property
+	def ExtraStuff(self):
+		"""The embedded _HEAP_ENTRY_EXTRA, as a MnVirtualAllocdBlockExtraStuff (built on first access)."""
+		if self._extra_stuff is None:
+			self._extra_stuff = MnVirtualAllocdBlockExtraStuff(self.address + self._offset("ExtraStuff"))
+		return self._extra_stuff
+
+	@property
+	def BusyBlock(self):
+		"""The trailing _HEAP_ENTRY wrapped as an MnChunk(parent=VADBLOCK), built on first access."""
+		if self._busy_block is None:
+			hdr = archValue(8, 0x10)
+			size_units = (self.CommitSize // HEAPGRANULARITY) if self.CommitSize else 0
+			chunk = MnChunk(self.BusyBlockAddr, "chunk", hdr, self.heapbase, 0,
+			                size_units, 0, 0, 0x01, 0, 0)
+			chunk.parent = ChunkParent.VADBLOCK
+			chunk.parent_ref = self
+			self._busy_block = chunk
+		return self._busy_block
+
+	def getChunk(self):
+		"""The MnChunk(parent=VADBLOCK) wrapping this VA block's BusyBlock _HEAP_ENTRY."""
+		return self.BusyBlock
 
 
 class MnUCRDescriptor:
-	"""Represents a _HEAP_UCR_DESCRIPTOR — an uncommitted range within a heap segment.
-
-	The descriptor body layout (Vista through Win11, unchanged):
-	  x86: +0x000 ListEntry (8b), +0x008 SegmentEntry (8b), +0x010 Address, +0x014 Size
-	  x64: +0x000 ListEntry (16b), +0x010 SegmentEntry (16b), +0x020 Address, +0x028 Size
-
-	The body is preceded by a _HEAP_ENTRY header (8 bytes x86 / 16 bytes x64) with
-	Flags=BUSY(1) and UnusedBytes=3 (internal sentinel, not a user allocation).
-
-	All offsets are measured from the descriptor body base (= ListEntry address).
-
-	Two factory methods reflect the two list memberships of the same physical descriptor:
-	  fromSegmentEntry — built from a UCRSegmentList walker entry (-> SegmentEntry field)
-	  fromListEntry    — built from a UCRList walker entry       (-> ListEntry field)
-	"""
+	"""Represents a _HEAP_UCR_DESCRIPTOR — an uncommitted range within a heap segment."""
 
 	_offsets = {
 		"ListEntry":    (0x000, 0x000),
@@ -18761,11 +18390,7 @@ class MnUCRDescriptor:
 
 	@classmethod
 	def fromListEntry(cls, entry_ptr):
-		"""Construct from a ListEntry pointer (UCRList walker).
-
-		The UCRList walker lands directly on ListEntry, which is the descriptor
-		body base, so offsets apply without adjustment.
-		"""
+		"""Construct from a ListEntry pointer (UCRList walker)."""
 		ai = MnPEB.getArch()
 		return cls(
 			readPtrSizeBytes(entry_ptr + cls._offsets["Address"][ai]),
@@ -18774,11 +18399,7 @@ class MnUCRDescriptor:
 
 	@classmethod
 	def fromSegmentEntry(cls, entry_ptr):
-		"""Construct from a SegmentEntry pointer (UCRSegmentList walker).
-
-		The UCRSegmentList walker lands on SegmentEntry, so subtract its offset
-		to recover the descriptor body base before reading Address and Size.
-		"""
+		"""Construct from a SegmentEntry pointer (UCRSegmentList walker)."""
 		ai   = MnPEB.getArch()
 		body = entry_ptr - cls._offsets["SegmentEntry"][ai]
 		return cls(
@@ -18807,32 +18428,15 @@ class MnUCRDescriptor:
 
 
 class MnNTSegmentBase:
-	"""Base for MnNTVistaSegment and derived segment classes.
-
-	Subclasses must set before calling _walk():
-	  self._encoding_key  : int   — XOR key (0 on XP)
-	  self.Heap           : int   — parent _HEAP base address
-	  self.BaseAddress    : int   — segment BaseAddress
-	  self.FirstEntry     : int
-	  self.LastValidEntry : int
-	"""
+	"""Base for MnNTVistaSegment and derived segment classes."""
 
 	def _last_committed_entry(self):
 		"""Return the address where committed chunk data ends in this segment.
-
-		Default: LastValidEntry (includes any uncommitted tail — safe as a
-		walk bound only when the walker can detect end-of-committed via the
-		chunk header 'last' flag or a read exception).  Subclasses may
-		override to return a tighter bound derived from UCR metadata.
 		"""
 		return self.LastValidEntry
 
 	def _walk(self):
-		"""Yield MnChunk instances by walking this segment's entries sequentially.
-
-		Uses self._encoding_key and the architecture-derived header offset to
-		decode each _HEAP_ENTRY.  Does not need the parent MnHeap object.
-		"""
+		"""Yield MnChunk instances by walking this segment's entries sequentially."""
 		mndbg.dbgp(get_current_function_name())
 		key     = self._encoding_key
 		hdr_off = archValue(0, 8)
@@ -18851,22 +18455,10 @@ class MnNTSegmentBase:
 			(self.LastValidEntry - self.FirstEntry) if self.LastValidEntry >= self.FirstEntry else 0, hdr_off, key))
 		consecutive_failures = 0
 		while current < last:
-			size = segid = flag = unused = tag = 0
+			# prevsize is the PREVIOUS chunk's size (running), not the header field; capture before decode.
+			prevsize = saved_prevsize
 			try:
-				if key == 0 and not g_win7_mode:
-					raw    = dbg.readMemory(current + hdr_off, 8)
-					size   = struct.unpack('<H', raw[0:2])[0]
-					segid  = struct.unpack('<B', raw[4:5])[0]
-					flag   = struct.unpack('<B', raw[5:6])[0]
-					unused = struct.unpack('<B', raw[6:7])[0]
-					tag    = struct.unpack('<B', raw[7:8])[0]
-				else:
-					raw    = decodeHeapHeader(current + hdr_off, 8, key)
-					size   = struct.unpack('<H', raw[0:2])[0]
-					flag   = struct.unpack('<B', raw[2:3])[0]
-					tag    = struct.unpack('<B', raw[3:4])[0]
-					segid  = struct.unpack('<B', raw[6:7])[0]
-					unused = struct.unpack('<B', raw[7:8])[0]
+				chunk = MnChunk.fromHeapEntry(current, key, hdr_off, self.Heap, self.BaseAddress, prevsize=prevsize)
 				consecutive_failures = 0
 			except Exception:
 				decode_failures += 1
@@ -18875,25 +18467,20 @@ class MnNTSegmentBase:
 					mndbg.dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
 						consecutive_failures, PTR_PRINT % current))
 					break
-			if saved_prevsize == 0:
-				prevsize       = 0
-				saved_prevsize = size
-			else:
-				prevsize       = saved_prevsize
-				saved_prevsize = size
-			flagtxt = getHeapFlag(flag).lower()
-			is_virtalloc = "virtall" in flagtxt
-			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else HEAPGRANULARITY
+				# Undecodable entry: yield a zeroed chunk and step on by one granularity (legacy behavior).
+				chunk = MnChunk(current, "chunk", HEAPGRANULARITY, self.Heap, self.BaseAddress,
+				                0, prevsize, 0, 0, 0, 0)
+			saved_prevsize = chunk.size
 			itercnt += 1
-			yield MnChunk(current, "chunk", headersize, self.Heap, self.BaseAddress,
-			              size, prevsize, segid, flag, unused, tag)
+			yield chunk
+			flagtxt = chunk.flagtxt.lower()
 			if "last" in flagtxt:
 				last_flag_hits += 1
 				mndbg.dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
 					PTR_PRINT % current, itercnt, time.time() - walk_start))
 				break
-			step = (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
-			if size == 0:
+			step = (chunk.size * HEAPGRANULARITY) if chunk.size > 0 else HEAPGRANULARITY
+			if chunk.size == 0:
 				zero_size_steps += 1
 			if step > max_step:
 				max_step = step
@@ -18932,39 +18519,6 @@ class MnNTSegmentBase:
 class MnNTVistaSegment(MnNTSegmentBase):
 	"""
 	Represents a single _HEAP_SEGMENT from a Windows Vista NT heap.
-	Used by MnNTVistaHeap and MnNT8Heap (all Vista+ versions share identical layout).
-
-	_HEAP_SEGMENT (x86, Vista)
-	+0x000 Entry                          : _HEAP_ENTRY
-	+0x008 SegmentSignature               : Uint4B
-	+0x00c SegmentFlags                   : Uint4B
-	+0x010 SegmentListEntry               : _LIST_ENTRY
-	+0x018 Heap                           : Ptr32 _HEAP
-	+0x01c BaseAddress                    : Ptr32 Void
-	+0x020 NumberOfPages                  : Uint4B
-	+0x024 FirstEntry                     : Ptr32 _HEAP_ENTRY
-	+0x028 LastValidEntry                 : Ptr32 _HEAP_ENTRY
-	+0x02c NumberOfUnCommittedPages       : Uint4B
-	+0x030 NumberOfUnCommittedRanges      : Uint4B
-	+0x034 SegmentAllocatorBackTraceIndex : Uint2B
-	+0x036 Reserved                       : Uint2B
-	+0x038 UCRSegmentList                 : _LIST_ENTRY
-
-	_HEAP_SEGMENT (x64, Vista)
-	+0x000 Entry                          : _HEAP_ENTRY  (16 bytes)
-	+0x010 SegmentSignature               : Uint4B
-	+0x014 SegmentFlags                   : Uint4B
-	+0x018 SegmentListEntry               : _LIST_ENTRY
-	+0x028 Heap                           : Ptr64 _HEAP
-	+0x030 BaseAddress                    : Ptr64 Void
-	+0x038 NumberOfPages                  : Uint4B
-	+0x040 FirstEntry                     : Ptr64 _HEAP_ENTRY
-	+0x048 LastValidEntry                 : Ptr64 _HEAP_ENTRY
-	+0x050 NumberOfUnCommittedPages       : Uint4B
-	+0x054 NumberOfUnCommittedRanges      : Uint4B
-	+0x058 SegmentAllocatorBackTraceIndex : Uint2B
-	+0x05a Reserved                       : Uint2B
-	+0x060 UCRSegmentList                 : _LIST_ENTRY
 	"""
 
 	_VALID_SEGMENT_SIGNATURE = 0xFFEEFFEE  # expected _HEAP_SEGMENT.SegmentSignature
@@ -18987,15 +18541,21 @@ class MnNTVistaSegment(MnNTSegmentBase):
 		"UCRSegmentList":                  (0x038, 0x060),
 	}
 
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_SEGMENT field offset for *name* (canonical mona style)."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	@classmethod
+	def segmentListEntryOffset(cls):
+		"""Offset of _HEAP_SEGMENT.SegmentListEntry."""
+		return cls._offsets["SegmentListEntry"][MnPEB.getArch()]
+
 	def getUCRDescriptors(self):
 		"""Walk the per-segment UCRSegmentList and return all UCR descriptors.
 
-		Walks _HEAP_SEGMENT.UCRSegmentList; each list entry lands on
-		_HEAP_UCR_DESCRIPTOR.SegmentEntry.
-
 		Return: list of MnUCRDescriptor.
 		"""
-		head = MnListEntry(self.address + self._offsets["UCRSegmentList"][MnPEB.getArch()])
+		head = MnListEntry(self.address + self._offset("UCRSegmentList"))
 		result = []
 		for entry in head.walk():
 			ucr = MnUCRDescriptor.fromSegmentEntry(entry)
@@ -19005,9 +18565,6 @@ class MnNTVistaSegment(MnNTSegmentBase):
 
 	def _last_committed_entry(self):
 		"""Return the address where committed data ends in this segment.
-
-		Uses UCR descriptors to find the lowest uncommitted range start,
-		falling back to LastValidEntry when no UCRs are present.
 		"""
 		ucrs = self.getUCRDescriptors()
 		if not ucrs:
@@ -19018,45 +18575,825 @@ class MnNTVistaSegment(MnNTSegmentBase):
 		self.address       = segaddr
 		self._encoding_key = encoding_key
 		self._chunks       = None
+		self.corrupted = False
+		self.corruption_reason = ""
 
-		self.SegmentSignature              = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["SegmentSignature"][MnPEB.getArch()], 4))[0]
-		self.SegmentFlags                  = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["SegmentFlags"][MnPEB.getArch()], 4))[0]
-		self.Heap                          = readPtrSizeBytes(segaddr + self._offsets["Heap"][MnPEB.getArch()])
-		self.BaseAddress                   = readPtrSizeBytes(segaddr + self._offsets["BaseAddress"][MnPEB.getArch()])
-		self.NumberOfPages                 = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfPages"][MnPEB.getArch()], 4))[0]
-		self.FirstEntry                    = readPtrSizeBytes(segaddr + self._offsets["FirstEntry"][MnPEB.getArch()])
-		self.LastValidEntry                = readPtrSizeBytes(segaddr + self._offsets["LastValidEntry"][MnPEB.getArch()])
-		self.NumberOfUnCommittedPages      = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfUnCommittedPages"][MnPEB.getArch()], 4))[0]
-		self.NumberOfUnCommittedRanges     = struct.unpack('<L', dbg.readMemory(segaddr + self._offsets["NumberOfUnCommittedRanges"][MnPEB.getArch()], 4))[0]
-		self.SegmentAllocatorBackTraceIndex = struct.unpack('<H', dbg.readMemory(segaddr + self._offsets["SegmentAllocatorBackTraceIndex"][MnPEB.getArch()], 2))[0]
+		ai = MnPEB.getArch()
+		try:
+			self.SegmentSignature              = u32(segaddr + self._offset("SegmentSignature"))
+			self.SegmentFlags                  = u32(segaddr + self._offset("SegmentFlags"))
+			self.Heap                          = readPtrSizeBytes(segaddr + self._offset("Heap"))
+			self.BaseAddress                   = readPtrSizeBytes(segaddr + self._offset("BaseAddress"))
+			self.NumberOfPages                 = u32(segaddr + self._offset("NumberOfPages"))
+			self.FirstEntry                    = readPtrSizeBytes(segaddr + self._offset("FirstEntry"))
+			self.LastValidEntry                = readPtrSizeBytes(segaddr + self._offset("LastValidEntry"))
+			self.NumberOfUnCommittedPages      = u32(segaddr + self._offset("NumberOfUnCommittedPages"))
+			self.NumberOfUnCommittedRanges     = u32(segaddr + self._offset("NumberOfUnCommittedRanges"))
+			self.SegmentAllocatorBackTraceIndex = u16(segaddr + self._offset("SegmentAllocatorBackTraceIndex"))
+		except Exception as e:
+			self.corrupted = True
+			self.corruption_reason = "Failed to read segment at 0x%x: %s" % (segaddr, str(e))
+		for _f in ("SegmentSignature", "SegmentFlags", "Heap", "BaseAddress", "NumberOfPages",
+		           "FirstEntry", "LastValidEntry", "NumberOfUnCommittedPages",
+		           "NumberOfUnCommittedRanges", "SegmentAllocatorBackTraceIndex"):
+			if getattr(self, _f, None) is None:
+				setattr(self, _f, 0)
+				if not self.corrupted:
+					self.corrupted = True
+					self.corruption_reason = "Unreadable segment field %s at 0x%x" % (_f, segaddr)
 		self.end                           = self.BaseAddress + (self.NumberOfPages * 0x1000)
 
 
-class MnNTLFHBase(object):
-	"""Shared LSI constants for every NT version. _HEAP_LOCAL_SEGMENT_INFO has the
-	same field layout across Vista-Win11; only its container differs. Single
-	source of truth for every LSI walk."""
+class MnLFHCipher(object):
+	"""LFH per-block _HEAP_ENTRY cipher: encode / validate / recover RtlpLFHKey.
 
-	# _HEAP_LOCAL_SEGMENT_INFO field offsets: (x86, x64).
-	# Hint (+0x000) is the bucket's primary subsegment -- the field WinDBG's
-	# !heap -p treats as authoritative. A bucket whose only committed subsegment
-	# lives in Hint (Active/CachedItems both null) is invisible without it.
-	_lsi_offsets = {
+	Pure, stateless math keyed by (arch, era). Verified line-by-line against the ntdll
+	decompilations in heapdoc/ (RtlpSubSegmentInitialize encode side; RtlpLowFragHeapFree x86
+	decode side) on 2026-06-13 -- not assumed. Two axes:
+
+	  arch : x86 encodes the block's first dword *(A), shift >> 3
+	         x64 encodes the dword at *(A+8) (the _HEAP_ENTRY.CompactHeader), shift >> 4
+	  era  : "classic" (Vista/7/8)  -- XOR Heap, SubSegment, shifted-address
+	         "8.1+"    (8.1/10/11)  -- SubSegment DROPPED, positional (A-U)<<shift added,
+	                                   and on x64 a PLAIN 32-bit store (no 40-bit RMW)
+
+	Operands: A = block/_HEAP_ENTRY address ; H = _LFH_HEAP.Heap (the _HEAP handle, read at a
+	version-dependent offset and already stored as lfh.Heap) ; S = owning _HEAP_SUBSEGMENT ;
+	U = UserBlocks ; K = RtlpLFHKey (per-process ntdll global).
+
+	  x86 classic : *(A)   = (A>>3) ^ K ^ H ^ S
+	  x64 classic : *(A+8) = ((H^A^S)>>4) ^ K           stored in the low 40 bits (high 24 preserved)
+	  x86 8.1+    : *(A)   = (A>>3) ^ H ^ ((A-U)<<0xd) ^ K
+	  x64 8.1+    : *(A+8) = ((A-U)<<0xc) ^ (A>>4) ^ H ^ K     plain 32-bit dword
+
+	x64 key WIDTH is era-specific: classic = 40-bit (mask 0xFFFFFFFFFF), 8.1+ = 32-bit
+	(mask 0xFFFFFFFF). Using the 40-bit mask on 8.1+ would fold the +0xC block-index dword into
+	the decode -- a real bug on the dominant modern x64 targets. On x64 classic the >>4 discards the
+	low 4 bits of (H^A^S), so a recovered S? only matches S in bits [4..43] (mask comparisons there).
+	"""
+
+	_X64_MASK = {"classic": 0xFFFFFFFFFF, "8.1+": 0xFFFFFFFF}
+
+	@staticmethod
+	def encodedWord(addr, era):
+		"""Read the encoded word: x86 -> *(A) (4 bytes); x64 -> low cipher bits of *(A+8).
+		Returns None if unreadable."""
+		if MnPEB.getArch() == 0:
+			return u32(addr)
+		raw = u64(addr + 8)
+		if raw is None:
+			return None
+		return raw & MnLFHCipher._X64_MASK.get(era, 0xFFFFFFFFFF)
+
+	@staticmethod
+	def expectedWord(addr, era, H, S, U, K):
+		"""Compute the word that SHOULD be stored at the encode site for block `addr`.
+		For validation (recompute & compare) and as the inverse used by recovery."""
+		if MnPEB.getArch() == 0:
+			if era == "8.1+":
+				return ((addr >> 3) ^ H ^ (((addr - U) << 0xd) & 0xFFFFFFFF) ^ K) & 0xFFFFFFFF
+			return ((addr >> 3) ^ K ^ H ^ S) & 0xFFFFFFFF
+		if era == "8.1+":
+			return (((addr - U) << 0xc) ^ (addr >> 4) ^ H ^ K) & 0xFFFFFFFF
+		return ((((H ^ addr ^ S) >> 4) ^ K)) & 0xFFFFFFFFFF
+
+	@staticmethod
+	def recoverKey(addr, era, H, S, U):
+		"""Invert the encode for block `addr` to recover RtlpLFHKey. Returns None if unreadable.
+
+		  x86 classic : K = *(A) ^ (A>>3) ^ H ^ S
+		  x86 8.1+    : K = *(A) ^ (A>>3) ^ H ^ ((A-U)<<0xd)
+		  x64 classic : K = (*(A+8) & 0xFFFFFFFFFF) ^ ((H^A^S)>>4)        # 40-bit
+		  x64 8.1+    : K = (*(A+8) & 0xFFFFFFFF)   ^ ((A-U)<<0xc) ^ (A>>4) ^ H   # 32-bit
+		"""
+		stored = MnLFHCipher.encodedWord(addr, era)
+		if stored is None:
+			return None
+		if MnPEB.getArch() == 0:
+			if era == "8.1+":
+				return (stored ^ (addr >> 3) ^ H ^ (((addr - U) << 0xd) & 0xFFFFFFFF)) & 0xFFFFFFFF
+			return (stored ^ (addr >> 3) ^ H ^ S) & 0xFFFFFFFF
+		if era == "8.1+":
+			return (stored ^ ((addr - U) << 0xc) ^ (addr >> 4) ^ H) & 0xFFFFFFFF
+		return (stored ^ ((H ^ addr ^ S) >> 4)) & 0xFFFFFFFFFF
+
+	@staticmethod
+	def validate(addr, era, H, S, U, K):
+		"""True if block `addr`'s stored header matches the cipher under key K.
+
+		x64 classic only matches in bits [4..43] (the >>4 drops the low 4 bits before storing),
+		so the comparison is masked to that window there; every other cell is an exact compare."""
+		stored = MnLFHCipher.encodedWord(addr, era)
+		if stored is None or K is None:
+			return False
+		expected = MnLFHCipher.expectedWord(addr, era, H, S, U, K)
+		if MnPEB.getArch() == 1 and era == "classic":
+			return (stored ^ expected) == 0
+		return stored == expected
+
+
+class MnNTLFHInterlockSeqBase(object):
+	"""_INTERLOCK_SEQ — the lock-free allocation cursor at _HEAP_SUBSEGMENT.AggregateExchg."""
+	_offsets = {"Depth": (0x000, 0x000)}
+
+	def _offset(self, name):
+		"""Arch-appropriate _INTERLOCK_SEQ field offset for *name*."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, addr, parent_subsegment=None):
+		self.address = addr
+		self.parent  = parent_subsegment       # MnNTLFHSubSegment
+		self.Depth   = u16(addr + self._offset("Depth")) or 0
+
+
+class MnNTVistaLFHInterlockSeq(MnNTLFHInterlockSeqBase):
+	"""Vista/7 _INTERLOCK_SEQ (8 bytes)"""
+	_offsets = {
+		"Depth":           (0x000, 0x000),
+		"FreeEntryOffset": (0x002, 0x002),
+		"Sequence":        (0x004, 0x004),
+	}
+
+	def __init__(self, addr, parent_subsegment=None):
+		super(MnNTVistaLFHInterlockSeq, self).__init__(addr, parent_subsegment)
+		self.FreeEntryOffset = u16(addr + self._offset("FreeEntryOffset")) or 0
+		self.Sequence        = u32(addr + self._offset("Sequence")) or 0
+		self.Hint = 0
+		self.Lock = 0
+
+
+class MnNT8LFHInterlockSeq(MnNTLFHInterlockSeqBase):
+	"""Win8+ _INTERLOCK_SEQ (4 bytes)
+	  +0x000 Depth  : Uint2B
+	  +0x002 Hint   : Pos 0, 15 Bits
+	  +0x002 Lock   : Pos 15, 1 Bit
+	  +0x002 Hint16 : Uint2B   (the read target)
+	"""
+
+	_offsets = {
+		"Depth":  (0x000, 0x000),
+		"Hint16": (0x002, 0x002),
+	}
+
+	def __init__(self, addr, parent_subsegment=None):
+		super(MnNT8LFHInterlockSeq, self).__init__(addr, parent_subsegment)
+		word = u16(addr + self._offset("Hint16")) or 0
+		self.Hint = word & 0x7FFF
+		self.Lock = (word >> 15) & 1
+		self.FreeEntryOffset = 0
+		self.Sequence        = 0
+
+
+class MnNTLFHBucketCounters(object):
+	"""_HEAP_BUCKET_COUNTERS — the per-LSI block accounting at _HEAP_LOCAL_SEGMENT_INFO.Counters."""
+
+	_offsets = {"TotalBlocks": (0x000, 0x000), "SubSegmentCounts": (0x004, 0x004)}
+
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_BUCKET_COUNTERS field offset for *name*."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, addr, parent_segment_info=None):
+		self.address          = addr
+		self.parent           = parent_segment_info
+		self.TotalBlocks      = u32(addr + self._offset("TotalBlocks")) or 0
+		self.SubSegmentCounts = u32(addr + self._offset("SubSegmentCounts")) or 0
+
+
+class MnNTLFHCrtZoneBase(object):
+	"""_LFH_BLOCK_ZONE — one node of the SubSegmentZones list, holding the bump/index allocator state
+	  for carving _HEAP_SUBSEGMENT descriptors.
+ 	"""
+
+	FIRST_SLOT = 0x010
+	SLOT_STRIDE = 0x28
+ 
+	_offsets = {"ListEntry": (0x000, 0x000)}
+
+	def _offset(self, name):
+		"""Arch-appropriate _LFH_BLOCK_ZONE field offset for *name* (accessor convention)."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, address):
+		self.address = address
+
+	def firstSlot(self):
+		"""Address of the first carved subsegment slot in this zone."""
+		return self.address + self.FIRST_SLOT
+
+
+class MnNTVistaLFHCrtZone(MnNTLFHCrtZoneBase):
+	"""Vista/7/8 _LFH_BLOCK_ZONE: bump allocator with FreePointer + Limit; a slot is occupied iff
+	  slot_addr < FreePointer.
+ 	"""
+
+	_offsets = {
+		"ListEntry":   (0x000, 0x000),
+		"FreePointer": (0x008, 0x010),
+		"Limit":       (0x00c, 0x018),
+	}
+
+	def freePointer(self):
+		"""Bump pointer: slots below this are occupied. None if unreadable."""
+		return readPtr(self.address + self._offset("FreePointer"))
+
+
+class MnNT10LFHCrtZone(MnNTLFHCrtZoneBase):
+	"""Win8.1/10/11 _LFH_BLOCK_ZONE."""
+
+	SLOT_COUNT  = 25
+	_offsets = {
+		"ListEntry": (0x000, 0x000),
+		"NextIndex": (0x008, 0x010),
+	}
+
+	def nextIndex(self):
+		"""Count of carved slots in this zone. None if unreadable."""
+		return u32(self.address + self._offset("NextIndex"))
+
+
+class MnNTLFHSegmentInfoBase(object):
+	"""_HEAP_LOCAL_SEGMENT_INFO"""
+
+	_offsets = {
 		"Hint":             (0x000, 0x000),
 		"ActiveSubsegment": (0x004, 0x008),
 		"CachedItems":      (0x008, 0x010),
+		"LocalData":        (0x000, 0x000),
+		"SListHeader":      (0x048, 0x090),
+		"Counters":         (0x050, 0x0a0),
+		"BucketIndex":      (0x05c, 0x0ac),
 	}
 	CACHED_ITEMS_COUNT = 16
+	LSI_STRIDE = (0x068, 0x0C0)
+	_has_hint = False
+
+	@classmethod
+	def _fieldAt(cls, lsi_addr, name):
+		"""Arch-resolved absolute address of LSI field *name* for the LSI at lsi_addr."""
+		return lsi_addr + cls._offsets[name][MnPEB.getArch()]
+
+	@classmethod
+	def countersAt(cls, lsi_addr):
+		"""Build the _HEAP_BUCKET_COUNTERS object owned by the LSI at lsi_addr (its Counters field).
+		Mirrors the in-memory association LSI -> Counters."""
+		return MnNTLFHBucketCounters(cls._fieldAt(lsi_addr, "Counters"))
+
+	@classmethod
+	def hintAt(cls, lsi_addr):
+		"""Address of LSI.Hint (Vista/7 primary-subsegment ptr; Win8+ this slot is LocalData)."""
+		return cls._fieldAt(lsi_addr, "Hint")
+
+	@classmethod
+	def activeSubsegmentAt(cls, lsi_addr):
+		"""Address of LSI.ActiveSubsegment."""
+		return cls._fieldAt(lsi_addr, "ActiveSubsegment")
+
+	@classmethod
+	def cachedItemsBase(cls, lsi_addr):
+		"""Address of LSI.CachedItems[0] (a [CACHED_ITEMS_COUNT] subsegment-ptr array)."""
+		return cls._fieldAt(lsi_addr, "CachedItems")
+
+	@classmethod
+	def localDataAt(cls, lsi_addr):
+		"""Address of LSI.LocalData (Win8+ back-ptr to _HEAP_LOCAL_DATA)."""
+		return cls._fieldAt(lsi_addr, "LocalData")
+
+	@classmethod
+	def bucketIndexAt(cls, lsi_addr):
+		"""Address of LSI.BucketIndex (u16 size-class index)."""
+		return cls._fieldAt(lsi_addr, "BucketIndex")
+
+	@classmethod
+	def slistHeaderAt(cls, lsi_addr):
+		"""Address of LSI.SListHeader (per-bucket reclaim _SLIST_HEADER)."""
+		return cls._fieldAt(lsi_addr, "SListHeader")
+
+	@classmethod
+	def lsiStride(cls):
+		"""Arch-resolved inline SegmentInfo[] element stride (sizeof padded LSI)."""
+		return cls.LSI_STRIDE[MnPEB.getArch()]
+
+	@classmethod
+	def cachedItemsCount(cls):
+		"""Number of CachedItems[] slots."""
+		return cls.CACHED_ITEMS_COUNT
+
+	@classmethod
+	def hasHint(cls):
+		"""True iff +0x000 is a Hint subsegment ptr (Vista/7) rather than a LocalData back-ptr (Win8+)."""
+		return cls._has_hint
+
+	def __init__(self, lsi_addr, parent_lfh, bucket=None):
+		"""First-class _HEAP_LOCAL_SEGMENT_INFO: owns this size class's subsegment table (Active +
+		Hint(Vista/7) + CachedItems) and Counters."""
+		self.address = lsi_addr
+		self.parent_lfh = parent_lfh
+		self.bucket = bucket
+		self.corrupted = False
+		self.corruption_reason = ""
+		self._subsegments = None
+		self._chunks = None
+		self.active_subsegment = None
+		self.hint_subsegment = None
+		self.cached_items = []
+		self.Counters = self.countersAt(lsi_addr) if lsi_addr else None
+		ss_cls = parent_lfh._subsegment_class
+		if lsi_addr != 0:
+			try:
+				active_ptr = readPtrSizeBytes(self.activeSubsegmentAt(lsi_addr))
+				if active_ptr != 0:
+					self.active_subsegment = ss_cls(active_ptr, parent_bucket=bucket)
+				if self.hasHint():
+					hint_ptr = readPtrSizeBytes(self.hintAt(lsi_addr))
+					if hint_ptr != 0:
+						self.hint_subsegment = ss_cls(hint_ptr, parent_bucket=bucket)
+				cached_base = self.cachedItemsBase(lsi_addr)
+				ptrsize = archValue(4, 8)
+				for i in range(self.cachedItemsCount()):
+					ptr = readPtrSizeBytes(cached_base + i * ptrsize)
+					if ptr != 0:
+						ss = ss_cls(ptr, parent_bucket=bucket)
+						if ss.isValid() or ss.corrupted:
+							self.cached_items.append(ss)
+			except Exception as e:
+				self.corrupted = True
+				self.corruption_reason = "Failed to read LSI at 0x%x: %s" % (lsi_addr, str(e))
+
+	def getSubSegments(self):
+		"""Valid subsegments (Active, then Hint, then CachedItems), deduped by address. Cached."""
+		if self._subsegments is None:
+			self._subsegments = []
+			seen = set()
+			candidates = []
+			if self.active_subsegment and (self.active_subsegment.isValid() or self.active_subsegment.corrupted):
+				candidates.append(self.active_subsegment)
+			if self.hint_subsegment and (self.hint_subsegment.isValid() or self.hint_subsegment.corrupted):
+				candidates.append(self.hint_subsegment)
+			candidates.extend(self.cached_items)
+			for ss in candidates:
+				if ss.address in seen:
+					continue
+				seen.add(ss.address)
+				self._subsegments.append(ss)
+		return self._subsegments
+
+	def getChunks(self):
+		"""Walk THIS size class's subsegments -> blocks, return {chunkptr: MnChunk} (cached)."""
+		if self._chunks is not None:
+			return self._chunks
+		chunks = {}
+		for ss in self.getSubSegments():
+			ud = ss.getUserBlock()
+			if ud and not ud.corrupted:
+				for chunk in ud.getBlocks():
+					chunks[chunk.chunkptr] = chunk
+		self._chunks = chunks
+		return self._chunks
+
+	def getTotalBlocks(self):
+		"""Total LFH slot capacity across this size class's subsegments (sum of BlockCount)."""
+		return sum(ss.BlockCount for ss in self.getSubSegments())
+
+	def getFreeBlocks(self):
+		"""Free (unallocated) slots across this size class's subsegments (key-free per-subseg count)."""
+		return sum(ss.getFreeCount() for ss in self.getSubSegments())
+
+	def getBusyBlocks(self):
+		"""Busy (allocated) slots = total - free (kept consistent with the two sums)."""
+		return self.getTotalBlocks() - self.getFreeBlocks()
+
+	def isActive(self):
+		"""True if this size class has at least one valid subsegment."""
+		return len(self.getSubSegments()) > 0
+
+
+class MnNTVistaLFHSegmentInfo(MnNTLFHSegmentInfoBase):
+	"""Vista/7 _HEAP_LOCAL_SEGMENT_INFO: Hint @ +0x000 is the bucket's primary subsegment."""
+	_offsets = {
+		"Hint":             (0x000, 0x000),
+		"ActiveSubsegment": (0x004, 0x008),
+		"CachedItems":      (0x008, 0x010),
+		"LocalData":        (0x000, 0x000),
+		"SListHeader":      (0x048, 0x090),
+		"Counters":         (0x050, 0x0a0),
+		"BucketIndex":      (0x060, 0x0b4),
+	}
+	_has_hint = True
+
+
+class MnNT8LFHSegmentInfo(MnNTLFHSegmentInfoBase):
+	"""Win8+ _HEAP_LOCAL_SEGMENT_INFO: +0x000 is LocalData (a back-ptr, not a subsegment) -- no Hint."""
+	_has_hint = False
+
+
+class MnNTLFHLocalDataBase(object):
+	"""_HEAP_LOCAL_DATA — the per-heap LFH local data block (one per _LFH_HEAP)."""
+
+	_offsets = {
+		"DeletedSubSegments": (0x000, 0x000),
+		"CrtZone":            (0x008, 0x010),
+		"LowFragHeap":        (0x00c, 0x018),
+		"Sequence":           (0x010, 0x020),
+	}
+
+	def _offset(self, name):
+		return self._offsets[name][MnPEB.getArch()]
+
+	@classmethod
+	def crtZoneAt(cls, localdata_addr):
+		"""Arch-resolved absolute address of _HEAP_LOCAL_DATA.CrtZone for the LocalData at
+		  localdata_addr.
+  		"""
+		return localdata_addr + cls._offsets["CrtZone"][MnPEB.getArch()]
+
+	@classmethod
+	def lowFragHeapAt(cls, localdata_addr):
+		"""Read _HEAP_LOCAL_DATA.LowFragHeap (the back-ptr to the owning _LFH_HEAP) for the LocalData
+		at localdata_addr; 0 if unreadable. Owner-side accessor for the Vista-vs-Win7 structural probe
+		(which runs before any LFH instance exists, so it must be a classmethod)."""
+		return readPtr(localdata_addr + cls._offsets["LowFragHeap"][MnPEB.getArch()]) or 0
+
+	def __init__(self, address, lfh):
+		self.address = address
+		self.lfh     = lfh
+		self.DeletedSubSegments = MnSListEntry(address + self._offset("DeletedSubSegments"),
+		                                       is_slist_header=True)
+		self.LowFragHeap = readPtr(address + self._offset("LowFragHeap")) or 0
+		crt = readPtr(address + self._offset("CrtZone"))
+		self.CrtZone = lfh._crtzone_class(crt) if crt else None
+
+	def getDeletedSubSegments(self):
+		"""Walk the DeletedSubSegments SLIST -> [MnNTLFHSubSegment]."""
+		ss_cls = self.lfh._subsegment_class
+		off = ss_cls.sFreeListEntryOffset()
+		if off is None:
+			return []
+		out = []
+		try:
+			for node in self.DeletedSubSegments.walk():
+				s = ss_cls(node - off, parent_bucket=None)
+				if s.isValid() or s.corrupted:
+					out.append(s)
+		except Exception as e:
+			mndbg.dbgp("getDeletedSubSegments: walk failed at 0x%x: %s" % (self.address, str(e)),
+			           errormode=False)
+		return out
+
+
+class MnNTVistaLFHLocalData(MnNTLFHLocalDataBase):
+	"""Vista/7 _HEAP_LOCAL_DATA -- OWNS the inline SegmentInfo[128] LSI array (+0x18/+0x30), since on
+	Vista/7 the LSIs are embedded here rather than referenced by a pointer array."""
+
+	_offsets = {
+		"DeletedSubSegments": (0x000, 0x000),
+		"CrtZone":            (0x008, 0x010),
+		"LowFragHeap":        (0x00c, 0x018),
+		"Sequence":           (0x010, 0x020),
+		"SegmentInfo":        (0x018, 0x030),
+	}
+
+	@classmethod
+	def segmentInfoOffset(cls):
+		"""Arch-resolved offset (relative to _HEAP_LOCAL_DATA base) of the inline SegmentInfo[128]
+		array. Class-level getter for consumers composing the array base from an LFH address."""
+		return cls._offsets["SegmentInfo"][MnPEB.getArch()]
+
+	def segmentInfoArrayBase(self):
+		"""Address of the inline SegmentInfo[128] array."""
+		return self.address + self._offset("SegmentInfo")
+
+	def lsiAddr(self, bucket_index):
+		"""Address of the inline LSI for *bucket_index*: array base + index * LSI_STRIDE. Stride is
+		sizeof(_HEAP_LOCAL_SEGMENT_INFO), owned by the version's SegmentInfo class."""
+		stride = self.lfh._segmentinfo_class.lsiStride()
+		return self.segmentInfoArrayBase() + (bucket_index * stride)
+	segment_infos = None
+
+
+class MnNT8LFHLocalData(MnNTLFHLocalDataBase):
+	"""Win8+ _HEAP_LOCAL_DATA. The LSI array moved to _LFH_HEAP.SegmentInfoArrays[]
+	(Win8+), so there is NO inline SegmentInfo array here; DeleteRateThreshold occupies the tail slot."""
+
+	_offsets = {
+		"DeletedSubSegments":  (0x000, 0x000),
+		"CrtZone":             (0x008, 0x010),
+		"LowFragHeap":         (0x00c, 0x018),
+		"Sequence":            (0x010, 0x020),
+		"DeleteRateThreshold": (0x014, 0x024),
+	}
+
+
+class MnNTLFHBase(object):
+	"""_LFH_HEAP — the front-end allocator. Models the _LFH_HEAP struct AND owns the whole LFH walk."""
+	_segmentinfo_class = MnNTVistaLFHSegmentInfo
+	_crtzone_class = MnNTVistaLFHCrtZone
+	_localdata_class = MnNTVistaLFHLocalData
+
+	AFFINITY_LSI_STRIDE = (0x068, 0x0C0)
+	AFFINITY_MAX = 64
+
+	_subsegment_class = None
+	_n_buckets = 128
+	_ubc_base   = None
+	_ubc_bias   = None
+	_ubc_stride = None
+
+	def _offset(self, name):
+		"""Arch-appropriate _LFH_HEAP field offset for *name* (this subclass's version), matching the
+		MnNTHeap accessor convention so subclasses never index self._offsets[name][ai] inline."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	@classmethod
+	def fieldAt(cls, lfh_addr, name):
+		"""Arch-resolved absolute address of _LFH_HEAP field *name* for the LFH at lfh_addr."""
+		return lfh_addr + cls._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, heap):
+		self.heap = heap
+		self.address = heap.getFrontEndHeap()
+		self.lfh = self
+		self._buckets = None
+		self._segment_infos = None
+		self._ranges = None
+		self._local_data = None
+		self.Heap = 0
+		self.Buckets = 0
+		self.LocalData = 0
+		self.SegmentInfoArrays = 0
+		self.AffinitizedInfoArrays = 0
+		self.SubSegmentZones_Flink = 0
+		self.SubSegmentZones_Blink = 0
+		self.ZoneBlockSize = 0
+		if self.address:
+			try:
+				self._readStruct()
+			except Exception as e:
+				mndbg.dbgp("MnNTLFHBase: _readStruct failed at 0x%x: %s" % (self.address, str(e)))
+
+	@property
+	def _lfh_class(self):
+		"""Back-compat alias: the LFH/engine class is now this object's own type."""
+		return type(self)
+
+	@property
+	def local_data(self):
+		"""The MnNTLFHLocalData object for this LFH's _HEAP_LOCAL_DATA (lazy; None if no LocalData).
+		Mirrors the in-memory association _LFH_HEAP -> _HEAP_LOCAL_DATA (CrtZone, DeletedSubSegments,
+		and on Vista/7 the inline SegmentInfo[] array)."""
+		if self._local_data is None and self.LocalData:
+			try:
+				self._local_data = self._localdata_class(self.LocalData, self)
+			except Exception as e:
+				mndbg.dbgp("local_data: build failed at 0x%x: %s" % (self.LocalData, str(e)), errormode=False)
+		return self._local_data
+
+	def _readStruct(self):
+		"""Read the _LFH_HEAP fields into attributes. Subclasses override per version."""
+		pass
+
+	def _resolveLSI(self, bucket_index):
+		"""Address of _HEAP_LOCAL_SEGMENT_INFO for bucket_index. Subclasses override per version."""
+		return 0
+
+	def getBuckets(self):
+		"""Build the pure _HEAP_BUCKET[] (one MnNTLFHBucket per size class), cached."""
+		if self._buckets is not None:
+			return self._buckets
+		self._buckets = []
+		if not self.address:
+			return self._buckets
+		buckets_base = self.Buckets
+		bucket_size = MnNTLFHBucket._BUCKET_SIZE
+		for i in range(self._n_buckets):
+			self._buckets.append(MnNTLFHBucket(i, buckets_base + (i * bucket_size), self))
+		return self._buckets
+
+	def getSegmentInfos(self):
+		"""THE version-aware _HEAP_LOCAL_SEGMENT_INFO resolver: build one MnNTLFHSegmentInfo per size
+		class via _resolveLSI(i) (Vista/7 inline SegmentInfo[] vs Win8+ SegmentInfoArrays[] deref),
+		pair it onto bucket[i].segment_info by index, and cache. [] when there is no LFH."""
+		if self._segment_infos is not None:
+			return self._segment_infos
+		self._segment_infos = []
+		si_cls = self._segmentinfo_class
+		for bucket in self.getBuckets():
+			lsi_addr = 0 if bucket.corrupted else self._resolveLSI(bucket.bucket_index)
+			si = si_cls(lsi_addr, self, bucket=bucket)
+			bucket.segment_info = si
+			self._segment_infos.append(si)
+		ld = self.local_data
+		if ld is not None and hasattr(ld, "segment_infos"):
+			ld.segment_infos = self._segment_infos
+		return self._segment_infos
+
+	def getActiveBuckets(self):
+		"""Only buckets whose paired segment info has >=1 valid subsegment. Resolves segment infos
+		first so the bucket<->LSI pairing is in place before isActive() is queried."""
+		self.getSegmentInfos()
+		return [b for b in self.getBuckets() if b.isActive()]
+
+	def getAllSubSegments(self):
+		"""Flat list of all subsegments across all active buckets (default-affinity only)."""
+		result = []
+		for bucket in self.getActiveBuckets():
+			result.extend(bucket.getSubSegments())
+		return result
+
+	def getAllSubSegmentsFull(self):
+		"""Full subsegment walk including per-affinity-slot subsegments. Vista/7 have no
+		AffinitizedInfoArrays, so this equals getAllSubSegments(); MnNT8LFH overrides."""
+		return self.getAllSubSegments()
+
+	def _wrapZoneSubSegment(self, ss_addr, seen):
+		"""Build + validate a subsegment carved inside a zone slot / recovered from a sink, dedupe via
+		`seen`. Returns the subsegment or None."""
+		if not ss_addr or ss_addr in seen:
+			return None
+		seen.add(ss_addr)
+		ss = self._subsegment_class(ss_addr, parent_bucket=None)
+		if not (ss.isValid() or ss.corrupted):
+			return None
+		return ss
+
+	def _zoneSlotSubSegments(self, zone_addr, seen):
+		"""_HEAP_SUBSEGMENT descriptors carved inside ONE zone."""
+		out = []
+		zone = MnNTVistaLFHCrtZone(zone_addr)
+		stride = (getattr(self, "ZoneBlockSize", 0) or 0) or zone.SLOT_STRIDE
+		free_ptr = zone.freePointer()
+		if not stride or not free_ptr:
+			return out
+		slot = zone.firstSlot()
+		guard = 0
+		while slot < free_ptr and guard < 4096:
+			guard += 1
+			ss = self._wrapZoneSubSegment(slot, seen)
+			if ss is not None:
+				out.append(ss)
+			slot += stride
+		return out
+
+	def getRetiredSubSegments(self):
+		"""All subsegments reachable ONLY off the working set: zone-carved slots + reclaim
+		sinks. Deduped against each other. Full-walk-only."""
+		seen = set()
+		retired = []
+		if not self.address:
+			return retired
+		try:
+			for z in self.getBlockZones():
+				retired.extend(self._zoneSlotSubSegments(z.get("address", 0), seen))
+		except Exception as e:
+			mndbg.dbgp("getRetiredSubSegments: zone walk failed: %s" % str(e), errormode=False)
+		try:
+			retired.extend(self._drainReclaimSinks(seen))
+		except Exception as e:
+			mndbg.dbgp("getRetiredSubSegments: sink drain failed: %s" % str(e), errormode=False)
+		return retired
+
+	def _drainReclaimSinks(self, seen):
+		"""Per-bucket reclaim LSI.SListHeader (interlocked _SLIST_HEADER). node -> subsegment =
+		node - SFreeListEntry offset. Returns recovered subsegments."""
+		out = []
+		sfle_off = self._subsegment_class.sFreeListEntryOffset()
+		if sfle_off is None:
+			return out
+		si_cls = self._segmentinfo_class
+		for si in self.getSegmentInfos():
+			lsi = si.address
+			if not lsi:
+				continue
+			try:
+				sl = MnSListEntry(si_cls.slistHeaderAt(lsi), is_slist_header=True)
+				for node in sl.walk():
+					ss = self._wrapZoneSubSegment(node - sfle_off, seen)
+					if ss is not None:
+						out.append(ss)
+			except Exception as e:
+				mndbg.dbgp("_drainReclaimSinks: reclaim SLIST failed at lsi 0x%x: %s" % (lsi, str(e)),
+				           errormode=False)
+		return out
+
+	def getCachedUserBlockPages(self):
+		"""Cached freed UserBlocks pages from _LFH_HEAP.UserBlockCache[]. Returns [{sizeindex,
+		page}]; quietly empty when not modeled. Full-walk-only."""
+		out = []
+		if not self.address or self._ubc_base is None or self._ubc_stride is None:
+			return out
+		ai = MnPEB.getArch()
+		base   = self.address + self._ubc_base[ai]
+		stride = self._ubc_stride[ai]
+		seen   = set()
+		for bucket in self.getActiveBuckets():
+			slot = bucket.SizeIndex - (self._ubc_bias or 0)
+			if slot < 0:
+				continue
+			entry = base + slot * stride
+			try:
+				sl = MnSListEntry(entry, is_slist_header=True)
+				for node in sl.walk():
+					if node and node not in seen:
+						seen.add(node)
+						out.append({"sizeindex": bucket.SizeIndex, "page": node})
+			except Exception as e:
+				mndbg.dbgp("getCachedUserBlockPages: slot %d failed: %s" % (slot, str(e)), errormode=False)
+		return out
+
+	def getRanges(self):
+		"""Collect (start, end) for all subsegment UserBlocks regions (cached)."""
+		if self._ranges is not None:
+			return self._ranges
+		self._ranges = []
+		for ss in self.getAllSubSegments():
+			r = ss.getRange()
+			if r[0] != 0:
+				self._ranges.append(r)
+		return self._ranges
+
+	def getChunks(self):
+		"""Flat {addr: MnChunk} dict for the whole LFH, composed by unioning each active bucket's
+		per-bucket getChunks() cache."""
+		chunks = {}
+		for bucket in self.getActiveBuckets():
+			chunks.update(bucket.getChunks())
+		return chunks
+
+	def getBucketForSize(self, size):
+		"""Given a user allocation size, return which bucket services it."""
+		if self.address == 0 or size > self._lfhCeiling():
+			return None
+		hdr  = archValue(8, 8)
+		gran = HEAPGRANULARITY
+		g_sh = archValue(3, 4)
+		idx = ((size + hdr + gran - 1) >> g_sh) - 1
+		if idx >= 0x20:
+			e = 5
+			while (idx >> e) != 0:
+				e += 1
+			g = 1 << (e - 5)
+			idx = (((idx + g - 1) & ~(g - 1)) >> (e - 5)) + ((e - 5) << 4)
+		if idx >= self._n_buckets:
+			return None
+		buckets = self.getBuckets()
+		if idx >= len(buckets):
+			return None
+		return buckets[idx]
+
+	def _lfhCeiling(self):
+		"""Inclusive LFH size ceiling for getBucketForSize. Vista/7: 0x3fff. MnNT8LFH overrides for
+		the Win8+ RtlpLargestLfhBlock limit."""
+		return 0x3fff
+
+	def getBucketStats(self):
+		"""Per-bucket summary for all active buckets."""
+		stats = []
+		for bucket in self.getActiveBuckets():
+			stats.append({
+				"index": bucket.bucket_index,
+				"block_size": bucket.block_size_bytes,
+				"subsegment_count": len(bucket.getSubSegments()),
+				"total_blocks": bucket.getTotalBlocks(),
+				"free_blocks": bucket.getFreeBlocks(),
+				"busy_blocks": bucket.getBusyBlocks(),
+			})
+		return stats
+
+	def getUtilization(self):
+		"""Aggregate (total_blocks, busy_blocks, free_blocks) across the entire LFH."""
+		total = busy = free = 0
+		for bucket in self.getActiveBuckets():
+			total += bucket.getTotalBlocks()
+			free += bucket.getFreeBlocks()
+			busy += bucket.getBusyBlocks()
+		return (total, busy, free)
+
+	def contains(self, addr):
+		"""Is addr within any LFH UserBlocks region."""
+		for start, end in self.getRanges():
+			if start <= addr < end:
+				return True
+		return False
+
+	def getSubSegmentForAddress(self, addr):
+		"""The subsegment whose UserBlocks region contains addr, or None (floor lookup, robust
+		against a corrupt/oversized BlockCount producing an overlapping lower range)."""
+		best_ss = None
+		for ss in self.getAllSubSegments():
+			ub = ss.UserBlocks
+			if ub == 0 or ub > addr:
+				continue
+			end = ub + ss.BlockCount * ss.BlockSize * HEAPGRANULARITY
+			if addr >= end:
+				continue
+			if best_ss is None or ub > best_ss.UserBlocks:
+				best_ss = ss
+		return best_ss
 
 
 class MnNTVistaLFH(MnNTLFHBase):
-	"""
-	Represents _LFH_HEAP on Windows Vista.
-	Lock is _RTL_CRITICAL_SECTION (0x18 bytes x86 / 0x28 bytes x64).
-	Buckets array has 128 entries.
-	"""
+	"""Represents _LFH_HEAP on Windows Vista."""
 
-	# _LFH_HEAP field offsets: (offset_x86, offset_x64)  -- Windows Vista (6002)
 	_offsets = {
 		"SubSegmentZones":      (0x018, 0x028),
 		"ZoneBlockSize":        (0x020, 0x038),
@@ -19072,30 +19409,35 @@ class MnNTVistaLFH(MnNTLFHBase):
 		"LocalData":            (0x300, 0x3e0),
 	}
 
-	# Inline _HEAP_LOCAL_DATA.SegmentInfo[] geometry (Vista/7 only): (x86, x64).
-	# LSI_STRIDE is sizeof(_HEAP_LOCAL_SEGMENT_INFO); x86 0x64 pads to 0x68 (8-byte
-	# alignment from the embedded _SLIST_HEADER).
-	_localdata_offsets = {
-		"SegmentInfo":      (0x018, 0x030),
-	}
-	LSI_STRIDE = (0x068, 0x0b8)
+	_segmentinfo_class = MnNTVistaLFHSegmentInfo
+	_n_buckets = 128
+	_ubc_base   = (0x040, 0x060)
+	_ubc_bias   = 3
+	_ubc_stride = (0x010, 0x018)
 
-	def __init__(self, lfhbase):
-		self.address = lfhbase
+	def _readStruct(self):
+		lfhbase = self.address
 		ptrsize = archValue(4, 8)
+		self.Heap                  = readPtrSizeBytes(lfhbase + self._offset("Heap"))
+		self.SubSegmentZones_Flink = readPtrSizeBytes(lfhbase + self._offset("SubSegmentZones"))
+		self.SubSegmentZones_Blink = readPtrSizeBytes(lfhbase + self._offset("SubSegmentZones") + ptrsize)
+		self.ZoneBlockSize         = readPtrSizeBytes(lfhbase + self._offset("ZoneBlockSize"))
+		self.SegmentChange         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentChange"), 4))[0]
+		self.SegmentCreate         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentCreate"), 4))[0]
+		self.SegmentInsertInFree   = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentInsertInFree"), 4))[0]
+		self.SegmentDelete         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentDelete"), 4))[0]
+		self.CacheAllocs           = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("CacheAllocs"), 4))[0]
+		self.CacheFrees            = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("CacheFrees"), 4))[0]
+		self.Buckets               = lfhbase + self._offset("Buckets")
+		self.LocalData             = lfhbase + self._offset("LocalData")
 
-		self.Heap                  = readPtrSizeBytes(lfhbase + self._offsets["Heap"][MnPEB.getArch()])
-		self.SubSegmentZones_Flink = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][MnPEB.getArch()])
-		self.SubSegmentZones_Blink = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][MnPEB.getArch()] + ptrsize)
-		self.ZoneBlockSize         = readPtrSizeBytes(lfhbase + self._offsets["ZoneBlockSize"][MnPEB.getArch()])
-		self.SegmentChange         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentChange"][MnPEB.getArch()], 4))[0]
-		self.SegmentCreate         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentCreate"][MnPEB.getArch()], 4))[0]
-		self.SegmentInsertInFree   = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentInsertInFree"][MnPEB.getArch()], 4))[0]
-		self.SegmentDelete         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentDelete"][MnPEB.getArch()], 4))[0]
-		self.CacheAllocs           = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheAllocs"][MnPEB.getArch()], 4))[0]
-		self.CacheFrees            = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheFrees"][MnPEB.getArch()], 4))[0]
-		self.Buckets               = lfhbase + self._offsets["Buckets"][MnPEB.getArch()]
-		self.LocalData             = lfhbase + self._offsets["LocalData"][MnPEB.getArch()]
+	def _resolveLSI(self, bucket_index):
+		"""Vista/7: LSI is inline in _HEAP_LOCAL_DATA.SegmentInfo[bucket_index]. Delegated to the
+		MnNTLFHLocalData object that physically owns the inline array (mona philosophy)."""
+		ld = self.local_data
+		if ld is None:
+			return 0
+		return ld.lsiAddr(bucket_index)
 
 	def getBlockZones(self):
 		"""Walk SubSegmentZones chain (Vista: raw pointer, NULL-terminated)."""
@@ -19113,14 +19455,8 @@ class MnNTVistaLFH(MnNTLFHBase):
 
 
 class MnNT7LFH(MnNTVistaLFH):
-	"""_LFH_HEAP on Windows 7.
+	"""_LFH_HEAP on Windows 7."""
 
-	Like Vista but with a SizeInCache field inserted at +0x040, shifting
-	UserBlockCache/Buckets/LocalData up by 0x10. Inner LSI/subsegment layouts are
-	unchanged, so the Vista subsegment/userdata classes are reused.
-	"""
-
-	# _LFH_HEAP field offsets: (offset_x86, offset_x64)  -- Windows 7 (7601)
 	_offsets = {
 		"SubSegmentZones":      (0x018, 0x028),
 		"ZoneBlockSize":        (0x020, 0x038),
@@ -19131,22 +19467,20 @@ class MnNT7LFH(MnNTVistaLFH):
 		"SegmentDelete":        (0x034, 0x054),
 		"CacheAllocs":          (0x038, 0x058),
 		"CacheFrees":           (0x03c, 0x05c),
-		"SizeInCache":          (0x040, 0x060),   # new on Win7
-		"UserBlockCache":       (0x050, 0x070),   # Vista 0x040/0x060 + 0x10
-		"Buckets":              (0x110, 0x1f0),   # Vista 0x100/0x1e0 + 0x10
-		"LocalData":            (0x310, 0x3f0),   # Vista 0x300/0x3e0 + 0x10
+		"SizeInCache":          (0x040, 0x060),
+		"UserBlockCache":       (0x050, 0x070),
+		"Buckets":              (0x110, 0x1f0),
+		"LocalData":            (0x310, 0x3f0),
 	}
+
+	_ubc_base   = (0x050, 0x070)
+	_ubc_bias   = 2
+	_ubc_stride = (0x010, 0x018)
 
 
 class MnNT8LFH(MnNTLFHBase):
-	"""
-	Represents _LFH_HEAP on Windows 8/8.1.
-	Lock changed to _RTL_SRWLOCK (4 bytes x86 / 8 bytes x64).
-	Buckets expanded to 129 entries; SegmentInfoArrays/AffinitizedInfoArrays added as pointer arrays.
-	No MemoryPolicies field.
-	"""
+	"""Represents _LFH_HEAP on Windows 8/8.1."""
 
-	# _LFH_HEAP field offsets: (offset_x86, offset_x64)
 	_offsets = {
 		"SubSegmentZones":             (0x004, 0x008),
 		"Heap":                        (0x00c, 0x018),
@@ -19166,42 +19500,229 @@ class MnNT8LFH(MnNTLFHBase):
 		"LocalData":                   (0x7c8, 0xcc0),
 	}
 
-	def __init__(self, lfhbase):
-		self.address = lfhbase
-		ptrsize = archValue(4, 8)
+	_segmentinfo_class = MnNT8LFHSegmentInfo
+	_localdata_class = MnNT8LFHLocalData
+	_n_buckets = 129
+	_ubc_base   = (0x038, 0x060)
+	_ubc_bias   = 7
+	_ubc_stride = (0x020, 0x030)
 
-		self.Heap                        = readPtrSizeBytes(lfhbase + self._offsets["Heap"][MnPEB.getArch()])
-		self.SubSegmentZones_Flink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][MnPEB.getArch()])
-		self.SubSegmentZones_Blink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][MnPEB.getArch()] + ptrsize)
-		self.NextSegmentInfoArrayAddress = readPtrSizeBytes(lfhbase + self._offsets["NextSegmentInfoArrayAddress"][MnPEB.getArch()])
-		self.FirstUncommittedAddress     = readPtrSizeBytes(lfhbase + self._offsets["FirstUncommittedAddress"][MnPEB.getArch()])
-		self.ReservedAddressLimit        = readPtrSizeBytes(lfhbase + self._offsets["ReservedAddressLimit"][MnPEB.getArch()])
-		self.SegmentCreate               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentCreate"][MnPEB.getArch()], 4))[0]
-		self.SegmentDelete               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentDelete"][MnPEB.getArch()], 4))[0]
-		self.MinimumCacheDepth           = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["MinimumCacheDepth"][MnPEB.getArch()], 4))[0]
-		self.CacheShiftThreshold         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheShiftThreshold"][MnPEB.getArch()], 4))[0]
-		self.Buckets                     = lfhbase + self._offsets["Buckets"][MnPEB.getArch()]
-		self.SegmentInfoArrays           = lfhbase + self._offsets["SegmentInfoArrays"][MnPEB.getArch()]
-		self.AffinitizedInfoArrays       = lfhbase + self._offsets["AffinitizedInfoArrays"][MnPEB.getArch()]
-		self.LocalData                   = lfhbase + self._offsets["LocalData"][MnPEB.getArch()]
+	def __init__(self, heap):
+		super(MnNT8LFH, self).__init__(heap)
+		self._is81plus = self._detectWin81Plus()
+		if self._is81plus:
+			self._subsegment_class = MnNT81LFHSubSegment
+			self._crtzone_class = MnNT10LFHCrtZone
+
+	def _readStruct(self):
+		lfhbase = self.address
+		ptrsize = archValue(4, 8)
+		self.Heap                        = readPtrSizeBytes(lfhbase + self._offset("Heap"))
+		self.SubSegmentZones_Flink       = readPtrSizeBytes(lfhbase + self._offset("SubSegmentZones"))
+		self.SubSegmentZones_Blink       = readPtrSizeBytes(lfhbase + self._offset("SubSegmentZones") + ptrsize)
+		self.NextSegmentInfoArrayAddress = readPtrSizeBytes(lfhbase + self._offset("NextSegmentInfoArrayAddress"))
+		self.FirstUncommittedAddress     = readPtrSizeBytes(lfhbase + self._offset("FirstUncommittedAddress"))
+		self.ReservedAddressLimit        = readPtrSizeBytes(lfhbase + self._offset("ReservedAddressLimit"))
+		self.SegmentCreate               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentCreate"), 4))[0]
+		self.SegmentDelete               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentDelete"), 4))[0]
+		self.Buckets                     = lfhbase + self._offset("Buckets")
+		self.SegmentInfoArrays           = lfhbase + self._offset("SegmentInfoArrays")
+		self.AffinitizedInfoArrays       = lfhbase + self._offset("AffinitizedInfoArrays")
+		self.LocalData                   = lfhbase + self._offset("LocalData")
 
 	def getBlockZones(self):
 		"""Walk SubSegmentZones _LIST_ENTRY (Win8+: doubly-linked list)."""
 		zones = []
-		head_addr = self.address + self._offsets["SubSegmentZones"][MnPEB.getArch()]
+		head_addr = self.address + self._offset("SubSegmentZones")
 		for entry in MnListEntry(head_addr).walk():
 			zones.append({"address": entry})
 		return zones
 
+	def _detectWin81Plus(self):
+		"""True only for the genuine Win8.1 window: this class (and its __init__) is
+		inherited by MnNT10LFH (Win10/11), so the swap to MnNT81LFHSubSegment must NOT fire there --
+		Win10/11 keep MnNT10LFHSubSegment. The shape probe alone can't tell 8.1 from 10/11 (both use
+		NextIndex), so a build UPPER bound is required: 9600 <= build < 10240. Within the window the
+		build is primary and the live _LFH_BLOCK_ZONE tail cross-checks it; shape wins on conflict."""
+		build = 0
+		try:
+			build = mndbg.ntdllBuild()
+		except Exception:
+			build = 0
+		if build >= 10240:
+			return False
+		by_build = (9600 <= build < 10240)
+		shape = self._zoneLooksLike81()
+		if shape is None:
+			return by_build
+		if shape != by_build:
+			mndbg.dbgp("MnNT8LFH: build says %s but CrtZone shape says %s -- trusting shape" %
+			           ("8.1+" if by_build else "Win8", "8.1+" if shape else "Win8"))
+		return shape
 
-class MnNT10LFH(MnNTLFHBase):
+	def _zoneLooksLike81(self):
+		"""Probe the current CrtZone tail."""
+		try:
+			if not self.address:
+				return None
+			crt = readPtr(self._localdata_class.crtZoneAt(self.LocalData))
+			if crt is None or crt == 0:
+				return None
+			tail = MnNT10LFHCrtZone(crt).nextIndex()
+			if tail is None:
+				return None
+			if tail < 0x10000:
+				return True
+			if tail > 0x10000:
+				return False
+			return None
+		except Exception:
+			return None
+
+	def _lfhCeiling(self):
+		"""Win8+ inclusive LFH ceiling = RtlpLargestLfhBlock, resolved query-only via
+		_HEAP.DeCommitFreeBlockThreshold << 4, else default 0x4000."""
+		try:
+			thr = u32(self.heap.heapbase + self.heap._offset("DeCommitFreeBlockThreshold"))
+			if thr is not None and thr:
+				val = thr << 4
+				if 0x4000 <= val <= 0x10000:
+					return val
+		except Exception:
+			pass
+		return 0x4000
+
+	def _resolveLSI(self, bucket_index):
+		"""Win8+: pointer from SegmentInfoArrays[bucket_index]."""
+		if not self.address:
+			return 0
+		ptrsize = archValue(4, 8)
+		try:
+			return readPtrSizeBytes(self.SegmentInfoArrays + (bucket_index * ptrsize))
+		except Exception:
+			return 0
+
+	def _resolveAffinitizedLSI(self, bucket_index):
+		"""Win8+: pointer from AffinitizedInfoArrays[bucket_index] (0 if none)."""
+		if not self.address:
+			return 0
+		ptrsize = archValue(4, 8)
+		try:
+			return readPtrSizeBytes(self.AffinitizedInfoArrays + (bucket_index * ptrsize))
+		except Exception:
+			return 0
+
+	def _subSegmentsFromLSI(self, lsi_addr, bucket, seen):
+		"""Collect Active + Hint + CachedItems subsegments from one LSI, deduped via `seen`. Keeps
+		corrupt-but-real; drops stale sentinels."""
+		ptrsize = archValue(4, 8)
+		si_cls = self._segmentinfo_class
+		out = []
+		def _add(ptr):
+			if not ptr:
+				return
+			ss = self._subsegment_class(ptr, parent_bucket=bucket)
+			if (ss.isValid() or ss.corrupted) and ss.address not in seen:
+				seen.add(ss.address)
+				out.append(ss)
+		try:
+			_add(readPtrSizeBytes(si_cls.activeSubsegmentAt(lsi_addr)))
+			if si_cls.hasHint():
+				_add(readPtrSizeBytes(si_cls.hintAt(lsi_addr)))
+			cached_base = si_cls.cachedItemsBase(lsi_addr)
+			for i in range(si_cls.cachedItemsCount()):
+				_add(readPtrSizeBytes(cached_base + i * ptrsize))
+		except Exception as e:
+			mndbg.dbgp("_subSegmentsFromLSI: read failed at 0x%x: %s" % (lsi_addr, str(e)), errormode=False)
+		return out
+
+	def _affinityLSIValid(self, lsi_addr, bucket_index):
+		"""True if the LSI at lsi_addr is a plausible affinitized entry for bucket_index
+		(self-bounding): non-NULL, sane LocalData back-ptr, BucketIndex == bucket_index."""
+		if not lsi_addr:
+			return False
+		si_cls = self._segmentinfo_class
+		local_data = readPtr(si_cls.localDataAt(lsi_addr))
+		if local_data is None or local_data == 0:
+			return False
+		bidx = u16(si_cls.bucketIndexAt(lsi_addr))
+		if bidx is None:
+			return False
+		return bidx == bucket_index
+
+	def getAffinitizedSubSegments(self, bucket, seen=None):
+		"""Per-affinity-slot subsegments for a bucket. AffinitizedInfoArrays[sizeidx] points to
+		an ARRAY of LSIs (one per non-default slot); iterate at AFFINITY_LSI_STRIDE, validate each
+		(self-bounding), stop at first invalid, cap at AFFINITY_MAX. Full-walk only."""
+		bucket_index = bucket.bucket_index
+		arr = self._resolveAffinitizedLSI(bucket_index)
+		if arr == 0:
+			return []
+		if seen is None:
+			seen = set()
+		ai = MnPEB.getArch()
+		stride = self.AFFINITY_LSI_STRIDE[ai]
+		subsegments = []
+		for k in range(self.AFFINITY_MAX):
+			lsi_addr = arr + k * stride
+			if not self._affinityLSIValid(lsi_addr, bucket_index):
+				break
+			subsegments.extend(self._subSegmentsFromLSI(lsi_addr, bucket, seen))
+		return subsegments
+
+	def getAllSubSegments(self, include_affinity=False):
+		"""Flat subsegment list; pass include_affinity=True for the full walk that folds in the
+		per-affinity-slot subsegments. Dedup shared via `seen`."""
+		result = []
+		seen = set()
+		for bucket in self.getActiveBuckets():
+			for ss in bucket.getSubSegments():
+				if ss.address not in seen:
+					seen.add(ss.address)
+					result.append(ss)
+			if include_affinity and bucket.UseAffinity:
+				result.extend(self.getAffinitizedSubSegments(bucket, seen))
+		return result
+
+	def getAllSubSegmentsFull(self):
+		"""Full walk: default-affinity + per-affinity-slot subsegments."""
+		return self.getAllSubSegments(include_affinity=True)
+
+	def _zoneUsesNextIndex(self):
+		"""Zone-slot layout selector, decoupled from the _is81plus UserBlock-swap flag (review): the
+		_LFH_BLOCK_ZONE tail is NextIndex on Win8.1/10/11 and FreePointer/Limit (bump) on Win8. On the
+		MnNT8LFH class this tracks _is81plus (True only in the 9600 window); MnNT10LFH overrides to
+		always True (Win10/11 always use NextIndex, even though they set _is81plus=False so the Win8.1
+		UserBlock shim does NOT fire)."""
+		return self._is81plus
+
+	def _zoneSlotSubSegments(self, zone_addr, seen):
+		"""NextIndex zone variant (MnNT10LFHCrtZone): slots at zone.firstSlot()+i*SLOT_STRIDE for
+		i in [0, min(NextIndex, SLOT_COUNT)) on Win8.1/10/11; Win8 falls back to the base
+		bump-allocator variant (FreePointer/Limit + ZoneBlockSize stride)."""
+		if not self._zoneUsesNextIndex():
+			return super(MnNT8LFH, self)._zoneSlotSubSegments(zone_addr, seen)
+		out = []
+		zone = MnNT10LFHCrtZone(zone_addr)
+		next_index = zone.nextIndex()
+		if not next_index:
+			return out
+		count = min(next_index, zone.SLOT_COUNT)
+		first_slot = zone.firstSlot()
+		for i in range(count):
+			ss = self._wrapZoneSubSegment(first_slot + i * zone.SLOT_STRIDE, seen)
+			if ss is not None:
+				out.append(ss)
+		return out
+
+
+class MnNT10LFH(MnNT8LFH):
 	"""
 	Represents _LFH_HEAP on Windows 10/11.
 	MemoryPolicies field inserted before Buckets (+0x1b8/+0x2a0).
 	SegmentAllocator pointer added before LocalData.
 	"""
 
-	# _LFH_HEAP field offsets: (offset_x86, offset_x64)
 	_offsets = {
 		"SubSegmentZones":             (0x004, 0x008),
 		"Heap":                        (0x00c, 0x018),
@@ -19223,34 +19744,30 @@ class MnNT10LFH(MnNTLFHBase):
 		"LocalData":                   (0x7d0, 0xcc0),
 	}
 
-	def __init__(self, lfhbase):
-		self.address = lfhbase
+	_crtzone_class = MnNT10LFHCrtZone
+
+	def __init__(self, heap):
+		MnNTLFHBase.__init__(self, heap)
+		self._is81plus = False
+
+	def _zoneUsesNextIndex(self):
+		return True
+
+	def _readStruct(self):
+		lfhbase = self.address
 		ptrsize = archValue(4, 8)
-
-		self.Heap                        = readPtrSizeBytes(lfhbase + self._offsets["Heap"][MnPEB.getArch()])
-		self.SubSegmentZones_Flink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][MnPEB.getArch()])
-		self.SubSegmentZones_Blink       = readPtrSizeBytes(lfhbase + self._offsets["SubSegmentZones"][MnPEB.getArch()] + ptrsize)
-		self.NextSegmentInfoArrayAddress = readPtrSizeBytes(lfhbase + self._offsets["NextSegmentInfoArrayAddress"][MnPEB.getArch()])
-		self.FirstUncommittedAddress     = readPtrSizeBytes(lfhbase + self._offsets["FirstUncommittedAddress"][MnPEB.getArch()])
-		self.ReservedAddressLimit        = readPtrSizeBytes(lfhbase + self._offsets["ReservedAddressLimit"][MnPEB.getArch()])
-		self.SegmentCreate               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentCreate"][MnPEB.getArch()], 4))[0]
-		self.SegmentDelete               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["SegmentDelete"][MnPEB.getArch()], 4))[0]
-		self.MinimumCacheDepth           = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["MinimumCacheDepth"][MnPEB.getArch()], 4))[0]
-		self.CacheShiftThreshold         = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["CacheShiftThreshold"][MnPEB.getArch()], 4))[0]
-		self.MemoryPolicies              = struct.unpack('<L', dbg.readMemory(lfhbase + self._offsets["MemoryPolicies"][MnPEB.getArch()], 4))[0]
-		self.Buckets                     = lfhbase + self._offsets["Buckets"][MnPEB.getArch()]
-		self.SegmentInfoArrays           = lfhbase + self._offsets["SegmentInfoArrays"][MnPEB.getArch()]
-		self.AffinitizedInfoArrays       = lfhbase + self._offsets["AffinitizedInfoArrays"][MnPEB.getArch()]
-		self.SegmentAllocator            = readPtrSizeBytes(lfhbase + self._offsets["SegmentAllocator"][MnPEB.getArch()])
-		self.LocalData                   = lfhbase + self._offsets["LocalData"][MnPEB.getArch()]
-
-	def getBlockZones(self):
-		"""Walk SubSegmentZones _LIST_ENTRY (Win10: same as Win8)."""
-		zones = []
-		head_addr = self.address + self._offsets["SubSegmentZones"][MnPEB.getArch()]
-		for entry in MnListEntry(head_addr).walk():
-			zones.append({"address": entry})
-		return zones
+		self.Heap                        = readPtrSizeBytes(lfhbase + self._offset("Heap"))
+		self.SubSegmentZones_Flink       = readPtrSizeBytes(lfhbase + self._offset("SubSegmentZones"))
+		self.SubSegmentZones_Blink       = readPtrSizeBytes(lfhbase + self._offset("SubSegmentZones") + ptrsize)
+		self.NextSegmentInfoArrayAddress = readPtrSizeBytes(lfhbase + self._offset("NextSegmentInfoArrayAddress"))
+		self.FirstUncommittedAddress     = readPtrSizeBytes(lfhbase + self._offset("FirstUncommittedAddress"))
+		self.ReservedAddressLimit        = readPtrSizeBytes(lfhbase + self._offset("ReservedAddressLimit"))
+		self.SegmentCreate               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentCreate"), 4))[0]
+		self.SegmentDelete               = struct.unpack('<L', dbg.readMemory(lfhbase + self._offset("SegmentDelete"), 4))[0]
+		self.Buckets                     = lfhbase + self._offset("Buckets")
+		self.SegmentInfoArrays           = lfhbase + self._offset("SegmentInfoArrays")
+		self.AffinitizedInfoArrays       = lfhbase + self._offset("AffinitizedInfoArrays")
+		self.LocalData                   = lfhbase + self._offset("LocalData")
 
 
 class ChunkParent:
@@ -19268,11 +19785,18 @@ class ChunkParent:
 class ChunkState:
 	"""Allocation state of a heap chunk (Python 2 compatible enum pattern).
 
-	BUSY - Chunk is allocated (flag bit 0x01 set).
-	FREE - Chunk is on the free list.
+	BUSY    - Chunk is allocated (flag bit 0x01 set).
+	FREE    - Chunk is on the free list.
+	DELAYED - Win8+ LFH only: freed-by-app but still bitmap-busy because it sits on the
+	          subsegment's DelayFreeList. A classic use-after-free-window indicator; reported as a
+	          distinct state, NOT folded into FREE. Vista/7 have no DelayFreeList.
+	UNKNOWN - State could not be determined key-free (e.g. Win8+ subsegment whose BusyBitmap is
+	          unreadable). Reported rather than guessed, so it is never silently mislabeled BUSY/FREE.
 	"""
-	BUSY = "busy"
-	FREE = "free"
+	BUSY    = "busy"
+	FREE    = "free"
+	DELAYED = "delayed"
+	UNKNOWN = "unknown"
 
 
 class MnSListEntry(object):
@@ -19284,27 +19808,26 @@ class MnSListEntry(object):
 
 	@property
 	def head(self):
-		"""Return the first entry pointer (0 if empty)."""
+		"""Return the first entry pointer (0 if empty/unreadable). Uses guarded reads (u64/readPtr)
+		so a bad header degrades to 0 rather than raising into the caller."""
 		if self._is_slist_header:
 			if arch == 64:
-				# x64 _SLIST_HEADER: Region at +0x008, NextEntry = (Region >> 4) << 4
-				region = struct.unpack('<Q', dbg.readMemory(self.address + 8, 8))[0]
-				return (region >> 4) << 4
-			else:
-				# x86 _SLIST_HEADER: Next is at offset 0 (union with _SINGLE_LIST_ENTRY)
-				return readPtrSizeBytes(self.address)
-		return readPtrSizeBytes(self.address)
+				region = u64(self.address + 8)
+				return ((region >> 4) << 4) if region else 0
+			return readPtr(self.address) or 0
+		return readPtr(self.address) or 0
 
 	def walk(self):
-		"""Yield address of each node following Next until NULL. Cycle-safe."""
+		"""Yield address of each node following Next until NULL/unreadable. Cycle-safe; a node whose
+		next-link is unreadable (readPtr -> None) ends the walk cleanly rather than raising."""
 		seen = set()
 		entry = self.head
-		while entry != 0:
+		while entry:
 			if entry in seen:
 				break
 			seen.add(entry)
 			yield entry
-			entry = readPtrSizeBytes(entry)
+			entry = readPtr(entry) or 0
 
 
 class MnNTLFHSubSegmentBase(object):
@@ -19316,31 +19839,50 @@ class MnNTLFHSubSegmentBase(object):
 
 	_offsets = {}
 
+	_cipher_era = "classic"
+
+	_interlockseq_class = MnNTVistaLFHInterlockSeq
+
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_SUBSEGMENT field offset for *name* (MnNTHeap accessor convention)."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	@classmethod
+	def sFreeListEntryOffset(cls):
+		"""Arch-resolved offset of _HEAP_SUBSEGMENT.SFreeListEntry, or None if this version has no such
+		field. Exposed for SLIST reclaim walks that recover a subsegment from a node (subsegment =
+		node - this offset) before any instance exists -- so consumers never index _offsets directly."""
+		sfle = cls._offsets.get("SFreeListEntry")
+		return sfle[MnPEB.getArch()] if sfle is not None else None
+
 	def __init__(self, ssbase, parent_bucket=None):
 		self.address = ssbase
 		self.parent_bucket = parent_bucket
 		self.corrupted = False
 		self.corruption_reason = ""
-		self._user_data = None
+		self._user_block = None
 		self._free_indices = None
+		self._geom_checked = False
 
 		try:
-			ai = MnPEB.getArch()
-			self.LocalInfo      = readPtrSizeBytes(ssbase + self._offsets["LocalInfo"][ai])
-			self.UserBlocks     = readPtrSizeBytes(ssbase + self._offsets["UserBlocks"][ai])
-			raw_exchg           = struct.unpack('<L', dbg.readMemory(ssbase + self._offsets["AggregateExchg"][ai], 4))[0]
-			self.Depth          = raw_exchg & 0xFFFF
-			self.FreeEntryOffset = (raw_exchg >> 16) & 0xFFFF
-			self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockSize"][ai], 2))[0]
-			self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["Flags"][ai], 2))[0]
-			self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offsets["BlockCount"][ai], 2))[0]
-			self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["SizeIndex"][ai], 1))[0]
-			self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offsets["AffinityIndex"][ai], 1))[0]
+			self.LocalInfo      = readPtrSizeBytes(ssbase + self._offset("LocalInfo"))
+			self.UserBlocks     = readPtrSizeBytes(ssbase + self._offset("UserBlocks"))
+			self.AggregateExchg  = self._interlockseq_class(
+				ssbase + self._offset("AggregateExchg"), self)
+			self.Depth           = self.AggregateExchg.Depth
+			self.FreeEntryOffset = self.AggregateExchg.FreeEntryOffset
+			self.BlockSize      = struct.unpack('<H', dbg.readMemory(ssbase + self._offset("BlockSize"), 2))[0]
+			self.Flags          = struct.unpack('<H', dbg.readMemory(ssbase + self._offset("Flags"), 2))[0]
+			self.BlockCount     = struct.unpack('<H', dbg.readMemory(ssbase + self._offset("BlockCount"), 2))[0]
+			self.SizeIndex      = struct.unpack('<B', dbg.readMemory(ssbase + self._offset("SizeIndex"), 1))[0]
+			self.AffinityIndex  = struct.unpack('<B', dbg.readMemory(ssbase + self._offset("AffinityIndex"), 1))[0]
+			self.Lock = u32(ssbase + self._offset("Lock")) or 0
 		except Exception as e:
 			self.corrupted = True
 			self.corruption_reason = "Failed to read subsegment at 0x%x: %s" % (ssbase, str(e))
 			self.LocalInfo = 0
 			self.UserBlocks = 0
+			self.AggregateExchg = None
 			self.Depth = 0
 			self.FreeEntryOffset = 0
 			self.BlockSize = 0
@@ -19348,34 +19890,84 @@ class MnNTLFHSubSegmentBase(object):
 			self.BlockCount = 0
 			self.SizeIndex = 0
 			self.AffinityIndex = 0
+			self.Lock = 0
 
 	def getFreeCount(self):
+		"""Free-block count for this subsegment.
+
+		Vista/7: count the validated in-band free chain (len(getFreeBlockIndices())), so the
+		         aggregate free count and the per-slot FREE labels share ONE source.
+		         AggregateExchg.Depth is the nominal count but can exceed the walkable chain on a
+		         truncated/corrupt chain.
+		Win8+:   the number of 0-bits in the BusyBitmap over [0, BlockCount). Depth is allocator
+		         availability (paired with a randomized Hint), NOT the bitmap-free count, so it is
+		         only an inexact fallback when the bitmap is unreadable (see
+		         freeCountIsExact()).
+		"""
+		ud = self.getUserBlock()
+		if ud is not None and not ud.corrupted:
+			bits = ud.getBusyBitmapBits()
+			if bits is not None:
+				return sum(1 for b in bits if b == 0)
+			if not ud._has_busy_bitmap:
+				return len(self.getFreeBlockIndices())
 		return self.Depth
 
+	def freeCountIsExact(self):
+		"""False when getFreeCount() is the inexact Win8+ Depth fallback (bitmap unreadable), so
+		callers/displays can annotate the count as estimated. Vista/7 and the Win8+
+		bitmap path are exact."""
+		ud = self.getUserBlock()
+		if ud is None or ud.corrupted:
+			return False
+		if not ud._has_busy_bitmap:
+			return True
+		return ud.getBusyBitmapBits() is not None
+
+	def getDelayedCount(self):
+		"""DELAYED block count (Win8+): bitmap-busy blocks pending on the DelayFreeList.
+		Zero on Vista/7. These are a subset of the bitmap-busy blocks."""
+		return len(self.getDelayedIndices())
+
 	def getBusyCount(self):
-		return self.BlockCount - self.Depth
+		"""Busy-block count = BlockCount - free (version-aware via getFreeCount). NOTE this is
+		the bitmap-busy total and so INCLUDES DELAYED blocks; subtract getDelayedCount() for the
+		strictly-allocated count (busy = #1-bits - #DELAYED)."""
+		return self.BlockCount - self.getFreeCount()
 
 	def isValid(self):
-		"""True only for a structurally plausible _HEAP_SUBSEGMENT.
-
-		Inactive buckets hold sentinel/stale LSI pointers; read as a subsegment
-		they show BlockCount==0 with a huge Depth. Requiring BlockCount>0 and
-		Depth<=BlockCount rejects them (free count can't exceed slot count).
-		"""
+		"""True only for a structurally plausible _HEAP_SUBSEGMENT (validation invariants)."""
 		if self.corrupted or self.UserBlocks == 0 or self.BlockSize == 0:
 			return False
 		if self.BlockCount == 0 or self.Depth > self.BlockCount:
 			return False
+		if not self._geom_checked:
+			self._geom_checked = True
+			try:
+				span = self.BlockCount * self.BlockSize * HEAPGRANULARITY
+				region = MnNTUserBlockBase._committedRegionSizeFor(self.UserBlocks)
+				if region and span > region:
+					self.corrupted = True
+					self.corruption_reason = (
+						"geometric: BlockCount 0x%x * stride > region 0x%x at UserBlocks 0x%x" % (
+							self.BlockCount, region, self.UserBlocks))
+			except Exception:
+				pass
+		if self.corrupted:
+			return False
 		return True
 
-	def getFreeBlockIndices(self):
-		"""Return the set of FREE block indices for this subsegment (Win7 LFH).
+	def isLocked(self):
+		"""True if the subsegment's Lock state word has bit0 set (in-use)."""
+		return bool(self.Lock & 1)
 
-		Win7 has no BusyBitmap; free slots form a singly-linked list rooted at
-		AggregateExchg.FreeEntryOffset (8-byte units from UserBlocks). Each free
-		block's next link is a plaintext WORD at block+sizeof(_HEAP_ENTRY); Depth
-		is the free count. Walk bounded by Depth, validated and cycle-guarded.
-		"""
+	def isDeletePending(self):
+		"""True if the subsegment is delete-pending/reclaim. This is the DISCRETE
+		value Lock == 2 (the reclaim state), NOT bit1 -- install sets |6, cache-insert sets |2."""
+		return self.Lock == 2
+
+	def getFreeBlockIndices(self):
+		"""Return the set of FREE block indices for this subsegment (Win7 LFH)."""
 		if self._free_indices is not None:
 			return self._free_indices
 
@@ -19388,8 +19980,8 @@ class MnNTLFHSubSegmentBase(object):
 		stride   = self.BlockSize * gran
 		if stride == 0:
 			return free
-		hdr_size    = archValue(0x10, 0x20)      # _HEAP_USERDATA_HEADER
-		entry_sz    = archValue(0x08, 0x10)      # _HEAP_ENTRY; next link sits past it
+		hdr_size    = archValue(0x10, 0x20)
+		entry_sz    = archValue(0x08, 0x10)
 		first_block = self.UserBlocks + hdr_size
 
 		offset = self.FreeEntryOffset
@@ -19413,16 +20005,137 @@ class MnNTLFHSubSegmentBase(object):
 		self._free_indices = free
 		return free
 
-	def getUserData(self):
-		"""Lazy-construct and return the MnNTUserData for this subsegment."""
-		if self._user_data is None and self.isValid():
-			block_size_bytes = self.BlockSize * HEAPGRANULARITY
-			self._user_data = self._createUserData(self.UserBlocks, block_size_bytes, self.BlockCount)
-		return self._user_data
+	def getDelayedIndices(self):
+		"""Return the set of DELAYED block indices for this subsegment (Win8+ only)."""
+		delayed = set()
+		if not self.DelayFreeList or self.BlockCount == 0:
+			return delayed
+		entry_sz = archValue(0x08, 0x10)
+		idx_off  = archValue(0x04, 0x0c)
+		try:
+			sl = MnSListEntry(self.DelayFreeList, is_slist_header=True)
+			for node in sl.walk():
+				base = node - entry_sz
+				dword = u32(base + idx_off)
+				if dword is None:
+					continue
+				idx = (dword >> 8) & 0xFFFF
+				if 0 <= idx < self.BlockCount:
+					delayed.add(idx)
+		except Exception as e:
+			mndbg.dbgp("getDelayedIndices: walk failed at 0x%x: %s" % (self.DelayFreeList, str(e)),
+			           errormode=False)
+		return delayed
 
-	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
-		"""Subclasses override to create the correct MnNTUserData version."""
-		return MnNTVistaUserData(userblocks_addr, block_size_bytes, block_count, self)
+	def getUserBlock(self):
+		"""Lazy-construct and return the MnNTUserBlock for this subsegment."""
+		if self._user_block is None and self.isValid():
+			block_size_bytes = self.BlockSize * HEAPGRANULARITY
+			self._user_block = self._createUserBlock(self.UserBlocks, block_size_bytes, self.BlockCount)
+		return self._user_block
+
+	def _createUserBlock(self, userblocks_addr, block_size_bytes, block_count):
+		"""Subclasses override to create the correct MnNTUserBlock version."""
+		return MnNTVistaUserBlock(userblocks_addr, block_size_bytes, block_count, self)
+
+	def _cipherHeap(self):
+		"""H operand for the cipher = _LFH_HEAP.Heap (the _HEAP handle, read at a version-dependent
+		offset and already stored as lfh.Heap). Returns None if the parent chain is incomplete."""
+		try:
+			lfh = self.parent_bucket.parent_lfh.lfh
+			if lfh is not None:
+				return lfh.Heap
+		except Exception:
+			pass
+		return None
+
+	def _blockAddrs(self, n):
+		"""First up to n block addresses (the encode site A for each slot). Vista/7 prefer free
+		blocks (their headers are the cleanest cipher witnesses); all eras fall back to sequential
+		slots. Anchored on the UserData first-block grid so A matches the writer's encode site."""
+		ud = self.getUserBlock()
+		if ud is None or ud.corrupted:
+			return []
+		stride = self.BlockSize * HEAPGRANULARITY
+		if stride == 0 or self.BlockCount == 0:
+			return []
+		first = ud.first_block_addr
+		idxs = []
+		if not ud._has_busy_bitmap:
+			idxs = sorted(self.getFreeBlockIndices())[:n]
+		if len(idxs) < n:
+			for i in range(self.BlockCount):
+				if i not in idxs:
+					idxs.append(i)
+				if len(idxs) >= n:
+					break
+		return [first + i * stride for i in idxs[:n]]
+
+	def recoverKeyCandidates(self, n=1):
+		"""Return up to n RtlpLFHKey candidates by inverting the cipher on this subsegment's blocks
+		(relaxation 1/2). Operands: A = block addr, H = _LFH_HEAP.Heap, S = this subsegment's
+		address, U = UserBlocks, era = _cipher_era. Skips unreadable blocks; [] if none recover."""
+		H = self._cipherHeap()
+		if H is None or not self.isValid():
+			return []
+		out = []
+		for A in self._blockAddrs(n):
+			k = MnLFHCipher.recoverKey(A, self._cipher_era, H, self.address, self.UserBlocks)
+			if k is not None:
+				out.append(k)
+		return out
+
+	def validateBlock(self, address, key):
+		"""True if the block at *address* validates under the cipher with *key* (recompute &
+		compare). Used to confirm a recovered key / flag corruption. False if key is None."""
+		H = self._cipherHeap()
+		if H is None or key is None:
+			return False
+		return MnLFHCipher.validate(address, self._cipher_era, H, self.address, self.UserBlocks, key)
+
+	def keyValidates(self, key, n=3):
+		"""True if *key* validates against at least one of this subsegment's first n blocks (recompute
+		& compare). Used to CONFIRM a key candidate from any source (block inversion, ntdll symbol,
+		EncodedOffsets) before it is trusted -- so a single confirmed source is sufficient and a wrong
+		candidate is rejected even when it would otherwise win a vote. False if key is None/unusable."""
+		if key is None or not self.isValid():
+			return False
+		blocks = self._blockAddrs(n)
+		return any(self.validateBlock(A, key) for A in blocks)
+
+	def _cipherLfhBase(self):
+		"""The _LFH_HEAP base address (NOT the .Heap handle). EncodedOffsets is keyed with this base,
+		unlike the per-block cipher which uses .Heap. Returns None if the parent chain is incomplete."""
+		try:
+			return self.parent_bucket.parent_lfh.address or None
+		except Exception:
+			return None
+
+	def recoverKeyFromEncodedOffsets(self):
+		"""Recover RtlpLFHKey by inverting the _HEAP_USERDATA_HEADER.EncodedOffsets encoding (Win8.1+
+		only). A SECOND, independent vector from block inversion: it reads the subsegment's USERDATA
+		HEADER, so it can recover the key even when the subsegment's block pages are unreadable."""
+		if self._cipher_era != "8.1+":
+			return None
+		ud = self.getUserBlock()
+		if ud is None or ud.corrupted:
+			return None
+		try:
+			enc = u32(ud.address + ud._offset("EncodedOffsets"))
+		except Exception:
+			enc = None
+		if enc is None:
+			return None
+		lfh_base = self._cipherLfhBase()
+		if lfh_base is None:
+			return None
+		first_alloc = getattr(ud, "FirstAllocationOffset", 0) or 0
+		stride      = getattr(ud, "BlockStride", 0) or (self.BlockSize * HEAPGRANULARITY)
+		if first_alloc <= 0 or stride <= 0:
+			return None
+		stride_and_offset = (first_alloc | ((stride << 16) & 0xFFFF0000)) & 0xFFFFFFFF
+		k = (enc ^ stride_and_offset ^ (lfh_base & 0xFFFFFFFF) ^ (ud.address & 0xFFFFFFFF)) & 0xFFFFFFFF
+		return k
 
 	def getRange(self):
 		"""Return (start, end) memory range covered by this subsegment's UserBlocks.
@@ -19435,19 +20148,12 @@ class MnNTLFHSubSegmentBase(object):
 		return (self.UserBlocks, self.UserBlocks + self.BlockCount * self.BlockSize * HEAPGRANULARITY)
 
 	def getChunkAt(self, address):
-		"""Return an MnChunk for the LFH slot containing *address*, or None.
-
-		Location is pure arithmetic (never None for an in-range address, so an
-		LFH slot is never misreported as "no chunk"). State falls back across
-		versions: Win8+ BusyBitmap if present, else the Win7 free-offset chain.
-		"""
+		"""Return an MnChunk for the LFH slot containing *address*, or None."""
 		if not self.isValid():
 			return None
-		ud = self.getUserData()
+		ud = self.getUserBlock()
 		if ud is None or ud.corrupted:
 			return None
-
-		# Location: arithmetic, version-independent, clamped into [0, BlockCount).
 		stride      = self.BlockSize * HEAPGRANULARITY
 		first_block = ud.first_block_addr
 		if stride == 0:
@@ -19458,13 +20164,15 @@ class MnNTLFHSubSegmentBase(object):
 		elif idx >= self.BlockCount:
 			idx = self.BlockCount - 1
 		block_start = first_block + idx * stride
-
-		# State: BusyBitmap (Win8+) first, else Win7 free-offset chain.
 		info = ud.getBlockBitmapInfo(address)
 		if info is not None:
-			block_start, state = info
-		else:
+			_, state = info
+		elif not ud._has_busy_bitmap:
 			state = ChunkState.FREE if idx in self.getFreeBlockIndices() else ChunkState.BUSY
+		else:
+			state = ChunkState.UNKNOWN
+		if state == ChunkState.BUSY and idx in self.getDelayedIndices():
+			state = ChunkState.DELAYED
 
 		heap_base = 0
 		try:
@@ -19476,6 +20184,9 @@ class MnNTLFHSubSegmentBase(object):
 		                self.BlockSize, 0, 0, flag, 0, 0)
 		chunk.parent = ChunkParent.LFH
 		chunk.parent_ref = self
+		chunk.lfh_state = state
+		if state in (ChunkState.BUSY, ChunkState.DELAYED):
+			chunk.lfh_user_size = ud.busyUserSize(block_start)
 		mndbg.dbgp("getChunkAt: addr=0x%x block_start=0x%x idx=%d state=%s" % (
 			address, block_start, idx, state))
 		return chunk
@@ -19501,12 +20212,14 @@ class MnNTVistaLFHSubSegment(MnNTLFHSubSegmentBase):
 		super(MnNTVistaLFHSubSegment, self).__init__(ssbase, parent_bucket)
 		self.DelayFreeList = 0
 
-	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
-		return MnNTVistaUserData(userblocks_addr, block_size_bytes, block_count, self)
+	def _createUserBlock(self, userblocks_addr, block_size_bytes, block_count):
+		return MnNTVistaUserBlock(userblocks_addr, block_size_bytes, block_count, self)
 
 
 class MnNT8LFHSubSegment(MnNTLFHSubSegmentBase):
-	"""_HEAP_SUBSEGMENT on Win8/8.1. Has DelayFreeList."""
+	"""_HEAP_SUBSEGMENT on Win8/8.1. Has DelayFreeList. 4-byte _INTERLOCK_SEQ (Hint:15+Lock:1)."""
+
+	_interlockseq_class = MnNT8LFHInterlockSeq
 
 	_offsets = {
 		"LocalInfo":      (0x000, 0x000),
@@ -19525,16 +20238,26 @@ class MnNT8LFHSubSegment(MnNTLFHSubSegmentBase):
 	def __init__(self, ssbase, parent_bucket=None):
 		super(MnNT8LFHSubSegment, self).__init__(ssbase, parent_bucket)
 		if not self.corrupted:
-			self.DelayFreeList = ssbase + self._offsets["DelayFreeList"][MnPEB.getArch()]
+			self.DelayFreeList = ssbase + self._offset("DelayFreeList")
 		else:
 			self.DelayFreeList = 0
 
-	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
-		return MnNT8UserData(userblocks_addr, block_size_bytes, block_count, self)
+	def _createUserBlock(self, userblocks_addr, block_size_bytes, block_count):
+		return MnNT8UserBlock(userblocks_addr, block_size_bytes, block_count, self)
+
+
+class MnNT81LFHSubSegment(MnNT8LFHSubSegment):
+	"""_HEAP_SUBSEGMENT on Win8.1 (build >= 9600)."""
+	_cipher_era = "8.1+"
+
+	def _createUserBlock(self, userblocks_addr, block_size_bytes, block_count):
+		return MnNT10UserBlock(userblocks_addr, block_size_bytes, block_count, self)
 
 
 class MnNT10LFHSubSegment(MnNTLFHSubSegmentBase):
-	"""_HEAP_SUBSEGMENT on Win10/11. Lock before SFreeListEntry."""
+	"""_HEAP_SUBSEGMENT on Win10/11. Lock before SFreeListEntry. 4-byte _INTERLOCK_SEQ."""
+	_cipher_era = "8.1+"
+	_interlockseq_class = MnNT8LFHInterlockSeq
 
 	_offsets = {
 		"LocalInfo":      (0x000, 0x000),
@@ -19553,20 +20276,27 @@ class MnNT10LFHSubSegment(MnNTLFHSubSegmentBase):
 	def __init__(self, ssbase, parent_bucket=None):
 		super(MnNT10LFHSubSegment, self).__init__(ssbase, parent_bucket)
 		if not self.corrupted:
-			self.DelayFreeList = ssbase + self._offsets["DelayFreeList"][MnPEB.getArch()]
+			self.DelayFreeList = ssbase + self._offset("DelayFreeList")
 		else:
 			self.DelayFreeList = 0
 
-	def _createUserData(self, userblocks_addr, block_size_bytes, block_count):
-		return MnNT10UserData(userblocks_addr, block_size_bytes, block_count, self)
+	def _createUserBlock(self, userblocks_addr, block_size_bytes, block_count):
+		return MnNT10UserBlock(userblocks_addr, block_size_bytes, block_count, self)
+
+MnNTVistaLFH._subsegment_class = MnNTVistaLFHSubSegment
+MnNT8LFH._subsegment_class     = MnNT8LFHSubSegment
+MnNT10LFH._subsegment_class    = MnNT10LFHSubSegment
 
 
-class MnNTUserDataBase(object):
+class MnNTUserBlockBase(object):
 	"""Base for _HEAP_USERDATA_HEADER implementations."""
+	_offsets = {}
 
-	# Subclasses set header_size
-	_header_size_x86 = 0x10
-	_header_size_x64 = 0x20
+	_has_busy_bitmap = True
+
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_USERDATA_HEADER offset for *name* (this subclass's version)."""
+		return self._offsets[name][MnPEB.getArch()]
 
 	def __init__(self, userblocks_addr, block_size_bytes, block_count, parent_subsegment=None):
 		self.address = userblocks_addr
@@ -19575,18 +20305,14 @@ class MnNTUserDataBase(object):
 		self.parent_subsegment = parent_subsegment
 		self.corrupted = False
 		self.corruption_reason = ""
-		self.header_size = archValue(self._header_size_x86, self._header_size_x64)
+		self._chunks = None
+		self.header_size = self._offset("Header")
 		self.first_block_addr = userblocks_addr + self.header_size
 
 		try:
-			self.SubSegment = readPtrSizeBytes(userblocks_addr)
-			ptrsize = archValue(4, 8)
-			# SizeIndex at header+0x08 (x86) or header+0x10 (x64)
-			si_offset = archValue(0x08, 0x10)
-			self.SizeIndex = struct.unpack('<B', dbg.readMemory(userblocks_addr + si_offset, 1))[0]
-			# Signature at header+0x0c (x86) or header+0x14 (x64)
-			sig_offset = archValue(0x0c, 0x14)
-			self.Signature = struct.unpack('<L', dbg.readMemory(userblocks_addr + sig_offset, 4))[0]
+			self.SubSegment = readPtrSizeBytes(userblocks_addr + self._offset("SubSegment"))
+			self.SizeIndex = struct.unpack('<B', dbg.readMemory(userblocks_addr + self._offset("SizeIndex"), 1))[0]
+			self.Signature = struct.unpack('<L', dbg.readMemory(userblocks_addr + self._offset("Signature"), 4))[0]
 		except Exception as e:
 			self.corrupted = True
 			self.corruption_reason = "Failed to read UserData header at 0x%x: %s" % (userblocks_addr, str(e))
@@ -19600,22 +20326,23 @@ class MnNTUserDataBase(object):
 			return False
 		return True
 
-	# _HEAP_USERDATA_HEADER BusyBitmap layout (Win8+/Win10/11): (x86, x64).
-	#   Signature (0xF0E0D0C0) | BusyBitmap _RTL_BITMAP { SizeOfBitMap; Buffer }
-	# Bit set = slot busy, clear = free; bits past BlockCount are sentinel-masked.
-	_bitmap_offsets = {
-		"Signature":    (0x0c, 0x14),
-		"SizeOfBitMap": (0x14, 0x1c),
-		"Buffer":       (0x18, 0x20),
-	}
+	@staticmethod
+	def _committedRegionSizeFor(addr):
+		"""Committed region size (bytes) containing addr, from the debugger memory map."""
+		try:
+			page = dbg.getMemoryPageByAddress(addr)
+			if page is None:
+				return 0
+			base = page.getBaseAddress()
+			size = page.getSize()
+			if size <= 0:
+				return 0
+			return (base + size) - addr
+		except Exception:
+			return 0
 
 	def getBlockBitmapInfo(self, address):
-		"""Locate the block containing *address* and read its BusyBitmap state.
-
-		Returns (block_start, ChunkState) or None.  Key-free: relies only on the
-		_HEAP_USERDATA_HEADER BusyBitmap, not on the (LFH-key-encoded, hence
-		undecodable here) per-block _HEAP_ENTRY headers.
-		"""
+		"""Locate the block containing *address* and read its BusyBitmap state."""
 		ss = self.parent_subsegment
 		if ss is None:
 			return None
@@ -19623,20 +20350,18 @@ class MnNTUserDataBase(object):
 		block_count = ss.BlockCount
 		if block_bytes == 0 or block_count == 0:
 			return None
-		ai = MnPEB.getArch()
+		first_block = self.first_block_addr
+		if address < first_block:
+			return None
+		idx = (address - first_block) // block_bytes
+		if idx < 0 or idx >= block_count:
+			return None
 		try:
-			sig = struct.unpack('<L', dbg.readMemory(self.address + self._bitmap_offsets["Signature"][ai], 4))[0]
+			sig = struct.unpack('<L', dbg.readMemory(self.address + self._offset("Signature"), 4))[0]
 			if sig != 0xF0E0D0C0:
 				return None
-			buf = readPtrSizeBytes(self.address + self._bitmap_offsets["Buffer"][ai])
+			buf = readPtrSizeBytes(self.address + self._offset("Buffer"))
 			if buf == 0:
-				return None
-			bitmap_dwords = (block_count + 31) // 32
-			first_block   = buf + bitmap_dwords * 4
-			if address < first_block:
-				return None
-			idx = (address - first_block) // block_bytes
-			if idx >= block_count:
 				return None
 			block_start = first_block + idx * block_bytes
 			dword = struct.unpack('<L', dbg.readMemory(buf + (idx // 32) * 4, 4))[0]
@@ -19655,12 +20380,11 @@ class MnNTUserDataBase(object):
 		block_count = ss.BlockCount
 		if block_count == 0:
 			return None
-		ai = MnPEB.getArch()
 		try:
-			sig = struct.unpack('<L', dbg.readMemory(self.address + self._bitmap_offsets["Signature"][ai], 4))[0]
+			sig = struct.unpack('<L', dbg.readMemory(self.address + self._offset("Signature"), 4))[0]
 			if sig != 0xF0E0D0C0:
 				return None
-			buf = readPtrSizeBytes(self.address + self._bitmap_offsets["Buffer"][ai])
+			buf = readPtrSizeBytes(self.address + self._offset("Buffer"))
 			if buf == 0:
 				return None
 			ndwords = (block_count + 31) // 32
@@ -19678,162 +20402,193 @@ class MnNTUserDataBase(object):
 				bucket = ss.parent_bucket
 				if bucket.parent_lfh and bucket.parent_lfh.heap:
 					return bucket.parent_lfh.heap.getEncodingKey()
-		except:
+		except Exception:
 			pass
 		return 0
 
-	def getChunks(self):
-		"""Walk blocks and return list of MnChunk with parent=ChunkParent.LFH.
+	def busyUserSize(self, block_addr):
+		"""Exact user-requested size of a BUSY block from its ExtendedBlockSignature."""
+		esb_off = archValue(0x07, 0x0f)
+		esb = u8(block_addr + esb_off)
+		if esb is None:
+			return None
+		low6 = esb & 0x3f
+		if (esb & 0x40) or low6 == 0x3f or esb == 5:
+			return None
+		size = self.block_size_bytes - low6
+		return size if size > 0 else None
 
-		Each block is at first_block_addr + index * block_size_bytes.
-		Decode _HEAP_ENTRY header via encoding key.
-		"""
+	def getBlocks(self):
+		"""Walk blocks and return list of MnChunk with parent=ChunkParent.LFH."""
+		if self._chunks is not None:
+			return self._chunks
 		if self.corrupted or self.block_count == 0 or self.block_size_bytes == 0:
-			return []
+			self._chunks = []
+			return self._chunks
 
-		key = self._getEncodingKey()
-		hdr_off = archValue(0, 8)
 		chunks = []
 		heap_base = 0
+		ss = self.parent_subsegment
 		try:
-			ss = self.parent_subsegment
 			if ss and ss.parent_bucket and ss.parent_bucket.parent_lfh:
 				heap_base = ss.parent_bucket.parent_lfh.heap.heapbase
-		except:
+		except Exception:
 			pass
+		busy_bits = self.getBusyBitmapBits()
+		free_indices = None
+		if busy_bits is None and not self._has_busy_bitmap and ss is not None:
+			free_indices = ss.getFreeBlockIndices()
+		delayed_indices = ss.getDelayedIndices() if ss is not None else set()
+
+		size_units = self.block_size_bytes // HEAPGRANULARITY
 
 		for i in range(self.block_count):
 			chunk_addr = self.first_block_addr + (i * self.block_size_bytes)
+			if busy_bits is not None and i < len(busy_bits):
+				state = ChunkState.BUSY if busy_bits[i] == 1 else ChunkState.FREE
+			elif free_indices is not None:
+				state = ChunkState.FREE if i in free_indices else ChunkState.BUSY
+			else:
+				state = ChunkState.UNKNOWN
+			if state == ChunkState.BUSY and i in delayed_indices:
+				state = ChunkState.DELAYED
+			flag = 0x01 if state == ChunkState.BUSY else 0x00
 			try:
-				if key == 0:
-					raw = dbg.readMemory(chunk_addr + hdr_off, 8)
-					size   = struct.unpack('<H', raw[0:2])[0]
-					flag   = struct.unpack('<B', raw[2:3])[0]
-					tag    = struct.unpack('<B', raw[3:4])[0]
-					prevsize = struct.unpack('<H', raw[4:6])[0]
-					segid  = struct.unpack('<B', raw[6:7])[0]
-					unused = struct.unpack('<B', raw[7:8])[0]
-				else:
-					raw = decodeHeapHeader(chunk_addr + hdr_off, 8, key)
-					size   = struct.unpack('<H', raw[0:2])[0]
-					flag   = struct.unpack('<B', raw[2:3])[0]
-					tag    = struct.unpack('<B', raw[3:4])[0]
-					prevsize = struct.unpack('<H', raw[4:6])[0]
-					segid  = struct.unpack('<B', raw[6:7])[0]
-					unused = struct.unpack('<B', raw[7:8])[0]
 				chunk = MnChunk(chunk_addr, "chunk", HEAPGRANULARITY, heap_base, 0,
-								size, prevsize, segid, flag, unused, tag)
+								size_units, 0, 0, flag, 0, 0)
 				chunk.parent = ChunkParent.LFH
 				chunk.parent_ref = self.parent_subsegment
+				chunk.lfh_state = state
+				if state in (ChunkState.BUSY, ChunkState.DELAYED):
+					chunk.lfh_user_size = self.busyUserSize(chunk_addr)
 				chunks.append(chunk)
-			except:
+			except Exception:
 				pass
-		return chunks
+		self._chunks = chunks
+		return self._chunks
 
 
-class MnNTVistaUserData(MnNTUserDataBase):
-	"""_HEAP_USERDATA_HEADER on Vista/7.
-
-	Stride computed from parent subsegment BlockSize * HEAPGRANULARITY.
-	No EncodedOffsets field, and no BusyBitmap -- Vista/7 track free blocks via
-	an in-band 16-bit next-free-offset chain (AggregateExchg.FreeEntryOffset).
-	"""
-	_header_size_x86 = 0x10
-	_header_size_x64 = 0x20
+class MnNTVistaUserBlock(MnNTUserBlockBase):
+	"""_HEAP_USERDATA_HEADER on Vista/7."""
+	_offsets = {
+		"Header":     (0x010, 0x020),
+		"SubSegment": (0x000, 0x000),
+		"SizeIndex":  (0x008, 0x010),
+		"Signature":  (0x00c, 0x018),
+	}
+	_has_busy_bitmap = False
 
 	def getBlockBitmapInfo(self, address):
-		# Vista/7 has no BusyBitmap; per-slot state needs the free-offset chain.
 		return None
 
 	def getBusyBitmapBits(self):
-		# Vista/7 has no BusyBitmap.
 		return None
 
 
-class MnNT8UserData(MnNTUserDataBase):
-	"""_HEAP_USERDATA_HEADER on Win8.
+class MnNT8UserBlock(MnNTUserBlockBase):
+	"""_HEAP_USERDATA_HEADER on Win8."""
 
-	Has FirstAllocationOffset and BlockStride fields (raw, not encoded).
-	BusyBitmap present.
-	"""
-	_header_size_x86 = 0x10
-	_header_size_x64 = 0x20
+	_offsets = {
+		"Header":         (0x010, 0x020),
+		"SubSegment":     (0x000, 0x000),
+		"SizeIndex":      (0x008, 0x010),
+		"Signature":      (0x00c, 0x014),
+		"EncodedOffsets": (0x010, 0x018),
+		"SizeOfBitMap":   (0x014, 0x020),
+		"Buffer":         (0x018, 0x028),
+	}
 
 	def __init__(self, userblocks_addr, block_size_bytes, block_count, parent_subsegment=None):
-		super(MnNT8UserData, self).__init__(userblocks_addr, block_size_bytes, block_count, parent_subsegment)
+		super(MnNT8UserBlock, self).__init__(userblocks_addr, block_size_bytes, block_count, parent_subsegment)
 		if not self.corrupted:
 			try:
-				offsets_field = archValue(0x10, 0x18)
-				raw_offsets = struct.unpack('<L', dbg.readMemory(userblocks_addr + offsets_field, 4))[0]
+				raw_offsets = struct.unpack('<L', dbg.readMemory(userblocks_addr + self._offset("EncodedOffsets"), 4))[0]
 				self.FirstAllocationOffset = raw_offsets & 0xFFFF
 				self.BlockStride = (raw_offsets >> 16) & 0xFFFF
 				if self.FirstAllocationOffset > 0:
 					self.first_block_addr = userblocks_addr + self.FirstAllocationOffset
 				if self.BlockStride > 0:
 					self.block_size_bytes = self.BlockStride
-			except:
+			except Exception:
 				pass
 
 
-class MnNT10UserData(MnNTUserDataBase):
-	"""_HEAP_USERDATA_HEADER on Win8.1/10/11.
-
-	EncodedOffsets field replaces raw FirstAllocationOffset/BlockStride.
-	Must XOR with encoding key material to decode.
-	"""
-	_header_size_x86 = 0x10
-	_header_size_x64 = 0x20
+class MnNT10UserBlock(MnNTUserBlockBase):
+	"""_HEAP_USERDATA_HEADER on Win8.1/10/11."""
+	_offsets = MnNT8UserBlock._offsets
+	_M5_FIXED_HDR   = (0x20, 0x40)
+	_M5_ALIGN_MASK  = (0x07, 0x0f)
 
 	def __init__(self, userblocks_addr, block_size_bytes, block_count, parent_subsegment=None):
-		super(MnNT10UserData, self).__init__(userblocks_addr, block_size_bytes, block_count, parent_subsegment)
-		if not self.corrupted:
-			try:
-				offsets_field = archValue(0x10, 0x18)
-				raw_encoded = struct.unpack('<L', dbg.readMemory(userblocks_addr + offsets_field, 4))[0]
-				# Decode: XOR with encoding key low dword
-				key = self._getEncodingKey()
-				if key != 0:
-					decoded = raw_encoded ^ (key & 0xFFFFFFFF)
-				else:
-					decoded = raw_encoded
-				self.FirstAllocationOffset = decoded & 0xFFFF
-				self.BlockStride = (decoded >> 16) & 0xFFFF
-				if self.FirstAllocationOffset > 0:
-					self.first_block_addr = userblocks_addr + self.FirstAllocationOffset
-				if self.BlockStride > 0:
-					self.block_size_bytes = self.BlockStride
-			except:
-				pass
+		super(MnNT10UserBlock, self).__init__(userblocks_addr, block_size_bytes, block_count, parent_subsegment)
+		if self.corrupted:
+			return
+		self.BlockStride = block_size_bytes
+		self.FirstAllocationOffset = self._computeFirstAllocationOffset(userblocks_addr, block_count)
+		if self.FirstAllocationOffset > 0:
+			self.first_block_addr = userblocks_addr + self.FirstAllocationOffset
+
+	def _computeFirstAllocationOffset(self, userblocks_addr, block_count):
+		"""Key-free FirstAllocationOffset for Win8.1+."""
+		ai  = MnPEB.getArch()
+		hdr = self._M5_FIXED_HDR[ai]
+		align = self._M5_ALIGN_MASK[ai]
+		try:
+			buf = readPtr(userblocks_addr + self._offset("Buffer"))
+			if buf:
+				ndwords = (block_count + 31) // 32
+				end = (buf - userblocks_addr) + ndwords * 4
+				if end > 0:
+					return (end + align) & ~align
+		except Exception:
+			pass
+		try:
+			stride = self.block_size_bytes + archValue(0x08, 0x10)   # + sizeof(_HEAP_ENTRY)
+			region = MnNTUserBlockBase._committedRegionSizeFor(userblocks_addr)
+			if stride > 0 and region > hdr:
+				est = (region - hdr) // stride
+				bmp = ((est + 0x1f) >> 3) & archValue(0x1ffffffc, 0x1ffffffffffffffc)
+				first = (bmp + hdr) & ~align
+				if first > 0:
+					return first
+		except Exception:
+			pass
+		return hdr
 
 
-class MnNTHeapBucket(object):
-	"""One LFH size class -- _HEAP_BUCKET + _HEAP_LOCAL_SEGMENT_INFO."""
+class MnNTLFHBucket(object):
+	"""One LFH size class -- the pure _HEAP_BUCKET header (BlockUnits / SizeIndex / Flags)."""
 
-	# _HEAP_BUCKET is always 4 bytes: BlockUnits(2) + SizeIndex(1) + Flags(1)
 	_BUCKET_SIZE = 4
 
-	def __init__(self, bucket_index, bucket_addr, lsi_addr, parent_lfh, subsegment_class):
+	_offsets = {
+		"BlockUnits": (0x000, 0x000),
+		"SizeIndex":  (0x002, 0x002),
+		"Flags":      (0x003, 0x003),
+	}
+
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_BUCKET field offset for *name* (canonical mona style)."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, bucket_index, bucket_addr, parent_lfh):
+		"""Pure _HEAP_BUCKET (one LFH size class header), 4 bytes. Read once, then split into fields."""
 		self.bucket_index = bucket_index
 		self.bucket_addr = bucket_addr
-		self.lsi_addr = lsi_addr
 		self.parent_lfh = parent_lfh
-		self._subsegment_class = subsegment_class
+		self.segment_info = None
 		self.corrupted = False
 		self.corruption_reason = ""
-		self._subsegments = None
-
-		# LSI field offsets come from the LFH class (single source of truth).
-		lfh_cls    = parent_lfh._lfh_class
-		lsi_off    = lfh_cls._lsi_offsets
-		n_cached   = lfh_cls.CACHED_ITEMS_COUNT
-
-		ai = MnPEB.getArch()
 		try:
 			raw = dbg.readMemory(bucket_addr, self._BUCKET_SIZE)
-			self.BlockUnits  = struct.unpack('<H', raw[0:2])[0]
-			self.SizeIndex   = struct.unpack('<B', raw[2:3])[0]
-			self.Flags       = struct.unpack('<B', raw[3:4])[0]
+			o_bu = self._offset("BlockUnits")
+			o_si = self._offset("SizeIndex")
+			o_fl = self._offset("Flags")
+			self.BlockUnits  = struct.unpack('<H', raw[o_bu:o_bu+2])[0]
+			self.SizeIndex   = struct.unpack('<B', raw[o_si:o_si+1])[0]
+			self.Flags       = struct.unpack('<B', raw[o_fl:o_fl+1])[0]
 			self.UseAffinity = (self.Flags & 0x01) != 0
+			self.DebugFlags  = (self.Flags >> 1) & 0x03
 		except Exception as e:
 			self.corrupted = True
 			self.corruption_reason = "Failed to read bucket at 0x%x: %s" % (bucket_addr, str(e))
@@ -19841,370 +20596,43 @@ class MnNTHeapBucket(object):
 			self.SizeIndex = 0
 			self.Flags = 0
 			self.UseAffinity = False
+			self.DebugFlags = 0
 
 		self.block_size_bytes = self.BlockUnits * HEAPGRANULARITY
-		self.active_subsegment = None
-		self.hint_subsegment = None
-		self.cached_items = []
-
-		if lsi_addr != 0 and not self.corrupted:
-			try:
-				active_ptr = readPtrSizeBytes(lsi_addr + lsi_off["ActiveSubsegment"][ai])
-				if active_ptr != 0:
-					self.active_subsegment = self._subsegment_class(active_ptr, parent_bucket=self)
-				# Hint holds the bucket's primary subsegment; for some buckets it is
-				# the only place the committed subsegment is referenced.
-				hint_ptr = readPtrSizeBytes(lsi_addr + lsi_off["Hint"][ai])
-				if hint_ptr != 0:
-					self.hint_subsegment = self._subsegment_class(hint_ptr, parent_bucket=self)
-				# CachedItems[16] -- present on Vista/7/8+ alike.
-				cached_base = lsi_addr + lsi_off["CachedItems"][ai]
-				ptrsize = archValue(4, 8)
-				for i in range(n_cached):
-					ptr = readPtrSizeBytes(cached_base + i * ptrsize)
-					if ptr != 0:
-						ss = self._subsegment_class(ptr, parent_bucket=self)
-						if ss.isValid():
-							self.cached_items.append(ss)
-			except Exception as e:
-				self.corrupted = True
-				self.corruption_reason = "Failed to read LSI at 0x%x: %s" % (lsi_addr, str(e))
 
 	def isSentinel(self):
 		return self.bucket_index == 128
 
 	def getSubSegments(self):
-		"""Valid subsegments (active + hint + cached), deduped by address.
-		Order matters: Active, then Hint, then CachedItems. Hint holds the
-		bucket's primary subsegment and is sometimes the only reference to a
-		committed subsegment (Active and CachedItems both null), so omitting it
-		drops otherwise-valid buckets. The same subsegment frequently appears in
-		more than one of these, hence the dedup."""
-		if self._subsegments is None:
-			self._subsegments = []
-			seen = set()
-			candidates = []
-			if self.active_subsegment and self.active_subsegment.isValid():
-				candidates.append(self.active_subsegment)
-			if self.hint_subsegment and self.hint_subsegment.isValid():
-				candidates.append(self.hint_subsegment)
-			candidates.extend(self.cached_items)
-			for ss in candidates:
-				if ss.address in seen:
-					continue
-				seen.add(ss.address)
-				self._subsegments.append(ss)
-		return self._subsegments
-
-	def getTotalBlocks(self):
-		return sum(ss.BlockCount for ss in self.getSubSegments())
-
-	def getFreeBlocks(self):
-		return sum(ss.getFreeCount() for ss in self.getSubSegments())
-
-	def getBusyBlocks(self):
-		return self.getTotalBlocks() - self.getFreeBlocks()
-
-	def isActive(self):
-		"""True if this bucket has at least one valid subsegment."""
-		return len(self.getSubSegments()) > 0
-
-
-class MnNTFrontEndAllocatorBase(object):
-	"""Base FrontEnd allocator — owns LFH state, provides unified interface to MnNTHeap.
-
-	Subclasses implement _resolveLSI() to handle version-specific LSI lookup.
-	"""
-
-	_lfh_class = None
-	_subsegment_class = None
-	_n_buckets = 128
-
-	def __init__(self, heap):
-		self.heap = heap
-		self.address = heap.getFrontEndHeap()
-		self._lfh = None
-		self._buckets = None
-		self._ranges = None
-
-	@property
-	def lfh(self):
-		if self._lfh is None and self.address != 0:
-			self._lfh = self._lfh_class(self.address)
-		return self._lfh
-
-	def _resolveLSI(self, bucket_index):
-		"""Return the address of _HEAP_LOCAL_SEGMENT_INFO for given bucket_index.
-		Subclasses override this for version-specific resolution.
-		"""
-		return 0
-
-	def getBuckets(self):
-		"""Iterate Buckets[0..n_buckets], resolve LSI per bucket, return all."""
-		if self._buckets is not None:
-			return self._buckets
-
-		self._buckets = []
-		if self.lfh is None:
-			return self._buckets
-
-		ai = MnPEB.getArch()
-		buckets_base = self.lfh.Buckets
-		bucket_size = MnNTHeapBucket._BUCKET_SIZE
-
-		for i in range(self._n_buckets):
-			bucket_addr = buckets_base + (i * bucket_size)
-			lsi_addr = self._resolveLSI(i)
-			bucket = MnNTHeapBucket(i, bucket_addr, lsi_addr, self, self._subsegment_class)
-			self._buckets.append(bucket)
-
-		return self._buckets
-
-	def getActiveBuckets(self):
-		"""Only buckets that have at least one active or cached subsegment."""
-		return [b for b in self.getBuckets() if b.isActive()]
-
-	def getAllSubSegments(self):
-		"""Flat list of all subsegments across all active buckets."""
-		result = []
-		for bucket in self.getActiveBuckets():
-			result.extend(bucket.getSubSegments())
-		return result
-
-	def getRanges(self):
-		"""Collect (start, end) for all subsegment UserBlocks regions."""
-		if self._ranges is not None:
-			return self._ranges
-		self._ranges = []
-		for ss in self.getAllSubSegments():
-			r = ss.getRange()
-			if r[0] != 0:
-				self._ranges.append(r)
-		return self._ranges
+		"""This size class's subsegments, via the paired segment info ([] if unpaired)."""
+		return self.segment_info.getSubSegments() if self.segment_info is not None else []
 
 	def getChunks(self):
-		"""Walk all buckets -> subsegments -> blocks, return dict keyed by address."""
-		chunks = {}
-		for ss in self.getAllSubSegments():
-			ud = ss.getUserData()
-			if ud and not ud.corrupted:
-				for chunk in ud.getChunks():
-					chunks[chunk.chunkptr] = chunk
-		return chunks
+		"""This size class's {chunkptr: MnChunk}, via the paired segment info ({} if unpaired)."""
+		return self.segment_info.getChunks() if self.segment_info is not None else {}
 
-	def getBucketForSize(self, size):
-		"""Given a user allocation size, return which bucket services it.
+	def getTotalBlocks(self):
+		"""Total LFH slot capacity for this size class (sum of every subsegment's BlockCount, busy
+		or free), via the paired segment info; 0 if unpaired."""
+		return self.segment_info.getTotalBlocks() if self.segment_info is not None else 0
 
-		Returns None if size exceeds LFH range.
-		"""
-		block_units = (size + HEAPGRANULARITY - 1 + archValue(8, 16)) // HEAPGRANULARITY
-		for bucket in self.getBuckets():
-			if bucket.BlockUnits >= block_units and not bucket.isSentinel():
-				return bucket
-		return None
+	def getFreeBlocks(self):
+		"""Free (unallocated) slots for this size class, via the paired segment info; 0 if unpaired.
+		Key-free -- derived from the BusyBitmap (Win8+) or in-band free chain (Vista/7)."""
+		return self.segment_info.getFreeBlocks() if self.segment_info is not None else 0
 
-	def getBucketStats(self):
-		"""Per-bucket summary for all active buckets."""
-		stats = []
-		for bucket in self.getActiveBuckets():
-			stats.append({
-				"index": bucket.bucket_index,
-				"block_size": bucket.block_size_bytes,
-				"subsegment_count": len(bucket.getSubSegments()),
-				"total_blocks": bucket.getTotalBlocks(),
-				"free_blocks": bucket.getFreeBlocks(),
-				"busy_blocks": bucket.getBusyBlocks(),
-			})
-		return stats
+	def getBusyBlocks(self):
+		"""Busy (allocated) slots for this size class (total - free), via the paired segment info;
+		0 if unpaired."""
+		return self.segment_info.getBusyBlocks() if self.segment_info is not None else 0
 
-	def getUtilization(self):
-		"""Aggregate block counts across the entire LFH.
-
-		Returns: (total_blocks, busy_blocks, free_blocks)
-		"""
-		total = busy = free = 0
-		for bucket in self.getActiveBuckets():
-			total += bucket.getTotalBlocks()
-			free += bucket.getFreeBlocks()
-			busy += bucket.getBusyBlocks()
-		return (total, busy, free)
-
-	def contains(self, addr):
-		"""Is addr within any LFH UserBlocks region."""
-		for start, end in self.getRanges():
-			if start <= addr < end:
-				return True
-		return False
-
-	def getSubSegmentForAddress(self, addr):
-		"""Return the subsegment whose UserBlocks region contains addr, or None.
-
-		Subsegments occupy distinct, non-overlapping memory regions, so the
-		owning subsegment is the one with the greatest UserBlocks base that is
-		still <= addr (a floor lookup), provided addr also falls before that
-		subsegment's computed end.  This is robust against a corrupt/oversized
-		BlockCount in a lower-address subsegment producing an overlapping range
-		that would otherwise win a naive first-match scan.
-		"""
-		best_ss = None
-		for ss in self.getAllSubSegments():
-			ub = ss.UserBlocks
-			if ub == 0 or ub > addr:
-				continue
-			end = ub + ss.BlockCount * ss.BlockSize * HEAPGRANULARITY
-			if addr >= end:
-				continue
-			if best_ss is None or ub > best_ss.UserBlocks:
-				best_ss = ss
-		return best_ss
-
-
-class MnNTVistaFrontEndAllocator(MnNTFrontEndAllocatorBase):
-	"""FrontEnd allocator for Vista/7.
-
-	LSI resolution: _HEAP_LOCAL_DATA contains inline SegmentInfo[128] array.
-	Each entry is a small _HEAP_LOCAL_SEGMENT_INFO (Vista format).
-	"""
-
-	_lfh_class = MnNTVistaLFH
-	_subsegment_class = MnNTVistaLFHSubSegment
-	_n_buckets = 128
-
-	def _resolveLSI(self, bucket_index):
-		"""Vista/7: LSI is inline in _HEAP_LOCAL_DATA.SegmentInfo[bucket_index].
-
-		Geometry comes from the LFH class (single source of truth), so this and
-		_walkLFHSubSegmentRanges cannot drift apart.
-		"""
-		if self.lfh is None:
-			return 0
-		ai = MnPEB.getArch()
-		seg_info_base = self.lfh.LocalData + self._lfh_class._localdata_offsets["SegmentInfo"][ai]
-		return seg_info_base + (bucket_index * self._lfh_class.LSI_STRIDE[ai])
-
-
-class MnNT7FrontEndAllocator(MnNTVistaFrontEndAllocator):
-	"""FrontEnd allocator for Windows 7. Same LSI geometry as Vista; only the
-	_LFH_HEAP outer offsets differ (MnNT7LFH)."""
-
-	_lfh_class = MnNT7LFH
-
-
-class MnNT8FrontEndAllocator(MnNTFrontEndAllocatorBase):
-	"""FrontEnd allocator for Win8/8.1.
-
-	LSI resolution: _LFH_HEAP.SegmentInfoArrays[129] is a pointer array.
-	Each entry is a pointer to a _HEAP_LOCAL_SEGMENT_INFO structure.
-
-	AffinitizedInfoArrays[129] is a parallel pointer array for non-default
-	affinity slots (multi-processor LFH). Each non-NULL entry points to
-	an array of LSIs for that bucket across affinity groups.
-	"""
-
-	_lfh_class = MnNT8LFH
-	_subsegment_class = MnNT8LFHSubSegment
-	_n_buckets = 129
-
-	def _resolveLSI(self, bucket_index):
-		"""Win8+: read pointer from SegmentInfoArrays[bucket_index]."""
-		if self.lfh is None:
-			return 0
-		ai = MnPEB.getArch()
-		ptrsize = archValue(4, 8)
-		ptr_addr = self.lfh.SegmentInfoArrays + (bucket_index * ptrsize)
-		try:
-			return readPtrSizeBytes(ptr_addr)
-		except:
-			return 0
-
-	def _resolveAffinitizedLSI(self, bucket_index):
-		"""Win8+: read pointer from AffinitizedInfoArrays[bucket_index].
-
-		Returns 0 if no affinitized LSI exists for this bucket.
-		"""
-		if self.lfh is None:
-			return 0
-		ai = MnPEB.getArch()
-		ptrsize = archValue(4, 8)
-		ptr_addr = self.lfh.AffinitizedInfoArrays + (bucket_index * ptrsize)
-		try:
-			return readPtrSizeBytes(ptr_addr)
-		except:
-			return 0
-
-	def getAffinitizedSubSegments(self, bucket_index):
-		"""Walk AffinitizedInfoArrays for a bucket, return additional subsegments.
-
-		On multi-processor systems, a bucket with UseAffinity=1 has additional
-		LSIs per affinity slot. Each affinitized LSI has its own ActiveSubsegment
-		and CachedItems.
-		"""
-		aff_lsi = self._resolveAffinitizedLSI(bucket_index)
-		if aff_lsi == 0:
-			return []
-		ai = MnPEB.getArch()
-		ptrsize = archValue(4, 8)
-		lsi_off = self._lfh_class._lsi_offsets
-		subsegments = []
-		seen = set()
-		try:
-			active_ptr = readPtrSizeBytes(aff_lsi + lsi_off["ActiveSubsegment"][ai])
-			if active_ptr != 0:
-				ss = self._subsegment_class(active_ptr, parent_bucket=None)
-				if ss.isValid() and ss.address not in seen:
-					seen.add(ss.address)
-					subsegments.append(ss)
-			hint_ptr = readPtrSizeBytes(aff_lsi + lsi_off["Hint"][ai])
-			if hint_ptr != 0:
-				ss = self._subsegment_class(hint_ptr, parent_bucket=None)
-				if ss.isValid() and ss.address not in seen:
-					seen.add(ss.address)
-					subsegments.append(ss)
-			cached_base = aff_lsi + lsi_off["CachedItems"][ai]
-			for i in range(self._lfh_class.CACHED_ITEMS_COUNT):
-				ptr = readPtrSizeBytes(cached_base + i * ptrsize)
-				if ptr != 0:
-					ss = self._subsegment_class(ptr, parent_bucket=None)
-					if ss.isValid() and ss.address not in seen:
-						seen.add(ss.address)
-						subsegments.append(ss)
-		except:
-			pass
-		return subsegments
-
-	def getAllSubSegments(self):
-		"""Flat list of all subsegments including affinitized slots."""
-		result = []
-		for bucket in self.getActiveBuckets():
-			result.extend(bucket.getSubSegments())
-			if bucket.UseAffinity:
-				result.extend(self.getAffinitizedSubSegments(bucket.bucket_index))
-		return result
-
-
-class MnNT10FrontEndAllocator(MnNT8FrontEndAllocator):
-	"""FrontEnd allocator for Win10/11.
-
-	Same LSI resolution as Win8 (SegmentInfoArrays pointer array).
-	Uses Win10 LFH and subsegment classes.
-	"""
-
-	_lfh_class = MnNT10LFH
-	_subsegment_class = MnNT10LFHSubSegment
-	_n_buckets = 129
+	def isActive(self):
+		"""True if this size class has at least one valid subsegment (via the paired segment info)."""
+		return self.segment_info is not None and self.segment_info.isActive()
 
 
 class MnNTFreeLists(object):
-	"""_HEAP.FreeLists -- the single doubly-linked list of free back-end chunks (Vista+).
-
-	The list head is the _HEAP.FreeLists _LIST_ENTRY.  Each free block embeds a
-	_LIST_ENTRY immediately after its _HEAP_ENTRY header (see _HEAP_FREE_ENTRY),
-	so a list node at address N corresponds to a chunk at N - header_size.
-
-	No per-Windows-version subclassing is needed: the version-varying part is the
-	location of FreeLists inside _HEAP, which the heap object resolves via
-	_offset("FreeLists").  The list/node layout itself is stable across Vista+.
-	"""
+	"""_HEAP.FreeLists -- the single doubly-linked list of free back-end chunks (Vista+)."""
 
 	def __init__(self, heap):
 		self.heap = heap
@@ -20216,7 +20644,7 @@ class MnNTFreeLists(object):
 		if self._chunks is not None:
 			return self._chunks
 		self._chunks = {}
-		hdr = archValue(8, 16)  # _HEAP_ENTRY size == offset of the embedded _LIST_ENTRY
+		hdr = archValue(8, 16)
 		try:
 			for node in MnListEntry(self.head).walk():
 				chunkptr = node - hdr
@@ -20237,13 +20665,14 @@ class MnNTFreeLists(object):
 			bins.setdefault(c.size, []).append(c)
 		return bins
 
+	def getBySize(self, size_units):
+		"""Return the free chunks of a given size (granularity units) from the flat list"""
+		return [c for c in self.getChunks().values() if c.size == size_units]
+
 	def getChunkPosition(self, chunkptr):
 		"""Ordinal position of chunkptr within the single free list, in physical
 		list order (Flink walk from the head -- the order getChunks() yields).
-
-		Returns (position, count): position is 0-based or None if not found;
-		count is the total number of free chunks in the list.
-		"""
+  		"""
 		chunks = list(self.getChunks().values())
 		for i, c in enumerate(chunks):
 			if c.chunkptr == chunkptr:
@@ -20251,324 +20680,308 @@ class MnNTFreeLists(object):
 		return (None, len(chunks))
 
 
-class MnNTListHints(object):
-	"""_HEAP.BlocksIndex (_HEAP_LIST_LOOKUP) -- the size-indexed hint array layered
-	over the single _HEAP.FreeLists list (Win7+).
-
-	Vista has no BlocksIndex (legacy freelist[128] array); that case is detected
-	by a NULL BlocksIndex pointer and reported via usesHints() == False.  The
-	_HEAP_LIST_LOOKUP layout is stable across Win7+, so (as with MnNTFreeLists)
-	the only version-dependent input is the _HEAP.BlocksIndex offset, supplied by
-	the heap object -- no per-version subclassing required.
+class MnNTBlockIndex(object):
+	"""One _HEAP.BlocksIndex node (_HEAP_LIST_LOOKUP). The size-indexed hint structure layered over
+	the single _HEAP.FreeLists list.
 	"""
-
-	# _HEAP_LIST_LOOKUP field offsets: (x86, x64)
+ 
 	_offsets = {
 		"ExtendedLookup":  (0x000, 0x000),
 		"ArraySize":       (0x004, 0x008),
+		"ExtraItem":       (0x008, 0x00c),
+		"ItemCount":       (0x00c, 0x010),
+		"OutOfRangeItems": (0x010, 0x014),
 		"BaseIndex":       (0x014, 0x018),
 		"ListHead":        (0x018, 0x020),
 		"ListsInUseUlong": (0x01c, 0x028),
 		"ListHints":       (0x020, 0x030),
 	}
 
-	def __init__(self, heap):
+	def _offset(self, name):
+		"""Arch-appropriate _HEAP_LIST_LOOKUP field offset for *name*."""
+		return self._offsets[name][MnPEB.getArch()]
+
+	def __init__(self, address, heap):
+		self.address = address
 		self.heap = heap
-		self.head = heap.heapbase + heap._offset("FreeLists")
-		self.blocks_index = 0
 		self.ArraySize = 0
+		self.ExtraItem = 0
+		self.ItemCount = 0
+		self.OutOfRangeItems = 0
 		self.BaseIndex = 0
+		self.ExtendedLookup = 0
 		self.ListHints = 0
 		self.ListsInUseUlong = 0
-		ai = MnPEB.getArch()
 		try:
-			self.blocks_index = readPtrSizeBytes(heap.heapbase + heap._offset("BlocksIndex"))
-			if self.blocks_index:
-				self.ArraySize = struct.unpack('<L', dbg.readMemory(self.blocks_index + self._offsets["ArraySize"][ai], 4))[0]
-				self.BaseIndex = struct.unpack('<L', dbg.readMemory(self.blocks_index + self._offsets["BaseIndex"][ai], 4))[0]
-				self.ListHints = readPtrSizeBytes(self.blocks_index + self._offsets["ListHints"][ai])
-				self.ListsInUseUlong = readPtrSizeBytes(self.blocks_index + self._offsets["ListsInUseUlong"][ai])
+			self.ExtendedLookup  = readPtrSizeBytes(address + self._offset("ExtendedLookup"))
+			self.ArraySize       = u32(address + self._offset("ArraySize")) or 0
+			self.ExtraItem       = u32(address + self._offset("ExtraItem")) or 0
+			self.ItemCount       = u32(address + self._offset("ItemCount")) or 0
+			self.OutOfRangeItems = u32(address + self._offset("OutOfRangeItems")) or 0
+			self.BaseIndex       = u32(address + self._offset("BaseIndex")) or 0
+			self.ListHints       = readPtrSizeBytes(address + self._offset("ListHints"))
+			self.ListsInUseUlong = readPtrSizeBytes(address + self._offset("ListsInUseUlong"))
 		except Exception as e:
-			mndbg.dbgp("MnNTListHints.__init__: %s" % str(e))
+			mndbg.dbgp("MnNTBlockIndex.__init__(0x%x): %s" % (address, str(e)))
+		self.list_hints = MnNTListHints(self)
+
+	def covers(self, n):
+		"""True if size class n (granularity units) is in THIS node's range."""
+		return self.BaseIndex <= n < self.BaseIndex + self.ArraySize
+
+	def extended(self):
+		"""Next-tier MnNTBlockIndex (larger sizes), or None at the end of the chain."""
+		return MnNTBlockIndex(self.ExtendedLookup, self.heap) if self.ExtendedLookup else None
+
+	def walk(self):
+		"""Yield this node then each ExtendedLookup tier, bounded and cycle-safe."""
+		node, seen = self, set()
+		while node is not None and node.address and node.address not in seen:
+			seen.add(node.address)
+			yield node
+			node = node.extended()
+
+	def lookupTierFor(self, n):
+		"""Descend the ExtendedLookup chain to the node servicing size class n. When n exceeds a
+		node's ArraySize and there is no further tier, n lands in THIS node's terminal/oversized
+		bucket (the caller clamps the index to ArraySize-1)."""
+		node = self
+		while n >= node.ArraySize and node.ExtendedLookup:
+			nxt = node.extended()
+			if nxt is None:
+				break
+			node = nxt
+		return node
+
+
+class MnNTListHints(object):
+	"""The ListHints[] array of one MnNTBlockIndex (_HEAP_LIST_LOOKUP). Each entry's Flink is a hint
+	to the first free chunk of that size class (chunk = Flink - header_size).
+	"""
+
+	def __init__(self, bi):
+		self.bi   = bi
+		self.heap = bi.heap
+		self.base = bi.ListHints
+		self.elt  = archValue(4, 8) * (2 if bi.ExtraItem else 1)
+
+	@property
+	def ArraySize(self):       return self.bi.ArraySize
+	@property
+	def BaseIndex(self):       return self.bi.BaseIndex
+	@property
+	def ListsInUseUlong(self): return self.bi.ListsInUseUlong
+	@property
+	def blocks_index(self):    return self.bi.address
 
 	def usesHints(self):
-		"""True on Win7+ (BlocksIndex present); False on Vista (legacy freelist[])."""
-		return self.blocks_index != 0
+		"""True when this node has a populated ListHints array. BlocksIndex/ListHints can be NULL at
+		runtime on any version -> False, and the caller falls back to a flat FreeLists walk."""
+		return self.bi.address != 0 and self.base != 0
+
+	def inUseIndices(self):
+		"""Sorted size classes (granularity units, ABSOLUTE i.e. n = index + BaseIndex) with >= 1 free
+		chunk, per the ListsInUseUlong bitmap."""
+		out, base = [], self.bi.ListsInUseUlong
+		if not base or self.bi.ArraySize == 0:
+			return out
+		for n in range(self.bi.BaseIndex, self.bi.BaseIndex + self.bi.ArraySize):
+			b = n - self.bi.BaseIndex
+			word = u32(base + (b >> 5) * 4)
+			if word is not None and (word >> (b & 0x1f)) & 1:
+				out.append(n)
+		return out
+
+	def hintFor(self, n):
+		"""Flink hint -> first free MnChunk of size class n (granularity units), or None. The hint
+		stores &FreeEntry.FreeList (a _LIST_ENTRY inside the chunk), so chunk = node - header_size."""
+		if not self.usesHints():
+			return None
+		idx = n - self.bi.BaseIndex
+		if idx < 0 or idx >= self.bi.ArraySize:
+			return None
+		node = readPtr(self.base + idx * self.elt)
+		return self.heap.chunkAt(node - archValue(8, 0x10)) if node else None
+
+	def activationFor(self, n):
+		"""Blink slot (Vista/7): the LFH-activation state for size class n, or None. INFERRED from the
+		2-pointer stride (ExtraItem != 0); Returns
+		("count", k) while counting toward activation, or ("bucket", MnNTLFHBucket) once LFH-active."""
+		if self.elt == archValue(4, 8):
+			return None
+		idx = n - self.bi.BaseIndex
+		if idx < 0 or idx >= self.bi.ArraySize:
+			return None
+		blink = readPtr(self.base + idx * self.elt + archValue(4, 8))
+		if not blink:
+			return None
+		if blink & 1:
+			return ("count", blink >> 1)
+		return ("bucket", self.heap.lfhBucketAt(blink))
+
+	def getBins(self):
+		"""{size_units: [MnChunk]} -- one bin per populated size class, each the FreeLists run from
+		hintFor(n) taken while the chunk size == n (the hint marks the FIRST chunk of that size)."""
+		return {n: self.heap.freeRunAt(self.hintFor(n), n) for n in self.inUseIndices()}
 
 	def getInUseDwords(self):
-		"""Return the raw ListsInUseUlong bitmap as a list of dwords (one per 32
-		indices), or an empty list when there is no BlocksIndex."""
-		if not self.usesHints() or self.ListsInUseUlong == 0 or self.ArraySize == 0:
+		"""Raw ListsInUseUlong bitmap as a list of dwords (one per 32 classes), or [] if no index."""
+		if not self.usesHints() or self.bi.ListsInUseUlong == 0 or self.bi.ArraySize == 0:
 			return []
-		ndwords = (self.ArraySize + 31) // 32
-		try:
-			return [struct.unpack('<L', dbg.readMemory(self.ListsInUseUlong + d * 4, 4))[0]
-			        for d in range(ndwords)]
-		except Exception as e:
-			mndbg.dbgp("MnNTListHints.getInUseDwords: %s" % str(e))
-			return []
+		ndwords = (self.bi.ArraySize + 31) // 32
+		out = []
+		for d in range(ndwords):
+			val = u32(self.bi.ListsInUseUlong + d * 4)
+			if val is None:
+				break
+			out.append(val)
+		return out
 
 	def getInUseIndices(self):
-		"""Return the sorted ListHints indices flagged in-use by the ListsInUseUlong
-		bitmap (each set bit i means ListHints[i], i.e. size (i+BaseIndex), has at
-		least one free chunk).  Empty list when there is no BlocksIndex."""
-		result = []
-		for d, val in enumerate(self.getInUseDwords()):
-			for bit in range(32):
-				idx = d * 32 + bit
-				if idx >= self.ArraySize:
-					break
-				if val & (1 << bit):
-					result.append(idx)
-		return result
+		"""RELATIVE in-use indices (0-based into ListHints[], i.e. n - BaseIndex)."""
+		return [n - self.bi.BaseIndex for n in self.inUseIndices()]
 
 	def bucketForSize(self, size_units):
-		"""Map a block size (granularity units) to its ListHints bucket.
-
-		Returns {index, dedicated, size_units, size_bytes}.  'dedicated' means the
-		size has its own ListHints entry; otherwise it is serviced from the
-		non-dedicated portion of the single free list.
-		"""
-		index = size_units - self.BaseIndex
+		"""Map a block size (granularity units) to its ListHints bucket: {index, dedicated,
+		size_units, size_bytes}. 'dedicated' = the size has its own ListHints entry."""
+		index = size_units - self.bi.BaseIndex
 		return {
 			"index":      index,
-			"dedicated":  (0 <= index < self.ArraySize),
+			"dedicated":  (0 <= index < self.bi.ArraySize),
 			"size_units": size_units,
 			"size_bytes": size_units * HEAPGRANULARITY,
 		}
 
-	def getBySize(self, size_units):
-		"""Return the free chunks of a given size (granularity units)."""
-		return [c for c in self.heap.getBackEndAllocator().free_lists.getChunks().values()
-		        if c.size == size_units]
-
-	def getBins(self):
-		"""Group free chunks by size (granularity units): {size_units: [MnChunk]}."""
-		return self.heap.getBackEndAllocator().free_lists.getBins()
-
-
-class MnNTBackEndAllocator(object):
-	"""BackEnd allocator — owns segments, free lists, UCRs, and VA blocks.
-
-	The heap's getSegments()/getVirtualAllocdBlocks()/getUCRDescriptors() delegate here.
+class MnDphBlockInformation(object):
+	"""_DPH_BLOCK_INFORMATION -- the Page Heap (Application Verifier) block header that precedes a
+	chunk's user data when the 'hpa' NtGlobalFlag is set.
 	"""
 
-	def __init__(self, heap):
-		self.heap = heap
-		self._segments = None
-		self._chunks = None
-		self._va_blocks = None
-		self._free_lists = None
-		self._list_hints = None
+	_offsets = {
+		"StartStamp":    (0x000, 0x000),
+		"Heap":          (0x004, 0x008),
+		"RequestedSize": (0x008, 0x010),
+		"ActualSize":    (0x00c, 0x018),
+		"TraceIndex":    (0x010, 0x020),
+		"StackTrace":    (0x018, 0x030),
+		"EndStamp":      (0x01c, 0x03c),
+	}
 
-	@property
-	def free_lists(self):
-		"""MnNTFreeLists for this heap (lazy, cached)."""
-		if self._free_lists is None:
-			self._free_lists = MnNTFreeLists(self.heap)
-		return self._free_lists
+	_SIZE = (0x20, 0x40)
 
-	@property
-	def list_hints(self):
-		"""MnNTListHints for this heap (lazy, cached)."""
-		if self._list_hints is None:
-			self._list_hints = MnNTListHints(self.heap)
-		return self._list_hints
+	def _offset(self, name):
+		"""Arch-appropriate _DPH_BLOCK_INFORMATION field offset for *name*."""
+		return self._offsets[name][MnPEB.getArch()]
 
-	def getSegments(self):
-		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
-		if self._segments is None:
-			self._segments = list(self.heap.iterSegments())
-		return self._segments
+	@classmethod
+	def size(cls):
+		"""Arch-appropriate total struct size (the chunk extraheadersize for a page-heap block)."""
+		return cls._SIZE[MnPEB.getArch()]
 
-	def getSegmentForAddress(self, addr):
-		"""Which segment contains the given address. Returns None if not found."""
-		for seg in self.getSegments():
-			try:
-				if seg.BaseAddress <= addr < seg.LastValidEntry:
-					return seg
-			except:
-				pass
-		return None
-
-	def getChunks(self):
-		"""All back-end segment chunks (walk all segments). parent=SEGMENT."""
-		if self._chunks is not None:
-			return self._chunks
-		self._chunks = {}
-		for seg in self.getSegments():
-			for chunk in seg.getChunks().values():
-				self._chunks[chunk.chunkptr] = chunk
-		return self._chunks
-
-	def getFreeChunks(self):
-		"""All chunks with state FREE."""
-		result = {}
-		for addr, chunk in self.getChunks().items():
-			if chunk.getState() == ChunkState.FREE:
-				result[addr] = chunk
-		return result
-
-	def getBusyChunks(self):
-		"""All segment chunks with state BUSY."""
-		result = {}
-		for addr, chunk in self.getChunks().items():
-			if chunk.getState() == ChunkState.BUSY:
-				result[addr] = chunk
-		return result
-
-	def getUCRDescriptors(self):
-		"""Walk the heap-wide UCRList."""
-		head = MnListEntry(self.heap.heapbase + self.heap._offset("UCRList"))
-		result = []
-		for entry in head.walk():
-			ucr = MnUCRDescriptor.fromListEntry(entry)
-			if ucr.size:
-				result.append(ucr)
-		return result
-
-	def getVABlocks(self):
-		"""Virtual-allocated blocks (> VirtualMemoryThreshold). Cached."""
-		if self._va_blocks is not None:
-			return self._va_blocks
-		self._va_blocks = self.heap.getVirtualAllocdBlocks()
-		return self._va_blocks
-
-	def contains(self, addr):
-		"""Is addr within any back-end segment committed range."""
-		return self.getSegmentForAddress(addr) is not None
-
-	def getRanges(self):
-		"""Return sorted list of (start, end) for all segments."""
-		ranges = []
-		for seg in self.getSegments():
-			try:
-				ranges.append((seg.BaseAddress, seg.LastValidEntry))
-			except:
-				pass
-		return sorted(ranges)
-
-
-"""
-MnHeap Childclass
-"""
-class MnSegment:
-	def __init__(self,heapbase,segmentstart,segmentend,firstentry=0,lastvalidentry=0):
-		self.heapbase = heapbase
-		self.segmentstart = segmentstart
-		self.segmentend = segmentend
-		self.firstentry = segmentstart
-		self.lastvalidentry = segmentend
-		if firstentry > 0:
-			self.firstentry = firstentry
-		if lastvalidentry > 0:
-			self.lastvalidentry = lastvalidentry
-		self.chunks = {}
-
-	def walk(self):
-		"""
-		Enumerate all chunks in the current segment
-		Output : Dictionary, key = chunkptr
-		         Values : MnChunk objects
-		"""
-		MnProc.ensure()
-		allchunks = {}
+	def __init__(self, address):
+		self.address = address
+		self.corrupted = False
+		self.corruption_reason = ""
+		ptr_fmt = archValue('<L', '<Q')
+		ptr_sz  = archValue(4, 8)
 		try:
-			mHeap = mnproc.getHeapObject(self.heapbase)
+			self.StartStamp    = struct.unpack('<L', dbg.readMemory(address + self._offset("StartStamp"), 4))[0]
+			self.Heap          = struct.unpack(ptr_fmt, dbg.readMemory(address + self._offset("Heap"), ptr_sz))[0]
+			self.RequestedSize = struct.unpack(ptr_fmt, dbg.readMemory(address + self._offset("RequestedSize"), ptr_sz))[0]
+			self.ActualSize    = struct.unpack(ptr_fmt, dbg.readMemory(address + self._offset("ActualSize"), ptr_sz))[0]
+			self.TraceIndex    = struct.unpack('<H', dbg.readMemory(address + self._offset("TraceIndex"), 2))[0]
+			self.StackTrace    = struct.unpack(ptr_fmt, dbg.readMemory(address + self._offset("StackTrace"), ptr_sz))[0]
+			self.EndStamp      = struct.unpack('<L', dbg.readMemory(address + self._offset("EndStamp"), 4))[0]
 		except Exception as e:
-			dbg.log("[!] getChunks: getHeapObject(0x%x) raised: %s" % (self.heapbase, e), highlight=1)
-			return allchunks
-		mndbg.dbgp("getChunks: heapbase=0x%x type=%s version=%s" % (self.heapbase, mHeap.heap_type, mHeap.heap_version))
-		mndbg.dbgp("getChunks: key=0x%x hdr_off=%d firstentry=0x%x lastvalid=0x%x" % (
-			mHeap.getEncodingKey(), mHeap.getChunkHeaderDataOffset(), self.firstentry, self.lastvalidentry))
-		for chunk in MnChunk.walk(self.firstentry, self.lastvalidentry, mHeap, self.segmentstart):
-			# Virtual-alloc chunks are tracked separately via getVirtualAllocdBlocks().
-			if not "virtall" in getHeapFlag(chunk.flag).lower() and chunk.chunkptr not in allchunks and chunk.size > 0:
-				allchunks[chunk.chunkptr] = chunk
-		self.chunks = allchunks
-		mndbg.dbgp("getChunks: returning %d chunks for segment 0x%x-0x%x" % (len(allchunks), self.firstentry, self.lastvalidentry))
-		return allchunks
+			self.corrupted = True
+			self.corruption_reason = "Failed to read _DPH_BLOCK_INFORMATION at 0x%x: %s" % (address, str(e))
+			self.StartStamp = self.Heap = self.RequestedSize = self.ActualSize = 0
+			self.TraceIndex = self.StackTrace = self.EndStamp = 0
+
+	def isValid(self):
+		"""False when the struct could not be read."""
+		return not self.corrupted
+
 
 """
 Chunk class
 """
-class MnChunk(MnListEntry):
-	chunkptr = 0
-	chunktype = ""
-	headersize = 0
-	extraheadersize = 0
-	heapbase = 0
-	segmentbase = 0
-	size = 0
-	prevsize = 0
-	segment = 0
-	flag = 0
-	flags = 0
-	unused = 0
-	tag = 0
-	flink = 0
-	blink = 0
-	commitsize = 0
-	reservesize = 0
-	remaining = 0
+class MnChunk(object):
 	parent = ChunkParent.SEGMENT
 	parent_ref = None
-	hasust = False
-	dph_block_information_startstamp = 0
-	dph_block_information_heap = 0
-	dph_block_information_requestedsize = 0
-	dph_block_information_actualsize = 0
-	dph_block_information_traceindex = 0
-	dph_block_information_stacktrace = 0
-	dph_block_information_endstamp = 0	
+	lfh_state = None
+	lfh_user_size = None
+	_va_slack = None
+	_data = None
+	_FILL_UNINITIALIZED = (0xbaadf00d, 0xc0c0c0c0, 0xcdcdcdcd)
+	_FILL_FREED         = (0xfeeefeee, 0xdddddddd)
+
+	_offsets = {
+		"Size":          (0x000, 0x000),
+		"Flags":         (0x002, 0x002),
+		"SmallTagIndex": (0x003, 0x003),
+		"PreviousSize":  (0x004, 0x004),
+		"SegmentOffset": (0x006, 0x006),
+		"UnusedBytes":   (0x007, 0x007),
+	}
+
+	@classmethod
+	def parseHeapEntry(cls, raw_bytes):
+		"""Decode an already-un-XORed 8-byte compact _HEAP_ENTRY buffer into a field dict."""
+		ai = MnPEB.getArch()
+		o = cls._offsets
+		return {
+			"Size":          struct.unpack('<H', raw_bytes[o["Size"][ai]:o["Size"][ai]+2])[0],
+			"Flags":         struct.unpack('<B', raw_bytes[o["Flags"][ai]:o["Flags"][ai]+1])[0],
+			"SmallTagIndex": struct.unpack('<B', raw_bytes[o["SmallTagIndex"][ai]:o["SmallTagIndex"][ai]+1])[0],
+			"PreviousSize":  struct.unpack('<H', raw_bytes[o["PreviousSize"][ai]:o["PreviousSize"][ai]+2])[0],
+			"SegmentOffset": struct.unpack('<B', raw_bytes[o["SegmentOffset"][ai]:o["SegmentOffset"][ai]+1])[0],
+			"UnusedBytes":   struct.unpack('<B', raw_bytes[o["UnusedBytes"][ai]:o["UnusedBytes"][ai]+1])[0],
+		}
+
+	@classmethod
+	def decodeEntryFields(cls, addr, key, hdr_off):
+		"""Read + decode the 8-byte compact _HEAP_ENTRY at *addr* + *hdr_off* for a segment walk."""
+		if key == 0 and not g_win7_mode:
+			raw    = dbg.readMemory(addr + hdr_off, 8)
+			size   = struct.unpack('<H', raw[0:2])[0]
+			segid  = struct.unpack('<B', raw[4:5])[0]
+			flag   = struct.unpack('<B', raw[5:6])[0]
+			unused = struct.unpack('<B', raw[6:7])[0]
+			tag    = struct.unpack('<B', raw[7:8])[0]
+		else:
+			raw    = decodeHeapHeader(addr + hdr_off, 8, key)
+			size   = struct.unpack('<H', raw[0:2])[0]
+			flag   = struct.unpack('<B', raw[2:3])[0]
+			tag    = struct.unpack('<B', raw[3:4])[0]
+			segid  = struct.unpack('<B', raw[6:7])[0]
+			unused = struct.unpack('<B', raw[7:8])[0]
+		return (size, segid, flag, unused, tag)
+
+	@classmethod
+	def fromHeapEntry(cls, addr, key, hdr_off, heapbase, segmentbase=0, prevsize=0, chunktype="chunk"):
+		"""Decode the back-end _HEAP_ENTRY at *addr* and build the MnChunk -- the "point at an address
+		+ key, decode the rest" constructor for SEGMENT / FREELIST chunks."""
+		size, segid, flag, unused, tag = cls.decodeEntryFields(addr, key, hdr_off)
+		flagtxt = getHeapFlag(flag).lower()
+		headersize = 0x20 if ("virtall" in flagtxt or "internal" in flagtxt) else HEAPGRANULARITY
+		return cls(addr, chunktype, headersize, heapbase, segmentbase,
+		           size, prevsize, segid, flag, unused, tag)
 
 	def __init__(self,chunkptr,chunktype,headersize,heapbase,segmentbase,size,prevsize,segment,flag,unused,tag,flink=0,blink=0,commitsize=0,reservesize=0):
 		self.chunkptr = chunkptr
 		self.chunktype = chunktype
 		self.extraheadersize = 0
 		self.remaining = 0
-		self.dph_block_information_startstamp = 0 
-		self.dph_block_information_heap = 0
-		self.dph_block_information_requestedsize = 0 
-		self.dph_block_information_actualsize = 0
-		self.dph_block_information_traceindex = 0
-		self.dph_block_information_stacktrace = 0
-		self.dph_block_information_endstamp = 0
+		self.dph = None
 		self.hasust = False
-		# if ust/hpa is enabled, the chunk header is followed by 32bytes of DPH_BLOCK_INFORMATION header info
 		_peb = mnproc.getPEB()
 		currentflagnames = _peb.getNtGlobalFlagNames(_peb.getNtGlobalFlag())
 		if "ust" in currentflagnames:
 			self.hasust = True
 		if "hpa" in currentflagnames:
-			# reader header info
-			if arch == 32:
-				self.extraheadersize = 0x20
-				try:
-					raw_dph_header = dbg.readMemory(chunkptr + headersize,0x20)
-					self.dph_block_information_startstamp = struct.unpack('<L',raw_dph_header[0:4])[0]
-					self.dph_block_information_heap = struct.unpack('<L',raw_dph_header[4:8])[0]
-					self.dph_block_information_requestedsize = struct.unpack('<L',raw_dph_header[8:12])[0]
-					self.dph_block_information_actualsize = struct.unpack('<L',raw_dph_header[12:16])[0]
-					self.dph_block_information_traceindex = struct.unpack('<H',raw_dph_header[16:18])[0]
-					self.dph_block_information_stacktrace = struct.unpack('<L',raw_dph_header[24:28])[0]
-					self.dph_block_information_endstamp = struct.unpack('<L',raw_dph_header[28:32])[0]
-				except:
-					pass
-			elif arch == 64:
-				self.extraheadersize = 0x40
-				# reader header info
-				try:
-					raw_dph_header = dbg.readMemory(chunkptr + headersize,0x40)
-					self.dph_block_information_startstamp = struct.unpack('<L',raw_dph_header[0:4])[0]
-					self.dph_block_information_heap = struct.unpack('<Q',raw_dph_header[8:16])[0]
-					self.dph_block_information_requestedsize = struct.unpack('<Q',raw_dph_header[16:24])[0]
-					self.dph_block_information_actualsize = struct.unpack('<Q',raw_dph_header[24:32])[0]
-					self.dph_block_information_traceindex = struct.unpack('<H',raw_dph_header[32:34])[0]
-					self.dph_block_information_stacktrace = struct.unpack('<Q',raw_dph_header[48:56])[0]
-					self.dph_block_information_endstamp = struct.unpack('<L',raw_dph_header[60:64])[0]
-				except:
-					pass
+			self.dph = MnDphBlockInformation(chunkptr + headersize)
+			self.extraheadersize = MnDphBlockInformation.size()
 		self.headersize = headersize
 		self.heapbase = heapbase
 		self.segmentbase = segmentbase
@@ -20587,28 +21000,61 @@ class MnChunk(MnListEntry):
 		self.usersize = (self.size * HEAPGRANULARITY) - self.unused - self.extraheadersize
 		self.remaining = self.unused - self.headersize - self.extraheadersize
 		self.flagtxt = getHeapFlag(self.flag)
-		# Inherit MnListEntry at the data area: for free chunks this is the _LIST_ENTRY (Flink/Blink).
-		super(MnChunk, self).__init__(self.userptr)
+
+	@property
+	def va_slack(self):
+		"""Trailing slack bytes for a virtual-allocated chunk (parent=VADBLOCK); None for any other chunk."""
+		if self.parent != ChunkParent.VADBLOCK:
+			return None
+		if self._va_slack is not None:
+			return self._va_slack if self._va_slack is not False else None
+		self._va_slack = False
+		if not self.heapbase:
+			return None
+		try:
+			heap    = mnproc.getPEB().getHeapObject(self.heapbase)
+			key     = heap.getEncodingKey()
+			hdr_off = heap.getChunkHeaderDataOffset()
+			if key == 0 and not g_win7_mode:
+				raw = dbg.readMemory(self.chunkptr + hdr_off, 8)
+			else:
+				raw = decodeHeapHeader(self.chunkptr + hdr_off, 8, key)
+			self._va_slack = struct.unpack('<H', raw[0:2])[0]
+		except Exception as e:
+			mndbg.dbgp("va_slack: decode failed for VA chunk 0x%x: %s" % (self.chunkptr, str(e)), errormode=False)
+			return None
+		return self._va_slack
+
+	@property
+	def data(self):
+		"""The chunk's user data bytes -- usersize bytes read from userptr -- built lazily and cached."""
+		if self._data is not None:
+			return self._data if self._data is not False else None
+		self._data = False
+		if self.usersize is None or self.usersize <= 0:
+			return None
+		try:
+			raw = dbg.readMemory(self.userptr, self.usersize)
+		except Exception as e:
+			mndbg.dbgp("data: read failed for chunk 0x%x (userptr 0x%x size 0x%x): %s" % (
+				self.chunkptr, self.userptr, self.usersize, str(e)), errormode=False)
+			return None
+		if raw is None or len(raw) < self.usersize:
+			return None
+		self._data = raw
+		return self._data
 
 	def getState(self):
-		"""Return ChunkState.BUSY or ChunkState.FREE based on the BUSY flag (bit 0)."""
+		"""Return the chunk state."""
+		if self.lfh_state is not None:
+			return self.lfh_state
 		if self.flag & 0x01:
 			return ChunkState.BUSY
 		return ChunkState.FREE
 
 	@classmethod
 	def walk(cls, first_entry, last_valid_entry, heap, segment_base):
-		"""Yield MnChunk instances by walking sequentially through a segment.
-
-		Decodes each _HEAP_ENTRY header (XOR-encoded on Vista+) and advances
-		by size * HEAPGRANULARITY.  Stops at last_valid_entry or the LAST flag.
-
-		Arguments:
-			first_entry      - int, address of the first _HEAP_ENTRY in the segment
-			last_valid_entry - int, address past the last valid entry
-			heap             - MnNTHeap, supplies encoding key and header data offset
-			segment_base     - int, base address of the containing segment
-		"""
+		"""Yield MnChunk instances by walking sequentially through a segment."""
 		mndbg.dbgp(get_current_function_name())
 		key     = heap.getEncodingKey()
 		hdr_off = heap.getChunkHeaderDataOffset()
@@ -20626,22 +21072,9 @@ class MnChunk(MnListEntry):
 			(last_valid_entry - first_entry) if last_valid_entry >= first_entry else 0, hdr_off, key))
 		consecutive_failures = 0
 		while current < last_valid_entry:
-			size = segid = flag = unused = tag = 0
+			prevsize = saved_prevsize
 			try:
-				if key == 0 and not g_win7_mode:
-					raw    = dbg.readMemory(current + hdr_off, 8)
-					size   = struct.unpack('<H', raw[0:2])[0]
-					segid  = struct.unpack('<B', raw[4:5])[0]
-					flag   = struct.unpack('<B', raw[5:6])[0]
-					unused = struct.unpack('<B', raw[6:7])[0]
-					tag    = struct.unpack('<B', raw[7:8])[0]
-				else:
-					raw    = decodeHeapHeader(current + hdr_off, 8, key)
-					size   = struct.unpack('<H', raw[0:2])[0]
-					flag   = struct.unpack('<B', raw[2:3])[0]
-					tag    = struct.unpack('<B', raw[3:4])[0]
-					segid  = struct.unpack('<B', raw[6:7])[0]
-					unused = struct.unpack('<B', raw[7:8])[0]
+				chunk = cls.fromHeapEntry(current, key, hdr_off, heap.heapbase, segment_base, prevsize=prevsize)
 				consecutive_failures = 0
 			except Exception as e:
 				mndbg.dbgp("Decode error: %s" % str(e))
@@ -20651,25 +21084,19 @@ class MnChunk(MnListEntry):
 					mndbg.dbgp("    Segment walk abort: %d consecutive decode failures at %s" % (
 						consecutive_failures, PTR_PRINT % current))
 					break
-			if saved_prevsize == 0:
-				prevsize       = 0
-				saved_prevsize = size
-			else:
-				prevsize       = saved_prevsize
-				saved_prevsize = size
-			flagtxt = getHeapFlag(flag).lower()
-			is_virtalloc = "virtall" in flagtxt
-			headersize   = 0x20 if (is_virtalloc or "internal" in flagtxt) else HEAPGRANULARITY
+				chunk = cls(current, "chunk", HEAPGRANULARITY, heap.heapbase, segment_base,
+				            0, prevsize, 0, 0, 0, 0)
+			saved_prevsize = chunk.size
 			itercnt += 1
-			yield cls(current, "chunk", headersize, heap.heapbase, segment_base,
-			          size, prevsize, segid, flag, unused, tag)
+			yield chunk
+			flagtxt = chunk.flagtxt.lower()
 			if "last" in flagtxt:
 				last_flag_hits += 1
 				mndbg.dbgp("    Segment walk stop: LAST flag at %s after %d iterations (elapsed %.2fs)" % (
 					PTR_PRINT % current, itercnt, time.time() - walk_start))
 				break
-			step = (size * HEAPGRANULARITY) if size > 0 else HEAPGRANULARITY
-			if size == 0:
+			step = (chunk.size * HEAPGRANULARITY) if chunk.size > 0 else HEAPGRANULARITY
+			if chunk.size == 0:
 				zero_size_steps += 1
 			if step > max_step:
 				max_step = step
@@ -20686,33 +21113,98 @@ class MnChunk(MnListEntry):
 		
 		interruptMona()
 
+	@staticmethod
+	def _normalizeFillPatterns(patterns):
+		"""Normalize the *patterns* argument into an ordered [(label, set-of-word-values)].
 
+		  None                          -> the built-in heap fills (Uninitialized / Freed)
+		  int                           -> a single custom pattern, labelled "Match"
+		  iterable of ints              -> those values, labelled "Match"
+		  dict {label: iterable-of-ints}-> used as given (lets callers name their own patterns)
+		"""
+		if patterns is None:
+			return [("Uninitialized", set(MnChunk._FILL_UNINITIALIZED)),
+			        ("Freed",         set(MnChunk._FILL_FREED))]
+		if isinstance(patterns, dict):
+			return [(lbl, set(vals)) for lbl, vals in patterns.items()]
+		if isinstance(patterns, int):
+			return [("Match", {patterns})]
+		return [("Match", set(patterns))]
 
 	@staticmethod
-	def getFillPattern(addy):
-		"""Return a label if *addy* is a known heap fill pattern, else None.
-
-		64-bit patterns are the 32-bit base pattern repeated: pat | (pat << 32).
-		"""
-		_uninitialized = {0xbaadf00d, 0xc0c0c0c0, 0xcdcdcdcd}
-		_freed         = {0xfeeefeee, 0xdddddddd}
-		for pat in _uninitialized:
-			if addy == pat or addy == pat | (pat << 32):
-				return "Uninitialized"
-		for pat in _freed:
-			if addy == pat or addy == pat | (pat << 32):
-				return "Freed"
+	def getFillPattern(addy, patterns=None):
+		"""Label of the fill pattern matching the single word *addy*, or None."""
+		for label, vals in MnChunk._normalizeFillPatterns(patterns):
+			for pat in vals:
+				if addy == pat or addy == (pat | (pat << 32)):
+					return label
 		return None
+
+	def fillPatternAtOffset(self, offset, patterns=None):
+		"""Classify the pointer-sized word at *offset* bytes into this chunk's data (self.data)."""
+		data = self.data
+		if data is None:
+			return None
+		if offset < 0 or offset + PTR_SIZE > len(data):
+			return None
+		word = struct.unpack(PTR_FMT, data[offset:offset + PTR_SIZE])[0]
+		return MnChunk.getFillPattern(word, patterns)
+
+	def fillPatternForChunk(self, patterns=None):
+		"""Whole-chunk fill verdict: the single pattern label that EVERY pointer-sized word in this
+		chunk's data matches, or None (no data, empty, or mixed / non-pattern content)."""
+		data = self.data
+		if data is None:
+			return None
+		nwords = len(data) // PTR_SIZE
+		if nwords == 0:
+			return None
+		verdict = None
+		for i in range(nwords):
+			word = struct.unpack(PTR_FMT, data[i * PTR_SIZE:(i + 1) * PTR_SIZE])[0]
+			label = MnChunk.getFillPattern(word, patterns)
+			if label is None:
+				return None
+			if verdict is None:
+				verdict = label
+			elif verdict != label:
+				return None
+		return verdict
+
+	def findInData(self, pattern, start=0, align=1):
+		"""Byte offset of the first occurrence of *pattern* within this chunk's data (self.data),
+		searching from *start*; None if the chunk has no data or *pattern* is absent/empty."""
+		data = self.data
+		if data is None or not pattern:
+			return None
+		if isinstance(pattern, str):
+			pattern = pattern.encode("latin-1", "replace")
+		pos = start
+		while True:
+			idx = data.find(pattern, pos)
+			if idx < 0:
+				return None
+			if align <= 1 or idx % align == 0:
+				return idx
+			pos = idx + 1
+
+	def findFillPattern(self, patterns=None):
+		"""Byte offset of the first pointer-sized word in this chunk's data that matches a fill
+		pattern (see getFillPattern), or None if the chunk has no data or no word matches."""
+		best = None
+		for _, vals in MnChunk._normalizeFillPatterns(patterns):
+			for pat in vals:
+				for word in (pat, pat | (pat << 32)):
+					if word >= (1 << (PTR_SIZE * 8)):
+						continue
+					off = self.findInData(struct.pack(PTR_FMT, word), align=PTR_SIZE)
+					if off is not None and (best is None or off < best):
+						best = off
+		return best
 
 	def fill(self, fillchar="A", start=None, size=None, offset=None):
 		"""
 		Fill chunk data with a single byte.
-
-		Arguments:
-			fillchar - byte/char to use for filling (only first byte is used)
-			start    - optional start address override (defaults to userptr)
-			size     - optional size override (defaults to usersize)
-			offset   - start writing from this offset, allows skipping initial vftable pointer
 
 		Return:
 			(start_addr, written_size) on success, (0, 0) if nothing was written
@@ -20739,6 +21231,8 @@ class MnChunk(MnListEntry):
 			errormsg = "Error writing to address %s: %s" % ((PTR_PRINT % start), str(e))
 			dbg.log(errormsg)
 			pass
+		# The write changed the chunk's bytes -- drop the cached data so .data re-reads on next access.
+		self._data = None
 		return (start, size)
 
 
@@ -20776,16 +21270,16 @@ class MnChunk(MnListEntry):
 			dbg.log("      Chunk header size: 0x%x (%d)" % (self.headersize,self.headersize))
 			if self.extraheadersize > 0:
 				dbg.log("      Extra header due to GFlags: 0x%x (%d) bytes" % (self.extraheadersize,self.extraheadersize))
-			if self.dph_block_information_stacktrace > 0:
+			if self.dph is not None and self.dph.StackTrace > 0:
 				dbg.log("      DPH_BLOCK_INFORMATION Header size: 0x%x (%d)" % (self.extraheadersize,self.extraheadersize))
-				dbg.log("         StartStamp    : 0x%08x" % self.dph_block_information_startstamp)
-				dbg.log("         Heap          : 0x%08x" % self.dph_block_information_heap)
-				dbg.log("         RequestedSize : 0x%08x" % self.dph_block_information_requestedsize)
-				requestedsize = self.dph_block_information_requestedsize
-				dbg.log("         ActualSize    : 0x%08x" % self.dph_block_information_actualsize)
-				dbg.log("         TraceIndex    : 0x%08x" % self.dph_block_information_traceindex)
-				dbg.log("         StackTrace    : 0x%08x" % self.dph_block_information_stacktrace)
-				dbg.log("         EndStamp      : 0x%08x" % self.dph_block_information_endstamp)	
+				dbg.log("         StartStamp    : 0x%08x" % self.dph.StartStamp)
+				dbg.log("         Heap          : 0x%08x" % self.dph.Heap)
+				dbg.log("         RequestedSize : 0x%08x" % self.dph.RequestedSize)
+				requestedsize = self.dph.RequestedSize
+				dbg.log("         ActualSize    : 0x%08x" % self.dph.ActualSize)
+				dbg.log("         TraceIndex    : 0x%08x" % self.dph.TraceIndex)
+				dbg.log("         StackTrace    : 0x%08x" % self.dph.StackTrace)
+				dbg.log("         EndStamp      : 0x%08x" % self.dph.EndStamp)	
 			dbg.log("      Size initial allocation request: 0x%x (%d)" % (requestedsize,requestedsize))
 			dbg.log("      Total space for data: 0x%x (%d)" % (self.usersize + self.unused - self.headersize,self.usersize + self.unused - self.headersize))
 			dbg.log("      Delta between initial size and total space for data: 0x%x (%d)" % (self.unused - self.headersize, self.unused-self.headersize))
@@ -20803,10 +21297,6 @@ class MnChunk(MnListEntry):
 	def showChunkLine(self,showdata = False):
 		return
 
-
-#---------------------------------------#
-#  Class to represent process layout    #
-#---------------------------------------#
 class MnProc:
 	"""
 	Aggregates all major process structures: PEB/TEB, modules,
@@ -21202,10 +21692,6 @@ class MnProc:
 				mndbg.dbgp("getAllSorted: enumerating vadblocks for heap %s" % (PTR_PRINT % heapaddr))
 				va_blocks  = mheap.getVABlocks()
 				mndbg.dbgp("getAllSorted: heap %s has %d vadblocks" % (PTR_PRINT % heapaddr, len(va_blocks)))
-				mndbg.dbgp("getAllSorted: enumerating LFH ranges for heap %s" % (PTR_PRINT % heapaddr))
-				lfh_ranges = mheap.getLFHRanges() if include_chunks else []
-				mndbg.dbgp("getAllSorted: heap %s has %d LFH ranges" % (PTR_PRINT % heapaddr, len(lfh_ranges)))
-				lfh_starts   = [r[0] for r in lfh_ranges]
 				listhead     = heapaddr + mheap._offset("SegmentList")
 				listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
 				seg_walk     = mheap._seg_walk()
@@ -21238,7 +21724,7 @@ class MnProc:
 							segname, corrupt_tag, heapname, flink, blink, chunk_info)))
 					if include_chunks:
 						for ci, chunk in enumerate(sorted(chunks.values(), key=lambda c: c.chunkptr)):
-							lfh_tag = " | LFH" if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts) else ""
+							lfh_tag = " | LFH" if getattr(chunk, "parent", ChunkParent.SEGMENT) == ChunkParent.LFH else ""
 							regions.append((chunk.chunkptr, chunk.chunkptr + chunk.size * HEAPGRANULARITY, "Chunk",
 								"%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
 									"Chnk%04d-%03d-%02d" % (ci, i, hidx),
@@ -21342,8 +21828,6 @@ class MnProc:
 				pass
 			segments     = mheap.getSegments()
 			va_blocks    = mheap.getVABlocks()
-			lfh_ranges   = mheap.getLFHRanges() if include_chunks else []
-			lfh_starts   = [r[0] for r in lfh_ranges]
 			listhead     = heapaddr + mheap._offset("SegmentList")
 			listhead_str = "0x%s (_HEAP.SegmentList)" % toHex(listhead)
 			seg_walk     = mheap._seg_walk()
@@ -21371,7 +21855,7 @@ class MnProc:
 				chunk_children = []
 				if include_chunks:
 					for ci, chunk in enumerate(sorted(chunks.values(), key=lambda c: c.chunkptr)):
-						lfh_tag = " | LFH" if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts) else ""
+						lfh_tag = " | LFH" if getattr(chunk, "parent", ChunkParent.SEGMENT) == ChunkParent.LFH else ""
 						chunk_children.append((chunk.chunkptr, chunk.chunkptr + chunk.size * HEAPGRANULARITY, "Chunk",
 							"%s | UserPtr: %s, UserSize: 0x%x | State: %s | Heap %s, Segment %s | Flag: 0x%02x%s)" % (
 								"Chnk%04d-%03d-%02d" % (ci, i, hidx),
@@ -22038,11 +22522,12 @@ class MnPointer:
 	def showHeapStackTrace(self,thischunk):
 		# show stacktrace if any
 		if mndbg.isWinDBG(): 
-			stacktrace_address = thischunk.dph_block_information_stacktrace
-			stacktrace_index = thischunk.dph_block_information_traceindex
+			_dph = thischunk.dph
+			stacktrace_address = _dph.StackTrace if _dph is not None else 0
+			stacktrace_index = _dph.TraceIndex if _dph is not None else 0
 			stacktrace_startstamp = 0xabcdaaaa
-			if thischunk.hasust and stacktrace_address > 0:
-				if stacktrace_startstamp == thischunk.dph_block_information_startstamp:
+			if thischunk.hasust and _dph is not None and stacktrace_address > 0:
+				if stacktrace_startstamp == _dph.StartStamp:
 					cmd2run = "dps %s L 24" % (PTR_PRINT % stacktrace_address)
 					output = dbg.nativeCommand(cmd2run)
 					outputlines = output.split("\n")
@@ -32751,8 +33236,6 @@ def procAssemble(args):
 			return
 	
 	assemble(opcodes,encoder)
-	
-# ----- info: show information about an address ----- #
 
 def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundinchunk):
 	"""Resolve everything needed to describe *address* within a heap.
@@ -32770,8 +33253,6 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 	MnProc.ensure()
 
 	if not foundinheap:
-		# showHeapBlockInfo found no chunk (e.g. address is in a segment header
-		# area). Scan the heap/segment list to identify the owning heap.
 		for _mh in mnproc.getPEB().getNTHeaps():
 			for _seg in _mh.getSegments():
 				_s = getattr(_seg, "BaseAddress", 0)
@@ -32793,8 +33274,6 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 
 	mheap = mnproc.getPEB().getHeapObject(foundinheap)
 
-	# If showHeapBlockInfo missed the chunk (LFH slot or address past a UCR),
-	# try the heap's own findChunk() which searches LFH first then segments.
 	chunk = foundinchunk if isinstance(foundinchunk, MnChunk) else None
 	if chunk is None:
 		try:
@@ -32818,9 +33297,6 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 
 	heap_flags = mheap.getFlags()
 
-	# Resolve the owning LFH subsegment (floor lookup over UserBlocks). A
-	# non-None result is itself the authoritative "this is an LFH slot" signal,
-	# so there is no separate getLFHRanges scan.
 	subsegment = None
 	if fea_enabled:
 		try:
@@ -32829,8 +33305,6 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 			mndbg.dbgp("_resolveHeapContext: getSubSegmentForAddress failed: %s" % str(e))
 	bucket = getattr(subsegment, "parent_bucket", None) if subsegment is not None else None
 
-	# For an LFH address, decode the individual slot so its BUSY/FREE state is
-	# correct (the chunk from showHeapBlockInfo is the always-busy container).
 	lfh_chunk = None
 	ss_size = None
 	if subsegment is not None:
@@ -32838,17 +33312,13 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 			lfh_chunk = subsegment.getChunkAt(address)
 		except Exception as e:
 			mndbg.dbgp("_resolveHeapContext: getChunkAt failed: %s" % str(e))
-		# Total size of the subsegment's UserBlocks region (all slots).
 		ss_size = subsegment.BlockCount * subsegment.BlockSize * HEAPGRANULARITY
 
-	# Heap segment containing this address (covers both back-end chunks and the
-	# LFH UserBlocks region, since the latter is itself a back-end allocation).
-	# Reserve = NumberOfPages * page; Commit = (NumberOfPages - UnCommitted) * page.
 	seg_base = foundinsegment
 	seg_reserve = None
 	seg_commit = None
 	try:
-		seg = mheap.getBackEndAllocator().getSegmentForAddress(address)
+		seg = mheap.getSegmentForAddress(address)
 		if seg is not None:
 			seg_base = getattr(seg, "BaseAddress", seg_base)
 			pages    = getattr(seg, "NumberOfPages", None)
@@ -32864,23 +33334,20 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 	except Exception as e:
 		mndbg.dbgp("_resolveHeapContext: segment lookup failed: %s" % str(e))
 
-	# Free-list placement for a FREE back-end chunk, via the backend allocator's
-	# MnNTListHints (Win7+ size-indexed hints over the single FreeLists list) or
-	# the legacy Vista freelist[128] fallback when BlocksIndex is absent.  Also
-	# resolve the chunk's position within its size's free list.
 	list_hints = None
 	freelist_pos = None
 	if isinstance(chunk, MnChunk) and subsegment is None and chunk.getState() == ChunkState.FREE:
 		try:
-			backend = mheap.getBackEndAllocator()
-			list_hints = backend.list_hints
-			freelist_pos = backend.free_lists.getChunkPosition(chunk.chunkptr)
+			list_hints = mheap.list_hints
+			freelist_pos = mheap.free_lists.getChunkPosition(chunk.chunkptr)
 		except Exception as e:
 			mndbg.dbgp("_resolveHeapContext: free-list placement failed: %s" % str(e))
 
 	va_index = None
 	va_commit = None
 	va_reserve = None
+	va_slack = None
+	va_extra = None
 	if foundinva is not None:
 		try:
 			for idx, (vaptr, vainfo) in enumerate(mheap.getVABlocks().items()):
@@ -32888,6 +33355,8 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 					va_index = idx
 					va_commit = vainfo.get("commit_size")
 					va_reserve = vainfo.get("reserve_size")
+					va_slack = vainfo.get("slack")
+					va_extra = (vainfo.get("extra_alloc_bt_index"), vainfo.get("extra_tag_index"), vainfo.get("extra_settable"))
 					break
 		except Exception as e:
 			mndbg.dbgp("_resolveHeapContext: VA index lookup failed: %s" % str(e))
@@ -32912,6 +33381,8 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 		"va_index":    va_index,
 		"va_commit":   va_commit,
 		"va_reserve":  va_reserve,
+		"va_slack":    va_slack,
+		"va_extra":    va_extra,
 	}
 
 
@@ -32928,43 +33399,44 @@ def _printHeapContext(ctx):
 	is_chunk   = isinstance(chunk, MnChunk)
 	is_va      = ctx["va"] is not None
 	hdr_bytes  = archValue(8, 16)
-	# For LFH, the decoded slot carries the correct per-block BUSY/FREE state;
-	# fall back to the container chunk only if the slot could not be decoded.
+ 
 	state_chunk = lfh_chunk if (is_lfh and lfh_chunk is not None) else chunk
 
-	# Block geometry, resolved once and shared by the Chunk/Allocator sections.
-	total_size = user_size = bucket_idx = block_bytes = 0
+	total_blocks = total_bytes = user_blocks = user_bytes = bucket_idx = 0
 	if is_chunk:
 		if is_lfh:
 			if bucket is not None:
-				bucket_idx  = bucket.bucket_index
-				block_bytes = bucket.block_size_bytes
+				bucket_idx   = bucket.bucket_index
+				total_blocks = bucket.BlockUnits
 			else:
-				bucket_idx  = subsegment.SizeIndex
-				block_bytes = subsegment.BlockSize * HEAPGRANULARITY
-			total_size = block_bytes
-			user_size  = block_bytes - hdr_bytes
+				bucket_idx   = subsegment.SizeIndex
+				total_blocks = subsegment.BlockSize
+			total_bytes = total_blocks * HEAPGRANULARITY
+			user_bytes  = total_bytes - hdr_bytes
 		else:
-			total_size = chunk.size * HEAPGRANULARITY
-			user_size  = chunk.usersize
+			total_blocks = chunk.size
+			total_bytes  = total_blocks * HEAPGRANULARITY
+			user_bytes   = chunk.usersize
+		user_blocks = user_bytes // HEAPGRANULARITY
 
-	# --- Chunk Details ---
 	if is_chunk:
 		dbg.log("")
 		dbg.log("[+] Chunk Details:")
 		dbg.log("    Chunk Base Address       : %s" % (PTR_PRINT % state_chunk.chunkptr))
 		dbg.log("    Chunk UserPtr            : %s" % (PTR_PRINT % state_chunk.userptr))
-		dbg.log("    Chunk Size               : 0x%x (%d bytes)" % (total_size, total_size))
-		# A free chunk has no live user data, so only report user-data size when busy.
+		dbg.log("    Chunk Size               : 0x%x blocks (0x%x bytes) [0x%x blocks, 0x%x bytes]" % (
+			total_blocks, total_bytes, user_blocks, user_bytes))
 		if state_chunk.getState() != ChunkState.FREE:
-			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_size, user_size))
+			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_bytes, user_bytes))
+			lfh_req = getattr(state_chunk, "lfh_user_size", None)
+			if lfh_req is not None:
+				dbg.log("    Requested Size           : 0x%x (%d bytes)" % (lfh_req, lfh_req))
 		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
 		dbg.log("    Flags                    : 0x%02x (%s)" % (
 			state_chunk.flag, getHeapFlag(state_chunk.flag)))
-		dbg.log("    Dump content             : %s" % clickDumpContent(state_chunk.userptr, total_size))
+		dbg.log("    Dump content             : %s" % clickDumpContent(state_chunk.userptr, total_bytes))
 		dbg.log("    Show chunk neighbours    : %s" % clickShowChunkNeighbours(ctx["heap"], state_chunk.chunkptr))
 
-	# --- Allocator Details ---
 	if is_chunk or is_va:
 		dbg.log("")
 		dbg.log("[+] Heap Allocator Details:")
@@ -32979,8 +33451,16 @@ def _printHeapContext(ctx):
 			if ctx["va_reserve"] is not None:
 				dbg.log("    VABlock Reserve          : 0x%x (%d bytes)" % (
 					ctx["va_reserve"], ctx["va_reserve"]))
+			if ctx.get("va_slack") is not None:
+				dbg.log("    VABlock Slack            : 0x%x (%d bytes)" % (
+					ctx["va_slack"], ctx["va_slack"]))
+			if ctx.get("va_extra") is not None:
+				_bt, _tag, _set = ctx["va_extra"]
+				dbg.log("    ExtraStuff.AllocBTIndex  : %s" % ("0x%x" % _bt if _bt is not None else "?"))
+				dbg.log("    ExtraStuff.TagIndex      : %s" % ("0x%x" % _tag if _tag is not None else "?"))
+				dbg.log("    ExtraStuff.Settable      : %s" % (PTR_PRINT % _set if _set is not None else "?"))
 		elif is_lfh:
-			bucket_max = block_bytes - hdr_bytes
+			bucket_max = user_bytes
 			bucket_min = max(1, bucket_max - HEAPGRANULARITY + 1)
 			dbg.log("    Allocator                : Front End Allocator (LFH)")
 			dbg.log("    LFH Bucket Index         : %d" % bucket_idx)
@@ -32992,20 +33472,14 @@ def _printHeapContext(ctx):
 			dbg.log("    List LFH front-end       : %s" % clickListLFH(ctx["heap"]))
 		else:
 			dbg.log("    Allocator               : Back End Allocator (Segment)")
-			# Free-list placement is only meaningful for a free chunk; a busy
-			# chunk is not linked on any free list.
 			hints = ctx["list_hints"]
 			pos   = ctx["freelist_pos"]
 			if chunk.getState() != ChunkState.FREE:
 				dbg.log("    (chunk is busy - not currently on a free list)")
 			else:
-				# Free List position: 1-based rank within the single FreeLists list
-				# (all sizes), so it lines up with windbg's `!heap -f` view.
 				if pos is not None and pos[0] is not None:
 					dbg.log("    FreeList Size           : %d" % pos[1])
 					dbg.log("    FreeList Index          : %d" % pos[0])
-				# Size-class tracking lives in ListHints: the BlocksIndex.ListHints[]
-				# slot and the allocation size it serves.
 				if hints is not None and hints.usesHints():
 					b = hints.bucketForSize(chunk.size)
 					if b["dedicated"]:
@@ -33025,12 +33499,13 @@ def _printHeapContext(ctx):
 			ctx["heap_flags"], ctx["mheap"].getFlagsText(ctx["heap_flags"])))
 	dbg.log("    Front End Allocator      : %s" % (
 		"Enabled (LFH)" if ctx["fea_enabled"] else "Disabled"))
-	if ctx["seg_base"]:
-		dbg.log("    Segment Base Address     : %s" % (PTR_PRINT % ctx["seg_base"]))
-	if ctx["seg_reserve"]:
-		dbg.log("    Segment Reserve Size     : 0x%x (%d bytes)" % (ctx["seg_reserve"], ctx["seg_reserve"]))
-	if ctx["seg_commit"] is not None:
-		dbg.log("    Segment Commit Size      : 0x%x (%d bytes)" % (ctx["seg_commit"], ctx["seg_commit"]))
+	if not is_va:
+		if ctx["seg_base"]:
+			dbg.log("    Segment Base Address     : %s" % (PTR_PRINT % ctx["seg_base"]))
+		if ctx["seg_reserve"]:
+			dbg.log("    Segment Reserve Size     : 0x%x (%d bytes)" % (ctx["seg_reserve"], ctx["seg_reserve"]))
+		if ctx["seg_commit"] is not None:
+			dbg.log("    Segment Commit Size      : 0x%x (%d bytes)" % (ctx["seg_commit"], ctx["seg_commit"]))
 	dbg.log("    List all heaps           : %s" % clickListHeaps())
 	dbg.log("    List heap segments       : %s" % clickListSegments(ctx["heap"]))
 
@@ -33074,8 +33549,11 @@ def tellmeHeapContext(address, ctx):
 			mndbg.dbgp("tellme: heap segment base=%s reserve=0x%x commit=0x%x" % (
 				PTR_PRINT % ctx["seg_base"], ctx["seg_reserve"] or 0, ctx["seg_commit"] or 0), errormode=False)
 		if ctx["va"] is not None:
-			mndbg.dbgp("tellme: VirtualAllocdBlock index=%s base=%s commit=0x%x reserve=0x%x" % (
-				str(ctx["va_index"]), PTR_PRINT % ctx["va"], ctx["va_commit"] or 0, ctx["va_reserve"] or 0), errormode=False)
+			_va_extra = ctx.get("va_extra") or (None, None, None)
+			mndbg.dbgp("tellme: VirtualAllocdBlock index=%s base=%s commit=0x%x reserve=0x%x slack=%s extra_bt=%s extra_tag=%s extra_settable=%s" % (
+				str(ctx["va_index"]), PTR_PRINT % ctx["va"], ctx["va_commit"] or 0, ctx["va_reserve"] or 0,
+				("0x%x" % ctx["va_slack"]) if ctx.get("va_slack") is not None else "?",
+				_va_extra[0], _va_extra[1], _va_extra[2]), errormode=False)
 	except Exception as e:
 		mndbg.dbgp("tellme: heap context summary failed: %s" % str(e), errormode=False)
 
@@ -38590,10 +39068,10 @@ def _procHeapByAddr(refvalue):
 					r = ss.getRange()
 					if r[0] == 0 or not (r[0] <= refvalue < r[1]):
 						continue
-					ud = ss.getUserData()
+					ud = ss.getUserBlock()
 					if ud is None or ud.corrupted:
 						continue
-					lfh_chunks = ud.getChunks()
+					lfh_chunks = ud.getBlocks()
 					sorted_lfh = sorted(lfh_chunks, key=lambda c: c.chunkptr)
 					for idx, chunk in enumerate(sorted_lfh):
 						if chunk.chunkptr <= refvalue < chunk.chunkptr + chunk.size * HEAPGRANULARITY:
@@ -38622,30 +39100,30 @@ def _procHeapByAddr(refvalue):
 	def _read_first8(ptr):
 		try:
 			return bin2hex(dbg.readMemory(ptr, 8))
-		except:
+		except Exception:
 			return "??"
 
-	def _chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+	def _chunk_context(chunk, mheap, va_blks):
 		for va, vi in va_blks.items():
 			if va <= chunk.chunkptr < va + vi["commit_size"]:
 				return "VABlock @ %s" % (PTR_PRINT % va)
-		if _lfh_contains(chunk.chunkptr, lfh_ranges, lfh_starts):
+		if getattr(chunk, "parent", ChunkParent.SEGMENT) == ChunkParent.LFH:
 			try:
 				return "LFH Subsegment (LFH @ %s)" % (PTR_PRINT % mheap.getLFHAddress())
-			except:
+			except Exception:
 				return "LFH Subsegment"
 		seg_str = PTR_PRINT % chunk.segmentbase
 		if mndbg.isWinDBG():
 			seg_str = "<link cmd=\"dt _HEAP_SEGMENT %s\">%s</link>" % (seg_str, seg_str)
 		return "Segment @ %s" % seg_str
 
-	def _print_one_chunk(label, chunk, mheap, va_blks, lfh_ranges, lfh_starts):
+	def _print_one_chunk(label, chunk, mheap, va_blks):
 		if chunk is None:
 			dbg.log("    %s" % label)
 			dbg.log("    (none)")
 			dbg.log("")
 			return
-		ctx    = _chunk_context(chunk, mheap, va_blks, lfh_ranges, lfh_starts)
+		ctx    = _chunk_context(chunk, mheap, va_blks)
 		first8 = _read_first8(chunk.userptr)
 		entry_str = PTR_PRINT % chunk.chunkptr
 		uptr_str  = PTR_PRINT % chunk.userptr
@@ -38684,7 +39162,7 @@ def _procHeapByAddr(refvalue):
 					string_to_print = stringinmemory
 					stringfoundat = startpos
 					break
-			except:
+			except Exception:
 				continue
 			if not stringfound:
 				try:
@@ -38695,7 +39173,7 @@ def _procHeapByAddr(refvalue):
 						string_to_print = stringinmemory
 						stringfoundat = startpos
 						break
-				except:
+				except Exception:
 					continue
 		
 		if stringfound:
@@ -38715,12 +39193,6 @@ def _procHeapByAddr(refvalue):
 		va_blks = mH.getVirtualAllocdBlocks()
 	except Exception:
 		pass
-	lfh_r, lfh_s = [], []
-	try:
-		lfh_r = mH.getLFHRanges()
-		lfh_s = [r[0] for r in lfh_r]
-	except Exception:
-		pass
 
 	if kind == "seg":
 		_, _, sorted_chunks, idx = found_result
@@ -38737,9 +39209,9 @@ def _procHeapByAddr(refvalue):
 			ptext = stripTags(ptext)
 			ctext = stripTags(ctext)
 			ntext = stripTags(ntext)
-		_print_one_chunk(ptext, prev_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk(ctext, curr_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk(ntext,  next_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk(ptext, prev_chunk, mH, va_blks)
+		_print_one_chunk(ctext, curr_chunk, mH, va_blks)
+		_print_one_chunk(ntext,  next_chunk, mH, va_blks)
 
 	elif kind == "lfh":
 		_, _, sorted_chunks, idx, subseg = found_result
@@ -38760,9 +39232,9 @@ def _procHeapByAddr(refvalue):
 			ptext = stripTags(ptext)
 			ctext = stripTags(ctext)
 			ntext = stripTags(ntext)
-		_print_one_chunk(ptext, prev_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk(ctext, curr_chunk, mH, va_blks, lfh_r, lfh_s)
-		_print_one_chunk(ntext, next_chunk, mH, va_blks, lfh_r, lfh_s)
+		_print_one_chunk(ptext, prev_chunk, mH, va_blks)
+		_print_one_chunk(ctext, curr_chunk, mH, va_blks)
+		_print_one_chunk(ntext, next_chunk, mH, va_blks)
 
 	elif kind == "va":
 		_, _, vaaddr, vainfo = found_result
@@ -38814,10 +39286,10 @@ def _resolveVtable(userptr, usersize):
 						parts = line.split()
 						if len(parts) >= 3:
 							return " ".join(parts[2:])
-			except:
+			except Exception:
 				pass
 		return modname
-	except:
+	except Exception:
 		return ""
 
 
@@ -38859,8 +39331,10 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 			bucket.block_size_bytes,
 			len(subsegments),
 			"" if len(subsegments) == 1 else "s"))
-		if bucket.corrupted:
-			dbg.log("      *** CORRUPTED: %s ***" % bucket.corruption_reason, highlight=True)
+		_si = bucket.segment_info
+		if bucket.corrupted or (_si is not None and _si.corrupted):
+			_reason = bucket.corruption_reason if bucket.corrupted else _si.corruption_reason
+			dbg.log("      *** CORRUPTED: %s ***" % _reason, highlight=True)
 			continue
 		for ss in subsegments:
 			if ss.corrupted:
@@ -38874,15 +39348,15 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 				ss.getBusyCount(),
 				ss.getFreeCount()))
 			# BusyBitmap (1 = busy slot, 0 = free), bit index = block index.
-			ud_bm = ss.getUserData()
+			ud_bm = ss.getUserBlock()
 			if ud_bm and not ud_bm.corrupted:
 				bits = ud_bm.getBusyBitmapBits()
 				if bits is not None:
 					dbg.log("        BusyBitmap (1=busy): %s" % "".join(str(b) for b in bits))
 			if expand:
-				ud = ss.getUserData()
+				ud = ss.getUserBlock()
 				if ud and not ud.corrupted:
-					chunks = ud.getChunks()
+					chunks = ud.getBlocks()
 					table_data = {}
 					table_seq = []
 					for chunk in chunks:
@@ -38906,10 +39380,7 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 def _heapShowFreeList(mHeap):
 	"""Display BackEnd Allocator free list information."""
 	dbg.log("[+] BackEnd Allocator : FreeList")
-	backend = mHeap.getBackEndAllocator()
-	# Walk the actual FreeList linked list (physical Flink order) so the order
-	# here matches the Free List Index reported by `!mona info -a`.
-	free_chunks = backend.free_lists.getChunks()
+	free_chunks = mHeap.free_lists.getChunks()
 	mndbg.dbgp("tellme: heap %s back-end FreeList has %d free chunk(s)" % (
 		PTR_PRINT % mHeap.heapbase, len(free_chunks)), errormode=False)
 	if len(free_chunks) == 0:
@@ -38936,8 +39407,8 @@ def _heapShowFreeList(mHeap):
 		# ordered by index ascending.  Dedicated sizes get one group each; every
 		# non-dedicated size is folded into a single combined list (which is how
 		# the heap services them), annotating each entry with its own size.
-		hints = backend.list_hints
-		bins = backend.free_lists.getBins()
+		hints = mHeap.list_hints
+		bins = mHeap.free_lists.getBins()
 		# ListsInUseUlong bitmap: raw value, then the populated ListHints indices.
 		dwords = hints.getInUseDwords()
 		if dwords:
@@ -38980,8 +39451,7 @@ def _heapShowFreeList(mHeap):
 def _heapShowVABlocks(mHeap):
 	"""Display VirtualAllocdBlocks information."""
 	dbg.log("[+] VirtualAllocdBlocks")
-	backend = mHeap.getBackEndAllocator()
-	va_blocks = backend.getVABlocks()
+	va_blocks = mHeap.getVABlocks()
 	mndbg.dbgp("tellme: heap %s has %d VirtualAllocdBlock(s)" % (
 		PTR_PRINT % mHeap.heapbase, len(va_blocks)), errormode=False)
 	if len(va_blocks) == 0:
@@ -38993,10 +39463,21 @@ def _heapShowVABlocks(mHeap):
 		for va_addr in sorted(va_blocks.keys()):
 			va_info = va_blocks[va_addr]
 			key = PTR_PRINT % va_addr
-			table_data[key] = [va_info["commit_size"], va_info["reserve_size"]]
+			slack = va_info.get("slack")
+			table_data[key] = [
+				va_info["commit_size"],
+				va_info["reserve_size"],
+				("0x%x" % slack) if slack is not None else "?",
+				va_info.get("extra_alloc_bt_index", 0),
+				va_info.get("extra_tag_index", 0),
+				va_info.get("extra_settable", 0),
+			]
 			table_seq.append(key)
-		headers = ["_HEAP_ENTRY", "CommitSize", "ReserveSize"]
-		types = ["string", "size", "size"]
+		# ExtraStuff = the _HEAP_ENTRY_EXTRA embedded in each _HEAP_VIRTUAL_ALLOC_ENTRY; Slack is the
+		# BusyBlock _HEAP_ENTRY.Size (aligned - requested bytes), decoded key-free.
+		headers = ["_HEAP_ENTRY", "CommitSize", "ReserveSize", "Slack",
+		           "Extra.AllocBTIndex", "Extra.TagIndex", "Extra.Settable"]
+		types = ["string", "size", "size", "string", "int", "int", "pointer"]
 		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
 	dbg.log("")
 
@@ -39004,8 +39485,7 @@ def _heapShowVABlocks(mHeap):
 def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle=None, stat_info=None):
 	"""Display segment list and optionally enumerate chunks."""
 	heapbase = mHeap.heapbase
-	backend = mHeap.getBackEndAllocator()
-	segments = backend.getSegments()
+	segments = mHeap.getSegments()
 
 	mndbg.dbgp("tellme: heap %s has %d segment(s)" % (
 		PTR_PRINT % heapbase, len(segments)), errormode=False)
@@ -39019,7 +39499,7 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 			segend = seg_obj.LastValidEntry
 			first_entry = seg_obj.FirstEntry
 			segsize = segend - segstart
-		except:
+		except Exception:
 			continue
 
 		tolog = "Segment %s - %s (FirstEntry: %s - LastValidEntry: %s): %s bytes" % (
@@ -39030,7 +39510,7 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 		if logfile:
 			try:
 				logfile.write(tolog, loghandle)
-			except:
+			except Exception:
 				pass
 
 		if searchtype == "chunks" or (stat_info is not None):
@@ -39040,7 +39520,7 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 			if logfile:
 				try:
 					logfile.write(tolog, loghandle)
-				except:
+				except Exception:
 					pass
 
 			if len(datablocks) > 0:
@@ -39083,7 +39563,7 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 					if logfile:
 						try:
 							logfile.write(tolog, loghandle)
-						except:
+						except Exception:
 							pass
 					for thissize in orderedsizes:
 						nrblocks = segstatinfo[thissize]
@@ -39093,14 +39573,14 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 						if logfile:
 							try:
 								logfile.write(tolog, loghandle)
-							except:
+							except Exception:
 								pass
 					tolog = "    Total chunks : %d" % totalalloc
 					dbg.log(tolog)
 					if logfile:
 						try:
 							logfile.write(tolog, loghandle)
-						except:
+						except Exception:
 							pass
 					dbg.log("")
 			dbg.log("")
@@ -39109,14 +39589,13 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 def _heapShowUCR(mHeap):
 	"""Display UCR descriptor information."""
 	heapbase = mHeap.heapbase
-	backend = mHeap.getBackEndAllocator()
 	hline = "UCR information for heap %s:" % (PTR_PRINT % heapbase)
 	dbg.log("")
 	dbg.log(hline)
 	dbg.log("-" * len(hline))
 
 	try:
-		heap_ucrs = backend.getUCRDescriptors()
+		heap_ucrs = mHeap.getUCRDescriptors()
 		dbg.log("  Heap-wide UCRList (%d entr%s, size-sorted):" % (
 			len(heap_ucrs), "y" if len(heap_ucrs) == 1 else "ies"))
 		if heap_ucrs:
@@ -39133,7 +39612,7 @@ def _heapShowUCR(mHeap):
 			dbg.log("    (none)")
 
 		dbg.log("")
-		for seg_obj in backend.getSegments():
+		for seg_obj in mHeap.getSegments():
 			seg_end = seg_obj.BaseAddress + seg_obj.NumberOfPages * 0x1000
 			seg_ucrs = seg_obj.getUCRDescriptors()
 			dbg.log("  Segment %s - %s (%d UCR%s):" % (
@@ -39159,10 +39638,20 @@ def _heapShowUCR(mHeap):
 
 
 def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstringlength=32, logfile=None, loghandle=None):
-	"""Display heap layout with content analysis (strings, objects, BSTRs)."""
+	"""Display heap layout with content analysis (strings, objects, BSTRs).
+
+	The unified address-ordered view merges LFH front-end blocks and VA blocks into each segment's
+	chunk list: the back-end segment walk alone yields only the LFH UserBlocks *container* as
+	one busy chunk, hiding the per-block slots -- so `-t layout` previously omitted LFH. We fold in
+	getAllChunks() per segment range to surface them."""
 	heapbase = mHeap.heapbase
-	backend = mHeap.getBackEndAllocator()
-	segments = backend.getSegments()
+	segments = mHeap.getSegments()
+	# All chunks (segment + LFH + VA), bucketed for per-segment merge below.
+	try:
+		all_chunks = mHeap.getAllChunks()
+	except Exception as e:
+		mndbg.dbgp("_heapShowLayout: getAllChunks failed: %s" % str(e), errormode=False)
+		all_chunks = {}
 
 	mnproc.vtableCache = dbg.getKnowledge("vtableCache")
 	if mnproc.vtableCache is None:
@@ -39175,9 +39664,15 @@ def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstri
 		try:
 			segstart = seg_obj.BaseAddress
 			segend = seg_obj.LastValidEntry
-		except:
+		except Exception:
 			continue
-		datablocks = seg_obj.getChunks()
+		datablocks = dict(seg_obj.getChunks())
+		# Merge LFH/VA chunks that fall within this segment's range. LFH slots live inside a
+		# back-end UserBlocks chunk already in datablocks; adding them by address gives the unified
+		# per-slot view. Keyed by address, so the LFH container and its slots both appear, ordered.
+		for addr, chunk in all_chunks.items():
+			if segstart <= addr < segend and addr not in datablocks:
+				datablocks[addr] = chunk
 		tolog = "----- Heap %s, Segment %s - %s -----" % (
 			PTR_PRINT % heapbase, PTR_PRINT % segstart, PTR_PRINT % segend)
 		dbg.log(tolog)
@@ -39194,7 +39689,7 @@ def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstri
 
 			try:
 				blockmem = dbg.readMemory(block, blocksize)
-			except:
+			except Exception:
 				continue
 
 			asciistrings = getAllStringOffsets(blockmem, minstringlen)
