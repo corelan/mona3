@@ -39424,9 +39424,12 @@ def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
 		lo_units = (_prev.BlockUnits + 1) if (_prev is not None and not _prev.corrupted and _prev.BlockUnits > 0) else 1
 		if lo_units > hi_units:
 			lo_units = hi_units
+		gran_units = hi_units - lo_units + 1
+		gran_bytes = gran_units * HEAPGRANULARITY
 		serves = "0x%x" % hi_units if lo_units == hi_units else "0x%x-0x%x" % (lo_units, hi_units)
 		bnode = {
-			"label": "Bucket[%d]  (serves %s)" % (bucket.bucket_index, serves),
+			"label": "Bucket[%d]  (serves %s units, gran %d bytes/0x%xu)" % (
+				bucket.bucket_index, serves, gran_bytes, gran_units),
 			"cells": [
 				("Size", "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes), "string"),
 				("Count", "%d subseg" % len(subsegments), "string"),
@@ -44686,7 +44689,9 @@ Mandatory arguments (heap-level queries):
     -h <address> : base address of the heap to query (or 'default' for default process heap)
     -t <type> : where type is 'segments', 'chunks', 'layout',
                 'fea' (let mona determine the frontend allocator),
-                'lfh' (force display of LFH FEA, shows bucket/subsegment info),
+                'lfh' (force display of LFH FEA, shows bucket/subsegment info;
+                       each bucket shows the block-size range it serves (in
+                       granularity units) and its granularity in bytes/units),
                 'bea' (backend allocator, mona will automatically determine what it is),
                 'ucr' (show uncommitted ranges per segment and heap-wide UCRList),
                 'search' (search chunk user data for a value, requires -s),
