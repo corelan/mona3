@@ -39337,10 +39337,10 @@ def _heapShowLFHBucket(bucket, expand=False):
 	subsegments = bucket.getSubSegments()
 
 	bkey = bucket.bucket_index
-	chunk_size = "0x%x (0x%x bytes)" % (bucket.BlockUnits, bucket.block_size_bytes)
+	chunk_size = "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes)
 	print_dict_table(
 		{bkey: [chunk_size, len(subsegments)]},
-		["Bucket Index", "Chunk Size", "# Subsegments"],
+		["Bucket Index", "Chunk Size (bytes)", "# Subsegments"],
 		["int", "string", "int"],
 		padding="    ", itemsequence=[bkey])
 
