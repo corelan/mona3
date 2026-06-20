@@ -19008,7 +19008,7 @@ class MnNTLFHSegmentInfoBase(object):
 				candidates.append(("Active", self.active_subsegment))
 			if self.hint_subsegment and (self.hint_subsegment.isValid() or self.hint_subsegment.corrupted):
 				candidates.append(("Hint", self.hint_subsegment))
-			candidates.extend(("CachedItem", ss) for ss in self.cached_items)
+			candidates.extend(("CachedItems", ss) for ss in self.cached_items)
 			for role, ss in candidates:
 				if ss.address in seen:
 					continue
