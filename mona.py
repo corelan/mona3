@@ -39323,29 +39323,32 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
 	dbg.log("")
 
-	for bucket in active_buckets:
+	for i, bucket in enumerate(active_buckets):
+		if i > 0:
+			dbg.log("")
 		_heapShowLFHBucket(bucket, expand=expand)
 	dbg.log("")
 
 
 def _heapShowLFHBucket(bucket, expand=False):
-	"""Display a single LFH bucket: its header line, a per-subsegment summary
-	table (chunk counts + busy bitmap), and (when expand) a per-chunk detail
-	table for each subsegment."""
+	"""Display one LFH bucket: a one-row bucket table (index / block size / subsegment
+	count), then a per-subsegment table (base / UserBlocks addresses, chunk counts and
+	busy bitmap), and when expand is set a per-chunk table for each subsegment."""
 	subsegments = bucket.getSubSegments()
-	dbg.log("    Bucket[%d] BlockSize: 0x%x (%d) - %d subsegment%s" % (
-		bucket.bucket_index,
-		bucket.block_size_bytes,
-		bucket.block_size_bytes,
-		len(subsegments),
-		"" if len(subsegments) == 1 else "s"))
+
+	bkey = bucket.bucket_index
+	print_dict_table(
+		{bkey: [bucket.block_size_bytes, len(subsegments)]},
+		["Bucket Index", "Block Size (bytes)", "# Subsegments"],
+		["int", "size", "int"],
+		padding="    ", itemsequence=[bkey])
+
 	_si = bucket.segment_info
 	if bucket.corrupted or (_si is not None and _si.corrupted):
 		_reason = bucket.corruption_reason if bucket.corrupted else _si.corruption_reason
 		dbg.log("      *** CORRUPTED: %s ***" % _reason, highlight=True)
 		return
 
-	# Per-subsegment summary table. BusyBitmap: 1 = busy slot, 0 = free, bit index = block index.
 	table_data = {}
 	table_seq = []
 	for ss in subsegments:
@@ -39369,7 +39372,7 @@ def _heapShowLFHBucket(bucket, expand=False):
 		]
 		table_seq.append(key)
 	if table_seq:
-		headers = ["SubSegment", "UserBlocks", "Chunks", "Busy", "Free", "BusyBitmap (1=busy)"]
+		headers = ["Base Address", "UserBlocks Base Address", "# Chunks", "# Busy Chunks", "# Free Chunks", "Bitmap"]
 		types = ["string", "string", "int", "int", "int", "string"]
 		print_dict_table(table_data, headers, types, padding="      ", itemsequence=table_seq)
 
@@ -39398,7 +39401,7 @@ def _heapShowLFHBucket(bucket, expand=False):
 		if not table_seq:
 			continue
 		dbg.log("")
-		dbg.log("      Chunks in SubSegment %s:" % (PTR_PRINT % ss.address))
+		dbg.log("        Chunks in SubSegment %s:" % (PTR_PRINT % ss.address))
 		headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
 		types = ["string", "size", "pointer", "size", "string", "string"]
 		print_dict_table(table_data, headers, types, padding="        ", itemsequence=table_seq)
