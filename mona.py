@@ -39384,8 +39384,6 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
 	dbg.log("")
 
-	# Build a Bucket -> SubSegment -> Chunk tree. Each level is a different node type with its
-	# own columns; chunk nodes are added only in expand mode. Rendered by the composable table.
 	nodes = []
 	for bucket in active_buckets:
 		_si = bucket.segment_info
@@ -39397,8 +39395,8 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 		bnode = {
 			"label": "Bucket[%d]" % bucket.bucket_index,
 			"cells": [
-				("Chunk Size (bytes)", "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes), "string"),
-				("# Subseg", len(subsegments), "int"),
+				("Size", "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes), "string"),
+				("Count", "%d subseg" % len(subsegments), "string"),
 			],
 			"children": [],
 		}
@@ -39409,30 +39407,27 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 					{"label": "SubSegment %s *** CORRUPTED: %s ***" % (PTR_PRINT % ss.address, ss.corruption_reason)})
 				continue
 			ud = ss.getUserBlock()
-			bitmap = ""
-			if ud and not ud.corrupted:
-				bits = ud.getBusyBitmapBits()
-				if bits is not None:
-					bitmap = _formatLFHBitmap(bits)
+			span = ss.BlockCount * ss.BlockSize * HEAPGRANULARITY
 			snode = {
 				"label": "SubSegment %s" % (PTR_PRINT % ss.address),
 				"cells": [
-					("UserBlocks", ss.UserBlocks, "pointer"),
-					("# Chunks", ss.BlockCount, "int"),
-					("# Busy", ss.getBusyCount(), "int"),
-					("# Free", ss.getFreeCount(), "int"),
-					("Bitmap", bitmap, "string"),
+					("Size", "0x%x" % span, "string"),
+					("Count", "%d (%dB/%dF)" % (ss.BlockCount, ss.getBusyCount(), ss.getFreeCount()), "string"),
+					("UserPtr", PTR_PRINT % ss.UserBlocks, "string"),
 				],
 				"children": [],
 			}
 			bnode["children"].append(snode)
+			if ud and not ud.corrupted:
+				bits = ud.getBusyBitmapBits()
+				if bits is not None:
+					snode["children"].append({"label": "Bitmap: %s" % _formatLFHBitmap(bits)})
 			if expand and ud and not ud.corrupted:
 				for chunk in ud.getBlocks():
 					snode["children"].append({
 						"label": "Chunk %s" % (PTR_PRINT % chunk.chunkptr),
 						"cells": [
-							("Size", chunk.size * HEAPGRANULARITY, "size"),
-							("UserPtr", chunk.userptr, "pointer"),
+							("UserPtr", PTR_PRINT % chunk.userptr, "string"),
 							("State", chunk.getState().upper(), "string"),
 							("VTable", _resolveVtable(chunk.userptr, chunk.usersize), "string"),
 						],
