@@ -39369,8 +39369,9 @@ def _resolveVtable(userptr, usersize):
 		return ""
 
 
-def _heapShowLFH(mHeap, showdata=False, expand=False):
-	"""Display LFH (FrontEnd Allocator) information for a heap."""
+def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
+	"""Display LFH (FrontEnd Allocator) information for a heap. When bucketsize is set,
+	only the bucket whose chunk (block) size equals bucketsize bytes is shown."""
 	dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
 	try:
 		_parseOsVersion()
@@ -39397,7 +39398,18 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 	dbg.log("    Total Chunks: %d (Busy: %d, Free: %d)" % (total, busy, free))
 	mndbg.dbgp("tellme: heap %s LFH at %s: %d active buckets, %d blocks (busy=%d free=%d)" % (
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
+	if bucketsize is not None:
+		active_buckets = [b for b in active_buckets if b.block_size_bytes == bucketsize]
+		dbg.log("    Filter: only bucket(s) with chunk size 0x%x (%d match%s)" % (
+			bucketsize, len(active_buckets), "" if len(active_buckets) == 1 else "es"))
+		if not active_buckets:
+			dbg.log("    No active LFH bucket has chunk size 0x%x" % bucketsize, highlight=True)
 	dbg.log("")
+
+	# All buckets (incl. inactive) indexed by bucket_index, for size-range boundary lookup.
+	by_index = {}
+	for _b in fe.getBuckets():
+		by_index[_b.bucket_index] = _b
 
 	nodes = []
 	for bucket in active_buckets:
@@ -39407,8 +39419,16 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 			nodes.append({"label": "Bucket[%d] *** CORRUPTED: %s ***" % (bucket.bucket_index, _reason)})
 			continue
 		subsegments = bucket.getSubSegments()
+		# Request-size range this bucket serves: (prev size class + 1) .. this block size, minus the
+		# 8-byte LFH block header (allocations round up to the bucket's block size).
+		hdr = 8
+		req_hi = bucket.block_size_bytes - hdr
+		_prev = by_index.get(bucket.bucket_index - 1)
+		req_lo = (_prev.block_size_bytes - hdr + 1) if (_prev is not None and not _prev.corrupted and _prev.block_size_bytes > 0) else 1
+		if req_lo < 1:
+			req_lo = 1
 		bnode = {
-			"label": "Bucket[%d]" % bucket.bucket_index,
+			"label": "Bucket[%d]  (serves 0x%x-0x%x)" % (bucket.bucket_index, req_lo, req_hi),
 			"cells": [
 				("Size", "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes), "string"),
 				("Count", "%d subseg" % len(subsegments), "string"),
@@ -40027,6 +40047,7 @@ def procHeap(args):
 	showdata = False
 	findvtablesize = True
 	expand = False
+	bucketsize = None
 
 	minstringlength = 32
 	
@@ -40063,6 +40084,18 @@ def procHeap(args):
 			
 		if "expand" in args:
 			expand = True
+
+		if "bs" in args:
+			if type(args["bs"]).__name__.lower() != "bool":
+				_bs = args["bs"].lower().replace('"', '').replace("'", "")
+				try:
+					bucketsize = hexStrToInt(_bs) if _bs.startswith("0x") else int(_bs)
+				except:
+					dbg.log("Please provide a valid chunk size with -bs (e.g. -bs 0x18)", highlight=1)
+					error = True
+			else:
+				dbg.log("Please provide a valid chunk size with -bs (e.g. -bs 0x18)", highlight=1)
+				error = True
 			
 		if "fast" in args:
 			findvtablesize = False 
@@ -40196,7 +40229,7 @@ def procHeap(args):
 						dbg.log("")
 
 			if searchtype == "lfh" or (searchtype == "all" and g_win7_mode):
-				_heapShowLFH(mHeap, showdata=showdata, expand=expand)
+				_heapShowLFH(mHeap, showdata=showdata, expand=expand, bucketsize=bucketsize)
 
 			if searchtype == "freelist" or searchtype == "all":
 				_heapShowFreeList(mHeap)
@@ -44675,6 +44708,8 @@ Layout positional view (use with -t layout):
 
 Optional arguments:
     -expand : show individual block details for LFH buckets (block-level view with vtable info)
+    -bs <size> : (LFH only) only show the bucket whose chunk size equals <size>, e.g. -bs 0x18
+                 (hex with 0x, otherwise decimal); use with -t lfh or -t all
     -stat : show statistics (also works in combination with -h heap, -t segments or -t chunks)
     -size <nr> : only show strings of at least the specified size. Works in combination with 'layout'
     -after <data> : only show current & next chunk layout entries when an entry contains this data
