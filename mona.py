@@ -39419,16 +39419,14 @@ def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
 			nodes.append({"label": "Bucket[%d] *** CORRUPTED: %s ***" % (bucket.bucket_index, _reason)})
 			continue
 		subsegments = bucket.getSubSegments()
-		# Request-size range this bucket serves: (prev size class + 1) .. this block size, minus the
-		# 8-byte LFH block header (allocations round up to the bucket's block size).
-		hdr = 8
-		req_hi = bucket.block_size_bytes - hdr
+		hi_units = bucket.BlockUnits
 		_prev = by_index.get(bucket.bucket_index - 1)
-		req_lo = (_prev.block_size_bytes - hdr + 1) if (_prev is not None and not _prev.corrupted and _prev.block_size_bytes > 0) else 1
-		if req_lo < 1:
-			req_lo = 1
+		lo_units = (_prev.BlockUnits + 1) if (_prev is not None and not _prev.corrupted and _prev.BlockUnits > 0) else 1
+		if lo_units > hi_units:
+			lo_units = hi_units
+		serves = "0x%x" % hi_units if lo_units == hi_units else "0x%x-0x%x" % (lo_units, hi_units)
 		bnode = {
-			"label": "Bucket[%d]  (serves 0x%x-0x%x)" % (bucket.bucket_index, req_lo, req_hi),
+			"label": "Bucket[%d]  (serves %s)" % (bucket.bucket_index, serves),
 			"cells": [
 				("Size", "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes), "string"),
 				("Count", "%d subseg" % len(subsegments), "string"),
@@ -39447,7 +39445,7 @@ def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
 				"label": "SubSegment %s" % (PTR_PRINT % ss.address),
 				"cells": [
 					("Size", "0x%x" % span, "string"),
-					("Count", "%d (%dB/%dF)" % (ss.BlockCount, ss.getBusyCount(), ss.getFreeCount()), "string"),
+					("Count", "%d Chunks (%d B/%d F)" % (ss.BlockCount, ss.getBusyCount(), ss.getFreeCount()), "string"),
 					("UserPtr", PTR_PRINT % ss.UserBlocks, "string"),
 				],
 				"notes": [],
