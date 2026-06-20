@@ -39318,7 +39318,7 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 	active_buckets = fe.getActiveBuckets()
 	total, busy, free = fe.getUtilization()
 	dbg.log("    Active Buckets: %d" % len(active_buckets))
-	dbg.log("    Total Blocks: %d (Busy: %d, Free: %d)" % (total, busy, free))
+	dbg.log("    Total Chunks: %d (Busy: %d, Free: %d)" % (total, busy, free))
 	mndbg.dbgp("tellme: heap %s LFH at %s: %d active buckets, %d blocks (busy=%d free=%d)" % (
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
 	dbg.log("")
@@ -39341,7 +39341,7 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 				dbg.log("      SubSegment %s *** CORRUPTED: %s ***" % (
 					PTR_PRINT % ss.address, ss.corruption_reason), highlight=True)
 				continue
-			dbg.log("      SubSegment %s  UserBlocks: %s  Blocks: %d (Busy: %d, Free: %d)" % (
+			dbg.log("      SubSegment %s  UserBlocks: %s  Chunks: %d (Busy: %d, Free: %d)" % (
 				PTR_PRINT % ss.address,
 				PTR_PRINT % ss.UserBlocks,
 				ss.BlockCount,
