@@ -11341,6 +11341,67 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 
 
 
+def print_dict_composable_table(nodes, label_header="", column_order=None, padding="",
+		logobj=None, logfile=None, mdstyle=False, title="", indent="  ", connector="\\_ "):
+	"""
+	Tree-aware sibling of print_dict_table: render a hierarchy of *heterogeneous* rows as one
+	aligned table. Where print_dict_table uses a single fixed schema for every row, here each
+	node carries its OWN columns, so a tree can mix entry types (e.g. Bucket / SubSegment /
+	Chunk) that each expose different columns. Columns are unioned across all nodes (first-seen
+	order, unless column_order is given); a row leaves blank any column it does not define.
+
+	nodes        : list of root node dicts. Each node (all keys optional except label):
+	                 {
+	                   "label":    <value for the first, tree-indented column>,
+	                   "cells":    [(column_name, value, type), ...],   # this row's own columns
+	                   "children": [<node>, ...],                       # nested rows
+	                 }
+	label_header : header text for the first (tree) column.
+	column_order : optional list pinning column order; unlisted columns are appended first-seen.
+	indent       : whitespace prepended per depth level.
+	connector    : connector string prepended to every non-root label.
+
+	Rows are emitted depth-first (each parent immediately followed by its descendants).
+	All width / alignment / markdown / file / WinDBG handling is delegated to print_dict_table.
+	"""
+	# Flatten depth-first, recording each node's depth.
+	flat = []
+	def _walk(items, depth):
+		for n in items:
+			flat.append((depth, n))
+			_walk(n.get("children", []), depth + 1)
+	_walk(nodes, 0)
+
+	# Union of columns (and their format types) across every node.
+	col_order = list(column_order) if column_order else []
+	col_types = {}
+	for _depth, n in flat:
+		for cname, _cval, ctype in n.get("cells", []):
+			if cname not in col_types:
+				col_types[cname] = ctype
+			if cname not in col_order:
+				col_order.append(cname)
+	for cname in col_order:
+		col_types.setdefault(cname, "string")
+
+	# Convert to print_dict_table inputs: sequential keys, tree label carried via key_col.
+	data = {}
+	seq = []
+	key_col = []
+	for i, (depth, n) in enumerate(flat):
+		label = n.get("label", "")
+		prefix = (indent * depth) + (connector if depth > 0 else "")
+		key_col.append(prefix + ("" if label is None else "%s" % (label,)))
+		cellmap = dict((c[0], c[1]) for c in n.get("cells", []))
+		data[i] = tuple(cellmap.get(cname, "") for cname in col_order)
+		seq.append(i)
+
+	headers = [label_header] + col_order
+	types = ["string"] + [col_types[c] for c in col_order]
+	print_dict_table(data, headers, types, itemsequence=seq, key_col=key_col, padding=padding,
+		logobj=logobj, logfile=logfile, mdstyle=mdstyle, title=title)
+
+
 def getDisasmInstruction(disasmentry):
 	""" returns instruction string, convert to lower if needed """
 	global g_disasm_lower_checked
@@ -39323,52 +39384,61 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
 	dbg.log("")
 
-	# Single merged table: one row per subsegment. Bucket index and chunk size appear only
-	# on the first row of each bucket; the bitmap is grouped into bytes (1 = busy slot).
-	table_data = {}
-	table_seq = []
-	key_col = []
+	# Build a Bucket -> SubSegment -> Chunk tree. Each level is a different node type with its
+	# own columns; chunk nodes are added only in expand mode. Rendered by the composable table.
+	nodes = []
 	for bucket in active_buckets:
 		_si = bucket.segment_info
 		if bucket.corrupted or (_si is not None and _si.corrupted):
 			_reason = bucket.corruption_reason if bucket.corrupted else _si.corruption_reason
-			dbg.log("    Bucket[%d] *** CORRUPTED: %s ***" % (bucket.bucket_index, _reason), highlight=True)
+			nodes.append({"label": "Bucket[%d] *** CORRUPTED: %s ***" % (bucket.bucket_index, _reason)})
 			continue
-		chunk_size = "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes)
-		first = True
-		for ss in bucket.getSubSegments():
+		subsegments = bucket.getSubSegments()
+		bnode = {
+			"label": "Bucket[%d]" % bucket.bucket_index,
+			"cells": [
+				("Chunk Size (bytes)", "0x%x (0x%x)" % (bucket.BlockUnits, bucket.block_size_bytes), "string"),
+				("# Subseg", len(subsegments), "int"),
+			],
+			"children": [],
+		}
+		nodes.append(bnode)
+		for ss in subsegments:
 			if ss.corrupted:
-				dbg.log("    Bucket[%d] SubSegment %s *** CORRUPTED: %s ***" % (
-					bucket.bucket_index, PTR_PRINT % ss.address, ss.corruption_reason), highlight=True)
+				bnode["children"].append(
+					{"label": "SubSegment %s *** CORRUPTED: %s ***" % (PTR_PRINT % ss.address, ss.corruption_reason)})
 				continue
+			ud = ss.getUserBlock()
 			bitmap = ""
-			ud_bm = ss.getUserBlock()
-			if ud_bm and not ud_bm.corrupted:
-				bits = ud_bm.getBusyBitmapBits()
+			if ud and not ud.corrupted:
+				bits = ud.getBusyBitmapBits()
 				if bits is not None:
 					bitmap = _formatLFHBitmap(bits)
-			key = PTR_PRINT % ss.address
-			table_data[key] = [
-				chunk_size if first else "",
-				key,
-				PTR_PRINT % ss.UserBlocks,
-				ss.BlockCount,
-				ss.getBusyCount(),
-				ss.getFreeCount(),
-				bitmap,
-			]
-			table_seq.append(key)
-			key_col.append(bucket.bucket_index if first else "")
-			first = False
-	if table_seq:
-		headers = ["Bucket", "Chunk Size (bytes)", "Subsegment", "UserBlocks", "# Chunks", "# Busy", "# Free", "Bitmap"]
-		types = ["string", "string", "string", "string", "int", "int", "int", "string"]
-		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq, key_col=key_col)
-	dbg.log("")
-
-	if expand:
-		for bucket in active_buckets:
-			_heapShowLFHBucket(bucket)
+			snode = {
+				"label": "SubSegment %s" % (PTR_PRINT % ss.address),
+				"cells": [
+					("UserBlocks", ss.UserBlocks, "pointer"),
+					("# Chunks", ss.BlockCount, "int"),
+					("# Busy", ss.getBusyCount(), "int"),
+					("# Free", ss.getFreeCount(), "int"),
+					("Bitmap", bitmap, "string"),
+				],
+				"children": [],
+			}
+			bnode["children"].append(snode)
+			if expand and ud and not ud.corrupted:
+				for chunk in ud.getBlocks():
+					snode["children"].append({
+						"label": "Chunk %s" % (PTR_PRINT % chunk.chunkptr),
+						"cells": [
+							("Size", chunk.size * HEAPGRANULARITY, "size"),
+							("UserPtr", chunk.userptr, "pointer"),
+							("State", chunk.getState().upper(), "string"),
+							("VTable", _resolveVtable(chunk.userptr, chunk.usersize), "string"),
+						],
+					})
+	if nodes:
+		print_dict_composable_table(nodes, label_header="Entity", padding="    ")
 	dbg.log("")
 
 
@@ -39377,39 +39447,6 @@ def _formatLFHBitmap(bits):
 	are easy to count, e.g. [0,0,1,0,0,1,0,0,0,1] -> '00100100 01'."""
 	s = "".join(str(b) for b in bits)
 	return " ".join(s[i:i + 8] for i in range(0, len(s), 8))
-
-
-def _heapShowLFHBucket(bucket):
-	"""Expand view: print a per-chunk table for each valid subsegment of one LFH bucket."""
-	if bucket.corrupted or (bucket.segment_info is not None and bucket.segment_info.corrupted):
-		return
-	for ss in bucket.getSubSegments():
-		if ss.corrupted:
-			continue
-		ud = ss.getUserBlock()
-		if not ud or ud.corrupted:
-			continue
-		table_data = {}
-		table_seq = []
-		for chunk in ud.getBlocks():
-			state = chunk.getState()
-			vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
-			key = PTR_PRINT % chunk.chunkptr
-			table_data[key] = [
-				chunk.size * HEAPGRANULARITY,
-				chunk.userptr,
-				chunk.usersize,
-				state.upper(),
-				vtable_info,
-			]
-			table_seq.append(key)
-		if not table_seq:
-			continue
-		dbg.log("")
-		dbg.log("    Bucket[%d] SubSegment %s chunks:" % (bucket.bucket_index, PTR_PRINT % ss.address))
-		headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
-		types = ["string", "size", "pointer", "size", "string", "string"]
-		print_dict_table(table_data, headers, types, padding="      ", itemsequence=table_seq)
 
 
 def _heapShowFreeList(mHeap):
