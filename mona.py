@@ -11096,7 +11096,7 @@ def DwordToBits(srcDword):
 
 
 
-def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None, mdstyle=False, title=""):
+def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequence=None, logobj=None, logfile=None, key_col=None, mdstyle=False, title="", row_notes=None):
 	"""
 	Prints a table from a dict, Python 2/3 compatible.
 
@@ -11217,6 +11217,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 		return [key, value]
 
 	raw_rows = []
+	row_keys = []
 	formatted_rows = []
 	file_formatted_rows = []
 	expected_cols = len(headers)
@@ -11237,6 +11238,7 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 				)
 
 			raw_rows.append(row)
+			row_keys.append(key)
 			formatted_rows.append([
 				_format_cell(row[i], types[i], i) for i in range(expected_cols)
 			])
@@ -11324,9 +11326,10 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 	_p(header_line, header_file_line)
 	_p(sep_line, sep_file_line)
 
-	for raw_row, row, file_row in zip(raw_rows, formatted_rows, file_formatted_rows):
+	for raw_row, row, file_row, row_key in zip(raw_rows, formatted_rows, file_formatted_rows, row_keys):
 		line = _render_row([_ensure_text(c) for c in row], align_right_cols=right_align_cols, use_mdstyle=False)
 		file_line = _render_row(file_row, align_right_cols=right_align_cols, use_mdstyle=mdstyle, file_mode=True)
+		row_printed = False
 		if len(types) > 0 and types[0].lower() == "pointer" and not __DEBUGGERAPP__ == "WinDBG":
 			addr_val = _pointer_to_int(raw_row[0])
 			if addr_val is not None:
@@ -11336,8 +11339,12 @@ def print_dict_table(data, headers, types, ptr_size=None, padding="", itemsequen
 					if not mdstyle:
 						file_padding = padding
 					logobj.write("%s%s" % (file_padding, stripTags(file_line)), logfile)
-				continue
-		_p(line, file_line)
+				row_printed = True
+		if not row_printed:
+			_p(line, file_line)
+		if row_notes is not None:
+			for _note in row_notes.get(row_key, []):
+				_p(_note)
 
 
 
@@ -11354,8 +11361,11 @@ def print_dict_composable_table(nodes, label_header="", column_order=None, paddi
 	                 {
 	                   "label":    <value for the first, tree-indented column>,
 	                   "cells":    [(column_name, value, type), ...],   # this row's own columns
+	                   "notes":    ["free-form line", ...],             # raw lines under the row, off-grid
 	                   "children": [<node>, ...],                       # nested rows
 	                 }
+	               "notes" are printed verbatim beneath the row and are excluded from column width,
+	               so a long value (e.g. a bitmap) does not widen the table.
 	label_header : header text for the first (tree) column.
 	column_order : optional list pinning column order; unlisted columns are appended first-seen.
 	indent       : whitespace prepended per depth level.
@@ -11388,6 +11398,7 @@ def print_dict_composable_table(nodes, label_header="", column_order=None, paddi
 	data = {}
 	seq = []
 	key_col = []
+	row_notes = {}
 	for i, (depth, n) in enumerate(flat):
 		label = n.get("label", "")
 		prefix = (indent * depth) + (connector if depth > 0 else "")
@@ -11395,11 +11406,15 @@ def print_dict_composable_table(nodes, label_header="", column_order=None, paddi
 		cellmap = dict((c[0], c[1]) for c in n.get("cells", []))
 		data[i] = tuple(cellmap.get(cname, "") for cname in col_order)
 		seq.append(i)
+		notes = n.get("notes", [])
+		if notes:
+			note_prefix = indent * (depth + 1)
+			row_notes[i] = [note_prefix + ("%s" % (nt,)) for nt in notes]
 
 	headers = [label_header] + col_order
 	types = ["string"] + [col_types[c] for c in col_order]
 	print_dict_table(data, headers, types, itemsequence=seq, key_col=key_col, padding=padding,
-		logobj=logobj, logfile=logfile, mdstyle=mdstyle, title=title)
+		logobj=logobj, logfile=logfile, mdstyle=mdstyle, title=title, row_notes=row_notes)
 
 
 def getDisasmInstruction(disasmentry):
@@ -39415,13 +39430,14 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 					("Count", "%d (%dB/%dF)" % (ss.BlockCount, ss.getBusyCount(), ss.getFreeCount()), "string"),
 					("UserPtr", PTR_PRINT % ss.UserBlocks, "string"),
 				],
+				"notes": [],
 				"children": [],
 			}
 			bnode["children"].append(snode)
 			if ud and not ud.corrupted:
 				bits = ud.getBusyBitmapBits()
 				if bits is not None:
-					snode["children"].append({"label": "Bitmap: %s" % _formatLFHBitmap(bits)})
+					snode["notes"].append("Bitmap: %s" % _formatLFHBitmap(bits))
 			if expand and ud and not ud.corrupted:
 				for chunk in ud.getBlocks():
 					snode["children"].append({
