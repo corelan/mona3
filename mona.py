@@ -39331,16 +39331,17 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 
 
 def _heapShowLFHBucket(bucket, expand=False):
-	"""Display one LFH bucket: a one-row bucket table (index / block size / subsegment
+	"""Display one LFH bucket: a one-row bucket table (index / chunk size / subsegment
 	count), then a per-subsegment table (base / UserBlocks addresses, chunk counts and
 	busy bitmap), and when expand is set a per-chunk table for each subsegment."""
 	subsegments = bucket.getSubSegments()
 
 	bkey = bucket.bucket_index
+	chunk_size = "0x%x (0x%x bytes)" % (bucket.BlockUnits, bucket.block_size_bytes)
 	print_dict_table(
-		{bkey: [bucket.block_size_bytes, len(subsegments)]},
-		["Bucket Index", "Block Size (bytes)", "# Subsegments"],
-		["int", "size", "int"],
+		{bkey: [chunk_size, len(subsegments)]},
+		["Bucket Index", "Chunk Size", "# Subsegments"],
+		["int", "string", "int"],
 		padding="    ", itemsequence=[bkey])
 
 	_si = bucket.segment_info
