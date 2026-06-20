@@ -18997,20 +18997,23 @@ class MnNTLFHSegmentInfoBase(object):
 				self.corruption_reason = "Failed to read LSI at 0x%x: %s" % (lsi_addr, str(e))
 
 	def getSubSegments(self):
-		"""Valid subsegments (Active, then Hint, then CachedItems), deduped by address. Cached."""
+		"""Valid subsegments (Active, then Hint, then CachedItems), deduped by address. Cached.
+		Each kept subsegment is tagged with its LSI-slot provenance via ss.role -- the first
+		(highest-priority) slot it appears in, since dedup is first-wins."""
 		if self._subsegments is None:
 			self._subsegments = []
 			seen = set()
 			candidates = []
 			if self.active_subsegment and (self.active_subsegment.isValid() or self.active_subsegment.corrupted):
-				candidates.append(self.active_subsegment)
+				candidates.append(("Active", self.active_subsegment))
 			if self.hint_subsegment and (self.hint_subsegment.isValid() or self.hint_subsegment.corrupted):
-				candidates.append(self.hint_subsegment)
-			candidates.extend(self.cached_items)
-			for ss in candidates:
+				candidates.append(("Hint", self.hint_subsegment))
+			candidates.extend(("CachedItem", ss) for ss in self.cached_items)
+			for role, ss in candidates:
 				if ss.address in seen:
 					continue
 				seen.add(ss.address)
+				ss.role = role
 				self._subsegments.append(ss)
 		return self._subsegments
 
@@ -19934,6 +19937,10 @@ class MnNTLFHSubSegmentBase(object):
 	def __init__(self, ssbase, parent_bucket=None):
 		self.address = ssbase
 		self.parent_bucket = parent_bucket
+		# LSI slot provenance ("Active"/"Hint"/"CachedItem"); set by
+		# MnNTLFHSegmentInfoBase.getSubSegments(). None for subsegments reached off other
+		# paths (deleted/retired/zone-carved).
+		self.role = None
 		self.corrupted = False
 		self.corruption_reason = ""
 		self._user_block = None
@@ -39437,14 +39444,16 @@ def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
 		}
 		nodes.append(bnode)
 		for ss in subsegments:
+			role = ss.role or "?"
 			if ss.corrupted:
 				bnode["children"].append(
-					{"label": "SubSegment %s *** CORRUPTED: %s ***" % (PTR_PRINT % ss.address, ss.corruption_reason)})
+					{"label": "SubSegment %s [%s] *** CORRUPTED: %s ***" % (
+						PTR_PRINT % ss.address, role, ss.corruption_reason)})
 				continue
 			ud = ss.getUserBlock()
 			span = ss.BlockCount * ss.BlockSize * HEAPGRANULARITY
 			snode = {
-				"label": "SubSegment %s" % (PTR_PRINT % ss.address),
+				"label": "SubSegment %s [%s]" % (PTR_PRINT % ss.address, role),
 				"cells": [
 					("Size", "0x%x" % span, "string"),
 					("Count", "%d Chunks (%d B/%d F)" % (ss.BlockCount, ss.getBusyCount(), ss.getFreeCount()), "string"),
