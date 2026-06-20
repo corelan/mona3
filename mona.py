@@ -39324,57 +39324,84 @@ def _heapShowLFH(mHeap, showdata=False, expand=False):
 	dbg.log("")
 
 	for bucket in active_buckets:
-		subsegments = bucket.getSubSegments()
-		dbg.log("    Bucket[%d] BlockSize: 0x%x (%d) - %d subsegment%s" % (
-			bucket.bucket_index,
-			bucket.block_size_bytes,
-			bucket.block_size_bytes,
-			len(subsegments),
-			"" if len(subsegments) == 1 else "s"))
-		_si = bucket.segment_info
-		if bucket.corrupted or (_si is not None and _si.corrupted):
-			_reason = bucket.corruption_reason if bucket.corrupted else _si.corruption_reason
-			dbg.log("      *** CORRUPTED: %s ***" % _reason, highlight=True)
-			continue
-		for ss in subsegments:
-			if ss.corrupted:
-				dbg.log("      SubSegment %s *** CORRUPTED: %s ***" % (
-					PTR_PRINT % ss.address, ss.corruption_reason), highlight=True)
-				continue
-			dbg.log("      SubSegment %s  UserBlocks: %s  Chunks: %d (Busy: %d, Free: %d)" % (
-				PTR_PRINT % ss.address,
-				PTR_PRINT % ss.UserBlocks,
-				ss.BlockCount,
-				ss.getBusyCount(),
-				ss.getFreeCount()))
-			# BusyBitmap (1 = busy slot, 0 = free), bit index = block index.
-			ud_bm = ss.getUserBlock()
-			if ud_bm and not ud_bm.corrupted:
-				bits = ud_bm.getBusyBitmapBits()
-				if bits is not None:
-					dbg.log("        BusyBitmap (1=busy): %s" % "".join(str(b) for b in bits))
-			if expand:
-				ud = ss.getUserBlock()
-				if ud and not ud.corrupted:
-					chunks = ud.getBlocks()
-					table_data = {}
-					table_seq = []
-					for chunk in chunks:
-						state = chunk.getState()
-						vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
-						key = PTR_PRINT % chunk.chunkptr
-						table_data[key] = [
-							chunk.size * HEAPGRANULARITY,
-							chunk.userptr,
-							chunk.usersize,
-							state.upper(),
-							vtable_info,
-						]
-						table_seq.append(key)
-					headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
-					types = ["string", "size", "pointer", "size", "string", "string"]
-					print_dict_table(table_data, headers, types, padding="        ", itemsequence=table_seq)
+		_heapShowLFHBucket(bucket, expand=expand)
 	dbg.log("")
+
+
+def _heapShowLFHBucket(bucket, expand=False):
+	"""Display a single LFH bucket: its header line, a per-subsegment summary
+	table (chunk counts + busy bitmap), and (when expand) a per-chunk detail
+	table for each subsegment."""
+	subsegments = bucket.getSubSegments()
+	dbg.log("    Bucket[%d] BlockSize: 0x%x (%d) - %d subsegment%s" % (
+		bucket.bucket_index,
+		bucket.block_size_bytes,
+		bucket.block_size_bytes,
+		len(subsegments),
+		"" if len(subsegments) == 1 else "s"))
+	_si = bucket.segment_info
+	if bucket.corrupted or (_si is not None and _si.corrupted):
+		_reason = bucket.corruption_reason if bucket.corrupted else _si.corruption_reason
+		dbg.log("      *** CORRUPTED: %s ***" % _reason, highlight=True)
+		return
+
+	# Per-subsegment summary table. BusyBitmap: 1 = busy slot, 0 = free, bit index = block index.
+	table_data = {}
+	table_seq = []
+	for ss in subsegments:
+		if ss.corrupted:
+			dbg.log("      SubSegment %s *** CORRUPTED: %s ***" % (
+				PTR_PRINT % ss.address, ss.corruption_reason), highlight=True)
+			continue
+		bitmap = ""
+		ud_bm = ss.getUserBlock()
+		if ud_bm and not ud_bm.corrupted:
+			bits = ud_bm.getBusyBitmapBits()
+			if bits is not None:
+				bitmap = "".join(str(b) for b in bits)
+		key = PTR_PRINT % ss.address
+		table_data[key] = [
+			PTR_PRINT % ss.UserBlocks,
+			ss.BlockCount,
+			ss.getBusyCount(),
+			ss.getFreeCount(),
+			bitmap,
+		]
+		table_seq.append(key)
+	if table_seq:
+		headers = ["SubSegment", "UserBlocks", "Chunks", "Busy", "Free", "BusyBitmap (1=busy)"]
+		types = ["string", "string", "int", "int", "int", "string"]
+		print_dict_table(table_data, headers, types, padding="      ", itemsequence=table_seq)
+
+	if not expand:
+		return
+	for ss in subsegments:
+		if ss.corrupted:
+			continue
+		ud = ss.getUserBlock()
+		if not ud or ud.corrupted:
+			continue
+		table_data = {}
+		table_seq = []
+		for chunk in ud.getBlocks():
+			state = chunk.getState()
+			vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
+			key = PTR_PRINT % chunk.chunkptr
+			table_data[key] = [
+				chunk.size * HEAPGRANULARITY,
+				chunk.userptr,
+				chunk.usersize,
+				state.upper(),
+				vtable_info,
+			]
+			table_seq.append(key)
+		if not table_seq:
+			continue
+		dbg.log("")
+		dbg.log("      Chunks in SubSegment %s:" % (PTR_PRINT % ss.address))
+		headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
+		types = ["string", "size", "pointer", "size", "string", "string"]
+		print_dict_table(table_data, headers, types, padding="        ", itemsequence=table_seq)
 
 
 def _heapShowFreeList(mHeap):
