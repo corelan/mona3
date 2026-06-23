@@ -17377,6 +17377,40 @@ class MnNTHeap(MnHeap):
 			self._list_hints = bi.list_hints if bi is not None else MnNTListHints(MnNTBlockIndex(0, self))
 		return self._list_hints
 
+	def lfhActivationCounter(self, bucket):
+		"""For an INACTIVE LFH bucket, return (current_count, threshold_or_None) showing progress
+		toward LFH activation, or None when the version/data can't supply it (caller prints '?').
+
+		Version-aware:
+		  - Vista/7 : ListHints Blink slot via MnNTListHints.activationFor() -- ("count", k) while
+		              counting; k is the activation progress for that size class.
+		  - Win8+   : _HEAP.FrontEndHeapUsageData[bucket_index] (an opaque per-size-class usage
+		              counter). activationFor() returns None on Win8+ (no Blink slot), so we fall
+		              through to the usage-data array.
+		The activation THRESHOLD is a Windows-internal constant not exposed in mona, so we always
+		return None for it and render just the count (never a guessed denominator)."""
+		# Vista/7 path first (activationFor returns None on Win8+).
+		try:
+			act = self.list_hints.activationFor(bucket.BlockUnits)
+		except Exception:
+			act = None
+		if act is not None:
+			if act[0] == "count":
+				return (act[1], None)
+			return None  # ('bucket', ...) => already active; not an inactive counter
+		# Win8+ path: opaque u16 usage counter per size class. Only trust it when LFH is the
+		# active front end (type 2), else the array may be stale.
+		try:
+			if self.getFrontEndHeapType() != 2:
+				return None
+			usage = self.getFrontEndHeapUsageData()  # [] on Vista/7 (no offset) or read failure
+		except Exception:
+			usage = []
+		idx = bucket.bucket_index
+		if usage and 0 <= idx < len(usage):
+			return (usage[idx], None)
+		return None
+
 	def getSegments(self):
 		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
 		if getattr(self, '_segments', None) is None:
@@ -39553,7 +39587,6 @@ def _heapShowSummary(mHeap):
 	except Exception as e:
 		dbg.log("    [-] %s" % str(e))
 
-	# -- ListHints (populated indices only) --
 	dbg.log("ListHints:")
 	try:
 		bins = mHeap.free_lists.getBins()
@@ -39561,11 +39594,26 @@ def _heapShowSummary(mHeap):
 		populated = sorted(bins.keys())
 		if not populated:
 			dbg.log("    (none populated)")
+		nondedicated_chunks = 0
 		for size_units in populated:
-			idx = hints.bucketForSize(size_units)["index"] if hints.usesHints() else size_units
-			dbg.log("    Index %d (size 0x%x): %d chunk%s" % (
-				idx, size_units * HEAPGRANULARITY, len(bins[size_units]),
-				"" if len(bins[size_units]) == 1 else "s"))
+			n = len(bins[size_units])
+			if hints.usesHints():
+				b = hints.bucketForSize(size_units)
+				dedicated = b["dedicated"]
+				idx = b["index"]
+			else:
+				dedicated = (size_units <= 127)
+				idx = size_units
+			if dedicated:
+				dbg.log("    Index %d (size 0x%x): %d chunk%s" % (
+					idx, size_units * HEAPGRANULARITY, n, "" if n == 1 else "s"))
+			else:
+				nondedicated_chunks += n
+		if nondedicated_chunks:
+			start_units = (hints.BaseIndex + hints.ArraySize) if hints.usesHints() else 128
+			dbg.log("    Non-dedicated (size >= 0x%x): %d chunk%s" % (
+				start_units * HEAPGRANULARITY, nondedicated_chunks,
+				"" if nondedicated_chunks == 1 else "s"))
 	except Exception as e:
 		dbg.log("    [-] %s" % str(e))
 
@@ -39577,7 +39625,7 @@ def _heapShowSummary(mHeap):
 		dbg.log("LFH Buckets:")
 		try:
 			fe = mHeap.getFrontEndAllocator()
-			fe.getSegmentInfos()  # pair bucket<->LSI so isActive()/counts are valid
+			fe.getSegmentInfos()
 			buckets = fe.getBuckets()
 			by_index = {b.bucket_index: b for b in buckets}
 			any_shown = False
@@ -39600,12 +39648,12 @@ def _heapShowSummary(mHeap):
 						bucket.bucket_index, serves, total, busy, free))
 					any_shown = True
 				else:
-					ctr = bucket.Counters
-					ctr_total = ctr.TotalBlocks if ctr is not None else 0
-					# Only list disabled buckets with a non-zero activation counter (signal).
-					if ctr_total:
-						dbg.log("    Bucket[%d]  Disabled  serves %s units  Counter: %d" % (
-							bucket.bucket_index, serves, ctr_total))
+					prog = mHeap.lfhActivationCounter(bucket)
+					if prog is not None and prog[0]:
+						cnt, thr = prog
+						ctr_str = "%d/%d" % (cnt, thr) if thr else "%d" % cnt
+						dbg.log("    Bucket[%d]  Disabled  serves %s units  Activation: %s" % (
+							bucket.bucket_index, serves, ctr_str))
 						any_shown = True
 			if not any_shown:
 				dbg.log("    (no active buckets)")
@@ -39746,6 +39794,7 @@ def _heapShowLFHCounters(mHeap, show_all=False):
 	fe = mHeap.getFrontEndAllocator()
 	try:
 		buckets = fe.getBuckets()
+		fe.getSegmentInfos()
 	except Exception as e:
 		dbg.log("    [-] Failed to enumerate LFH buckets: %s" % str(e))
 		dbg.log("")
@@ -39763,24 +39812,19 @@ def _heapShowLFHCounters(mHeap, show_all=False):
 		total = bucket.getTotalBlocks()
 		busy = bucket.getBusyBlocks()
 		free = bucket.getFreeBlocks()
-		ctr = bucket.Counters
+		si = bucket.segment_info
+		ctr = si.Counters if si is not None else None
 		ctr_total = ctr.TotalBlocks if ctr is not None else 0
 		ctr_subseg = ctr.SubSegmentCounts if ctr is not None else 0
-		# Activation state (Vista/7 expose it via ListHints Blink; Win8+ -> active if paired).
-		activation = ""
-		try:
-			act = mHeap.list_hints.activationFor(bucket.BlockUnits)
-			if act is not None:
-				if act[0] == "count":
-					activation = "counting (%d)" % act[1]
-				else:
-					activation = "ACTIVE"
-			elif bucket.isActive():
-				activation = "ACTIVE"
-		except Exception:
-			if bucket.isActive():
-				activation = "ACTIVE"
-		# Skip all-zero buckets unless show_all.
+		if bucket.isActive():
+			activation = "ACTIVE"
+		else:
+			prog = mHeap.lfhActivationCounter(bucket)
+			if prog is not None:
+				cnt, thr = prog
+				activation = "counting (%d/%d)" % (cnt, thr) if thr else "counting (%d)" % cnt
+			else:
+				activation = ""
 		if not show_all and total == 0 and busy == 0 and free == 0 and ctr_total == 0 and ctr_subseg == 0 and activation == "":
 			continue
 		key = "Bucket[%d]" % bucket.bucket_index
