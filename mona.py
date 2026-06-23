@@ -17378,39 +17378,42 @@ class MnNTHeap(MnHeap):
 		return self._list_hints
 
 	def lfhActivationCounter(self, bucket):
-		"""For an INACTIVE LFH bucket, return (current_count, threshold_or_None) showing progress
-		toward LFH activation, or None when the version/data can't supply it (caller prints '?').
-
-		Version-aware:
-		  - Vista/7 : ListHints Blink slot via MnNTListHints.activationFor() -- ("count", k) while
-		              counting; k is the activation progress for that size class.
-		  - Win8+   : _HEAP.FrontEndHeapUsageData[bucket_index] (an opaque per-size-class usage
-		              counter). activationFor() returns None on Win8+ (no Blink slot), so we fall
-		              through to the usage-data array.
-		The activation THRESHOLD is a Windows-internal constant not exposed in mona, so we always
-		return None for it and render just the count (never a guessed denominator)."""
-		# Vista/7 path first (activationFor returns None on Win8+).
+		"""For an INACTIVE LFH size class, return (count, threshold) showing progress toward LFH
+		activation, or None when the value is not a meaningful pre-activation counter (caller prints
+		'-'). Conservative: anything we cannot decode with confidence returns None."""
+		units = getattr(bucket, "BlockUnits", 0)
+		if not units:
+			return None
 		try:
-			act = self.list_hints.activationFor(bucket.BlockUnits)
+			act = self.list_hints.activationFor(units)
 		except Exception:
 			act = None
 		if act is not None:
 			if act[0] == "count":
-				return (act[1], None)
-			return None  # ('bucket', ...) => already active; not an inactive counter
-		# Win8+ path: opaque u16 usage counter per size class. Only trust it when LFH is the
-		# active front end (type 2), else the array may be stale.
+				return (act[1] & 0xFFFF, 0x20)
+			return None
 		try:
 			if self.getFrontEndHeapType() != 2:
 				return None
-			usage = self.getFrontEndHeapUsageData()  # [] on Vista/7 (no offset) or read failure
+			usage = self.getFrontEndHeapUsageData()
 		except Exception:
 			usage = []
-		idx = bucket.bucket_index
-		if usage and 0 <= idx < len(usage):
-			return (usage[idx], None)
-		return None
+		if not usage or not (0 <= units < len(usage)):
+			return None
+		try:
+			if self._frontEndStatusBitmapBit(units):
+				return None
+		except Exception:
+			return None
+		raw = usage[units]
+		return (raw & 0x1F, 0x10)
 
+	def _frontEndStatusBitmapBit(self, units):
+		"""True if the FrontEndHeapStatusBitmap bit for size class *units* is set (LFH active for it).
+		Byte[units>>3], bit (units&7). Raises on read failure (caller treats as conservative None)."""
+		base = self.heapbase + self._offset("FrontEndHeapStatusBitmap")
+		byte = dbg.readMemory(base + (units >> 3), 1)
+		return bool(_ord(byte[0]) & (1 << (units & 7)))
 	def getSegments(self):
 		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
 		if getattr(self, '_segments', None) is None:
@@ -20924,7 +20927,8 @@ class MnNTListHints(object):
 	def activationFor(self, n):
 		"""Blink slot (Vista/7): the LFH-activation state for size class n, or None. INFERRED from the
 		2-pointer stride (ExtraItem != 0); Returns
-		("count", k) while counting toward activation, or ("bucket", MnNTLFHBucket) once LFH-active."""
+		("count", low16_counter) while counting toward activation (LSB clear), or ("bucket",
+		MnNTLFHBucket) once LFH-active (LSB set => Blink is a pointer). Threshold ~0x20 (Win7)."""
 		if self.elt == archValue(4, 8):
 			return None
 		idx = n - self.bi.BaseIndex
@@ -20934,8 +20938,8 @@ class MnNTListHints(object):
 		if not blink:
 			return None
 		if blink & 1:
-			return ("count", blink >> 1)
-		return ("bucket", self.heap.lfhBucketAt(blink))
+			return ("bucket", self.heap.lfhBucketAt(blink & ~1))
+		return ("count", blink & 0xFFFF)
 
 	def getBins(self):
 		"""{size_units: [MnChunk]} -- one bin per populated size class, each the FreeLists run from
