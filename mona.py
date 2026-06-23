@@ -39557,6 +39557,13 @@ def _heapShowSummary(mHeap):
 	dbg.log("")
 	dbg.log("================ Heap %s%s ================" % (PTR_PRINT % heapbase, tag))
 
+	# -- Encoding Key --
+	try:
+		_key = mHeap.getEncodingKey()
+		dbg.log("Encoding Key: 0x%x" % _key)
+	except Exception:
+		dbg.log("Encoding Key: ?")
+
 	# -- Flags --
 	try:
 		dbg.log("Flags: %s" % mHeap.getFlagsText())
@@ -39564,9 +39571,9 @@ def _heapShowSummary(mHeap):
 		dbg.log("Flags: ?")
 
 	# -- Segments --
-	dbg.log("Segments:")
 	try:
 		segments = mHeap.getSegments()
+		dbg.log("Segments (%d):" % len(segments))
 		if not segments:
 			dbg.log("    (none)")
 		for seg in segments:
@@ -39576,12 +39583,13 @@ def _heapShowSummary(mHeap):
 				free = sum(1 for c in chunks.values() if c.getState() != ChunkState.BUSY)
 				reserved = seg.NumberOfPages * 0x1000
 				committed = max(0, (seg.NumberOfPages - seg.NumberOfUnCommittedPages)) * 0x1000
-				dbg.log("    %s - %s  Chunks: %d (B:%d/F:%d)  Reserved: 0x%x  Committed: 0x%x" % (
+				dbg.log("    Base: %s - Top: %s  Chunks: %d (B:%d/F:%d)  Reserved: 0x%x  Committed: 0x%x" % (
 					PTR_PRINT % seg.BaseAddress, PTR_PRINT % seg.LastValidEntry,
 					len(chunks), busy, free, reserved, committed))
 			except Exception as e:
 				dbg.log("    %s  [-] %s" % (PTR_PRINT % getattr(seg, "BaseAddress", 0), str(e)))
 	except Exception as e:
+		dbg.log("Segments:")
 		dbg.log("    [-] Failed to enumerate segments: %s" % str(e))
 
 	# -- FreeList --
@@ -39596,13 +39604,11 @@ def _heapShowSummary(mHeap):
 	except Exception as e:
 		dbg.log("    [-] %s" % str(e))
 
-	dbg.log("ListHints:")
 	try:
 		bins = mHeap.free_lists.getBins()
 		hints = mHeap.list_hints
 		populated = sorted(bins.keys())
-		if not populated:
-			dbg.log("    (none populated)")
+		dedicated_rows = []
 		nondedicated_chunks = 0
 		for size_units in populated:
 			n = len(bins[size_units])
@@ -39614,16 +39620,22 @@ def _heapShowSummary(mHeap):
 				dedicated = (size_units <= 127)
 				idx = size_units
 			if dedicated:
-				dbg.log("    Index %d (size 0x%x): %d chunk%s" % (
-					idx, size_units * HEAPGRANULARITY, n, "" if n == 1 else "s"))
+				dedicated_rows.append((idx, size_units, n))
 			else:
 				nondedicated_chunks += n
+		dbg.log("ListHints (%d):" % len(dedicated_rows))
+		if not populated:
+			dbg.log("    (none populated)")
+		for idx, size_units, n in dedicated_rows:
+			dbg.log("    Index %d (size 0x%x): %d chunk%s" % (
+				idx, size_units * HEAPGRANULARITY, n, "" if n == 1 else "s"))
 		if nondedicated_chunks:
 			start_units = (hints.BaseIndex + hints.ArraySize) if hints.usesHints() else 128
 			dbg.log("    Non-dedicated (size >= 0x%x): %d chunk%s" % (
 				start_units * HEAPGRANULARITY, nondedicated_chunks,
 				"" if nondedicated_chunks == 1 else "s"))
 	except Exception as e:
+		dbg.log("ListHints:")
 		dbg.log("    [-] %s" % str(e))
 
 	# -- LFH state + buckets --
@@ -39631,54 +39643,61 @@ def _heapShowSummary(mHeap):
 		dbg.log("LFH: Disabled")
 	else:
 		dbg.log("LFH: Enabled")
-		dbg.log("LFH Buckets:")
 		try:
 			fe = mHeap.getFrontEndAllocator()
 			fe.getSegmentInfos()
 			buckets = fe.getBuckets()
 			by_index = {b.bucket_index: b for b in buckets}
-			any_shown = False
+			rows = []
 			for bucket in buckets:
 				if bucket.corrupted:
-					dbg.log("    Bucket[%d]  *** CORRUPTED ***" % bucket.bucket_index)
-					any_shown = True
+					rows.append("    Bucket[%d]  *** CORRUPTED ***" % bucket.bucket_index)
 					continue
 				hi = bucket.BlockUnits
 				prev = by_index.get(bucket.bucket_index - 1)
 				lo = (prev.BlockUnits + 1) if (prev is not None and not prev.corrupted and prev.BlockUnits > 0) else 1
 				if lo > hi:
 					lo = hi
-				serves = "0x%x" % hi if lo == hi else "0x%x-0x%x" % (lo, hi)
+				_hdr = archValue(8, 16)
+				us_lo = max(0, lo * HEAPGRANULARITY - _hdr)
+				us_hi = max(0, hi * HEAPGRANULARITY - _hdr)
+				if lo == hi:
+					serves = "0x%x blocks (%d bytes usersize)" % (hi, us_hi)
+				else:
+					serves = "0x%x-0x%x blocks (0x%x - 0x%x bytes usersize)" % (lo, hi, us_lo, us_hi)
 				if bucket.isActive():
 					total = bucket.getTotalBlocks()
 					busy = bucket.getBusyBlocks()
 					free = bucket.getFreeBlocks()
-					dbg.log("    Bucket[%d]  Enabled   serves %s units  Chunks: %d (B:%d/F:%d)" % (
+					rows.append("    Bucket[%d]  Enabled   serves %s  Chunks: %d (B:%d/F:%d)" % (
 						bucket.bucket_index, serves, total, busy, free))
-					any_shown = True
 				else:
 					cnt = mHeap.lfhActivationCounter(bucket)
 					if cnt:
-						dbg.log("    Bucket[%d]  Disabled  serves %s units  Activation count: %d" % (
+						rows.append("    Bucket[%d]  Disabled  serves %s  Count: %d" % (
 							bucket.bucket_index, serves, cnt))
-						any_shown = True
-			if not any_shown:
+			dbg.log("LFH Buckets (%d):" % len(rows))
+			if not rows:
 				dbg.log("    (no active buckets)")
+			for r in rows:
+				dbg.log(r)
 		except Exception as e:
+			dbg.log("LFH Buckets:")
 			dbg.log("    [-] %s" % str(e))
 
 	# -- VABlocks --
-	dbg.log("VABlocks:")
 	try:
 		va_blocks = mHeap.getVABlocks()
+		dbg.log("VABlocks (%d):" % len(va_blocks))
 		if not va_blocks:
 			dbg.log("    (none)")
 		for va_addr in sorted(va_blocks.keys()):
 			vi = va_blocks[va_addr]
-			dbg.log("    %s - %s  Reserved: 0x%x  Committed: 0x%x" % (
+			dbg.log("    Base: %s - Top: %s  Reserved: 0x%x  Committed: 0x%x" % (
 				PTR_PRINT % va_addr, PTR_PRINT % (va_addr + vi["commit_size"]),
 				vi["reserve_size"], vi["commit_size"]))
 	except Exception as e:
+		dbg.log("VABlocks:")
 		dbg.log("    [-] %s" % str(e))
 	dbg.log("")
 
@@ -40667,27 +40686,15 @@ def procHeap(args):
 	dbg.log("Peb : %s, NtGlobalFlag : 0x%08x" % (PTR_PRINT % mnproc.getPEB().address, mnproc.getPEB().getNtGlobalFlag()))
 	dbg.log("Heaps:")
 	dbg.log("------")
+	# Flag corrupted heaps up front (the per-heap one-line summary was removed in favour of the
+	# detailed _heapShowSummary view below). Healthy heaps produce no banner line here.
 	if len(allheaps) > 0:
 		for heap in allheaps:
-			segments = getSegmentList(heap)
-			segmentlist = []
-			for segment in segments:
-				segmentlist.append(segment)
-			if not g_win7_mode:
-				segmentlist.sort()
-			segmentinfo = ""
-			for segment in segmentlist:
-				segmentinfo = segmentinfo + "%s" % (PTR_PRINT % segment) + ","
-			segmentinfo = segmentinfo.strip(",")
-			segmentinfo = " : " + segmentinfo
-			defheap = ""
-			lfhheap = ""
-			keyinfo = ""
-			if heap == getDefaultProcessHeap():
-				defheap = "* Default process heap"
-			if g_win7_mode:
-				iHeap = MnHeap(heap)
-				if iHeap.isCorrupted():
+			defheap = "* Default process heap" if heap == getDefaultProcessHeap() else ""
+			iHeap = MnHeap(heap)
+			if iHeap.isCorrupted():
+				sigdetail = ""
+				if g_win7_mode:
 					nt_sig = None
 					seg_sig = None
 					try:
@@ -40698,25 +40705,11 @@ def procHeap(args):
 						seg_sig = iHeap.getSegmentHeapSignature()
 					except:
 						pass
-					sigdetail = ""
 					if nt_sig is not None:
 						sigdetail += " NT sig: 0x%08x" % nt_sig
 					if seg_sig is not None:
 						sigdetail += " Seg sig: 0x%08x" % seg_sig
-					dbg.log("0x%08x ** CORRUPTED ** (type: %s,%s) %s" % (heap, iHeap.getHeapType(), sigdetail, defheap), highlight=1)
-					continue
-				if iHeap.usesLFH():
-					lfhheapaddress = iHeap.getLFHAddress()
-					lfhheap = "[LFH enabled, _LFH_HEAP at 0x%08x]" % lfhheapaddress
-				if iHeap.getEncodingKey() > 0:
-					keyinfo = "Encoding key: 0x%016x" % iHeap.getEncodingKey()
-			else:
-				iHeap = MnHeap(heap)
-				if iHeap.isCorrupted():
-					dbg.log("0x%08x ** CORRUPTED ** (type: %s) %s" % (heap, iHeap.getHeapType(), defheap), highlight=1)
-					continue
-			dbg.log("%s (%d segment(s)%s) %s %s %s" % (
-				(PTR_PRINT % heap), len(segments), segmentinfo, defheap, lfhheap, keyinfo))
+				dbg.log("0x%08x ** CORRUPTED ** (type: %s,%s) %s" % (heap, iHeap.getHeapType(), sigdetail, defheap), highlight=1)
 	else:
 		dbg.log(" ** No heaps found")
 	dbg.log("")
