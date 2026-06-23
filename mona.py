@@ -39506,6 +39506,128 @@ class _HeapProgress(object):
 			dbg.log("    [%s] processed %d, %ds elapsed" % (self.label, self.done, int(elapsed)))
 
 
+def _heapShowSummary(mHeap):
+	"""Detailed per-heap summary (the no-subcommand `!mona heap` view): Flags, Segments,
+	FreeList, ListHints, LFH state + buckets, and VABlocks -- each as its own block."""
+	heapbase = mHeap.heapbase
+	tag = " [Default process heap]" if heapbase == getDefaultProcessHeap() else ""
+	dbg.log("")
+	dbg.log("================ Heap %s%s ================" % (PTR_PRINT % heapbase, tag))
+
+	# -- Flags --
+	try:
+		dbg.log("Flags: %s" % mHeap.getFlagsText())
+	except Exception:
+		dbg.log("Flags: ?")
+
+	# -- Segments --
+	dbg.log("Segments:")
+	try:
+		segments = mHeap.getSegments()
+		if not segments:
+			dbg.log("    (none)")
+		for seg in segments:
+			try:
+				chunks = seg.getChunks()
+				busy = sum(1 for c in chunks.values() if c.getState() == ChunkState.BUSY)
+				free = sum(1 for c in chunks.values() if c.getState() != ChunkState.BUSY)
+				reserved = seg.NumberOfPages * 0x1000
+				committed = max(0, (seg.NumberOfPages - seg.NumberOfUnCommittedPages)) * 0x1000
+				dbg.log("    %s - %s  Chunks: %d (B:%d/F:%d)  Reserved: 0x%x  Committed: 0x%x" % (
+					PTR_PRINT % seg.BaseAddress, PTR_PRINT % seg.LastValidEntry,
+					len(chunks), busy, free, reserved, committed))
+			except Exception as e:
+				dbg.log("    %s  [-] %s" % (PTR_PRINT % getattr(seg, "BaseAddress", 0), str(e)))
+	except Exception as e:
+		dbg.log("    [-] Failed to enumerate segments: %s" % str(e))
+
+	# -- FreeList --
+	dbg.log("FreeList:")
+	try:
+		fl = mHeap.free_lists.getOrderedChunks()
+		if not fl:
+			dbg.log("    Length: 0")
+		else:
+			sizes = [c.size * HEAPGRANULARITY for c in fl]
+			dbg.log("    Length: %d  Min Size: 0x%x  Max Size: 0x%x" % (len(fl), min(sizes), max(sizes)))
+	except Exception as e:
+		dbg.log("    [-] %s" % str(e))
+
+	# -- ListHints (populated indices only) --
+	dbg.log("ListHints:")
+	try:
+		bins = mHeap.free_lists.getBins()
+		hints = mHeap.list_hints
+		populated = sorted(bins.keys())
+		if not populated:
+			dbg.log("    (none populated)")
+		for size_units in populated:
+			idx = hints.bucketForSize(size_units)["index"] if hints.usesHints() else size_units
+			dbg.log("    Index %d (size 0x%x): %d chunk%s" % (
+				idx, size_units * HEAPGRANULARITY, len(bins[size_units]),
+				"" if len(bins[size_units]) == 1 else "s"))
+	except Exception as e:
+		dbg.log("    [-] %s" % str(e))
+
+	# -- LFH state + buckets --
+	if not mHeap.usesLFH():
+		dbg.log("LFH: Disabled")
+	else:
+		dbg.log("LFH: Enabled")
+		dbg.log("LFH Buckets:")
+		try:
+			fe = mHeap.getFrontEndAllocator()
+			fe.getSegmentInfos()  # pair bucket<->LSI so isActive()/counts are valid
+			buckets = fe.getBuckets()
+			by_index = {b.bucket_index: b for b in buckets}
+			any_shown = False
+			for bucket in buckets:
+				if bucket.corrupted:
+					dbg.log("    Bucket[%d]  *** CORRUPTED ***" % bucket.bucket_index)
+					any_shown = True
+					continue
+				hi = bucket.BlockUnits
+				prev = by_index.get(bucket.bucket_index - 1)
+				lo = (prev.BlockUnits + 1) if (prev is not None and not prev.corrupted and prev.BlockUnits > 0) else 1
+				if lo > hi:
+					lo = hi
+				serves = "0x%x" % hi if lo == hi else "0x%x-0x%x" % (lo, hi)
+				if bucket.isActive():
+					total = bucket.getTotalBlocks()
+					busy = bucket.getBusyBlocks()
+					free = bucket.getFreeBlocks()
+					dbg.log("    Bucket[%d]  Enabled   serves %s units  Chunks: %d (B:%d/F:%d)" % (
+						bucket.bucket_index, serves, total, busy, free))
+					any_shown = True
+				else:
+					ctr = bucket.Counters
+					ctr_total = ctr.TotalBlocks if ctr is not None else 0
+					# Only list disabled buckets with a non-zero activation counter (signal).
+					if ctr_total:
+						dbg.log("    Bucket[%d]  Disabled  serves %s units  Counter: %d" % (
+							bucket.bucket_index, serves, ctr_total))
+						any_shown = True
+			if not any_shown:
+				dbg.log("    (no active buckets)")
+		except Exception as e:
+			dbg.log("    [-] %s" % str(e))
+
+	# -- VABlocks --
+	dbg.log("VABlocks:")
+	try:
+		va_blocks = mHeap.getVABlocks()
+		if not va_blocks:
+			dbg.log("    (none)")
+		for va_addr in sorted(va_blocks.keys()):
+			vi = va_blocks[va_addr]
+			dbg.log("    %s - %s  Reserved: 0x%x  Committed: 0x%x" % (
+				PTR_PRINT % va_addr, PTR_PRINT % (va_addr + vi["commit_size"]),
+				vi["reserve_size"], vi["commit_size"]))
+	except Exception as e:
+		dbg.log("    [-] %s" % str(e))
+	dbg.log("")
+
+
 def _heapShowLFH(mHeap, bucketsize=None, extend=False):
 	"""Display LFH (FrontEnd Allocator) information for a heap. When bucketsize is set
 	(in granularity units), only the bucket whose BlockUnits equals it is shown.
@@ -40108,30 +40230,32 @@ def _heapHexDump(data, base_addr, max_bytes=256):
 		dbg.log("    ... (%d more bytes, truncated)" % (len(data) - max_bytes))
 
 
-def _heapShowChunks(mHeap, phase=None, addr=None, dump=False, find=None, neighbour=False, radius=2,
+def _heapShowChunks(mHeap, parent=None, addr=None, dump=False, find=None, neighbour=False, radius=2,
                     logfile=None, loghandle=None):
 	"""Per-heap chunk view.
 
-	No addr -> summary of chunk counts by parent (or one phase via -p).
+	No addr -> summary of chunk counts by parent (or one parent via -p).
 	addr    -> locate the chunk in THIS heap and show it + parent context; -dump adds a hexdump,
 	           -find searches this chunk's data, -neighbour shows +/-radius neighbours."""
 	heapbase = mHeap.heapbase
 	if addr is None:
-		if phase is not None:
-			if phase == "freelist":
+		if parent is not None:
+			pl = {"freelists": "freelist", "vablocks": "vablock", "vadblock": "vablock",
+			      "vadblocks": "vablock", "segments": "segment", "lfhs": "lfh"}.get(parent, parent)
+			if pl == "freelist":
 				chunks = mHeap.free_lists.getChunks()
-			elif phase == "lfh":
+			elif pl == "lfh":
 				chunks = mHeap.iterChunksByParent(ChunkParent.LFH)
-			elif phase == "vablocks":
+			elif pl == "vablock":
 				chunks = mHeap.iterChunksByParent(ChunkParent.VADBLOCK)
-			elif phase == "segments":
+			elif pl == "segment":
 				chunks = mHeap.iterChunksByParent(ChunkParent.SEGMENT)
 			else:
-				dbg.log("    [-] Unknown -p phase '%s'. Valid: freelist, vablocks, lfh, segments" % phase, highlight=True)
+				dbg.log("    [-] Unknown -p parent '%s'. Valid: freelist, vablock, lfh, segment" % parent, highlight=True)
 				dbg.log("")
 				return
-			dbg.log("[+] Chunks for heap %s (phase: %s) : %d" % (
-				PTR_PRINT % heapbase, phase, len(chunks)))
+			dbg.log("[+] Chunks for heap %s (parent: %s) : %d" % (
+				PTR_PRINT % heapbase, parent, len(chunks)))
 			table_data = {}
 			table_seq = []
 			for chunk in chunks.values():
@@ -40544,19 +40668,8 @@ def procHeap(args):
 				if iHeap.isCorrupted():
 					dbg.log("0x%08x ** CORRUPTED ** (type: %s) %s" % (heap, iHeap.getHeapType(), defheap), highlight=1)
 					continue
-			# FreeList depth + decoded Flags (best-effort; never let a probe abort the summary).
-			fl_depth = "?"
-			flags_txt = "?"
-			try:
-				fl_depth = "%d" % len(iHeap.free_lists.getChunks())
-			except Exception:
-				pass
-			try:
-				flags_txt = iHeap.getFlagsText()
-			except Exception:
-				pass
-			dbg.log("%s (%d segment(s)%s) FreeList depth: %s, Flags: %s %s %s %s" % (
-				(PTR_PRINT % heap), len(segments), segmentinfo, fl_depth, flags_txt, defheap, lfhheap, keyinfo))
+			dbg.log("%s (%d segment(s)%s) %s %s %s" % (
+				(PTR_PRINT % heap), len(segments), segmentinfo, defheap, lfhheap, keyinfo))
 	else:
 		dbg.log(" ** No heaps found")
 	dbg.log("")
@@ -40692,10 +40805,10 @@ def procHeap(args):
 		if subcmd is None and not want_all_dump:
 			subcmd = "chunks"
 
-	# ---- -p phase (for -chunks) ----
-	phase = None
+	# ---- -p parent (for -chunks): singular names (freelist|vablock|lfh|segment); plural also accepted ----
+	parent = None
 	if "p" in args and type(args["p"]).__name__.lower() != "bool":
-		phase = _norm(args["p"].lower().strip())
+		parent = args["p"].lower().strip()
 
 	# ---- -search / -find pattern, -offset / -free filters (for -search) ----
 	search_parent = None
@@ -40716,10 +40829,6 @@ def procHeap(args):
 			search_offset = None
 	search_busy = "free" not in args
 
-	# ---- no subcommand + no -a + no -stat -> summary already printed above; return ----
-	if subcmd is None and not want_all_dump and "stat" not in args:
-		return
-
 	# ---- build heap_to_query (absent -h, every subcommand runs across all heaps) ----
 	heap_to_query = []
 	if "h" in args:
@@ -40730,6 +40839,12 @@ def procHeap(args):
 			return
 	else:
 		heap_to_query = list(allheaps)
+
+	# ---- no subcommand + no -a + no -stat -> detailed per-heap summary, then return ----
+	if subcmd is None and not want_all_dump and "stat" not in args:
+		for heapbase in heap_to_query:
+			_heapShowSummary(MnHeap(heapbase))
+		return
 
 	# ---- per-heap logfile for chunk/segment dumps ----
 	statinfo = {}
@@ -40794,7 +40909,7 @@ def procHeap(args):
 		if subcmd == "chunks" or want_all_dump:
 			# Under -all (dump everything) ignore -a/-dump/-find/-neighbour so it stays a
 			# full summary, matching the vablocks/segments branches above.
-			_heapShowChunks(mHeap, phase=phase if subcmd == "chunks" else None,
+			_heapShowChunks(mHeap, parent=parent if subcmd == "chunks" else None,
 			                addr=addr if subcmd == "chunks" else None,
 			                dump=("dump" in args) if subcmd == "chunks" else False,
 			                find=(args["find"] if (subcmd == "chunks" and "find" in args and type(args["find"]).__name__.lower() != "bool") else None),
@@ -45174,13 +45289,13 @@ Optional arguments:
              -extend               + reserve/commit + chunk states
              -a <addr> [-extend]   one segment (the one containing <addr>)
   !mona heap -chunks               per-heap chunk summary
-             -p {freelist|vablocks|lfh|segments}   one allocator phase
+             -p {freelist|vablock|lfh|segment}   one container type
              -a <addr>             locate chunk + parent context
              -a <addr> -dump       + hexdump of data
              -a <addr> -find <pat> search pattern in this chunk's data
              -a <addr> -neighbour [-n R]   chunk +/-R neighbours (default 2)
   !mona heap -search <pattern>     heap-wide: every chunk whose data contains <pattern>
-             -p {lfh|segment|vadblock}   restrict to one parent type
+             -p {lfh|segment|vablock}   restrict to one parent type
              -offset <n>           only match at this byte offset
              -free                 include free chunks (default: busy only)
   !mona heap -layout               full content-analysis view (strings/BSTRs/objects/vtables)
