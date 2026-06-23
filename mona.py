@@ -240,7 +240,7 @@ guessedAlias = ""
 aliasname = ""
 
 # cache
-# 
+#
 _memory_page_acl_cache={}
 _config_file_cache = {}
 _cfg_table_cache = {}
@@ -278,7 +278,7 @@ g_tellme_pattern_cache = None
 
 
 
-# these 2 are going to play an important role  
+# these 2 are going to play an important role
 mnproc = None
 mndbg = None
 
@@ -381,7 +381,7 @@ class MnDebugger:
 	def isWinDBG(self):
 		if __DEBUGGERAPP__ == "WinDBG":
 			return True
-		return False		
+		return False
 
 	def isImmunity(self):
 		if __DEBUGGERAPP__ == "Immunity Debugger":
@@ -1356,7 +1356,7 @@ def _safe_int(v):
 
 def getAvailableAIEngines(reason="", refresh=False):
 	mndbg.dbgp(get_current_function_name())
-	engines = ["openai", "openaiagents", "anthropic", "ollama", "customai"]
+	engines = ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai"]
 	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
@@ -1385,7 +1385,7 @@ def getDefaultAIEngineEnvName():
 
 def _isSupportedAIEngine(engine_value):
 	mndbg.dbgp(get_current_function_name())
-	return engine_value in ["openai", "openaiagents", "anthropic", "ollama", "customai"]
+	return engine_value in ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai"]
 
 
 def ensureDefaultAIEngineConfig(mona_config, available_engines):
@@ -1408,7 +1408,7 @@ def resolveAIEngine(engine_arg, mona_config, available_engines):
 	mndbg.dbgp(get_current_function_name())
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
-		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|ollama|customai>", False
+		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|openrouter|ollama|customai>", False
 	engine = _normalizeAIEngine(engine_arg)
 	if engine != "":
 		return engine, engine_source, "", False
@@ -4622,6 +4622,12 @@ def _build_bridge_error_summary(job, error_text):
 		if max_tokens_value > 0:
 			troubleshooting_lines.append("Current openaiagents.max_tokens value: %d" % max_tokens_value)
 		troubleshooting_lines.append("Increase openaiagents.max_tokens and try again.")
+		# Add specific suggestions for how to increase max_tokens
+		truncation_note = _buildGenericTruncationNote("openaiagents", max_tokens=max_tokens_value, stop_reason="max_output_tokens")
+		if truncation_note != "":
+			for line in truncation_note.split("\n"):
+				if line.strip() not in ["", "[AI Response Note]", "This answer was likely cut off because the response hit the current max_tokens limit."]:
+					troubleshooting_lines.append(line)
 	return error_summary, troubleshooting_lines
 
 
@@ -4776,6 +4782,12 @@ def _run_job(job):
 		if _is_partial_output_useful(partial_output_text):
 			troubleshooting_lines.append("A partial answer was returned before the run stopped.")
 			troubleshooting_lines.append("Increase openaiagents.max_tokens if you want the full answer.")
+			# Add specific suggestions for how to increase max_tokens
+			truncation_note = _buildGenericTruncationNote("openaiagents", max_tokens=0, stop_reason="max_output_tokens")
+			if truncation_note != "":
+				for line in truncation_note.split("\n"):
+					if line.strip() not in ["", "[AI Response Note]", "This answer was likely cut off because the response hit the current max_tokens limit."]:
+						troubleshooting_lines.append(line)
 		if _ensure_text(job.get("raw_request_file", "")).strip() != "":
 			troubleshooting_lines.append("Raw request file: %s" % _ensure_text(job.get("raw_request_file", "")).strip())
 		if _ensure_text(job.get("raw_result_file", "")).strip() != "":
@@ -4955,6 +4967,9 @@ def getAIModelAndKey(engine, mona_config):
 	elif engine == "anthropic":
 		env_key_name = "ANTHROPIC_API_KEY"
 		env_model_name = "ANTHROPIC_MODEL"
+	elif engine == "openrouter":
+		env_key_name = "OPENROUTER_API_KEY"
+		env_model_name = "OPENROUTER_MODEL"
 	elif engine == "ollama":
 		env_model_name = "OLLAMA_MODEL"
 	elif engine == "customai":
@@ -5177,6 +5192,8 @@ def getDefaultAIModel(engine):
 		return "gpt-5-mini"
 	if engine == "anthropic":
 		return "claude-sonnet-4-6"
+	if engine == "openrouter":
+		return "google/gemma-4-31b-it:free"
 	return ""
 
 
@@ -9731,6 +9748,83 @@ def _fetchOllamaModelsDirect(base_url, timeout_seconds=20.0):
 	return _extractModelIdsFromOllamaTagsPayload(response_data)
 
 
+def _fetchOpenRouterModelsDirect(api_key, timeout_seconds=20.0):
+	mndbg.dbgp(get_current_function_name())
+	request = urllib_Request(
+		"https://openrouter.ai/api/v1/models",
+		headers={
+			"authorization": "Bearer %s" % api_key,
+			"user-agent": "mona-tellme/3.0"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			if isinstance(raw_response, dict):
+				response_data = raw_response
+			elif isinstance(raw_response, list):
+				response_data = raw_response
+			else:
+				response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("request-id", "") or e.headers.get("x-request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+		if error_message == "":
+			error_message = "OpenRouter model list HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach OpenRouter models API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"OpenRouter model list setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	return _extractModelIdsFromListPayload(response_data)
+
+
 def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, refresh=False):
 	mndbg.dbgp(get_current_function_name())
 	cache_key = (engine, api_key, base_url)
@@ -9740,6 +9834,8 @@ def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, 
 		model_ids = _fetchOpenAIModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "anthropic":
 		model_ids = _fetchAnthropicModelsDirect(api_key, timeout_seconds=timeout_seconds)
+	elif engine == "openrouter":
+		model_ids = _fetchOpenRouterModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "ollama":
 		model_ids = _fetchOllamaModelsDirect(base_url, timeout_seconds=timeout_seconds)
 	else:
@@ -9768,9 +9864,18 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		mndbg.dbgp("tellme: OpenAI request id: %s" % request_id)
 	output_text = getattr(response, "output_text", "")
 	if output_text:
+		# Check for truncation and append note if needed
+		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=0)
+		if truncation_note != "":
+			output_text = "%s\n\n%s" % (output_text, truncation_note)
 		return output_text, request_id
 	try:
-		return str(response.output[0].content[0].text), request_id
+		output_text = str(response.output[0].content[0].text)
+		# Check for truncation and append note if needed
+		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=0)
+		if truncation_note != "":
+			output_text = "%s\n\n%s" % (output_text, truncation_note)
+		return output_text, request_id
 	except Exception:
 		raise AIProviderError(
 			"OpenAI returned an empty or unexpected response payload",
@@ -10183,19 +10288,84 @@ def _anthropicGetStopReason(message):
 	return ensure_text(getattr(message, "stop_reason", "")).strip()
 
 
+def _openaiGetStopReason(response):
+	"""Extract stop reason from OpenAI response object."""
+	mndbg.dbgp(get_current_function_name())
+	try:
+		# Try to get finish_reason from response.choices[0]
+		if hasattr(response, "choices") and len(response.choices) > 0:
+			return ensure_text(getattr(response.choices[0], "finish_reason", "")).strip()
+		# Fallback for dict-like responses
+		if isinstance(response, dict):
+			choices = response.get("choices", [])
+			if len(choices) > 0:
+				return ensure_text(choices[0].get("finish_reason", "")).strip()
+	except Exception:
+		pass
+	return ""
+
+
+def _buildGenericTruncationNote(engine, message=None, max_tokens=0, stop_reason=""):
+	"""Build truncation detection note for any AI engine with engine-specific suggestions."""
+	mndbg.dbgp(get_current_function_name())
+	engine = _ensure_text(engine).strip().lower()
+	
+	# Extract stop reason if message object is provided
+	if message is not None and stop_reason == "":
+		if engine == "anthropic":
+			stop_reason = _anthropicGetStopReason(message)
+		elif engine == "openai":
+			stop_reason = _openaiGetStopReason(message)
+	
+	# Check if response was truncated based on engine-specific indicators
+	truncated = False
+	if engine == "anthropic" and stop_reason == "max_tokens":
+		truncated = True
+	elif engine in ["openai", "openrouter"] and stop_reason == "length":
+		truncated = True
+	elif engine == "openaiagents" and stop_reason == "max_output_tokens":
+		truncated = True
+	
+	if not truncated:
+		return ""
+	
+	note_lines = [
+		"[AI Response Note]",
+		"This answer was likely cut off because the response hit the current max_tokens limit."
+	]
+	
+	if isinstance(max_tokens, int) and max_tokens > 0:
+		note_lines.append("Current %s.max_tokens value: %d." % (engine, max_tokens))
+	
+	note_lines.append("Increase %s.max_tokens if you want a longer answer." % engine)
+	
+	# Add specific suggestions for the current engine
+	note_lines.append("")
+	note_lines.append("To increase max_tokens for %s:" % engine)
+	
+	# Map environment variable names
+	env_var_map = {
+		"openai": "OPENAI_MAX_TOKENS",
+		"openaiagents": "OPENAI_MAX_TOKENS",
+		"anthropic": "ANTHROPIC_MAX_TOKENS",
+		"openrouter": "OPENROUTER_MAX_TOKENS"
+	}
+	env_var = env_var_map.get(engine, "")
+	
+	note_lines.append("1. Command line: !mona config -set %s.max_tokens 16384" % engine)
+	if env_var:
+		note_lines.append("2. Environment variable: set %s=16384" % env_var)
+	
+	return "\n".join(note_lines)
+
+
 def _anthropicBuildTruncationNote(message, max_tokens=0):
 	mndbg.dbgp(get_current_function_name())
 	stop_reason = _anthropicGetStopReason(message)
 	if stop_reason != "max_tokens":
 		return ""
-	note_lines = [
-		"[Anthropic note]",
-		"This answer was likely cut off because the response hit the current max_tokens limit."
-	]
-	if isinstance(max_tokens, int) and max_tokens > 0:
-		note_lines.append("Current anthropic.max_tokens value: %d." % max_tokens)
-	note_lines.append("Increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS if you want a longer answer.")
-	return "\n".join(note_lines)
+	# Use generic function for consistency
+	return _buildGenericTruncationNote("anthropic", message=message, max_tokens=max_tokens, stop_reason=stop_reason)
 
 
 def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
@@ -10614,6 +10784,127 @@ def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="
 			"response_keys": response_keys,
 			"response_preview": _previewAIResponseBody(response_data)
 		},
+		error_type="UnexpectedPayloadError"
+	)
+
+
+def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=8192, options=None):
+	"""Send a chat completion request to OpenRouter using their OpenAI-compatible API."""
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling OpenRouter model '%s' with timeout %.1fs" % (model, timeout_seconds))
+	request_body = {
+		"model": model,
+		"messages": [{"role": "user", "content": prompt}],
+		"max_tokens": max_tokens
+	}
+	if isinstance(options, dict) and len(options) > 0:
+		for opt_key, opt_value in options.items():
+			request_body[opt_key] = opt_value
+	request_data = json.dumps(request_body).encode("utf-8")
+	request = urllib_Request(
+		"https://openrouter.ai/api/v1/chat/completions",
+		data=request_data,
+		headers={
+			"content-type": "application/json",
+			"authorization": "Bearer %s" % api_key,
+			"user-agent": "mona-tellme/3.0",
+			"http-referer": "https://github.com/corelan/mona",
+			"x-title": "mona tellme"
+		}
+	)
+	try:
+		response = urllib_urlopen(request, timeout=timeout_seconds)
+		try:
+			raw_response = response.read()
+			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+			request_id = ""
+			try:
+				request_id = response.headers.get("x-request-id", "") or response.headers.get("request-id", "")
+			except Exception:
+				request_id = ""
+			try:
+				response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			except Exception:
+				response_data = {}
+		finally:
+			try:
+				response.close()
+			except Exception:
+				pass
+	except urllib_HTTPError as e:
+		status_code = getattr(e, "code", None)
+		raw_body = ""
+		parsed_body = {}
+		request_id = ""
+		try:
+			raw_body = ensure_text(e.read().decode("utf-8", "replace"))
+		except Exception:
+			raw_body = ""
+		try:
+			parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+		except Exception:
+			parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+		try:
+			request_id = e.headers.get("x-request-id", "") or e.headers.get("request-id", "")
+		except Exception:
+			request_id = ""
+		error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+		error_message = ""
+		error_code = ""
+		error_type = ""
+		if isinstance(error_obj, dict):
+			error_message = ensure_text(error_obj.get("message", ""))
+			error_code = ensure_text(error_obj.get("code", ""))
+			error_type = ensure_text(error_obj.get("type", ""))
+		if error_message == "":
+			error_message = "OpenRouter HTTP error %s" % str(status_code)
+		raise AIProviderError(
+			error_message,
+			request_id=request_id,
+			status_code=status_code,
+			code=error_code,
+			body=parsed_body if parsed_body else raw_body,
+			error_type=error_type
+		)
+	except urllib_URLError as e:
+		raise AIProviderError(
+			"Unable to reach OpenRouter API: %s" % str(getattr(e, "reason", e)),
+			body={"error": {"message": str(getattr(e, "reason", e))}},
+			error_type=e.__class__.__name__
+		)
+	except socket.timeout:
+		raise
+	except Exception as e:
+		raise AIProviderError(
+			"OpenRouter request setup failed: %s" % str(e),
+			body={"error": {"message": str(e)}},
+			error_type=e.__class__.__name__
+		)
+	# Extract response text from OpenAI-compatible chat completions format
+	text = ""
+	stop_reason = ""
+	if isinstance(response_data, dict):
+		if request_id == "":
+			request_id = ensure_text(response_data.get("id", "")).strip()
+		choices = response_data.get("choices", [])
+		if isinstance(choices, list) and len(choices) > 0:
+			first_choice = choices[0]
+			if isinstance(first_choice, dict):
+				message = first_choice.get("message", {})
+				if isinstance(message, dict):
+					text = ensure_text(message.get("content", "")).strip()
+				# Extract finish_reason for truncation detection
+				stop_reason = ensure_text(first_choice.get("finish_reason", "")).strip()
+	if text:
+		# Check for truncation and append note if needed
+		truncation_note = _buildGenericTruncationNote("openrouter", max_tokens=max_tokens, stop_reason=stop_reason)
+		if truncation_note != "":
+			text = "%s\n\n%s" % (text, truncation_note)
+		return text, request_id
+	raise AIProviderError(
+		"OpenRouter returned an empty or unexpected response payload",
+		request_id=request_id,
+		body={"raw_response": response_data, "response_preview": _previewAIResponseBody(response_data)},
 		error_type="UnexpectedPayloadError"
 	)
 
@@ -11931,12 +12222,12 @@ def normalizeHexBytesArg(pattern):
 
 	return txt
 
-def cleanHex(hex):
-	hex = hex.replace("'","")
-	hex = hex.replace('"',"")
-	hex = hex.replace("\\x","")
-	hex = hex.replace("0x","")
-	return hex
+def cleanHex(input_string):
+	input_string = input_string.replace("'","")
+	input_string = input_string.replace('"',"")
+	input_string = input_string.replace("\\x","")
+	input_string = input_string.replace("0x","")
+	return input_string
 
 def hex2int(hex):
 	return int(hex,16)
@@ -13947,7 +14238,7 @@ def getModuleObj(modname):
 		modname_search = modname + suf	
 		
 		#WinDBG optimized
-		if mndbg.isWinDBG():	
+		if mndbg.isWinDBG():
 			for tmod_s in allmod:
 				tmod = dbgGetModuleSafe(tmod_s)
 				if not tmod == None:
@@ -14504,7 +14795,7 @@ class MnEncoder:
 			revval=hexStrToInt(reversebytes)			   
 			twoval=4294967296-revval
 			twobytes=toHex(twoval)
-			if not g_silent:	
+			if not g_silent:
 				dbg.log("Opcode to produce : %s%s %s%s %s%s %s%s" % (origbytes[0],origbytes[1],origbytes[2],origbytes[3],origbytes[4],origbytes[5],origbytes[6],origbytes[7]))
 				dbg.log("         reversed : %s%s %s%s %s%s %s%s" % (reversebytes[0],reversebytes[1],reversebytes[2],reversebytes[3],reversebytes[4],reversebytes[5],reversebytes[6],reversebytes[7]))
 				dbg.log("                    -----------")				   
@@ -15212,7 +15503,7 @@ class MnLog:
 			thispid = dbg.getDebuggedPid()
 			if thispid == 0:
 				debuggedname = "_no_name_"
-			
+
 			thisconfig = MnConfig()
 			workingfolder = thisconfig.get("workingfolder").rstrip("\\").strip()
 			mndbg.dbgp("Workingfolder: %s" % workingfolder)
@@ -15223,7 +15514,7 @@ class MnLog:
 			debuggedname = debuggedname[0:len(debuggedname)-extlen]
 			debuggedname = debuggedname.replace(" ","_")
 			workingfolder = workingfolder.replace('%p', debuggedname)
-			workingfolder = workingfolder.replace('%i', str(thispid))		
+			workingfolder = workingfolder.replace('%i', str(thispid))
 			#logfile = workingfolder + "\\" + self.filename
 			# working folder will be created inside getAbsolutePath if needed
 			logfile = getAbsolutePath(self.filename)
@@ -16422,7 +16713,7 @@ class MnModule: # TODO: Add getters
 				
 				# METHOD 1 - Parse the strings from the IAT.  Fastest way
 				if not g_silent:
-					dbg.log("      Enumerating IAT, method 1 (Read IAT from memory)") 
+					dbg.log("      Enumerating IAT, method 1 (Read IAT from memory)")
 				# find optional header
 				PEHeader_ref = self.moduleBase + 0x3c
 				PEHeader_location = self.moduleBase + struct.unpack('<L', dbg.readMemory(PEHeader_ref, 4))[0]
@@ -16571,7 +16862,7 @@ class MnModule: # TODO: Add getters
 				if len(IAT) < 10:
 					before_method2_cnt = len(IAT)
 					if not g_silent:
-						dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)") 
+						dbg.log("      Enumerating IAT, method 2 (Symbols - this might take a while)")
 					# this may not work well on Immunity.  Module.getSymbols() may not return anything         
 					try:
 						themod = dbgGetModuleSafe(self.moduleKey)
@@ -21237,7 +21528,7 @@ class MnChunk(object):
 		mndbg.dbgp("    Segment walk done: seg=%s iterations=%d decode_failures=%d zero_steps=%d last_hits=%d max_step=0x%x elapsed=%.2fs" % (
 			PTR_PRINT % segment_base, itercnt, decode_failures, zero_size_steps, last_flag_hits,
 			max_step, time.time() - walk_start))
-		
+
 		interruptMona()
 
 	@staticmethod
@@ -21344,7 +21635,7 @@ class MnChunk(object):
 			return (0, 0)
 		if offset != None:
 			start = start + offset
-			size = size - offset 
+			size = size - offset
 
 		fillbyte = _normalize_single_fill_byte(fillchar)
 		if len(fillbyte) == 0:
@@ -22322,7 +22613,7 @@ class MnPointer:
 
 	def showObjectInfo(self):
 		# check if chunk is a DOM object
-		
+
 		if mndbg.isWinDBG():
 			cmdtorun = "dps %s L 1" % (PTR_PRINT % self.address)
 			output = dbg.nativeCommand(cmdtorun)
@@ -25186,7 +25477,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 					dbg.updateLog()
 					mndbg.dbgp("Number of ropgadgets: %d" % len(ropgadgets))
 					mndbg.dbgp("Number of stackpivots: %d" % len(stackpivots))
-					mndbg.dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))					
+					mndbg.dbgp("Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))
 					tc += 1				
 				if not usefiles:
 					#first get max backward instruction
@@ -25229,7 +25520,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 									#if DEBUG_MODE:
 									#	mndbg.dbgp("Address 0x%x passed the isGoodGadgetPtr test" % startptr)
 									invalidinstr = False
-									#mndbg.dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))	
+									#mndbg.dbgp("Chainptr 0x%08x, Endingtypeptr 0x%08x, Invalidinstr: %s (Before start of loop)" % (chainptr, endingtypeptr, invalidinstr))
 									avoidunlimitedloop = 0
 									while chainptr < endingtypeptr and not invalidinstr and avoidunlimitedloop < 100:
 										thisopcode = dbg.disasm(chainptr)
@@ -25255,7 +25546,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 										if not startptr in _invalid_instr_cache:
 											_invalid_instr_cache.add(startptr)
 											_invalid_instr_cache_stores += 1
-									mndbg.dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))				
+									mndbg.dbgp("Chain at 0x%x, Endingtypeptr 0x%x,  Invalidinstr: %s, endingtypeptr , chain %s" % (startptr, endingtypeptr, invalidinstr, thischain))
 									if endingtypeptr == chainptr and startptr != chainptr and not invalidinstr:
 										if not startptr in ropgadgets:
 											fullchain = thischain + " # " + endingtype.lower()
@@ -25288,7 +25579,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 											if bypasscfg and iscfg:
 												# only allow CFG Compatible pointers 
 												cfg_compatible_pointer = modinfo.checkCFGCompatible(startptr)
-												mndbg.dbgp("Is %s (%s) CFG compatible? %s " % (PTR_PRINT % startptr,currentmodulename, cfg_compatible_pointer))											
+												mndbg.dbgp("Is %s (%s) CFG compatible? %s " % (PTR_PRINT % startptr,currentmodulename, cfg_compatible_pointer))
 												if cfg_compatible_pointer:
 													valid_cfg_target_gadgets.append(startptr)
 													mndbg.dbgp("Added %s to CFG Compatible gadgets " % (PTR_PRINT % startptr))
@@ -25347,7 +25638,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 	mndbg.dbgp("Final Number of ropgadgets: %d" % len(ropgadgets))
 	mndbg.dbgp("Final Number of stackpivots: %d" % len(stackpivots))
 	mndbg.dbgp("Final Number of safeseh stackpivots: %d" % len(stackpivots_safeseh))
-	mndbg.dbgp("Final Number of valid CFG target gadgets: %d" % len(valid_cfg_target_gadgets))			
+	mndbg.dbgp("Final Number of valid CFG target gadgets: %d" % len(valid_cfg_target_gadgets))
 	invalid_instr_cache_hits, invalid_instr_cache_requests, invalid_instr_cache_stores, invalid_instr_cache_pct = getInvalidInstrCacheStats()
 
 	mndbg.dbgp("Invalid instruction cache stats: %d hit(s) / %d request(s), %d stored (%.2f%%)" % (
@@ -25545,7 +25836,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 			except:
 				pass
 			_writeMarkdownTextFenceEnd(logfile, thislog)
-			
+
 
 		if not split:
 			dbg.log("")
@@ -25656,7 +25947,7 @@ def findROPGADGETS(modulecriteria={},criteria={},endings=[],maxoffset=40,depth=5
 				except:
 					pass
 				_writeMarkdownTextFenceEnd(logfile, thislog)
-			
+
 		else:
 			dbg.log("[+] Writing results to individual files (grouped by module)")
 			dbg.updateLog()
@@ -26185,7 +26476,7 @@ def findOffsetInPattern(searchpat,size=20280,args = {}):
 	oldsilent=g_silent
 	
 	for mode in modes:
-		g_silent=oldsilent		
+		g_silent=oldsilent
 		if mode == "normal":
 			g_silent=True
 			mspattern=createPattern(size,args)
@@ -27107,7 +27398,7 @@ def findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype):
 	patterntype - type of search to conduct (str or bin)
 	"""
 	
-	global g_silent	
+	global g_silent
 	
 	rangestosearch = []
 	tmpsearch = []
@@ -27368,7 +27659,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	rangestosearch = []
 	tmpsearch = []
 	p2prangestosearch = []
-	global g_silent	
+	global g_silent
 	if len(modulecriteria) > 0:
 		modulestosearch = getModulesToQuery(modulecriteria)
 		# convert modules to ranges
@@ -27433,7 +27724,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	patternfilename = ""
 	split1 = re.compile(' ')		
 	split2 = re.compile(':')
-	split3 = re.compile("\\*")		
+	split3 = re.compile("\\*")
 	
 	if not g_silent:
 		dbg.log("    - Treating search pattern as %s" % ptype)
@@ -28332,7 +28623,7 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 	if mapping:
 		for x, y in mapping:
 			if x != y:
-				first_broken_src = x
+				first_broken_src = ord(x)
 				break
 
 	for i, c in enumerate(chunks):
@@ -28355,29 +28646,29 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 
 	if first_broken_src is not None:
 		if not logsilent:
-			log("First mismatching byte: %s" % bin2hex(first_broken_src))
+			log(f"First mismatching byte: {bin2hex(first_broken_src)}")
 		if first_broken_src not in guessed_badchars:
 			guessed_badchars.append(first_broken_src)
 
 	if likely_bc:
 		if not logsilent:
-			log("Very likely bad chars: %s" % bin2hex(sorted(set(likely_bc))))
+			log(f"Very likely bad chars: {bin2hex(sorted(set(list(likely_bc))))}")
 		for b in likely_bc:
 			if b not in guessed_badchars:
 				guessed_badchars.append(b)
 
 	if not logsilent and len(bytes_in_changed_blocks) > 0:
-		log("Possibly bad chars: %s" % bin2hex(sorted(bytes_in_changed_blocks)))
+		log(f"Possibly bad chars: {bin2hex(sorted(set(list(bytes_in_changed_blocks))))}")
 
-	for b in sorted(bytes_in_changed_blocks):
+	for b in bytes_in_changed_blocks:
 		if b not in guessed_badchars:
 			guessed_badchars.append(b)
 
 	# List bytes already omitted from the input
-	bytes_omitted_from_input = set(chr(i) for i in range(0, 256)) - set(cmp.x)
+	bytes_omitted_from_input = set(i for i in range(0, 256)) - set(cmp.x)
 	if bytes_omitted_from_input:
 		if not logsilent:
-			log("Bytes omitted from input: %s" % bin2hex(sorted(bytes_omitted_from_input)))
+			log(f"Bytes omitted from input: {bin2hex(sorted(set(list(bytes_omitted_from_input))))}")
 		for b in sorted(bytes_omitted_from_input):
 			if b not in guessed_badchars:
 				guessed_badchars.append(b)
@@ -28385,7 +28676,7 @@ def guess_bad_chars(cmp, log, logsilent, mapping=None):
 	return guessed_badchars
 
 
-def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
+def memcompare(location, src, comparetable, sctype="normal", smart=True, tablecols=16):
 	''' Thoroughly compares an input binary string with a location in memory
 	and outputs the results. '''
 
@@ -28403,7 +28694,7 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 		locinfo = MnPointer(location).memLocation()
 		badbstr = " "
 		if len(badbytes) > 0:
-			badbstr = "%s " % bin2hex(sorted(badbytes))
+			badbstr = bin2hex(badbytes)
 		comparetable.add(0, ['0x%08x' % location, msg, badbstr, sctype, locinfo])
 
 	objlogfile.write("-" * 100, logfile)
@@ -28412,7 +28703,11 @@ def memcompare(location, src, comparetable, sctype, smart=True, tablecols=16):
 
 	mem = read_memory(dbg, location, 2 * len(src))
 	if smart:
-		cmp = MemoryComparator(src, mem)
+		# Convert list of single byte strs (src) to bytes object for MemoryComparator
+		src_bytes = b""
+		for byte_str in src:
+			src_bytes = src_bytes + bytes([ord(byte_str)])
+		cmp = MemoryComparator(src_bytes, mem)
 		mapped_chunks = [''.join(chr(_ord(b)) for b in chunk) for chunk in cmp.guess_mapping()]
 	else:
 		mapped_chunks = [chr(_ord(b)) for b in mem[:len(src)]] + [()] * (len(src) - len(mem))
@@ -28570,7 +28865,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		dbg.log("[+] %s" % updatetxt)
 		objprogressfile.write("- " + updatetxt,progressfile)
 		vplogtxt += "\n"
-		vplogtxt += "\n\n### Register setup for " + routine + "() :\n" 
+		vplogtxt += "\n\n### Register setup for " + routine + "() :\n"
 		vplogtxt += routinesetup[routine] + "\n\n"
 		targetOS = "(XP/2003 Server and up)"
 		if routine == "SetInformationProcess":
@@ -28791,10 +29086,10 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 					type = "ptr"
 					al = criteria["accesslevel"]
 					criteria["accesslevel"] = "R"
-					g_ptr_counter = 0				
+					g_ptr_counter = 0
 					g_ptr_to_get = 2
 					oldsilent = g_silent
-					g_silent=True				
+					g_silent=True
 					allpointers = findPattern(modulecriteria,criteria,pattern,type,base,top)
 					g_silent = oldsilent
 					criteria["accesslevel"] = al
@@ -29056,7 +29351,7 @@ def createRopChains(suggestions,interestinggadgets,allgadgets,modulecriteria,cri
 		vplogtxt += "```\n"
 		# Python
 		vplogtxt += "\n```python\n"
-		vplogtxt += "*** [ Python ] ***\n\n"		
+		vplogtxt += "*** [ Python ] ***\n\n"
 		vplogtxt += "  def create_rop_chain(%s):\n" % argtxt
 		vplogtxt += "\n    # rop chain generated with mona.py - www.corelan.be\n"			
 		vplogtxt += "    rop_gadgets = [\n"
@@ -29392,12 +29687,12 @@ def getPickupGadget(targetreg,targetval,freetext,suggestions,interestinggadgets,
 			criteria["accesslevel"] = "X"
 			global g_ptr_to_get
 			global g_ptr_counter
-			g_ptr_counter = 0				
+			g_ptr_counter = 0
 			g_ptr_to_get = 5
 			theptr = 0
 			global g_silent
 			oldsilent = g_silent
-			g_silent=True				
+			g_silent=True
 			allpointers = findPattern(modulecriteria,criteria,pattern,type,base,top)
 			g_silent = oldsilent
 			criteria["accesslevel"] = al
@@ -29447,7 +29742,7 @@ def getRopFuncPtr(apiname,modulecriteria,criteria,mode, objprogressfile, progres
 	oldsilent = g_silent
 	g_silent = True
 	global g_ptr_to_get
-	g_ptr_to_get = -1	
+	g_ptr_to_get = -1
 	rfuncsearch = apiname.lower()
     
 	selectedmodules = False
@@ -31550,7 +31845,7 @@ def args2criteria(args,modulecriteria,criteria):
 	if "p" in args:
 		if str(args["p"]).lower() != "true":
 			g_ptr_to_get = int(args["p"].strip())
-		if g_ptr_to_get > 0:	
+		if g_ptr_to_get > 0:
 			dbg.log("    - Maximum nr of pointers to return : %d" % g_ptr_to_get)
 	
 	# only want to see specific type of pointers ?
@@ -31569,14 +31864,8 @@ def args2criteria(args,modulecriteria,criteria):
 			args["cpb"] = args["cbp"]
 	
 	if "cpb" in args:
-		strb, badcharsok = cpbArgToBytes(args["cpb"])
-		if not badcharsok:
-			dbg.log("    * Unable to parse -cpb value '%s'" % args["cpb"], highlight=True)
-			return modulecriteria,criteria
-		criteria["badchars"] = strb
-		badchars_printable = "\\x" + "\\x".join(bin2hex(strb).split(" "))
-		dbg.log("    - Bad char filter will be applied to pointers : %s " % badchars_printable)
-
+		criteria["badchars"] = b"".join(parse_cpb_input(args["cpb"]))
+		dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
 			
 	if "cm" in args:
 		modcriteria = args["cm"].split(",")
@@ -31880,7 +32169,7 @@ def procCleanLog(args):
 						if thisfile_lc.endswith(".old2"):
 							matches = True
 						if "tellme" in thisfile_lc and thisfile_lc.endswith(".json"):
-							matches = True	
+							matches = True
 						if "rop" in thisfile_lc and "progress" in thisfile_lc and thisfile_lc.endswith(".log"):
 							matches = True
 						if "bridge" in thisfile_lc and thisfile_lc.endswith(".log"):
@@ -33922,7 +34211,7 @@ def procInfo(args):
 			reasonlines = reason.split('\n')
 			for reasonline in reasonlines:
 				dbg.log("    -> %s" % reasonline)
-								
+
 	else:
 		output = ""
 		if ptr.isInHeap():
@@ -34201,6 +34490,13 @@ class MnAI(object):
 				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
 				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "8192"},
 			]
+		if engine == "openrouter":
+			return [
+				{"name": "key", "required": True, "env": "OPENROUTER_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "OPENROUTER_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "OPENROUTER_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OPENROUTER_MAX_TOKENS", "show_value": True, "default": "8192"},
+			]
 		if engine == "ollama":
 			return [
 				{"name": "url", "required": True, "env": "OLLAMA_URL", "show_value": True},
@@ -34341,7 +34637,7 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine_arg_raw = self.args.get("e", "")
 		if type(engine_arg_raw).__name__.lower() == "bool":
-			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|ollama|customai>")
+			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|openrouter|ollama|customai>")
 			return False
 
 		explicit_engine = _normalizeAIEngine(engine_arg_raw)
@@ -34373,7 +34669,7 @@ class MnAI(object):
 			self.logInfoDetail("[+] The OpenAI Agents engine will briefly validate the external Python bridge environment before submission.")
 			self.logInfoDetail("    You'll briefly see a py.exe window, that's perfectly normal. It should close automatically.")
 		if self.engine not in self.available_engines:
-			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openaiagents, anthropic, ollama, customai" % self.engine)
+			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openaiagents, anthropic, openrouter, ollama, customai" % self.engine)
 			return False
 		if self.engine != "offline" and self.engine not in self.available_provider_engines:
 			if self.isDefaultEngineSelection():
@@ -34419,7 +34715,7 @@ class MnAI(object):
 		if self.engine == "offline":
 			self.available_model_ids = []
 			return self.available_model_ids
-		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key == "":
+		if self.engine in ["openai", "openaiagents", "anthropic", "openrouter"] and self.api_key == "":
 			self.available_model_ids = []
 			return self.available_model_ids
 		if self.engine == "ollama" and self.api_url == "":
@@ -34470,13 +34766,23 @@ class MnAI(object):
 			return
 		log_func("")
 		log_func("Available %s models:" % self.engine)
-		for model_id in models:
-			log_func("  %s" % model_id)
+		# Sort alphabetically and print in 2 columns
+		sorted_models = sorted(models, key=lambda x: x.lower())
+		if len(sorted_models) > 0:
+			max_width = max(len(m) for m in sorted_models)
+			col_width = max_width + 4  # Add padding between columns
+			for i in range(0, len(sorted_models), 2):
+				left = sorted_models[i]
+				if i + 1 < len(sorted_models):
+					right = sorted_models[i + 1]
+					log_func("  %s%s" % (left.ljust(col_width), right))
+				else:
+					log_func("  %s" % left)
 
 	def tryLogAvailableModelsForMissingModel(self):
 		"""Try to show provider-visible model IDs after a missing-model configuration error."""
 		mndbg.dbgp(get_current_function_name())
-		if self.engine not in ["openai", "openaiagents", "anthropic", "ollama"]:
+		if self.engine not in ["openai", "openaiagents", "anthropic", "ollama", "openrouter"]:
 			return
 		try:
 			models = self.fetchAvailableModels(refresh=True, log_errors=False)
@@ -34742,7 +35048,7 @@ class MnAI(object):
 		if self.offline or self.engine == "offline":
 			return True
 
-		if self.engine in ["openai", "openaiagents", "anthropic"] and self.api_key == "":
+		if self.engine in ["openai", "openaiagents", "anthropic", "openrouter"] and self.api_key == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
 					"No API key was found for the default engine '%s'. Falling back to offline mode." % self.engine,
@@ -35985,6 +36291,15 @@ class MnAI(object):
 						response_field=self.response_field or "response",
 						options=self.api_options
 					)
+				elif self.engine == "openrouter":
+					self.response, self.request_id = callAIOpenRouter(
+						self.api_key,
+						self.model,
+						self.prompt,
+						timeout_seconds=attempt_timeout,
+						max_tokens=self.max_tokens,
+						options=self.api_options
+					)
 				else:
 					self.response, self.request_id = callAICustom(
 						self.api_url,
@@ -36158,35 +36473,92 @@ def procDump(args):
 
 # ----- compare : Compare a file created by msfvenom/gdb/hex/xxd/hexdump/ollydbg or just a file with raw bytes with a copy in memory, indicate bad chars / corruption ----- #
 def procCompare(args):
-	startpos = 0
-	filename = ""
-	skipmodules = False
-	findunicode = False
-	allregs = getRegisters()
-	if "f" in args:
-		filename = getAbsolutePath(args["f"].replace('"',"").replace("'",""))
-		#see if we can read the file
-		if not os.path.isfile(filename):
-			dbg.log("Unable to find/read file %s" % filename,highlight=1)
-			return
-	else:
-		dbg.log("You must specify a valid filename using parameter -f", highlight=1)
-		return
+	memory_search_start_pos = 0
+	skip_modules = False
+	find_unicode = False
+	char_array_args = {}
+	search_mode = "normal"
 	if "a" in args:
-		startpos,addyok = getAddyArg(args["a"])
+		memory_search_start_pos,addyok = getAddyArg(args["a"])
 		if not addyok:
 			dbg.log("%s is an invalid address" % args["a"], highlight=1)
 			return
 	if "s" in args:
-		skipmodules = True
+		skip_modules = True
 	if "unicode" in args:
-		findunicode = True
+		find_unicode = True
+	if "cpb" in args:
+		char_array_args["cpb"] = args["cpb"]
 	if "t" in args:
-		format = args["t"]
+		file_format = args["t"]
 	else:
-		format = None
-	compareFormattedFileWithMemory(filename,format,startpos,skipmodules,findunicode)				
-	
+		file_format = None
+	if "f" in args:
+		file_name = getAbsolutePath(args["f"].replace('"',"").replace("'",""))
+		if not os.path.isfile(file_name):
+			dbg.log("Unable to find/read file %s" % file_name,highlight=1)
+			return
+		compareFormattedFileWithMemory(file_name, file_format, memory_search_start_pos, skip_modules, find_unicode)
+	else:
+		if find_unicode: raise NotImplementedError("compare does not yet support unicode search")
+		comparison_output_table = dbg.createTable('mona Memory comparison results',
+		                               ['Address', 'Status', 'BadChars', 'Type', 'Location'])
+		char_array = bad_char_comparison_array(char_array_args)
+		# memcompare expects a list of single char strings, not bytes, so:
+		char_string_array = []
+		for char in char_array:
+			char_string_array.append(chr(char))
+		memcompare(memory_search_start_pos, char_string_array, comparison_output_table)
+
+def parse_undelimited_cpb(input_string):
+	hex_char_list = []
+	parsed_string = ""
+	zipped_chars = zip(input_string[::2], input_string[1::2])
+	for char_first, char_second in zipped_chars:
+		hex_char_list.append(char_first + char_second)
+	for index, char in enumerate(hex_char_list):
+		try:
+			if hex_char_list[index + 1] == ".." or hex_char_list[index - 1] == "..":
+				continue
+			elif char == "..":
+				parsed_string += f"{hex_char_list[index - 1]}..{hex_char_list[index + 1]},"
+				continue
+		except IndexError:
+			parsed_string += f"{char},"
+			continue
+		else: parsed_string += f"{char},"
+	return parse_cpb_input(parsed_string[:-1])
+
+
+def parse_cpb_input(user_input):
+	user_input = cleanHex(user_input)
+	user_input = user_input.replace(":", ",")
+	user_input_list = user_input.split(",")
+	bad_chars_list = []
+	for input_substring_entry in user_input_list:
+		if len(input_substring_entry) == 2:
+			bad_char = bytes.fromhex(input_substring_entry)
+			bad_chars_list.append(bad_char)
+		elif len(input_substring_entry) == 6 and input_substring_entry[2:4] == "..":
+			start_bad_char = bytes.fromhex(input_substring_entry[0:2])
+			end_bad_char = bytes.fromhex(input_substring_entry[4:6])
+			for char_index in range(int.from_bytes(start_bad_char), int.from_bytes(end_bad_char)):
+				bad_chars_list.append(char_index.to_bytes())
+			bad_chars_list.append(end_bad_char)
+		else: bad_chars_list = bad_chars_list + parse_undelimited_cpb(input_substring_entry)
+	return bad_chars_list
+
+def bad_char_comparison_array(args):
+	bad_chars_list = []
+	if "cpb" in args:
+		bad_chars_list = parse_cpb_input(args["cpb"])
+	char_array_list = []
+	for char in range(0x00, 0xFF+1): # for X in range() does not include final number, so +1 to account for that
+		if bytes([char]) not in bad_chars_list:
+			char_array_list.append(char)
+	char_array = bytes(char_array_list)
+	return char_array
+
 # ----- offset: Calculate the offset between two addresses ----- #
 def procOffset(args):
 	extratext1 = ""
@@ -36433,16 +36805,10 @@ def procByteArray(args):
 			if not "cpb" in args:
 				args["cpb"] = args["b"]
 
-	strb = b""
 	if "cpb" in args:
-		strb, badcharsok = cpbArgToBytes(args["cpb"])
-		if not badcharsok:
-			dbg.log(" *** Unable to parse -cpb value '%s' ***" % args["cpb"], highlight=1)
-			return
+		bad_chars = b"".join(parse_cpb_input(args["cpb"]))
 
-	badchars_printable = "\\x" + "\\x".join(bin2hex(strb).split(" "))
-	dbg.log("Generating table, excluding %d bad chars: %s" % (len(strb), badchars_printable))
-
+	dbg.log("Generating table, excluding %d bad chars..." % len(bad_chars))
 	arraytable = []
 	binarray = b""
 
@@ -36461,7 +36827,7 @@ def procByteArray(args):
 		if len(hexbyte) == 1:
 			hexbyte = "0" + hexbyte
 		hexbyte2 = binascii.a2b_hex(hexbyte)
-		if not hexbyte2 in strb:
+		if not hexbyte2 in bad_chars:
 			arraytable.append(hexbyte)
 			binarray += binbyte
 
@@ -37821,7 +38187,7 @@ def procUpdate(args):
 					cmdname = clickWinDBGCmd(windbg_cmd = "%s up -force" % getAliasName())
 					dbg.log("        Run %s to overwrite your local copy anyway" % cmdname, highlight=1)
 				else:
-					dbg.log("        Run '%s up -force' to overwrite your local copy anyway" % getAliasName(), highlight=1)					
+					dbg.log("        Run '%s up -force' to overwrite your local copy anyway" % getAliasName(), highlight=1)
 				mndbg.dbgp("Same version/revision but file contents differ for %s" % name)
 			else:
 				dbg.log("    [+] You are already running the latest version of %s" % name)
@@ -37961,7 +38327,7 @@ def procEgg(args):
 	
 	global g_silent
 	oldsilent = g_silent
-	g_silent = True			
+	g_silent = True
 	
 	if "f" in args:
 		if type(args["f"]).__name__.lower() != "bool":
@@ -38331,7 +38697,7 @@ def procEgg(args):
 	
 	egghunter = startat + egghunter
 	
-	g_silent = oldsilent			
+	g_silent = oldsilent
 	
 	#Convert binary to printable hex format
 	egghunter_hex = toniceHex(egghunter.strip().replace(b" ",b""),16)
@@ -38461,7 +38827,7 @@ def procSuggest(args):
 	exploitfilename="exploit.rb"
 	objexploitfile = MnLog(exploitfilename)
 
-	#g_ptr_to_get = 5				
+	#g_ptr_to_get = 5
 	g_no_header = True
 	exploitfile = objexploitfile.reset(showheader = False, skipModuleTable=True)			
 	g_no_header = False
@@ -38600,11 +38966,11 @@ def procSuggest(args):
 					# can we find a jmp to that reg ?
 					g_silent = True
 					g_ptr_counter = 0
-					g_ptr_to_get = 1								
+					g_ptr_to_get = 1
 					jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
 					if len( jmp_pointers ) == 0:
 						g_ptr_counter = 0
-						g_ptr_to_get = 1								
+						g_ptr_to_get = 1
 						modulecriteria["os"] = True
 						jmp_pointers = findJMP(modulecriteria,eipcriteria,reg.lower())
 					modulecriteria["os"] = False
@@ -38762,7 +39128,7 @@ def procSuggest(args):
 		#get SEH pointers
 		g_silent = True
 		g_ptr_counter = 0
-		g_ptr_to_get = 1					
+		g_ptr_to_get = 1
 		seh_pointers = findSEH(modulecriteria,sehcriteria)
 		jmpback = False
 		g_silent = False
@@ -38776,7 +39142,7 @@ def procSuggest(args):
 						sehcriteria.pop("nonull")
 						g_silent = True
 						g_ptr_counter = 0
-						g_ptr_to_get = 1									
+						g_ptr_to_get = 1
 						seh_pointers = findSEH(modulecriteria,sehcriteria)
 						g_silent = False
 						jmpback = True
@@ -39323,17 +39689,17 @@ def _procHeapByAddr(refvalue):
 		chunkDict[entry_str] = [uptr_str, chunk.usersize]
 		headers = ["_HEAP_ENTRY", "UserPtr", "UserSize"]
 		types = ["string", "string", "size"]
-		dbg.log("    %s found in Heap %s, %s:" % (label, heap_str, ctx))  
+		dbg.log("    %s found in Heap %s, %s:" % (label, heap_str, ctx))
 		print_dict_table(chunkDict, headers, types, padding = "    ", itemsequence = [])
-		
+
 		dbg.log("    State : %s (0x%02x)" % (chunk.flagtxt, chunk.flag))
-		# to do: 
+		# to do:
 		# if pointer at UserPtr is a symbol, print the symbol
 
 		# if pointer at UserPtr is part of a module, print the module
 
 		# is there a string at UserPtr or UserPtr+PTR_SIZE
-		startpos_offsets = [0, 4, 8] 
+		startpos_offsets = [0, 4, 8]
 		stringfound=False
 		stringfoundat = 0
 		string_to_print = ""
@@ -39361,7 +39727,7 @@ def _procHeapByAddr(refvalue):
 						break
 				except Exception:
 					continue
-		
+
 		if stringfound:
 			# only print the first 40 chars
 			dbg.log("    Chunk contains start of a %s string @%s : '<b>%s</b>'" % (string_type, PTR_PRINT % stringfoundat, string_to_print[:40] ))
@@ -41833,9 +42199,9 @@ def procFillChunk(args):
 			write_offset = _determineWriteOffset(userptr)
 			if write_offset > 0:
 				dbg.log("")
-			
+
 			dbg.log("[+] Filling chunk with \\x%s, starting at %s, skipping %d bytes" % (
-						bin2hex(fillchar), (PTR_PRINT % userptr), write_offset))				
+						bin2hex(fillchar), (PTR_PRINT % userptr), write_offset))
 			fillbyte = _normalize_single_fill_byte(fillchar)
 			if len(fillbyte) == 0:
 				dbg.log("    ** Invalid fill byte specified **", highlight=1)
@@ -42587,8 +42953,7 @@ def procEnc(args):
 			byteerror = True
 
 	if "cpb" in args:
-		if type(args["cpb"]).__name__.lower() != "bool":
-			badbytes = hex2bin(args["cpb"])
+		bad_chars = b"".join(parse_cpb_input(args["cpb"]))
 
 	if not encodertype in validencoders:
 		encodertyperror = True
@@ -44634,7 +44999,7 @@ def getBanner():
 	bannertext += "    |       | | | | | || (_) || | | || (_| | _ | |_) || |_| |          |\n"
 	bannertext += "    |       |_| |_| |_| \\___/ |_| |_| \\__,_|(_)| .__/  \\__, |          |\n"
 	bannertext += "    |                                          |_|     |___/           |\n"
-	bannertext += "    \\------------------------------------------------------------------/\n"	
+	bannertext += "    \\------------------------------------------------------------------/\n"
 	banners[1] = bannertext
 
 	bannertext = ""
@@ -45099,21 +45464,26 @@ Optional arguments:
     -e <address> : the end address of the copy"""
 	
 
-	compareUsage = """Compare a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
+	compareUsage = """Compare a bad characters array or a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
 
 Mandatory argument :
     -f <filename> : full path to input file
 
-Optional argument :
+
+Optional arguments :
+    -cpb <bytes> : bytes to exclude from the comparison array. Example : '\\x00\\x0a\\x0d'
+                   Note: Does not work when file specified for comparison array with -f
+                   Note: you can specify ranges using .. 
+                   Example: '\\x00\\x0a..\\x20\\x32\\x7f..\\xff'
     -a <address> : the exact address of the bytes in memory (address or register). 
                    If you don't specify an address, I will try to locate the bytes in memory 
                    by looking at the first 8 bytes.
     -s : skip locations that belong to a module
     -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically
     -t : input file type format. If no file type format is specified, I will try to guess the input file type format.
-	 
-    Available formats:
-    'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'"""
+	-f <filename> : full path to input file to compare bytes in memory with
+                    Available formats:
+                    'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'"""
 
 	offsetUsage = """Calculate the number of bytes between two addresses. 
 In addition to plain addresses, you can also specify registers, modules, module!functionnames, etc.
@@ -45369,7 +45739,7 @@ Optional arguments:
 
 Optional arguments:
     -s <keywords> : only show EAT entries that contain one of these keywords"""
-	
+
 
 	fillchunkUsage = """Fills a heap chunk, referenced by an address expression, with A's (or another character)
 
@@ -45978,7 +46348,7 @@ Official model docs:
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
 	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
-	commands["cleanlog"]        = MnCommand("cleanlog","Remove old log files from your workingfolder",cleanLogUsage,procCleanLog,"clean",[32,64])   
+	commands["cleanlog"]        = MnCommand("cleanlog","Remove old log files from your workingfolder",cleanLogUsage,procCleanLog,"clean",[32,64])
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
 	commands["ropfunc"] 		= MnCommand("ropfunc","Find pointers to pointers (IAT) to interesting functions that can be used in your ROP chain",ropfuncUsage,procFindROPFUNC,"rf",[32,64])
 	commands["rop"] 			= MnCommand("rop","Finds gadgets that can be used in a ROP chain and perhaps do some ROP magic with them",ropUsage,procROP,"",[32,64])
@@ -46347,7 +46717,7 @@ def main(args):
 
 		if command == "" or command == "-h":
 			command = "help"
-		
+
 
 		# is user trying to run a valid command or alias?
 		if command in acceptedcommands or command in acceptedaliases:
