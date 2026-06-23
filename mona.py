@@ -17378,9 +17378,9 @@ class MnNTHeap(MnHeap):
 		return self._list_hints
 
 	def lfhActivationCounter(self, bucket):
-		"""For an INACTIVE LFH size class, return (count, threshold) showing progress toward LFH
-		activation, or None when the value is not a meaningful pre-activation counter (caller prints
-		'-'). Conservative: anything we cannot decode with confidence returns None."""
+		"""For an INACTIVE LFH size class, return the current consecutive-allocation count toward LFH
+		activation (an int), or None when the value is not a meaningful pre-activation counter
+		(caller prints '-'). Conservative: anything we cannot decode with confidence returns None."""
 		units = getattr(bucket, "BlockUnits", 0)
 		if not units:
 			return None
@@ -17390,7 +17390,7 @@ class MnNTHeap(MnHeap):
 			act = None
 		if act is not None:
 			if act[0] == "count":
-				return (act[1] & 0xFFFF, 0x20)
+				return (act[1] & 0xFFFF) // 2
 			return None
 		try:
 			if self.getFrontEndHeapType() != 2:
@@ -17405,8 +17405,7 @@ class MnNTHeap(MnHeap):
 				return None
 		except Exception:
 			return None
-		raw = usage[units]
-		return (raw & 0x1F, 0x10)
+		return usage[units] & 0x1F
 
 	def _frontEndStatusBitmapBit(self, units):
 		"""True if the FrontEndHeapStatusBitmap bit for size class *units* is set (LFH active for it).
@@ -39652,12 +39651,10 @@ def _heapShowSummary(mHeap):
 						bucket.bucket_index, serves, total, busy, free))
 					any_shown = True
 				else:
-					prog = mHeap.lfhActivationCounter(bucket)
-					if prog is not None and prog[0]:
-						cnt, thr = prog
-						ctr_str = "%d/%d" % (cnt, thr) if thr else "%d" % cnt
-						dbg.log("    Bucket[%d]  Disabled  serves %s units  Activation: %s" % (
-							bucket.bucket_index, serves, ctr_str))
+					cnt = mHeap.lfhActivationCounter(bucket)
+					if cnt:
+						dbg.log("    Bucket[%d]  Disabled  serves %s units  Activation count: %d" % (
+							bucket.bucket_index, serves, cnt))
 						any_shown = True
 			if not any_shown:
 				dbg.log("    (no active buckets)")
@@ -39823,12 +39820,8 @@ def _heapShowLFHCounters(mHeap, show_all=False):
 		if bucket.isActive():
 			activation = "ACTIVE"
 		else:
-			prog = mHeap.lfhActivationCounter(bucket)
-			if prog is not None:
-				cnt, thr = prog
-				activation = "counting (%d/%d)" % (cnt, thr) if thr else "counting (%d)" % cnt
-			else:
-				activation = ""
+			cnt = mHeap.lfhActivationCounter(bucket)
+			activation = "counting (%d)" % cnt if cnt else ""
 		if not show_all and total == 0 and busy == 0 and free == 0 and ctr_total == 0 and ctr_subseg == 0 and activation == "":
 			continue
 		key = "Bucket[%d]" % bucket.bucket_index
