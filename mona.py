@@ -1112,7 +1112,7 @@ def clickListHeaps(displaytext=""):
 
 def clickListLFH(heapbase, displaytext=""):
 	"""Clickable link that lists the LFH front-end for *heapbase*."""
-	cmd = "%s heap -h %s -t lfh" % (getAliasName(), PTR_PRINT % heapbase)
+	cmd = "%s heap -h %s -lfh" % (getAliasName(), PTR_PRINT % heapbase)
 	if displaytext == "":
 		displaytext = cmd
 	if mndbg.isWinDBG():
@@ -1121,7 +1121,7 @@ def clickListLFH(heapbase, displaytext=""):
 
 def clickListSegments(heapbase, displaytext=""):
 	"""Clickable link that lists the segments of *heapbase*."""
-	cmd = "%s heap -h %s -t segments" % (getAliasName(), PTR_PRINT % heapbase)
+	cmd = "%s heap -h %s -segments" % (getAliasName(), PTR_PRINT % heapbase)
 	if displaytext == "":
 		displaytext = cmd
 	if mndbg.isWinDBG():
@@ -1130,7 +1130,7 @@ def clickListSegments(heapbase, displaytext=""):
 
 def clickListFreeList(heapbase, displaytext=""):
 	"""Clickable link that lists the back-end free list of *heapbase*."""
-	cmd = "%s heap -h %s -t bea" % (getAliasName(), PTR_PRINT % heapbase)
+	cmd = "%s heap -h %s -freelist" % (getAliasName(), PTR_PRINT % heapbase)
 	if displaytext == "":
 		displaytext = cmd
 	if mndbg.isWinDBG():
@@ -1151,7 +1151,7 @@ def clickDumpContent(address, length=0x64, displaytext=""):
 def clickShowChunkNeighbours(heapbase, address, displaytext=""):
 	"""Clickable link that shows the heap layout centered on *address* -- the
 	chunk together with its neighbouring chunks."""
-	cmd = "%s heap -h %s -t layout -a %s" % (getAliasName(), PTR_PRINT % heapbase, PTR_PRINT % address)
+	cmd = "%s heap -h %s -chunks -a %s -neighbour" % (getAliasName(), PTR_PRINT % heapbase, PTR_PRINT % address)
 	if displaytext == "":
 		displaytext = cmd
 	if mndbg.isWinDBG():
@@ -19937,9 +19937,6 @@ class MnNTLFHSubSegmentBase(object):
 	def __init__(self, ssbase, parent_bucket=None):
 		self.address = ssbase
 		self.parent_bucket = parent_bucket
-		# LSI slot provenance ("Active"/"Hint"/"CachedItem"); set by
-		# MnNTLFHSegmentInfoBase.getSubSegments(). None for subsegments reached off other
-		# paths (deleted/retired/zone-carved).
 		self.role = None
 		self.corrupted = False
 		self.corruption_reason = ""
@@ -20761,6 +20758,10 @@ class MnNTFreeLists(object):
 			if c.chunkptr == chunkptr:
 				return (i, len(chunks))
 		return (None, len(chunks))
+
+	def getOrderedChunks(self):
+		"""Free chunks in physical list (Flink) order -- the order getChunks() yields."""
+		return list(self.getChunks().values())
 
 
 class MnNTBlockIndex(object):
@@ -33469,10 +33470,12 @@ def _resolveHeapContext(address, foundinheap, foundinsegment, foundinva, foundin
 	}
 
 
-def _printHeapContext(ctx):
-	"""Print the '[+] Heap Details' block from a resolved context dict.
+def _showChunkMetrics(ctx):
+	"""Compute block/byte sizes for the resolved chunk.
 
-	Pure formatting -- all lookups happen in _resolveHeapContext.
+	Shared by the Chunk Details block and the LFH allocator block.  Returns a
+	dict with the selected chunk (LFH inner chunk when applicable) and its
+	size metrics, all zeroed out when there is no chunk.
 	"""
 	chunk      = ctx["chunk"]
 	lfh_chunk  = ctx["lfh_chunk"]
@@ -33480,9 +33483,8 @@ def _printHeapContext(ctx):
 	bucket     = ctx["bucket"]
 	is_lfh     = subsegment is not None
 	is_chunk   = isinstance(chunk, MnChunk)
-	is_va      = ctx["va"] is not None
 	hdr_bytes  = archValue(8, 16)
- 
+
 	state_chunk = lfh_chunk if (is_lfh and lfh_chunk is not None) else chunk
 
 	total_blocks = total_bytes = user_blocks = user_bytes = bucket_idx = 0
@@ -33502,77 +33504,132 @@ def _printHeapContext(ctx):
 			user_bytes   = chunk.usersize
 		user_blocks = user_bytes // HEAPGRANULARITY
 
-	if is_chunk:
-		dbg.log("")
-		dbg.log("[+] Chunk Details:")
-		dbg.log("    Chunk Base Address       : %s" % (PTR_PRINT % state_chunk.chunkptr))
-		dbg.log("    Chunk UserPtr            : %s" % (PTR_PRINT % state_chunk.userptr))
-		dbg.log("    Chunk Size               : 0x%x blocks (0x%x bytes) [0x%x blocks, 0x%x bytes]" % (
-			total_blocks, total_bytes, user_blocks, user_bytes))
-		if state_chunk.getState() != ChunkState.FREE:
-			dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_bytes, user_bytes))
-			lfh_req = getattr(state_chunk, "lfh_user_size", None)
-			if lfh_req is not None:
-				dbg.log("    Requested Size           : 0x%x (%d bytes)" % (lfh_req, lfh_req))
-		dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
-		dbg.log("    Flags                    : 0x%02x (%s)" % (
-			state_chunk.flag, getHeapFlag(state_chunk.flag)))
-		dbg.log("    Dump content             : %s" % clickDumpContent(state_chunk.userptr, total_bytes))
-		dbg.log("    Show chunk neighbours    : %s" % clickShowChunkNeighbours(ctx["heap"], state_chunk.chunkptr))
+	return {
+		"state_chunk":  state_chunk,
+		"total_blocks": total_blocks,
+		"total_bytes":  total_bytes,
+		"user_blocks":  user_blocks,
+		"user_bytes":   user_bytes,
+		"bucket_idx":   bucket_idx,
+	}
 
-	if is_chunk or is_va:
-		dbg.log("")
-		dbg.log("[+] Heap Allocator Details:")
-		if is_va:
-			dbg.log("    Allocator                : Virtual Allocated Block")
-			dbg.log("    VABlock Index            : %s" % (
-				str(ctx["va_index"]) if ctx["va_index"] is not None else "?"))
-			dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % ctx["va"]))
-			if ctx["va_commit"] is not None:
-				dbg.log("    VABlock Size             : 0x%x (%d bytes)" % (
-					ctx["va_commit"], ctx["va_commit"]))
-			if ctx["va_reserve"] is not None:
-				dbg.log("    VABlock Reserve          : 0x%x (%d bytes)" % (
-					ctx["va_reserve"], ctx["va_reserve"]))
-			if ctx.get("va_slack") is not None:
-				dbg.log("    VABlock Slack            : 0x%x (%d bytes)" % (
-					ctx["va_slack"], ctx["va_slack"]))
-			if ctx.get("va_extra") is not None:
-				_bt, _tag, _set = ctx["va_extra"]
-				dbg.log("    ExtraStuff.AllocBTIndex  : %s" % ("0x%x" % _bt if _bt is not None else "?"))
-				dbg.log("    ExtraStuff.TagIndex      : %s" % ("0x%x" % _tag if _tag is not None else "?"))
-				dbg.log("    ExtraStuff.Settable      : %s" % (PTR_PRINT % _set if _set is not None else "?"))
-		elif is_lfh:
-			bucket_max = user_bytes
-			bucket_min = max(1, bucket_max - HEAPGRANULARITY + 1)
-			dbg.log("    Allocator                : Front End Allocator (LFH)")
-			dbg.log("    LFH Bucket Index         : %d" % bucket_idx)
-			dbg.log("    LFH Bucket Size Range    : 0x%x - 0x%x (%d - %d bytes)" % (
-				bucket_min, bucket_max, bucket_min, bucket_max))
-			dbg.log("    SubSegment Address       : %s" % (PTR_PRINT % subsegment.address))
-			if ctx["ss_size"]:
-				dbg.log("    SubSegment Size          : 0x%x (%d bytes)" % (ctx["ss_size"], ctx["ss_size"]))
-			dbg.log("    List LFH front-end       : %s" % clickListLFH(ctx["heap"]))
-		else:
-			dbg.log("    Allocator               : Back End Allocator (Segment)")
-			hints = ctx["list_hints"]
-			pos   = ctx["freelist_pos"]
-			if chunk.getState() != ChunkState.FREE:
-				dbg.log("    (chunk is busy - not currently on a free list)")
+
+def _showNTChunkDetails(ctx, metrics):
+	"""Print the '[+] Chunk Details' block from a resolved context dict."""
+	if not isinstance(ctx["chunk"], MnChunk):
+		return
+	state_chunk  = metrics["state_chunk"]
+	total_blocks = metrics["total_blocks"]
+	total_bytes  = metrics["total_bytes"]
+	user_blocks  = metrics["user_blocks"]
+	user_bytes   = metrics["user_bytes"]
+
+	dbg.log("")
+	dbg.log("[+] Chunk Details:")
+	dbg.log("    Chunk Base Address       : %s" % (PTR_PRINT % state_chunk.chunkptr))
+	dbg.log("    Chunk UserPtr            : %s" % (PTR_PRINT % state_chunk.userptr))
+	dbg.log("    Chunk Size               : 0x%x blocks (0x%x bytes) [0x%x blocks, 0x%x bytes]" % (
+		total_blocks, total_bytes, user_blocks, user_bytes))
+	if state_chunk.getState() != ChunkState.FREE:
+		dbg.log("    Chunk User Data Size     : 0x%x (%d bytes)" % (user_bytes, user_bytes))
+		lfh_req = getattr(state_chunk, "lfh_user_size", None)
+		if lfh_req is not None:
+			dbg.log("    Requested Size           : 0x%x (%d bytes)" % (lfh_req, lfh_req))
+	dbg.log("    Chunk State              : %s" % state_chunk.getState().upper())
+	dbg.log("    Flags                    : 0x%02x (%s)" % (
+		state_chunk.flag, getHeapFlag(state_chunk.flag)))
+	dbg.log("    Dump content             : %s" % clickDumpContent(state_chunk.userptr, total_bytes))
+	dbg.log("    Show chunk neighbours    : %s" % clickShowChunkNeighbours(ctx["heap"], state_chunk.chunkptr))
+
+
+def _showNTVABlockDetails(ctx):
+	"""Print the Virtual Allocated Block branch of the Heap Allocator Details block."""
+	dbg.log("    Allocator                : Virtual Allocated Block")
+	dbg.log("    VABlock Index            : %s" % (
+		str(ctx["va_index"]) if ctx["va_index"] is not None else "?"))
+	dbg.log("    VABlock Base Address     : %s" % (PTR_PRINT % ctx["va"]))
+	if ctx["va_commit"] is not None:
+		dbg.log("    VABlock Size             : 0x%x (%d bytes)" % (
+			ctx["va_commit"], ctx["va_commit"]))
+	if ctx["va_reserve"] is not None:
+		dbg.log("    VABlock Reserve          : 0x%x (%d bytes)" % (
+			ctx["va_reserve"], ctx["va_reserve"]))
+	if ctx.get("va_slack") is not None:
+		dbg.log("    VABlock Slack            : 0x%x (%d bytes)" % (
+			ctx["va_slack"], ctx["va_slack"]))
+	if ctx.get("va_extra") is not None:
+		_bt, _tag, _set = ctx["va_extra"]
+		dbg.log("    ExtraStuff.AllocBTIndex  : %s" % ("0x%x" % _bt if _bt is not None else "?"))
+		dbg.log("    ExtraStuff.TagIndex      : %s" % ("0x%x" % _tag if _tag is not None else "?"))
+		dbg.log("    ExtraStuff.Settable      : %s" % (PTR_PRINT % _set if _set is not None else "?"))
+
+
+def _showNTLFHDetails(ctx, metrics):
+	"""Print the Front End Allocator (LFH) branch of the Heap Allocator Details block."""
+	subsegment = ctx["subsegment"]
+	bucket_max = metrics["user_bytes"]
+	bucket_min = max(1, bucket_max - HEAPGRANULARITY + 1)
+	dbg.log("    Allocator                : Front End Allocator (LFH)")
+	dbg.log("    LFH Bucket Index         : %d" % metrics["bucket_idx"])
+	dbg.log("    LFH Bucket Size Range    : 0x%x - 0x%x (%d - %d bytes)" % (
+		bucket_min, bucket_max, bucket_min, bucket_max))
+	dbg.log("    SubSegment Address       : %s" % (PTR_PRINT % subsegment.address))
+	if ctx["ss_size"]:
+		dbg.log("    SubSegment Size          : 0x%x (%d bytes)" % (ctx["ss_size"], ctx["ss_size"]))
+	try:
+		chunk = ctx["chunk"]
+		stride = subsegment.BlockSize * HEAPGRANULARITY
+		if isinstance(chunk, MnChunk) and stride > 0 and subsegment.UserBlocks:
+			idx = (chunk.chunkptr - subsegment.UserBlocks) // stride
+			if 0 <= idx < subsegment.BlockCount:
+				dbg.log("    Block Index in SubSegment: %d of %d" % (idx, subsegment.BlockCount))
+	except Exception as e:
+		mndbg.dbgp("_showNTLFHDetails: block index calc failed: %s" % str(e), errormode=False)
+	dbg.log("    List LFH front-end       : %s" % clickListLFH(ctx["heap"]))
+
+
+def _showNTSegmentDetails(ctx):
+	"""Print the Back End Allocator (Segment) branch of the Heap Allocator Details block."""
+	chunk = ctx["chunk"]
+	hints = ctx["list_hints"]
+	pos   = ctx["freelist_pos"]
+	dbg.log("    Allocator               : Back End Allocator (Segment)")
+	if chunk.getState() != ChunkState.FREE:
+		dbg.log("    (chunk is busy - not currently on a free list)")
+	else:
+		if pos is not None and pos[0] is not None:
+			dbg.log("    FreeList Size           : %d" % pos[1])
+			dbg.log("    FreeList Index          : %d" % pos[0])
+		if hints is not None and hints.usesHints():
+			b = hints.bucketForSize(chunk.size)
+			if b["dedicated"]:
+				dbg.log("    ListHints Index         : %d" % b["index"])
 			else:
-				if pos is not None and pos[0] is not None:
-					dbg.log("    FreeList Size           : %d" % pos[1])
-					dbg.log("    FreeList Index          : %d" % pos[0])
-				if hints is not None and hints.usesHints():
-					b = hints.bucketForSize(chunk.size)
-					if b["dedicated"]:
-						dbg.log("    ListHints Index         : %d" % b["index"])
-					else:
-						dbg.log("    ListHints Index         : non-dedicated (size exceeds ArraySize 0x%x)" % hints.ArraySize)
-					dbg.log("    ListHints Chunk Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
-				dbg.log("    List back-end freelist  : %s" % clickListFreeList(ctx["heap"]))
+				dbg.log("    ListHints Index         : non-dedicated (size exceeds ArraySize 0x%x)" % hints.ArraySize)
+			dbg.log("    ListHints Chunk Size    : 0x%x (%d bytes)" % (b["size_bytes"], b["size_bytes"]))
+		dbg.log("    List back-end freelist  : %s" % clickListFreeList(ctx["heap"]))
 
-	# --- Heap Details ---
+
+def _showNTHeapAllocatorDetails(ctx, metrics):
+	"""Print the '[+] Heap Allocator Details' block, dispatching to the VA / LFH /
+	back-end segment branch that applies to the resolved context."""
+	chunk = ctx["chunk"]
+	is_va = ctx["va"] is not None
+	if not (isinstance(chunk, MnChunk) or is_va):
+		return
+	dbg.log("")
+	dbg.log("[+] Heap Allocator Details:")
+	if is_va:
+		_showNTVABlockDetails(ctx)
+	elif ctx["subsegment"] is not None:
+		_showNTLFHDetails(ctx, metrics)
+	else:
+		_showNTSegmentDetails(ctx)
+
+
+def _showNTHeap(ctx):
+	"""Print the '[+] Heap Details' block from a resolved context dict."""
+	is_va = ctx["va"] is not None
 	dbg.log("")
 	dbg.log("[+] Heap Details:")
 	dbg.log("    Heap Base Address        : %s%s" % (
@@ -33647,7 +33704,10 @@ def _showHeapDetails(address, foundinheap, foundinsegment, foundinva, foundinchu
 	if ctx is None:
 		return
 	tellmeHeapContext(address, ctx)
-	_printHeapContext(ctx)
+	metrics = _showChunkMetrics(ctx)
+	_showNTChunkDetails(ctx, metrics)
+	_showNTHeapAllocatorDetails(ctx, metrics)
+	_showNTHeap(ctx)
 	_identifyHeapStructureHeader(address, ctx["heap"], ctx["mheap"])
 
 
@@ -39376,9 +39436,80 @@ def _resolveVtable(userptr, usersize):
 		return ""
 
 
-def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
-	"""Display LFH (FrontEnd Allocator) information for a heap. When bucketsize is set,
-	only the bucket whose chunk (block) size equals bucketsize bytes is shown."""
+def _heapBuildNeedle(pattern):
+	"""Turn a user-supplied -search/-find pattern into a search needle (bytes).
+
+	'0x..' (or anything that parses as hex) -> packed pointer-sized int (little-endian);
+	otherwise the literal text as latin-1 bytes. Returns (needle_bytes, is_int_value, int_value)
+	so callers can reuse searchChunks() (which wants the int) or do a raw data.find() (bytes).
+	Returns (None, False, None) for an empty/blank pattern."""
+	if pattern is None:
+		return (None, False, None)
+	p = pattern.replace('"', '').replace("'", "").strip()
+	if p == "":
+		return (None, False, None)
+	# hex pointer value?
+	is_int = False
+	int_val = None
+	try:
+		if p.lower().startswith("0x"):
+			int_val = hexStrToInt(p)
+			is_int = True
+		else:
+			# bare hex (e.g. "deadbeef") still counts as a value, matching the old -t search
+			int_val = hexStrToInt(p)
+			is_int = True
+	except Exception:
+		is_int = False
+		int_val = None
+	if is_int:
+		ptrsize = archValue(4, 8)
+		if ptrsize == 4:
+			needle = struct.pack('<L', int_val & 0xFFFFFFFF)
+		else:
+			needle = struct.pack('<Q', int_val & 0xFFFFFFFFFFFFFFFF)
+		return (needle, True, int_val)
+	needle = p.encode('latin-1', 'replace') if isinstance(p, str) else p
+	return (needle, False, None)
+
+
+class _HeapProgress(object):
+	"""Throttled, user-visible progress reporter for long all-heaps heap walks.
+
+	Emits via dbg.log (so the user sees it -- unlike mndbg.dbgp, which is debug-only),
+	at most once every `interval` seconds. Two modes:
+	  - known total  -> "processed X/Y (Z%), ~T s remaining" with a linear ETA.
+	  - unknown total -> "processed N, Xs elapsed" (no ETA -- it would be circular).
+	Stays silent unless the work is large enough to matter (see _heapMaybeProgress)."""
+
+	def __init__(self, label, total=None, interval=1.0):
+		self.label = label
+		self.total = total
+		self.interval = interval
+		self.started = time.time()
+		self.last = self.started
+		self.done = 0
+
+	def step(self, n=1):
+		self.done += n
+		now = time.time()
+		if now - self.last < self.interval:
+			return
+		self.last = now
+		elapsed = now - self.started
+		if self.total:
+			pct = (float(self.done) / float(self.total)) * 100 if self.total else 0
+			eta = (elapsed / self.done) * (self.total - self.done) if self.done else 0
+			dbg.log("    [%s] processed %d/%d (%d%%), ~%ds remaining" % (
+				self.label, self.done, self.total, int(pct), int(eta)))
+		else:
+			dbg.log("    [%s] processed %d, %ds elapsed" % (self.label, self.done, int(elapsed)))
+
+
+def _heapShowLFH(mHeap, bucketsize=None, extend=False):
+	"""Display LFH (FrontEnd Allocator) information for a heap. When bucketsize is set
+	(in granularity units), only the bucket whose BlockUnits equals it is shown.
+	extend=True also enumerates every chunk (slot) within each subsegment."""
 	dbg.log("[+] FrontEnd Allocator : Low Fragmentation Heap")
 	try:
 		_parseOsVersion()
@@ -39406,11 +39537,11 @@ def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
 	mndbg.dbgp("tellme: heap %s LFH at %s: %d active buckets, %d blocks (busy=%d free=%d)" % (
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
 	if bucketsize is not None:
-		active_buckets = [b for b in active_buckets if b.block_size_bytes == bucketsize]
-		dbg.log("    Filter: only bucket(s) with chunk size 0x%x (%d match%s)" % (
-			bucketsize, len(active_buckets), "" if len(active_buckets) == 1 else "es"))
+		active_buckets = [b for b in active_buckets if b.BlockUnits == bucketsize]
+		dbg.log("    Filter: only bucket(s) with block size 0x%x units (0x%x bytes) (%d match%s)" % (
+			bucketsize, bucketsize * HEAPGRANULARITY, len(active_buckets), "" if len(active_buckets) == 1 else "es"))
 		if not active_buckets:
-			dbg.log("    No active LFH bucket has chunk size 0x%x" % bucketsize, highlight=True)
+			dbg.log("    No active LFH bucket has block size 0x%x units" % bucketsize, highlight=True)
 	dbg.log("")
 
 	# All buckets (incl. inactive) indexed by bucket_index, for size-range boundary lookup.
@@ -39467,7 +39598,7 @@ def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
 				bits = ud.getBusyBitmapBits()
 				if bits is not None:
 					snode["notes"].append("Bitmap: %s" % _formatLFHBitmap(bits))
-			if expand and ud and not ud.corrupted:
+			if extend and ud and not ud.corrupted:
 				for chunk in ud.getBlocks():
 					snode["children"].append({
 						"label": "Chunk %s" % (PTR_PRINT % chunk.chunkptr),
@@ -39482,6 +39613,74 @@ def _heapShowLFH(mHeap, showdata=False, expand=False, bucketsize=None):
 	dbg.log("")
 
 
+def _heapShowLFHCounters(mHeap, show_all=False):
+	"""Per-bucket LFH counters + activation state. By default skips all-zero buckets;
+	show_all=True includes them."""
+	dbg.log("[+] FrontEnd Allocator : LFH per-bucket counters")
+	if not mHeap.usesLFH():
+		dbg.log("    LFH is not active for this heap")
+		dbg.log("")
+		return
+	fe = mHeap.getFrontEndAllocator()
+	try:
+		buckets = fe.getBuckets()
+	except Exception as e:
+		dbg.log("    [-] Failed to enumerate LFH buckets: %s" % str(e))
+		dbg.log("")
+		return
+	table_data = {}
+	table_seq = []
+	shown = 0
+	for bucket in buckets:
+		if bucket.corrupted:
+			key = "Bucket[%d]" % bucket.bucket_index
+			table_data[key] = ["*** CORRUPTED ***", "", "", "", "", ""]
+			table_seq.append(key)
+			shown += 1
+			continue
+		total = bucket.getTotalBlocks()
+		busy = bucket.getBusyBlocks()
+		free = bucket.getFreeBlocks()
+		ctr = bucket.Counters
+		ctr_total = ctr.TotalBlocks if ctr is not None else 0
+		ctr_subseg = ctr.SubSegmentCounts if ctr is not None else 0
+		# Activation state (Vista/7 expose it via ListHints Blink; Win8+ -> active if paired).
+		activation = ""
+		try:
+			act = mHeap.list_hints.activationFor(bucket.BlockUnits)
+			if act is not None:
+				if act[0] == "count":
+					activation = "counting (%d)" % act[1]
+				else:
+					activation = "ACTIVE"
+			elif bucket.isActive():
+				activation = "ACTIVE"
+		except Exception:
+			if bucket.isActive():
+				activation = "ACTIVE"
+		# Skip all-zero buckets unless show_all.
+		if not show_all and total == 0 and busy == 0 and free == 0 and ctr_total == 0 and ctr_subseg == 0 and activation == "":
+			continue
+		key = "Bucket[%d]" % bucket.bucket_index
+		table_data[key] = [
+			"0x%x (0x%x B)" % (bucket.BlockUnits, bucket.block_size_bytes),
+			"%d/%d/%d" % (total, busy, free),
+			ctr_total,
+			ctr_subseg,
+			activation or "-",
+		]
+		table_seq.append(key)
+		shown += 1
+	if shown == 0:
+		dbg.log("    No buckets with non-zero counters (use -all to include zero buckets)")
+		dbg.log("")
+		return
+	headers = ["Bucket", "BlockSize", "Total/Busy/Free", "Counters.TotalBlocks", "Counters.SubSegmentCounts", "Activation"]
+	types = ["string", "string", "string", "int", "int", "string"]
+	print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+	dbg.log("")
+
+
 def _formatLFHBitmap(bits):
 	"""Render LFH BusyBitmap bits (list of 0/1, 1 = busy) as space-separated bytes so slots
 	are easy to count, e.g. [0,0,1,0,0,1,0,0,0,1] -> '00100100 01'."""
@@ -39489,8 +39688,9 @@ def _formatLFHBitmap(bits):
 	return " ".join(s[i:i + 8] for i in range(0, len(s), 8))
 
 
-def _heapShowFreeList(mHeap):
-	"""Display BackEnd Allocator free list information."""
+def _heapShowFreeList(mHeap, reverse=False):
+	"""Display BackEnd Allocator free list. reverse=True sorts entries descending by size.
+	(The ListHints/size-class view now lives in _heapShowListHints, reached via -listhints.)"""
 	dbg.log("[+] BackEnd Allocator : FreeList")
 	free_chunks = mHeap.free_lists.getChunks()
 	mndbg.dbgp("tellme: heap %s back-end FreeList has %d free chunk(s)" % (
@@ -39498,11 +39698,16 @@ def _heapShowFreeList(mHeap):
 	if len(free_chunks) == 0:
 		dbg.log("    No free chunks on the free list")
 	else:
-		dbg.log("    %d free chunk%s:" % (len(free_chunks), "" if len(free_chunks) == 1 else "s"))
+		dbg.log("    %d free chunk%s%s:" % (
+			len(free_chunks), "" if len(free_chunks) == 1 else "s",
+			" (sorted by size, descending)" if reverse else ""))
+		ordered = mHeap.free_lists.getOrderedChunks()
+		if reverse:
+			ordered = sorted(ordered, key=lambda c: c.size, reverse=True)
 		table_data = {}
 		table_seq = []
-		for addr, chunk in free_chunks.items():
-			key = PTR_PRINT % addr
+		for chunk in ordered:
+			key = PTR_PRINT % chunk.chunkptr
 			table_data[key] = [
 				chunk.prevsize * HEAPGRANULARITY,
 				chunk.size * HEAPGRANULARITY,
@@ -39514,96 +39719,219 @@ def _heapShowFreeList(mHeap):
 		headers = ["_HEAP_ENTRY", "PrevSize", "Size", "Unused", "UserPtr", "UserSize"]
 		types = ["string", "size", "size", "size", "pointer", "size"]
 		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
-
-		# Grouped per ListHints index (size class), only the non-empty lists,
-		# ordered by index ascending.  Dedicated sizes get one group each; every
-		# non-dedicated size is folded into a single combined list (which is how
-		# the heap services them), annotating each entry with its own size.
-		hints = mHeap.list_hints
-		bins = mHeap.free_lists.getBins()
-		# ListsInUseUlong bitmap: raw value, then the populated ListHints indices.
-		dwords = hints.getInUseDwords()
-		if dwords:
-			dbg.log("")
-			dbg.log("    ListsInUse bitmap (BlocksIndex) @ %s:" % (PTR_PRINT % hints.ListsInUseUlong))
-			dbg.log("      Value            : %s" % " ".join("0x%08x" % d for d in dwords))
-			inuse = hints.getInUseIndices()
-			dbg.log("      Populated indexes: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"))
-		if len(bins) > 0:
-			dbg.log("")
-			dbg.log("    FreeList by ListHints index (size class):")
-			nondedicated = []   # list of (size_units, chunk)
-			for size_units in sorted(bins.keys()):
-				chunks = bins[size_units]
-				size_bytes = size_units * HEAPGRANULARITY
-				if hints.usesHints():
-					b = hints.bucketForSize(size_units)
-					dedicated = b["dedicated"]
-					idx = b["index"]
-				else:
-					dedicated = (size_units <= 127)
-					idx = size_units
-				if not dedicated:
-					for c in chunks:
-						nondedicated.append((size_units, c))
-					continue
-				dbg.log("      ListHints[%d] size 0x%x (%d bytes) : %d chunk%s" % (
-					idx, size_bytes, size_bytes, len(chunks), "" if len(chunks) == 1 else "s"))
-				for c in chunks:
-					dbg.log("        %s" % (PTR_PRINT % c.chunkptr))
-			if nondedicated:
-				if hints.usesHints():
-					start_units = hints.BaseIndex + hints.ArraySize
-				else:
-					start_units = 128
-				start_bytes = start_units * HEAPGRANULARITY
-				dbg.log("      ListHints[non-dedicated] size >= 0x%x (>= %d bytes) : %d chunk%s" % (
-					start_bytes, start_bytes,
-					len(nondedicated), "" if len(nondedicated) == 1 else "s"))
-				for size_units, c in sorted(nondedicated, key=lambda t: (t[0], t[1].chunkptr)):
-					sb = size_units * HEAPGRANULARITY
-					dbg.log("        %s  0x%x (%d bytes)" % (PTR_PRINT % c.chunkptr, sb, sb))
 	dbg.log("")
 
 
-def _heapShowVABlocks(mHeap):
-	"""Display VirtualAllocdBlocks information."""
+def _heapShowListHints(mHeap, show_all=False, bucketsize=None, extend=False):
+	"""Display the ListHints (size-class index into the back-end free list).
+
+	show_all  -> iterate the full BaseIndex..BaseIndex+ArraySize range, including empty classes.
+	bucketsize-> (granularity units) restrict to one size class via list_hints.bucketForSize().
+	extend    -> walk and print every chunk in each shown size class (via getBins())."""
+	dbg.log("[+] BackEnd Allocator : ListHints")
+	hints = mHeap.list_hints
+	bins = mHeap.free_lists.getBins()
+	# ListsInUseUlong bitmap: raw value, then the populated ListHints indices.
+	dwords = hints.getInUseDwords()
+	if dwords:
+		dbg.log("    ListsInUse bitmap (BlocksIndex) @ %s:" % (PTR_PRINT % hints.ListsInUseUlong))
+		dbg.log("      Value            : %s" % " ".join("0x%08x" % d for d in dwords))
+		inuse = hints.getInUseIndices()
+		dbg.log("      Populated indexes: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"))
+
+	# Single size class.
+	if bucketsize is not None:
+		b = hints.bucketForSize(bucketsize) if hints.usesHints() else {
+			"index": bucketsize, "dedicated": (bucketsize <= 127),
+			"size_units": bucketsize, "size_bytes": bucketsize * HEAPGRANULARITY}
+		chunks = bins.get(bucketsize, [])
+		dbg.log("")
+		dbg.log("    ListHints[%d] size 0x%x units (0x%x bytes) %s: %d chunk%s" % (
+			b["index"], bucketsize, bucketsize * HEAPGRANULARITY,
+			"(dedicated) " if b.get("dedicated") else "(non-dedicated) ",
+			len(chunks), "" if len(chunks) == 1 else "s"))
+		if not chunks:
+			present = sorted(bins.keys())
+			dbg.log("      No free chunks of that size. Sizes present (units): %s" % (
+				", ".join("0x%x" % s for s in present) if present else "(none)"), highlight=True)
+		elif extend:
+			for c in chunks:
+				dbg.log("        %s  size 0x%x (%d bytes)" % (
+					PTR_PRINT % c.chunkptr, c.size * HEAPGRANULARITY, c.size * HEAPGRANULARITY))
+		dbg.log("")
+		return
+
+	if show_all and hints.usesHints():
+		dbg.log("")
+		dbg.log("    All ListHints size classes (BaseIndex 0x%x, ArraySize 0x%x):" % (
+			hints.BaseIndex, hints.ArraySize))
+		for n in range(hints.BaseIndex, hints.BaseIndex + hints.ArraySize):
+			chunks = bins.get(n, [])
+			size_bytes = n * HEAPGRANULARITY
+			b = hints.bucketForSize(n)
+			dbg.log("      ListHints[%d] size 0x%x (%d bytes) : %d chunk%s" % (
+				b["index"], size_bytes, size_bytes, len(chunks), "" if len(chunks) == 1 else "s"))
+			if extend and chunks:
+				for c in chunks:
+					dbg.log("        %s" % (PTR_PRINT % c.chunkptr))
+		dbg.log("")
+		return
+
+	# Default: only populated size classes (the old _heapShowFreeList behaviour).
+	if len(bins) > 0:
+		dbg.log("")
+		dbg.log("    FreeList by ListHints index (size class):")
+		nondedicated = []   # list of (size_units, chunk)
+		for size_units in sorted(bins.keys()):
+			chunks = bins[size_units]
+			size_bytes = size_units * HEAPGRANULARITY
+			if hints.usesHints():
+				b = hints.bucketForSize(size_units)
+				dedicated = b["dedicated"]
+				idx = b["index"]
+			else:
+				dedicated = (size_units <= 127)
+				idx = size_units
+			if not dedicated:
+				for c in chunks:
+					nondedicated.append((size_units, c))
+				continue
+			dbg.log("      ListHints[%d] size 0x%x (%d bytes) : %d chunk%s" % (
+				idx, size_bytes, size_bytes, len(chunks), "" if len(chunks) == 1 else "s"))
+			for c in chunks:
+				dbg.log("        %s" % (PTR_PRINT % c.chunkptr))
+		if nondedicated:
+			if hints.usesHints():
+				start_units = hints.BaseIndex + hints.ArraySize
+			else:
+				start_units = 128
+			start_bytes = start_units * HEAPGRANULARITY
+			dbg.log("      ListHints[non-dedicated] size >= 0x%x (>= %d bytes) : %d chunk%s" % (
+				start_bytes, start_bytes,
+				len(nondedicated), "" if len(nondedicated) == 1 else "s"))
+			for size_units, c in sorted(nondedicated, key=lambda t: (t[0], t[1].chunkptr)):
+				sb = size_units * HEAPGRANULARITY
+				dbg.log("        %s  0x%x (%d bytes)" % (PTR_PRINT % c.chunkptr, sb, sb))
+	else:
+		dbg.log("    No populated ListHints size classes")
+	dbg.log("")
+
+
+def _heapShowFreeListNeighbours(mHeap, bucketsize, radius=2):
+	"""Free-list entries around the first free chunk of size `bucketsize` (granularity units).
+	radius is the validated -n window (1..5, default 2)."""
+	dbg.log("[+] BackEnd Allocator : FreeList neighbours")
+	matches = mHeap.free_lists.getBySize(bucketsize)
+	ordered = mHeap.free_lists.getOrderedChunks()
+	if not matches:
+		present = sorted(set(c.size for c in ordered))
+		dbg.log("    No free chunk of size 0x%x units (0x%x bytes). Sizes present (units): %s" % (
+			bucketsize, bucketsize * HEAPGRANULARITY,
+			", ".join("0x%x" % s for s in present) if present else "(none)"), highlight=True)
+		dbg.log("")
+		return
+	target = matches[0]
+	try:
+		idx = ordered.index(target)
+	except ValueError:
+		idx = 0
+	lo = max(0, idx - radius)
+	hi = min(len(ordered), idx + radius + 1)
+	dbg.log("    First free chunk of size 0x%x units (0x%x bytes) at %s; showing +/-%d neighbour(s):" % (
+		bucketsize, bucketsize * HEAPGRANULARITY, PTR_PRINT % target.chunkptr, radius))
+	table_data = {}
+	table_seq = []
+	for i in range(lo, hi):
+		c = ordered[i]
+		marker = " <== target" if i == idx else ""
+		key = "%s%s" % (PTR_PRINT % c.chunkptr, marker)
+		table_data[key] = [
+			c.prevsize * HEAPGRANULARITY,
+			c.size * HEAPGRANULARITY,
+			c.unused,
+			c.userptr,
+			c.usersize,
+		]
+		table_seq.append(key)
+	headers = ["_HEAP_ENTRY", "PrevSize", "Size", "Unused", "UserPtr", "UserSize"]
+	types = ["string", "size", "size", "size", "pointer", "size"]
+	print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+	dbg.log("")
+
+
+def _heapShowVABlocks(mHeap, extend=False, addr=None):
+	"""Display VirtualAllocdBlocks. addr (the -a value) filters to one VA block;
+	extend adds the chunk-in-VA + VA header detail (honored with or without addr)."""
 	dbg.log("[+] VirtualAllocdBlocks")
 	va_blocks = mHeap.getVABlocks()
 	mndbg.dbgp("tellme: heap %s has %d VirtualAllocdBlock(s)" % (
 		PTR_PRINT % mHeap.heapbase, len(va_blocks)), errormode=False)
 	if len(va_blocks) == 0:
 		dbg.log("    No VirtualAllocdBlocks for this heap")
+		dbg.log("")
+		return
+	keys = sorted(va_blocks.keys())
+	if addr is not None:
+		if addr not in va_blocks:
+			present = ", ".join(PTR_PRINT % k for k in keys)
+			dbg.log("    %s is not a VirtualAllocdBlock for this heap. Present: %s" % (
+				PTR_PRINT % addr, present if present else "(none)"), highlight=True)
+			dbg.log("")
+			return
+		keys = [addr]
 	else:
 		dbg.log("    %d VirtualAllocdBlock%s:" % (len(va_blocks), "" if len(va_blocks) == 1 else "s"))
-		table_data = {}
-		table_seq = []
-		for va_addr in sorted(va_blocks.keys()):
+	table_data = {}
+	table_seq = []
+	for va_addr in keys:
+		va_info = va_blocks[va_addr]
+		key = PTR_PRINT % va_addr
+		slack = va_info.get("slack")
+		table_data[key] = [
+			va_info["commit_size"],
+			va_info["reserve_size"],
+			("0x%x" % slack) if slack is not None else "?",
+			va_info.get("extra_alloc_bt_index", 0),
+			va_info.get("extra_tag_index", 0),
+			va_info.get("extra_settable", 0),
+		]
+		table_seq.append(key)
+	headers = ["_HEAP_ENTRY", "CommitSize", "ReserveSize", "Slack",
+	           "Extra.AllocBTIndex", "Extra.TagIndex", "Extra.Settable"]
+	types = ["string", "size", "size", "string", "int", "int", "pointer"]
+	print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+
+	if extend:
+		busy_off = archValue(0x018, 0x030)
+		hdr_size = archValue(0x8, 0x10)
+		for va_addr in keys:
 			va_info = va_blocks[va_addr]
-			key = PTR_PRINT % va_addr
-			slack = va_info.get("slack")
-			table_data[key] = [
-				va_info["commit_size"],
-				va_info["reserve_size"],
-				("0x%x" % slack) if slack is not None else "?",
-				va_info.get("extra_alloc_bt_index", 0),
-				va_info.get("extra_tag_index", 0),
-				va_info.get("extra_settable", 0),
-			]
-			table_seq.append(key)
-		# ExtraStuff = the _HEAP_ENTRY_EXTRA embedded in each _HEAP_VIRTUAL_ALLOC_ENTRY; Slack is the
-		# BusyBlock _HEAP_ENTRY.Size (aligned - requested bytes), decoded key-free.
-		headers = ["_HEAP_ENTRY", "CommitSize", "ReserveSize", "Slack",
-		           "Extra.AllocBTIndex", "Extra.TagIndex", "Extra.Settable"]
-		types = ["string", "size", "size", "string", "int", "int", "pointer"]
-		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+			chunk_ptr = va_addr + busy_off
+			user_ptr = chunk_ptr + hdr_size
+			user_size = va_info["commit_size"] - busy_off - hdr_size
+			dbg.log("")
+			dbg.log("    [VABlock %s detail]" % (PTR_PRINT % va_addr))
+			dbg.log("      _HEAP_ENTRY (chunk) : %s" % (PTR_PRINT % chunk_ptr))
+			dbg.log("      UserPtr             : %s" % (PTR_PRINT % user_ptr))
+			dbg.log("      UserSize            : 0x%x (%d)" % (user_size, user_size))
+			dbg.log("      CommitSize          : 0x%x" % va_info["commit_size"])
+			dbg.log("      ReserveSize         : 0x%x" % va_info["reserve_size"])
 	dbg.log("")
 
 
-def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle=None, stat_info=None):
-	"""Display segment list and optionally enumerate chunks."""
+def _heapShowSegments(mHeap, extend=False, addr=None, logfile=None, loghandle=None, stat_info=None):
+	"""Display segment list. extend (or -stat) enumerates each segment's chunks + states;
+	addr (the -a value) filters to the single segment that contains it."""
 	heapbase = mHeap.heapbase
 	segments = mHeap.getSegments()
+
+	if addr is not None:
+		seg = mHeap.getSegmentForAddress(addr)
+		if seg is None:
+			dbg.log("    %s is not within any segment of this heap" % (PTR_PRINT % addr), highlight=True)
+			dbg.log("")
+			return
+		segments = [seg]
 
 	mndbg.dbgp("tellme: heap %s has %d segment(s)" % (
 		PTR_PRINT % heapbase, len(segments)), errormode=False)
@@ -39631,7 +39959,7 @@ def _heapShowSegments(mHeap, searchtype, showdata=False, logfile=None, loghandle
 			except Exception:
 				pass
 
-		if searchtype == "chunks" or (stat_info is not None):
+		if extend or (stat_info is not None):
 			datablocks = seg_obj.getChunks()
 			tolog = "    Nr of chunks : %d " % len(datablocks)
 			dbg.log(tolog)
@@ -39755,6 +40083,197 @@ def _heapShowUCR(mHeap):
 		dbg.log("  [-] Failed to enumerate UCRs: %s" % str(e))
 
 
+def _heapChunkParentStr(chunk):
+	"""Short provenance string for a chunk's parent allocator."""
+	p = getattr(chunk, "parent", ChunkParent.SEGMENT)
+	if p == ChunkParent.LFH:
+		return "LFH"
+	if p == ChunkParent.VADBLOCK:
+		return "VABlock"
+	return "Segment"
+
+
+def _heapHexDump(data, base_addr, max_bytes=256):
+	"""Print a classic 16-byte-per-row hex+ascii dump of `data`, addresses from base_addr."""
+	if not data:
+		dbg.log("    (no data)")
+		return
+	n = min(len(data), max_bytes)
+	for off in range(0, n, 16):
+		row = data[off:off + 16]
+		hexpart = " ".join("%02x" % _ord(b) for b in row)
+		asciipart = "".join((chr(_ord(b)) if 0x20 <= _ord(b) < 0x7f else ".") for b in row)
+		dbg.log("    %s  %-47s  %s" % (PTR_PRINT % (base_addr + off), hexpart, asciipart))
+	if len(data) > max_bytes:
+		dbg.log("    ... (%d more bytes, truncated)" % (len(data) - max_bytes))
+
+
+def _heapShowChunks(mHeap, phase=None, addr=None, dump=False, find=None, neighbour=False, radius=2,
+                    logfile=None, loghandle=None):
+	"""Per-heap chunk view.
+
+	No addr -> summary of chunk counts by parent (or one phase via -p).
+	addr    -> locate the chunk in THIS heap and show it + parent context; -dump adds a hexdump,
+	           -find searches this chunk's data, -neighbour shows +/-radius neighbours."""
+	heapbase = mHeap.heapbase
+	if addr is None:
+		if phase is not None:
+			if phase == "freelist":
+				chunks = mHeap.free_lists.getChunks()
+			elif phase == "lfh":
+				chunks = mHeap.iterChunksByParent(ChunkParent.LFH)
+			elif phase == "vablocks":
+				chunks = mHeap.iterChunksByParent(ChunkParent.VADBLOCK)
+			elif phase == "segments":
+				chunks = mHeap.iterChunksByParent(ChunkParent.SEGMENT)
+			else:
+				dbg.log("    [-] Unknown -p phase '%s'. Valid: freelist, vablocks, lfh, segments" % phase, highlight=True)
+				dbg.log("")
+				return
+			dbg.log("[+] Chunks for heap %s (phase: %s) : %d" % (
+				PTR_PRINT % heapbase, phase, len(chunks)))
+			table_data = {}
+			table_seq = []
+			for chunk in chunks.values():
+				key = PTR_PRINT % chunk.chunkptr
+				table_data[key] = [
+					chunk.size * HEAPGRANULARITY,
+					chunk.userptr,
+					chunk.usersize,
+					chunk.getState().upper(),
+				]
+				table_seq.append(key)
+			if table_seq:
+				headers = ["_HEAP_ENTRY", "Size", "UserPtr", "UserSize", "State"]
+				types = ["string", "size", "pointer", "size", "string"]
+				print_dict_table(table_data, headers, types, padding="    ",
+				                 itemsequence=table_seq, logobj=logfile, logfile=loghandle)
+			dbg.log("")
+			return
+		try:
+			seg_n = len(mHeap.getChunks())
+			lfh_n = len(mHeap.getLFHChunks())
+			va_n = len(mHeap.getVABlockChunks())
+		except Exception as e:
+			dbg.log("    [-] Failed to enumerate chunks: %s" % str(e))
+			dbg.log("")
+			return
+		dbg.log("[+] Chunk summary for heap %s:" % (PTR_PRINT % heapbase))
+		dbg.log("    Segment (back-end) chunks : %d" % seg_n)
+		dbg.log("    LFH (front-end) chunks    : %d" % lfh_n)
+		dbg.log("    VirtualAllocd blocks      : %d" % va_n)
+		dbg.log("    Total                     : %d" % (seg_n + lfh_n + va_n))
+		dbg.log("")
+		return
+
+	chunk = mHeap.findChunk(addr)
+	if chunk is None:
+		mndbg.dbgp("_heapShowChunks: %s not found in heap %s" % (
+			PTR_PRINT % addr, PTR_PRINT % heapbase), errormode=False)
+		return
+	dbg.log("[+] Chunk containing %s in heap %s:" % (PTR_PRINT % addr, PTR_PRINT % heapbase))
+	dbg.log("    _HEAP_ENTRY : %s" % (PTR_PRINT % chunk.chunkptr))
+	dbg.log("    UserPtr     : %s" % (PTR_PRINT % chunk.userptr))
+	dbg.log("    UserSize    : 0x%x (%d)" % (chunk.usersize, chunk.usersize))
+	dbg.log("    Size        : 0x%x units (0x%x bytes)" % (chunk.size, chunk.size * HEAPGRANULARITY))
+	dbg.log("    State       : %s" % chunk.getState().upper())
+	dbg.log("    Parent      : %s" % _heapChunkParentStr(chunk))
+	vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
+	if vtable_info:
+		dbg.log("    VTable      : %s" % vtable_info)
+
+	if find is not None:
+		needle, _is_int, _ival = _heapBuildNeedle(find)
+		if needle is None:
+			dbg.log("    [-] Empty -find pattern", highlight=True)
+		else:
+			off = chunk.findInData(needle)
+			if off is None:
+				dbg.log("    [-] Pattern not found in this chunk's data")
+			else:
+				dbg.log("    [+] Pattern found at UserPtr+0x%x (%s)" % (off, PTR_PRINT % (chunk.userptr + off)))
+				ctx = chunk.data[max(0, off - 4):off + len(needle) + 4] if chunk.data else None
+				if ctx:
+					dbg.log("        context: %s" % bin2hex(ctx))
+
+	if dump:
+		dbg.log("    Data:")
+		_heapHexDump(chunk.data, chunk.userptr)
+
+	if neighbour:
+		before, target, after = mHeap.getChunksAround(addr, radius)
+		dbg.log("")
+		dbg.log("    Neighbours (+/-%d in memory order):" % radius)
+		for c in before:
+			dbg.log("      [-] %s  size 0x%x  %s  %s" % (
+				PTR_PRINT % c.chunkptr, c.size * HEAPGRANULARITY,
+				c.getState().upper(), _heapChunkParentStr(c)))
+		if target is not None:
+			dbg.log("      [*] %s  size 0x%x  %s  %s  <== target" % (
+				PTR_PRINT % target.chunkptr, target.size * HEAPGRANULARITY,
+				target.getState().upper(), _heapChunkParentStr(target)))
+		for c in after:
+			dbg.log("      [+] %s  size 0x%x  %s  %s" % (
+				PTR_PRINT % c.chunkptr, c.size * HEAPGRANULARITY,
+				c.getState().upper(), _heapChunkParentStr(c)))
+	dbg.log("")
+
+
+def _heapShowSearch(mHeap, pattern, parent_filter=None, offset_filter=None, busy_only=True):
+	"""Heap-wide pattern search. Wraps mHeap.searchChunks() (preserving its parent/offset/
+	busy-free filters + per-hit vtable) and adds safety rails: reject empty pattern, warn on
+	a <2-byte needle, cap output at 500 hits."""
+	needle, is_int, int_val = _heapBuildNeedle(pattern)
+	if needle is None:
+		dbg.log("    [-] Empty -search pattern. Provide a hex value (0x..) or a literal string.", highlight=True)
+		return
+	if len(needle) < 2:
+		dbg.log("    [-] Pattern is only %d byte(s); a near-universal match would be slow." % len(needle), highlight=True)
+		dbg.log("        Refine the pattern (>= 2 bytes) and re-run.", highlight=True)
+		return
+	search_value = int_val if is_int else needle
+	search_size = len(needle) if not is_int else None
+	dbg.log("[+] Searching heap %s for pattern (%d byte needle)..." % (
+		PTR_PRINT % mHeap.heapbase, len(needle)))
+	try:
+		results = mHeap.searchChunks(search_value, size=search_size,
+		                             parent_filter=parent_filter, busy_only=busy_only,
+		                             offset_filter=offset_filter)
+	except Exception as e:
+		dbg.log("    [-] searchChunks failed: %s" % str(e))
+		return
+	if not results:
+		dbg.log("    [-] No matches found.")
+		dbg.log("")
+		return
+	CAP = 500
+	capped = results[:CAP]
+	dbg.log("[+] Found %d match(es)%s:" % (
+		len(results), " (showing first %d)" % CAP if len(results) > CAP else ""))
+	table_data = {}
+	table_seq = []
+	for chunk, offset in capped:
+		vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
+		key = PTR_PRINT % chunk.chunkptr
+		if key in table_data:
+			key = "%s+0x%x" % (key, offset)
+		table_data[key] = [
+			chunk.userptr,
+			chunk.usersize,
+			"0x%x" % offset,
+			chunk.getState().upper(),
+			_heapChunkParentStr(chunk),
+			vtable_info,
+		]
+		table_seq.append(key)
+	headers = ["ChunkPtr", "UserPtr", "UserSize", "Offset", "State", "Parent", "VTable"]
+	types = ["string", "pointer", "size", "string", "string", "string", "string"]
+	print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+	if len(results) > CAP:
+		dbg.log("    ... %d more match(es); refine the pattern to narrow results." % (len(results) - CAP))
+	dbg.log("")
+
+
 def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstringlength=32, logfile=None, loghandle=None):
 	"""Display heap layout with content analysis (strings, objects, BSTRs).
 
@@ -39764,7 +40283,6 @@ def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstri
 	getAllChunks() per segment range to surface them."""
 	heapbase = mHeap.heapbase
 	segments = mHeap.getSegments()
-	# All chunks (segment + LFH + VA), bucketed for per-segment merge below.
 	try:
 		all_chunks = mHeap.getAllChunks()
 	except Exception as e:
@@ -39785,9 +40303,6 @@ def _heapShowLayout(mHeap, showdata=False, expand=False, filterafter="", minstri
 		except Exception:
 			continue
 		datablocks = dict(seg_obj.getChunks())
-		# Merge LFH/VA chunks that fall within this segment's range. LFH slots live inside a
-		# back-end UserBlocks chunk already in datablocks; adding them by address gives the unified
-		# per-slot view. Keyed by address, so the LFH container and its slots both appear, ordered.
 		for addr, chunk in all_chunks.items():
 			if segstart <= addr < segend and addr not in datablocks:
 				datablocks[addr] = chunk
@@ -40029,362 +40544,324 @@ def procHeap(args):
 				if iHeap.isCorrupted():
 					dbg.log("0x%08x ** CORRUPTED ** (type: %s) %s" % (heap, iHeap.getHeapType(), defheap), highlight=1)
 					continue
-			dbg.log("%s (%d segment(s)%s) %s %s %s" % ((PTR_PRINT % heap),len(segments),segmentinfo,defheap,lfhheap,keyinfo))
+			# FreeList depth + decoded Flags (best-effort; never let a probe abort the summary).
+			fl_depth = "?"
+			flags_txt = "?"
+			try:
+				fl_depth = "%d" % len(iHeap.free_lists.getChunks())
+			except Exception:
+				pass
+			try:
+				flags_txt = iHeap.getFlagsText()
+			except Exception:
+				pass
+			dbg.log("%s (%d segment(s)%s) FreeList depth: %s, Flags: %s %s %s %s" % (
+				(PTR_PRINT % heap), len(segments), segmentinfo, fl_depth, flags_txt, defheap, lfhheap, keyinfo))
 	else:
 		dbg.log(" ** No heaps found")
 	dbg.log("")
 
+	if len(allheaps) == 0:
+		dbg.log("No heaps found", highlight=1)
+		return
+
+	# ---- clearcache (carried-over modifier; only the persistent vtableCache is cross-call) ----
+	if "clearcache" in args:
+		dbg.forgetKnowledge("vtableCache")
+		dbg.log("[+] vtableCache cleared.")
+
+	# ---- subcommand detection + alias normalization ----
+	# Canonical subcommands. -all is handled specially (top-level vs modifier).
+	SUBCMDS = ["freelist", "listhints", "lfh", "vablocks", "segments", "chunks", "layout", "search", "ucr"]
+	# alias -> canonical
+	ALIASES = {
+		"vablock": "vablocks", "vadblock": "vablocks", "vadblocks": "vablocks",
+		"segment": "segments", "freelists": "freelist", "listhint": "listhints",
+		"chunk": "chunks",
+	}
+	# Modifier flags that are NOT subcommands (so they don't trigger "unknown subcommand").
+	MODIFIERS = set([
+		"h", "a", "s", "n", "p", "offset", "free", "extend", "reverse", "counters",
+		"all", "dump", "find", "neighbour", "neighbor", "stat", "v", "fast", "size",
+		"clearcache", "after", "t", "debug", "debugmona", "debugwindbglib", "showargs",
+	])
+
+	def _norm(name):
+		return ALIASES.get(name, name)
+
+	present = []
+	for a in args:
+		na = _norm(a)
+		if na in SUBCMDS and na not in present:
+			present.append(na)
+
+	# Unknown subcommand-shaped token (a flag that is neither a known subcommand,
+	# an alias, nor a modifier) -> discoverability error with closest match.
+	known = set(SUBCMDS) | set(ALIASES.keys()) | MODIFIERS
+	unknown = [a for a in args if a not in known and _norm(a) not in SUBCMDS]
+	if unknown:
+		import difflib
+		allnames = SUBCMDS + sorted(MODIFIERS)
+		for u in unknown:
+			sugg = difflib.get_close_matches(u, allnames, n=1)
+			hint = " ; did you mean -%s?" % sugg[0] if sugg else ""
+			dbg.log("[!] Unknown option -%s%s" % (u, hint), highlight=1)
+		dbg.log("    Valid subcommands: %s" % ", ".join("-%s" % s for s in SUBCMDS), highlight=1)
+		return
+
+	# -all is both a top-level "dump everything" and a per-subcommand modifier.
+	want_all_modifier = "all" in args and len(present) == 1
+	want_all_dump = "all" in args and len(present) == 0
+
+	# Mutual exclusion: at most one subcommand (besides the -all modifier role).
+	if len(present) > 1:
+		dbg.log("[!] These subcommands are mutually exclusive: %s" % (
+			", ".join("-%s" % s for s in present)), highlight=1)
+		dbg.log("    Pick one. Run '%s heap' for the summary, or see '%s help heap'." % (
+			getAliasName(), getAliasName()), highlight=1)
+		return
+
+	subcmd = present[0] if present else None
+
+	# ---- -h heap scoping (applies to ALL subcommands) ----
+	error = False
+	heapbase = 0
+	if "h" in args and type(args["h"]).__name__.lower() != "bool":
+		hbase = args["h"].replace("0x", "").replace("0X", "")
+		if not (isAddress(hbase) or hbase.lower() == "default"):
+			dbg.log("%s is an invalid address" % args["h"], highlight=1)
+			return
+		if hbase.lower() == "default":
+			heapbase = getDefaultProcessHeap()
+		else:
+			heapbase = hexStrToInt(hbase)
+	elif "h" in args:
+		dbg.log("Please specify a valid heap base address -h", highlight=1)
+		return
+
+	# ---- toggles ----
+	extend = ("extend" in args) or want_all_modifier
+	show_all = ("all" in args)
+	reverse = "reverse" in args
+	showdata = "v" in args
+	if "fast" in args:
+		showdata = False
+
+	# ---- -s <size> : granularity units, trailing 'b' = bytes ----
+	bucketsize = None
+	if "s" in args and type(args["s"]).__name__.lower() != "bool":
+		_s = args["s"].lower().replace('"', '').replace("'", "").strip()
+		_is_bytes = _s.endswith("b")
+		if _is_bytes:
+			_s = _s[:-1]
+		try:
+			_val = hexStrToInt(_s) if _s.startswith("0x") else int(_s)
+		except Exception:
+			dbg.log("Please provide a valid size with -s (units, or append 'b' for bytes e.g. -s 0x40b)", highlight=1)
+			return
+		if _is_bytes:
+			if _val % HEAPGRANULARITY != 0:
+				dbg.log("[!] -s %s bytes is not a multiple of HEAPGRANULARITY (0x%x); rounding down to 0x%x units" % (
+					_s, HEAPGRANULARITY, _val // HEAPGRANULARITY), highlight=1)
+			bucketsize = _val // HEAPGRANULARITY
+		else:
+			bucketsize = _val
+
+	# ---- -n <radius> : window radius for -neighbour views (1..5, default 2) ----
+	radius = 2
+	if "n" in args and type(args["n"]).__name__.lower() != "bool":
+		try:
+			radius = int(args["n"])
+		except Exception:
+			dbg.log("Please provide a valid -n radius (integer 1..5)", highlight=1)
+			return
+		if radius < 1 or radius > 5:
+			dbg.log("[!] -n radius must be between 1 and 5 (got %d)" % radius, highlight=1)
+			return
+
+	# ---- -a <addr> : per-subcommand filter; bare -a (no subcommand) ==> -chunks -a ----
+	addr = None
 	if "a" in args:
 		if type(args["a"]).__name__.lower() == "bool":
 			dbg.log("Please specify a valid chunk address/register with -a", highlight=1)
 			return
-		refvalue, addyok = getAddyArg(args["a"])
+		addr, addyok = getAddyArg(args["a"])
 		if not addyok:
 			dbg.log("%s is an invalid address" % args["a"], highlight=1)
 			return
-		dbg.log("[+] Looking for chunk at/containing %s ..." % (PTR_PRINT % refvalue))
-		dbg.log("")
-		_procHeapByAddr(refvalue)
+		if subcmd is None and not want_all_dump:
+			subcmd = "chunks"
+
+	# ---- -p phase (for -chunks) ----
+	phase = None
+	if "p" in args and type(args["p"]).__name__.lower() != "bool":
+		phase = _norm(args["p"].lower().strip())
+
+	# ---- -search / -find pattern, -offset / -free filters (for -search) ----
+	search_parent = None
+	if "p" in args and type(args["p"]).__name__.lower() != "bool":
+		_pv = args["p"].lower().strip()
+		if _pv == "lfh":
+			search_parent = ChunkParent.LFH
+		elif _pv in ("segment", "segments"):
+			search_parent = ChunkParent.SEGMENT
+		elif _pv in ("vadblock", "vablock", "vablocks", "vadblocks"):
+			search_parent = ChunkParent.VADBLOCK
+	search_offset = None
+	if "offset" in args and type(args["offset"]).__name__.lower() != "bool":
+		_ov = args["offset"].replace('"', '').replace("'", "")
+		try:
+			search_offset = hexStrToInt(_ov) if _ov.lower().startswith("0x") else int(_ov)
+		except Exception:
+			search_offset = None
+	search_busy = "free" not in args
+
+	# ---- no subcommand + no -a + no -stat -> summary already printed above; return ----
+	if subcmd is None and not want_all_dump and "stat" not in args:
 		return
 
-	heapbase = 0
-	searchtype = ""
-	searchtypes = ["lfh","all","segments", "chunks", "layout", "fea", "bea", "ucr", "search"]
-	error = False
-	filterafter = ""
-	
-	showdata = False
-	findvtablesize = True
-	expand = False
-	bucketsize = None
-
-	minstringlength = 32
-	
-	if len(allheaps) > 0:
-		if "h" in args and type(args["h"]).__name__.lower() != "bool":
-			hbase = args["h"].replace("0x","").replace("0X","")
-			if not (isAddress(hbase) or hbase.lower() == "default"):
-				dbg.log("%s is an invalid address" % args["h"], highlight=1)
-				return
-			else:
-				if hbase.lower() == "default":
-					heapbase = getDefaultProcessHeap()
-				else:
-					heapbase = hexStrToInt(hbase)
-	
-		if "t" in args:
-			if type(args["t"]).__name__.lower() != "bool":
-				searchtype = args["t"].lower().replace('"','').replace("'","")
-				if searchtype == "blocks":
-					dbg.log("** Note : type 'blocks' has been replaced with 'chunks'",highlight=1)
-					dbg.log("")
-					searchtype = "chunks"
-				if not searchtype in searchtypes:
-					searchtype = ""
-			else:
-				searchtype = ""
-
-		if "after" in args:
-			if type(args["after"]).__name__.lower() != "bool":
-				filterafter = args["after"].replace('"','').replace("'","")
-				
-		if "v" in args:
-			showdata = True
-			
-		if "expand" in args:
-			expand = True
-
-		if "bs" in args:
-			if type(args["bs"]).__name__.lower() != "bool":
-				_bs = args["bs"].lower().replace('"', '').replace("'", "")
-				try:
-					bucketsize = hexStrToInt(_bs) if _bs.startswith("0x") else int(_bs)
-				except:
-					dbg.log("Please provide a valid chunk size with -bs (e.g. -bs 0x18)", highlight=1)
-					error = True
-			else:
-				dbg.log("Please provide a valid chunk size with -bs (e.g. -bs 0x18)", highlight=1)
-				error = True
-			
-		if "fast" in args:
-			findvtablesize = False 
-			showdata = False
-		
-		if searchtype == "" and not "stat" in args:
-			dbg.log("You can further refine your search by specifying a valid searchtype -t",highlight=1)
-			dbg.log("Valid values are :",highlight=1)
-			vallist = []
-			for val in searchtypes:
-				if val != "blocks":	
-					vallist.append(val)
-			dbg.log("   %s" % ','.join(vallist),highlight=1)
-			error = True
-
-		if "h" in args and heapbase == 0:
-			dbg.log("Please specify a valid heap base address -h",highlight=1)
-			error = True
-
-		if "size" in args:
-			if type(args["size"]).__name__.lower() != "bool":
-				size = args["size"].lower()
-				if size.startswith("0x"):
-					minstringlength = hexStrToInt(size)
-				else:
-					minstringlength = int(size)
-			else:
-				dbg.log("Please provide a valid size -size",highlight=1)
-				error = True
-
-		if "clearcache" in args:
-			dbg.forgetKnowledge("vtableCache")
-			dbg.log("[+] vtableCache cleared.")
-	
-	else:
-		dbg.log("No heaps found",highlight=1)
-		return
-	
+	# ---- build heap_to_query (absent -h, every subcommand runs across all heaps) ----
 	heap_to_query = []
-	heapfound = False
-	
 	if "h" in args:
-		for heap in allheaps:
-			if heapbase == heap:
-				heapfound = True
-				heap_to_query = [heapbase]
-		if not heapfound:
-			error = True
-			dbg.log("0x%08x is not a valid heap base address" % heapbase,highlight=1)
+		if heapbase in allheaps:
+			heap_to_query = [heapbase]
+		else:
+			dbg.log("0x%08x is not a valid heap base address" % heapbase, highlight=1)
+			return
 	else:
-		#show all heaps
-		for heap in allheaps:
-			heap_to_query.append(heap)
-	
-	if error:
-		return
-	else:
-		statinfo = {}
-		logfile_b = ""
-		thislog_b = ""
+		heap_to_query = list(allheaps)
 
-		if searchtype == "chunks" or searchtype == "all":
-			logfile_b = MnLog("heapchunks.md")
-			thislog_b = logfile_b.reset()
+	# ---- per-heap logfile for chunk/segment dumps ----
+	statinfo = {}
+	logfile_b = ""
+	thislog_b = ""
+	if subcmd in ("chunks", "segments") or want_all_dump:
+		logfile_b = MnLog("heapchunks.md")
+		thislog_b = logfile_b.reset()
 
-		for heapbase in heap_to_query:
-			mHeap = MnHeap(heapbase)
-			heapbase_extra = ""
-			heapidx = allheaps.index(heapbase) if heapbase in allheaps else 0
-			#heapname = "Heap %d" % heapidx
-			heapname = clickHeapWinDBG(heapbase, "nt", "Heap %d" % heapidx)
-			if heapbase == getDefaultProcessHeap():
-				heapname += " [Default]"
-			frontendinfo = []
-			frontendheapptr = 0
-			frontendheaptype = 0
-			if g_win7_mode:
-				heapkey = mHeap.getEncodingKey()
-				if mHeap.usesLFH():
-					frontendheaptype = 0x2
-					heapbase_extra = " [LFH] "
-					frontendheapptr = mHeap.getLFHAddress()
-			frontendinfo = [frontendheaptype,frontendheapptr]
-				
-			dbg.log("")
-			dbg.log("[+] Processing heap 0x%08x - %s%s" % (heapbase, heapname, heapbase_extra))
+	# ---- progress for long all-heaps walks (heavy subcommands, >1 heap, no -h) ----
+	# Heap count is the known total here -> linear ETA. (searchChunks reports its own
+	# intra-heap progress; this complements it with "which heap of how many".)
+	heavy = subcmd in ("search", "chunks", "layout") or want_all_dump or (extend and subcmd == "segments")
+	progress = None
+	if heavy and "h" not in args and len(heap_to_query) > 1:
+		progress = _HeapProgress("heap", total=len(heap_to_query))
 
-			if searchtype == "fea":
-				if g_win7_mode:
-					searchtype = "lfh"
+	for heapbase in heap_to_query:
+		mHeap = MnHeap(heapbase)
+		heapidx = allheaps.index(heapbase) if heapbase in allheaps else 0
+		heapname = clickHeapWinDBG(heapbase, "nt", "Heap %d" % heapidx)
+		if heapbase == getDefaultProcessHeap():
+			heapname += " [Default]"
+		heapbase_extra = ""
+		if g_win7_mode and mHeap.usesLFH():
+			heapbase_extra = " [LFH] "
+		dbg.log("")
+		dbg.log("[+] Processing heap 0x%08x - %s%s" % (heapbase, heapname, heapbase_extra))
+
+		# -- dispatch --
+		if subcmd == "freelist" or want_all_dump:
+			if "neighbour" in args or "neighbor" in args:
+				if bucketsize is None:
+					dbg.log("    -freelist -neighbour needs a size: -s <size> [-n <radius>]", highlight=1)
 				else:
-					searchtype = "lal"
-			if searchtype == "bea":
-					searchtype = "freelist"
+					_heapShowFreeListNeighbours(mHeap, bucketsize, radius=radius)
+			else:
+				_heapShowFreeList(mHeap, reverse=reverse)
 
-			# LookAsideList
-			if searchtype == "lal" or (searchtype == "all" and not g_win7_mode):
-				lalindex = 0
-				if g_win7_mode:
-					dbg.log(" !! This version of the OS doesn't have a LookAside List !!")
+		if subcmd == "listhints" or want_all_dump:
+			_heapShowListHints(mHeap, show_all=show_all, bucketsize=bucketsize, extend=extend)
+
+		if subcmd == "lfh" or want_all_dump:
+			if "counters" in args:
+				_heapShowLFHCounters(mHeap, show_all=show_all)
+			else:
+				_heapShowLFH(mHeap, bucketsize=bucketsize, extend=extend)
+
+		if subcmd == "vablocks" or want_all_dump:
+			_heapShowVABlocks(mHeap, extend=extend, addr=addr if subcmd == "vablocks" else None)
+
+		if subcmd == "segments" or want_all_dump or ("stat" in args and subcmd is None):
+			stat_info = {} if "stat" in args else None
+			_heapShowSegments(mHeap, extend=extend or want_all_dump,
+			                  addr=addr if subcmd == "segments" else None,
+			                  logfile=logfile_b if (subcmd in ("segments", "chunks") or want_all_dump) else None,
+			                  loghandle=thislog_b if (subcmd in ("segments", "chunks") or want_all_dump) else None,
+			                  stat_info=stat_info)
+			if stat_info:
+				statinfo.update(stat_info)
+
+		if subcmd == "chunks" or want_all_dump:
+			# Under -all (dump everything) ignore -a/-dump/-find/-neighbour so it stays a
+			# full summary, matching the vablocks/segments branches above.
+			_heapShowChunks(mHeap, phase=phase if subcmd == "chunks" else None,
+			                addr=addr if subcmd == "chunks" else None,
+			                dump=("dump" in args) if subcmd == "chunks" else False,
+			                find=(args["find"] if (subcmd == "chunks" and "find" in args and type(args["find"]).__name__.lower() != "bool") else None),
+			                neighbour=(("neighbour" in args or "neighbor" in args) if subcmd == "chunks" else False),
+			                radius=radius, logfile=logfile_b, loghandle=thislog_b)
+
+		if subcmd == "layout":
+			if addr is not None:
+				before, target, after = mHeap.getChunksAround(addr, radius)
+				dbg.log("[+] Layout around %s (+/- %d chunks):" % (PTR_PRINT % addr, radius))
+				dbg.log("")
+				table_data = {}
+				table_seq = []
+				def _add_layout_row(chunk, marker=""):
+					vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
+					key = "%s%s" % (marker, PTR_PRINT % chunk.chunkptr)
+					table_data[key] = [
+						chunk.size * HEAPGRANULARITY,
+						chunk.userptr,
+						chunk.usersize,
+						chunk.getState(),
+						vtable_info,
+					]
+					table_seq.append(key)
+				for chunk in before:
+					_add_layout_row(chunk)
+				if target:
+					_add_layout_row(target, ">> ")
 				else:
-					dbg.log("[+] FrontEnd Allocator : LookAsideList")
-					dbg.log("[+] Getting LookAsideList for heap 0x%08x" % heapbase)
-					# do we have a LAL for this heap ?
-					FrontEndHeap = mHeap.getFrontEndHeap()
-					if FrontEndHeap > 0:
-						dbg.log("    FrontEndHeap: 0x%08x" % FrontEndHeap)
-						fea_lal = mHeap.getLookAsideList()
-						dbg.log("    Nr of (non-empty) LookAside Lists : %d" % len(fea_lal))
-						dbg.log("")
-						for lal_table_entry in sorted(fea_lal.keys()):
-							expectedsize = lal_table_entry * 8
-							nr_of_chunks = len(fea_lal[lal_table_entry])
-							lalhead = struct.unpack('<L',dbg.readMemory(FrontEndHeap + (0x30 * lal_table_entry),4))[0]
-							dbg.log("LAL [%d] @0x%08x, Expected Chunksize 0x%x (%d), Flink : 0x%08x" % (lal_table_entry,FrontEndHeap + (0x30 * lal_table_entry),expectedsize,expectedsize,lalhead))
-							mHeap.showLookAsideHead(lal_table_entry)
-							dbg.log("  %d chunks:" % nr_of_chunks)
-							for chunkindex in fea_lal[lal_table_entry]:
-								lalchunk = fea_lal[lal_table_entry][chunkindex]
-								chunksize = lalchunk.size * 8
-								flag = getHeapFlag(lalchunk.flag)
-								data = ""
-								if showdata:
-									data = bin2hex(dbg.readMemory(lalchunk.userptr,16))
-								dbg.log("     ChunkPtr: 0x%08x, UserPtr: 0x%08x, Flink: 0x%08x, ChunkSize: 0x%x, UserSize: 0x%x, Userspace: 0x%x (%s) %s" % (lalchunk.chunkptr, lalchunk.userptr,lalchunk.flink,chunksize,lalchunk.usersize,lalchunk.usersize+lalchunk.remaining,flag,data))
-								if chunksize != expectedsize:
-									dbg.log("               ^^ ** Warning - unexpected size value, header corrupted ? **",highlight=True)
-							dbg.log("")
-					else:
-						dbg.log("[+] No LookAsideList found for this heap")
-						dbg.log("")
+					key = ">> " + (PTR_PRINT % addr)
+					table_data[key] = [0, 0, 0, "NOT FOUND", ""]
+					table_seq.append(key)
+				for chunk in after:
+					_add_layout_row(chunk)
+				headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
+				types = ["string", "size", "pointer", "size", "string", "string"]
+				print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
+				dbg.log("")
+			else:
+				logfile_l = MnLog("heaplayout.md")
+				thislog_l = logfile_l.reset()
+				_heapShowLayout(mHeap, showdata=showdata, expand=extend,
+								filterafter=(args["after"].replace('"', '').replace("'", "") if ("after" in args and type(args["after"]).__name__.lower() != "bool") else ""),
+								minstringlength=32,
+								logfile=logfile_l, loghandle=thislog_l)
 
-			if searchtype == "lfh" or (searchtype == "all" and g_win7_mode):
-				_heapShowLFH(mHeap, showdata=showdata, expand=expand, bucketsize=bucketsize)
+		if subcmd == "search":
+			if "s" not in args or type(args["s"]).__name__.lower() == "bool":
+				dbg.log("Please specify a search pattern with -s <hex value | string>", highlight=1)
+			else:
+				_heapShowSearch(mHeap, args["s"], parent_filter=search_parent,
+				                offset_filter=search_offset, busy_only=search_busy)
 
-			if searchtype == "freelist" or searchtype == "all":
-				_heapShowFreeList(mHeap)
+		if subcmd == "ucr" or want_all_dump:
+			_heapShowUCR(mHeap)
 
-			if searchtype == "layout" or searchtype == "all":
-				if "a" in args and type(args["a"]).__name__.lower() != "bool" and searchtype == "layout":
-					layout_addr = hexStrToInt(args["a"].replace("0x","").replace("0X",""))
-					layout_count = 5
-					if "n" in args and type(args["n"]).__name__.lower() != "bool":
-						try:
-							layout_count = int(args["n"])
-						except:
-							layout_count = 5
-					before, target, after = mHeap.getChunksAround(layout_addr, layout_count)
-					dbg.log("[+] Layout around 0x%08x (+/- %d chunks):" % (layout_addr, layout_count))
-					dbg.log("")
-					table_data = {}
-					table_seq = []
-					def _add_layout_row(chunk, marker=""):
-						vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
-						key = "%s%s" % (marker, PTR_PRINT % chunk.chunkptr)
-						table_data[key] = [
-							chunk.size * HEAPGRANULARITY,
-							chunk.userptr,
-							chunk.usersize,
-							chunk.getState(),
-							vtable_info,
-						]
-						table_seq.append(key)
-					for chunk in before:
-						_add_layout_row(chunk)
-					if target:
-						_add_layout_row(target, ">> ")
-					else:
-						key = ">> " + (PTR_PRINT % layout_addr)
-						table_data[key] = [0, 0, 0, "NOT FOUND", ""]
-						table_seq.append(key)
-					for chunk in after:
-						_add_layout_row(chunk)
-					headers = ["ChunkPtr", "Size", "UserPtr", "UserSize", "State", "VTable"]
-					types = ["string", "size", "pointer", "size", "string", "string"]
-					print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
-					dbg.log("")
-				else:
-					logfile_l = MnLog("heaplayout.md")
-					thislog_l = logfile_l.reset()
-					_heapShowLayout(mHeap, showdata=showdata, expand=expand,
-									filterafter=filterafter, minstringlength=minstringlength,
-									logfile=logfile_l, loghandle=thislog_l)
+		if progress is not None:
+			progress.step()
 
-
-			if searchtype in ["segments", "all", "chunks"] or "stat" in args:
-				stat_info = {} if "stat" in args else None
-				_heapShowSegments(mHeap, searchtype, showdata=showdata,
-								  logfile=logfile_b if searchtype in ["chunks", "all"] else None,
-								  loghandle=thislog_b if searchtype in ["chunks", "all"] else None,
-								  stat_info=stat_info)
-				if searchtype in ["all", "chunks"]:
-					_heapShowVABlocks(mHeap)
-				if stat_info:
-					statinfo.update(stat_info)
-
-			if searchtype == "ucr":
-				_heapShowUCR(mHeap)
-
-			if searchtype == "search":
-				if "s" not in args or type(args["s"]).__name__.lower() == "bool":
-					dbg.log("Please specify a search value with -s <hex_value|pointer>", highlight=1)
-				else:
-					search_val = args["s"].replace('"','').replace("'","")
-					search_size = None
-					search_parent = None
-					search_offset = None
-					search_busy = True
-
-					if search_val.startswith("0x") or search_val.startswith("0X"):
-						search_val = hexStrToInt(search_val)
-					else:
-						try:
-							search_val = hexStrToInt(search_val)
-						except:
-							search_val = search_val.encode('latin-1') if isinstance(search_val, str) else search_val
-
-					if "p" in args and type(args["p"]).__name__.lower() != "bool":
-						pval = args["p"].lower().strip()
-						if pval == "lfh":
-							search_parent = ChunkParent.LFH
-						elif pval == "segment":
-							search_parent = ChunkParent.SEGMENT
-						elif pval == "vadblock":
-							search_parent = ChunkParent.VADBLOCK
-
-					if "offset" in args and type(args["offset"]).__name__.lower() != "bool":
-						oval = args["offset"].replace('"','').replace("'","")
-						if oval.startswith("0x") or oval.startswith("0X"):
-							search_offset = hexStrToInt(oval)
-						else:
-							search_offset = int(oval)
-
-					if "free" in args:
-						search_busy = False
-
-					dbg.log("[+] Searching heap 0x%08x for value 0x%x..." % (heapbase, search_val if isinstance(search_val, int) else 0))
-					results = mHeap.searchChunks(
-						search_val,
-						size=search_size,
-						parent_filter=search_parent,
-						busy_only=search_busy,
-						offset_filter=search_offset
-					)
-					if len(results) > 0:
-						dbg.log("[+] Found %d match(es):" % len(results))
-						table_data = {}
-						table_seq = []
-						for chunk, offset in results:
-							state = chunk.getState()
-							parent_str = ""
-							if hasattr(chunk, 'parent') and chunk.parent:
-								parent_str = chunk.parent
-							vtable_info = _resolveVtable(chunk.userptr, chunk.usersize)
-							key = PTR_PRINT % chunk.chunkptr
-							if key in table_data:
-								key = "%s+0x%x" % (key, offset)
-							table_data[key] = [
-								chunk.userptr,
-								chunk.usersize,
-								"0x%x" % offset,
-								state,
-								parent_str,
-								vtable_info,
-							]
-							table_seq.append(key)
-						headers = ["ChunkPtr", "UserPtr", "UserSize", "Offset", "State", "Parent", "VTable"]
-						types = ["string", "pointer", "size", "string", "string", "string", "string"]
-						print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq)
-					else:
-						dbg.log("[-] No matches found.")
-					dbg.log("")
-
-
-		if "stat" in args and len(statinfo) > 0:
+	# ---- -stat global histogram tail (segments/chunks/all populate statinfo) ----
+	if "stat" in args:
+		if len(statinfo) > 0:
 			tolog = "Global statistics"
 			dbg.log(tolog)
 			try:
-				logfile_b.write(tolog,thislog_b)
-			except:
+				logfile_b.write(tolog, thislog_b)
+			except Exception:
 				pass
 			globalstats = {}
 			allalloc = 0
@@ -40392,30 +40869,24 @@ def procHeap(args):
 				segmentstats = statinfo[seginfo]
 				for size in segmentstats:
 					allalloc += segmentstats[size]
-					if not size in globalstats:
-						globalstats[size] = segmentstats[size]
-					else:
-						globalstats[size] += segmentstats[size]
-			orderedstats = []
-			for size in globalstats:
-				orderedstats.append(size)
-			orderedstats.sort(reverse=True)
-			for thissize in orderedstats:
+					globalstats[size] = globalstats.get(size, 0) + segmentstats[size]
+			for thissize in sorted(globalstats.keys(), reverse=True):
 				nrblocks = globalstats[thissize]
-				percentage = (float(nrblocks) / float(allalloc)) * 100
-				tolog = "  Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize,thissize,nrblocks,percentage)
+				percentage = (float(nrblocks) / float(allalloc)) * 100 if allalloc else 0
+				tolog = "  Size : 0x%x (%d) : %d chunks (%.2f %%)" % (thissize, thissize, nrblocks, percentage)
 				dbg.log(tolog)
 				try:
-					logfile_b.write(tolog,thislog_b)
-				except:
+					logfile_b.write(tolog, thislog_b)
+				except Exception:
 					pass
 			tolog = "  Total chunks : %d" % allalloc
 			dbg.log(tolog)
 			try:
-				logfile_b.write(tolog,thislog_b)
-			except:
+				logfile_b.write(tolog, thislog_b)
+			except Exception:
 				pass
-	#dbg.log("%s" % "*" * 90)					
+		elif subcmd in ("search", "lfh", "listhints", "freelist", "vablocks", "ucr"):
+			dbg.log("[i] -stat has no effect on -%s" % subcmd)
 	return
 
 def procGetIAT(args):
@@ -44684,50 +45155,55 @@ Optional arguments:
     -s : size of the cyclic pattern (default : 5000)
 """
 	
-	heapUsage = """Show information about various heap chunk lists
+	heapUsage = """Show information about heaps, using dedicated subcommand flags.
 
-Standalone argument (mutually exclusive with -h / -t):
-    -a <address> : show _HEAP_ENTRY, UserPtr, UserSize, State, first 8 bytes at UserPtr,
-                   Heap and Segment / LFH Subsegment / VABlock for the chunk that contains
-                   <address> and its immediate predecessor and successor chunks.
-                   <address> may be the chunk header, the user-data pointer, or any address
-                   within the chunk's allocated range (hex, register, expression).
+  !mona heap                       per-heap summary (process-heap tag, LFH state,
+                                   #segments, FreeList depth, Flags)
+  !mona heap -freelist             full back-end free list (-reverse sorts by size desc)
+             -neighbour -s <size> -n <R>   free-list entries +/-R around first chunk of <size>
+  !mona heap -listhints            populated list hints
+             -all                  include empty size classes
+             -s <size> [-extend]   one size class (extend walks every chunk)
+  !mona heap -lfh                  LFH summary (state, buckets, subsegments)
+             -counters [-all]      per-bucket counters + activation (all = include zero)
+             -s <size> [-extend]   one bucket size (extend = per-subsegment chunks)
+  !mona heap -vablocks             VirtualAllocdBlocks list
+             -extend               + chunk-in-VA + VA header detail
+             -a <addr> [-extend]   one VA block
+  !mona heap -segments             segment list
+             -extend               + reserve/commit + chunk states
+             -a <addr> [-extend]   one segment (the one containing <addr>)
+  !mona heap -chunks               per-heap chunk summary
+             -p {freelist|vablocks|lfh|segments}   one allocator phase
+             -a <addr>             locate chunk + parent context
+             -a <addr> -dump       + hexdump of data
+             -a <addr> -find <pat> search pattern in this chunk's data
+             -a <addr> -neighbour [-n R]   chunk +/-R neighbours (default 2)
+  !mona heap -search <pattern>     heap-wide: every chunk whose data contains <pattern>
+             -p {lfh|segment|vadblock}   restrict to one parent type
+             -offset <n>           only match at this byte offset
+             -free                 include free chunks (default: busy only)
+  !mona heap -layout               full content-analysis view (strings/BSTRs/objects/vtables)
+             -a <addr> [-n R]      layout centered on <addr> (+/-R chunks)
+  !mona heap -ucr                  uncommitted ranges (per segment + heap-wide)
+  !mona heap -all                  dump freelist/listhints/lfh/vablocks/segments/chunks/ucr
+                                   (no per-chunk hexdumps; -layout is excluded, run it separately)
+  !mona heap -a <addr>             alias for -chunks -a <addr>
 
-Mandatory arguments (heap-level queries):
-    -h <address> : base address of the heap to query (or 'default' for default process heap)
-    -t <type> : where type is 'segments', 'chunks', 'layout',
-                'fea' (let mona determine the frontend allocator),
-                'lfh' (force display of LFH FEA, shows bucket/subsegment info;
-                       each bucket shows the block-size range it serves and
-                       its granularity, both in granularity units),
-                'bea' (backend allocator, mona will automatically determine what it is),
-                'ucr' (show uncommitted ranges per segment and heap-wide UCRList),
-                'search' (search chunk user data for a value, requires -s),
-                'all' (show all information)
+Common modifiers:
+    -h <addr>   : restrict any of the above to one heap ('default' = default process heap;
+                  absent -h, the subcommand runs across ALL heaps)
+    -s <size>   : size in granularity units; append 'b' for bytes (e.g. -s 0x40b = 0x40 bytes)
+    -n <R>      : neighbour window radius, 1..5 (default 2)
+    -stat       : size histogram for -segments/-chunks/-all; match count for -search
+    -v          : verbose / show data
+    -fast       : skip vtable size calculation (faster, less info)
+    -clearcache : clear the vtable cache
 
-Search arguments (use with -t search):
-    -s <value>     : hex value or pointer to search for in chunk user data
-    -p <parent>    : filter by parent type: 'lfh', 'segment', or 'vadblock'
-    -offset <n>    : only check at this byte offset within user data (e.g. 0 for vtable)
-    -free          : include free chunks in the search (default: busy only)
-
-Layout positional view (use with -t layout):
-    -a <address>   : center the layout view around this address (show surrounding chunks)
-    -n <count>     : number of chunks to show before/after the target (default: 5)
-    Note: 'layout' will show all heap chunks and their vtables & strings.
-          Use on WinDBG for maximum results (vtable symbol resolution via dps).
-
-Optional arguments:
-    -expand : show individual block details for LFH buckets (block-level view with vtable info)
-    -bs <size> : (LFH only) only show the bucket whose chunk size equals <size>, e.g. -bs 0x18
-                 (hex with 0x, otherwise decimal); use with -t lfh or -t all
-    -stat : show statistics (also works in combination with -h heap, -t segments or -t chunks)
-    -size <nr> : only show strings of at least the specified size. Works in combination with 'layout'
-    -after <data> : only show current & next chunk layout entries when an entry contains this data
-                    (Only works in combination with 'layout')
-    -v : show data / write verbose info to the Log window
-    -fast : skip vtable size calculation (faster but less info)
-    -clearcache : clear the vtable cache"""
+Native WinDBG equivalents (use when mona can't help):
+    allocation stack traces -> !heap -p -a <addr> (needs PageHeap + ust / gflags)
+    live corruption detection -> PageHeap / gflags, or !heap -b breakpoints
+    These are WinDBG-only; mona's heap views also work under Immunity (32-bit)."""
 	
 	getiatUsage = """Show IAT entries from selected module(s)
 
