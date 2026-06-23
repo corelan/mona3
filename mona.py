@@ -18159,17 +18159,21 @@ class MnNTVistaHeap(MnNTHeap):
 		return frontendheaptype == 0x2
 
 	def getFrontEndHeapUsageData(self):
-		"""Read the FrontEndHeapUsageData array (Vista/Win7).
-
-		Return: list of 128 int counters, or empty list on failure.
-		"""
+		"""Read the FrontEndHeapUsageData u16[] array (Win8+ NT heap)."""
 		counters = []
 		try:
-			offset = self._offset("FrontEndHeapUsageData")
-			data = dbg.readMemory(self.heapbase + offset, 128 * 2)
-			for i in range(128):
-				val = struct.unpack('<H', data[i*2:(i+1)*2])[0]
-				counters.append(val)
+			arr = readPtrSizeBytes(self.heapbase + self._offset("FrontEndHeapUsageData"))
+			if not arr:
+				return []
+			try:
+				n = u16(self.heapbase + self._offset("FrontEndHeapMaximumIndex")) or 0
+			except Exception:
+				n = 0
+			if n <= 0 or n > 0x1000:
+				n = 256
+			data = dbg.readMemory(arr, n * 2)
+			for i in range(n):
+				counters.append(struct.unpack('<H', data[i*2:(i+1)*2])[0])
 		except Exception:
 			pass
 		return counters
@@ -18349,9 +18353,11 @@ class MnNT10Heap(MnNT8Heap):
 	}
 
 	_BUILD_OFFSETS = {
-		"FrontEndHeap":         {17763: ((0x0d0, 0x170), (0x0e4, 0x198))},
-		"FrontEndHeapType":     {17763: ((0x0d6, 0x17a), (0x0ea, 0x1a2))},
-		"FrontEndHeapUsageData":{17763: ((0x0d8, 0x180), (0x0ec, 0x1a8))},
+		"FrontEndHeap":             {17763: ((0x0d0, 0x170), (0x0e4, 0x198))},
+		"FrontEndHeapType":         {17763: ((0x0d6, 0x17a), (0x0ea, 0x1a2))},
+		"FrontEndHeapUsageData":    {17763: ((0x0d8, 0x180), (0x0ec, 0x1a8))},
+		"FrontEndHeapMaximumIndex": {17763: ((0x0dc, 0x188), (0x0f0, 0x1b0))},
+		"FrontEndHeapStatusBitmap": {17763: ((0x0de, 0x18a), (0x0f2, 0x1b2))},
 	}
 
 	def _offset(self, name):
