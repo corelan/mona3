@@ -1,3 +1,26 @@
+[mona 3.0.3025]
+- Update revision (mona: 3025, windbglib: 3014)
+BailOutHere:
+  - <link cmd="https://github.com/corelan/mona3/commit/8750228">8750228</link> Minor fixes:     guess_bad_chars():     - "mapping" var uses strings, whereas the rest of the logic here expects integer representations of bytes.     - final logic for updating bytes omitted from input converts i to char, whereas set(cmp.x) already returns a set of integers
+  - <link cmd="https://github.com/corelan/mona3/commit/118c6b4">118c6b4</link>     Changes:         memcompare():         # Found the problem re: standard comparison table vs the corrupted, uncorrupted bytes!           - MemoryComparator() expects a bytes() object           - draw_byte_table() uses mapping, which should be derived from a list of single bytes         - ensured bytes object is passed to MemoryComparator and not list of bytes         - fixed issue with attempting to sort bytes objects rather than lists
+  - <link cmd="https://github.com/corelan/mona3/commit/83a7c45">83a7c45</link> Changes:         procCompare():         - made -f arg no longer mandatory         - added -cpb arg for gen. of badchars array         - create_char_array() used when there is no -f arg         - use memcompare() for comparison where no file is specified         - renamed vars to reduce ambiguity
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/c281c9a">c281c9a</link> Heap work (#67)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/c6eabba">c6eabba</link> update -q 2
+  - <link cmd="https://github.com/corelan/mona3/commit/930dcb9">930dcb9</link> bugfix ensure_text
+  - <link cmd="https://github.com/corelan/mona3/commit/f870a25">f870a25</link> Merge pull request #66 from BailOutHere/compare-cmd-changes
+  - <link cmd="https://github.com/corelan/mona3/commit/9cab4c6">9cab4c6</link> provide help when response was truncated
+  - <link cmd="https://github.com/corelan/mona3/commit/95004fc">95004fc</link> add support for openrouter
+  - <link cmd="https://github.com/corelan/mona3/commit/56e6100">56e6100</link> allow pip updates via mona up. you can turn it off via mona config variable pip_update
+  - <link cmd="https://github.com/corelan/mona3/commit/cca5eb8">cca5eb8</link> update prompt
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/0ef6c08">0ef6c08</link> Update revision (mona: 3024) update pip modules via mona up
+
+[windbglib 3.0.3014]
+- Update revision (mona: 3025, windbglib: 3014)
+- No file-specific commits found.
+
 [mona 3.0.3024]
 - Update revision (mona: 3024) update pip modules via mona up
 corelanc0d3r:
@@ -184,27 +207,9 @@ github-actions[bot]:
 - Update revision (mona: 3015, windbglib: 3006) AI refinements
 - No file-specific commits found.
 
-[mona 3.0.3014]
-- Update revision (mona: 3014) improvements and bugfixes, mostly in AI integration
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/6bc4323">6bc4323</link> further refine context for AI
-  - <link cmd="https://github.com/corelan/mona3/commit/2c0072d">2c0072d</link> delay calling MnProc.ensure() until after arguments are validated
-  - <link cmd="https://github.com/corelan/mona3/commit/f699083">f699083</link> instruction on getting cyber approval for anthropic
-  - <link cmd="https://github.com/corelan/mona3/commit/cfad610">cfad610</link> add some extra checks for mona dumpobj
-  - <link cmd="https://github.com/corelan/mona3/commit/79b8af0">79b8af0</link> detect file differences within same version/revision and offer to run mona up -force
-  - <link cmd="https://github.com/corelan/mona3/commit/1dd7d84">1dd7d84</link> add diagnostics logging for mona up
-  - <link cmd="https://github.com/corelan/mona3/commit/d46fc37">d46fc37</link> enrich pageacl output
-  - <link cmd="https://github.com/corelan/mona3/commit/fedd091">fedd091</link> do it for immunity as well
-  - <link cmd="https://github.com/corelan/mona3/commit/907a3fa">907a3fa</link> make line that contains pageacl address stand out (bold) in windbg
-  - <link cmd="https://github.com/corelan/mona3/commit/23f16a3">23f16a3</link> Update mona.py
-
 [windbglib 3.0.3005]
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
 
 [windbglib 3.0.3004]
 - No file-specific commits found.
-
-[windbglib 3.0.3003]
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/66ae788">66ae788</link> cache getPtrFunction and add nativecommand statistics for windbg
