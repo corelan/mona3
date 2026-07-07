@@ -10308,7 +10308,7 @@ def _openaiGetStopReason(response):
 def _buildGenericTruncationNote(engine, message=None, max_tokens=0, stop_reason=""):
 	"""Build truncation detection note for any AI engine with engine-specific suggestions."""
 	mndbg.dbgp(get_current_function_name())
-	engine = _ensure_text(engine).strip().lower()
+	engine = ensure_text(engine).strip().lower()
 	
 	# Extract stop reason if message object is provided
 	if message is not None and stop_reason == "":
