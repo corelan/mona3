@@ -2287,7 +2287,7 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 		"valid_location": False,
 		"valid_location_reason": "",
 		"analysis_scope": "",
-		"control_flow_follow_depth": 1,
+		"control_flow_follow_depth": 0,
 		"function_start": "",
 		"symbol": "",
 		"symbol_offset": "",
@@ -2298,8 +2298,8 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 		"resolution_method": "",
 		}
 		mndbg.dbgp("tellme: collecting current function context at %s" % (PTR_PRINT % address))
-		if not isinstance(follow_depth, int) or follow_depth < 1:
-			follow_depth = 1
+		if not isinstance(follow_depth, int) or follow_depth < 0:
+			follow_depth = 0
 		if follow_depth > 4:
 			follow_depth = 4
 		if not isinstance(forward_line_count, int) or forward_line_count < 1:
@@ -2444,7 +2444,7 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 			if context.get("control_flow_source", "") == "":
 				context["control_flow_source"] = "code_window"
 		dbg.log("    Function context disassembly source: %s" % context.get("control_flow_source", "unknown"))
-		if disasm_source != "":
+		if disasm_source != "" and follow_depth > 0:
 			disasm_entries = _parseDisassemblyTextEntries(disasm_source)
 			dbg.log("    Parsing %d disassembly line%s for control-flow targets" % (
 				len(disasm_entries),
@@ -2455,6 +2455,9 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 				len(context["control_flow_targets"]),
 				"" if len(context["control_flow_targets"]) == 1 else "s"
 			))
+		elif disasm_source != "":
+			context["control_flow_targets"] = []
+			dbg.log("    Skipping linked control-flow target expansion (depth 0)")
 		else:
 			context["control_flow_targets"] = []
 			dbg.log("    No disassembly source was available for control-flow target extraction")
@@ -34446,15 +34449,25 @@ class MnAI(object):
 	def parseControlFlowFollowDepth(self):
 		"""Parse generic control-flow follow depth from -d for code-flow aware requests."""
 		mndbg.dbgp(get_current_function_name())
-		self.q2_follow_depth = 2
+		if self.effective_question_type == "2":
+			self.q2_follow_depth = 0
+		else:
+			self.q2_follow_depth = 2
 		if not self.needsFunctionContext() or "d" not in self.args:
 			return True
 		if type(self.args["d"]).__name__.lower() == "bool":
-			self.logError("Please specify a numeric depth with -d <1-4>")
+			if self.effective_question_type == "2":
+				self.logError("Please specify a numeric depth with -d <0-4>")
+			else:
+				self.logError("Please specify a numeric depth with -d <1-4>")
 			return False
 		follow_depth, depth_ok = getIntArg(self.args["d"])
-		if not depth_ok or follow_depth < 1 or follow_depth > 4:
-			self.logError("Invalid -d value '%s'. Please specify a number between 1 and 4." % self.args["d"])
+		min_depth = 0 if self.effective_question_type == "2" else 1
+		if not depth_ok or follow_depth < min_depth or follow_depth > 4:
+			self.logError("Invalid -d value '%s'. Please specify a number between %d and 4." % (
+				self.args["d"],
+				min_depth
+			))
 			return False
 		self.q2_follow_depth = follow_depth
 		mndbg.dbgp("tellme: using control-flow follow depth %d from -d" % self.q2_follow_depth)
@@ -34694,7 +34707,7 @@ class MnAI(object):
 			dbg.log("")
 			self.logInfo("Available questions:")
 			self.logInfoDetail("-q 1 : analyse the crash context")
-			self.logInfoDetail("-q 2 : analyse the current function")
+			self.logInfoDetail("-q 2 : analyse the current __PC__ function, plus optional -a function; use -d to include linked targets")
 			self.logInfoDetail("-q 3 : analyse whether a controlled heap chunk can steer execution to a target")
 			#self.logInfoDetail("-q 8 : analyse ROP primitive quality and feasibility")
 			self.logInfoDetail("-q 9 : use a request template from -f <file>")
@@ -34820,7 +34833,7 @@ class MnAI(object):
 				self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
 		self.logInfo("Specify a query profile with -q <1|2|3|9>.")
 		self.logInfoDetail("-q 1 : analyse the crash context")
-		self.logInfoDetail("-q 2 : analyse the current function")
+		self.logInfoDetail("-q 2 : analyse the current __PC__ function, plus optional -a function; use -d to include linked targets")
 		self.logInfoDetail("-q 3 : analyse whether a controlled heap chunk can steer execution to a target")
 		self.logInfoDetail("-q 9 : use a request template from -f <file>")
 
@@ -46139,7 +46152,10 @@ Official model docs:
 	                   Mona passes the IDs through as-is, so make sure they belong to the provider you selected.
 	    -q <number>  : Required. Prompt profile to use:
 	                   1 = analyse the current crash state
-	                   2 = analyse the current __PC__ function, plus an optional extra function from -a
+	                   2 = analyse the current __PC__ function as the primary target
+	                       and optionally analyse one extra function from -a
+	                       By default, q2 stays focused on just those one or two functions
+	                       Use -d to also expand linked call/jump targets from those functions
 	                   3 = analyse whether a controlled heap chunk can steer execution to a target address,
 	                       or, without -t, discover the best reachable chunk-modification paths and
 	                       controlled-data consumption sinks such as vftable use or indirect call/jmp
@@ -46151,7 +46167,8 @@ Official model docs:
 	    -a <address> : Optional address/register/module!symbol/expression to analyse.
 	                   With -q 1, this adds an extra heap target.
 	                   With -q 2, this adds a second function analysis rooted at that location,
-	                   while still keeping the live __PC__ function as the primary context
+	                   while still keeping the live __PC__ function as the primary context.
+	                   It does not replace the current function.
 	    -c <address> : With -q 3, required controlled heap chunk address.
 	                   This should point at the chunk whose contents you can manipulate.
 	                   q3 treats that chunk as the attacker-controlled input and asks which
@@ -46177,10 +46194,16 @@ Official model docs:
 	                   confirms an SEH overwrite. This is usually a good idea, otherwise the
 	                   suggested trampoline or SEH candidate may contain bytes you already know you cannot use
 	    -d <number>  : With -q 2, -q 3, or -q 3b, optional call/jump follow depth for control_flow_targets.
+	                   For -q 2, this controls how many levels of linked call/jump targets mona adds
+	                   on top of the current __PC__ function and the optional -a function.
+	                   -d 0 = do not include linked targets; analyze only the current function and optional -a function
+	                   -d 1 = include first-level linked targets reached directly from those functions
+	                   -d 2..4 = include deeper nested linked targets up to that depth
+	                   For -q 2, the default is 0 to keep the request small and focused.
 	                   For -q 3, the same depth is also used as the default number of caller frames
 	                   to inspect on the return-resume path.
 	                   q3 follows direct branches/calls/jumps, nested callees, and caller-side resume paths.
-	                   Default: 2. Maximum: 4.
+	                   Default: q2=0, q3/q3b=2. Maximum: 4.
 	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
 	    -f <file>    : Required for -q 9.
 	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
