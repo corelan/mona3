@@ -45826,21 +45826,21 @@ Optional arguments:
 	compareUsage = """Compare a bad characters array or a file created by mona's bytearray/msfvenom/gdb/hex/xxd/hexdump/ollydbg with a copy in memory.
 
 Mandatory argument :
-    -f <filename> : full path to input file
-
-
-Optional arguments :
+    -f <filename> : full path to input bin file
+    or
     -cpb <bytes> : bytes to exclude from the comparison array. Example : '\\x00\\x0a\\x0d'
                    Note: Does not work when file specified for comparison array with -f
                    Note: you can specify ranges using .. 
                    Example: '\\x00\\x0a..\\x20\\x32\\x7f..\\xff'
+
+Optional arguments :
     -a <address> : the exact address of the bytes in memory (address or register). 
                    If you don't specify an address, I will try to locate the bytes in memory 
                    by looking at the first 8 bytes.
     -s : skip locations that belong to a module
     -unicode : perform unicode search. Note: input should *not* be unicode, it will be expanded automatically
     -t : input file type format. If no file type format is specified, I will try to guess the input file type format.
-	-f <filename> : full path to input file to compare bytes in memory with
+    -f <filename> : full path to input file to compare bytes in memory with
                     Available formats:
                     'raw', 'hexdump', 'js-unicode', 'dword', 'xxd', 'byte-array', 'hexstring', 'hexdump-C', 'classic-hexdump', 'escaped-hexes', 'msfvenom-powershell', 'gdb', 'ollydbg', 'msfvenom-ruby', 'msfvenom-c', 'msfvenom-carray', 'msfvenom-python'"""
 
