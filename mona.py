@@ -647,7 +647,7 @@ class MnDebugger:
 			if line == "":
 				continue
 			if line.endswith(":"):
-				return line[:-1].strip()
+				return _normalizeDisassemblyLabel(line[:-1].strip())
 			break
 		return ""
 
@@ -1754,6 +1754,174 @@ def _collectManualHeapTargetFallback(address):
 	return info
 
 
+def _normalizeDisassemblyLabel(label_text):
+	mndbg.dbgp(get_current_function_name())
+	label = ensure_text(label_text).strip().rstrip(":")
+	if label == "":
+		return ""
+	if " [" in label and "]" in label:
+		label = label.split(" [", 1)[0].strip()
+	return label
+
+
+def _extractSourceReferenceFromDisassemblyLabel(label_text):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("path", ""),
+		("line", 0),
+	])
+	label = ensure_text(label_text).strip()
+	if label == "":
+		return result
+	match = re.search(r"\[([^\]]+?)\s+@\s+([0-9]+)\]\s*:?\s*$", label)
+	if not match:
+		return result
+	source_path = ensure_text(match.group(1)).strip()
+	source_line = _safe_int(match.group(2), 0)
+	if source_path != "":
+		result["path"] = source_path
+	if source_line > 0:
+		result["line"] = source_line
+	return result
+
+
+def _extractSourceLineFromDisasmLine(raw_line, requested_address=0):
+	mndbg.dbgp(get_current_function_name())
+	line = ensure_text(raw_line).strip()
+	if line == "" or line.endswith(":"):
+		return 0, 0
+	parts = line.split()
+	if len(parts) < 2:
+		return 0, 0
+	addr, addr_index = _extractDisassemblyAddress(parts)
+	if addr <= 0:
+		return 0, 0
+	if isinstance(requested_address, int) and requested_address > 0 and addr != requested_address:
+		return 0, addr
+	if addr_index > 0:
+		source_token = ensure_text(parts[addr_index - 1]).strip()
+		if source_token.isdigit():
+			source_line = _safe_int(source_token, 0)
+			if source_line > 0:
+				return source_line, addr
+	return 0, addr
+
+
+def _readSourceContextSnippet(source_path, target_line=0, context_before=6, context_after=10, max_chars=6000):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("path", ensure_text(source_path).strip()),
+		("line", target_line if isinstance(target_line, int) and target_line > 0 else 0),
+		("start_line", 0),
+		("end_line", 0),
+		("snippet", ""),
+	])
+	normalized_path = ensure_text(source_path).strip()
+	if normalized_path == "" or not os.path.isfile(normalized_path):
+		return result
+	try:
+		with open(normalized_path, "rb") as fh:
+			raw_value = fh.read()
+	except Exception as e:
+		result["error"] = str(e)
+		return result
+	file_text = decodeTextFromFile(raw_value, preferred_encoding="utf-8")
+	lines = file_text.splitlines()
+	if len(lines) == 0:
+		return result
+	if not isinstance(target_line, int) or target_line <= 0:
+		target_line = 1
+	start_line = max(1, target_line - max(int(context_before), 0))
+	end_line = min(len(lines), target_line + max(int(context_after), 0))
+	width = len(str(end_line))
+	snippet_lines = []
+	for line_no in range(start_line, end_line + 1):
+		marker = ">" if line_no == target_line else " "
+		snippet_lines.append("%s %*d | %s" % (
+			marker,
+			width,
+			line_no,
+			lines[line_no - 1]
+		))
+	snippet = "\n".join(snippet_lines)
+	if isinstance(max_chars, int) and max_chars > 0 and len(snippet) > max_chars:
+		snippet = snippet[:max_chars].rstrip() + "\n... [truncated]"
+	result["line"] = target_line
+	result["start_line"] = start_line
+	result["end_line"] = end_line
+	result["snippet"] = snippet
+	return result
+
+
+def _collectFunctionSourceContext(address, uf_output="", nearest_symbol_output="", prompt_for_permission=False, source_context_decisions=None):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict()
+	address = int(address) if isinstance(address, int) else 0
+	uf_text = ensure_text(uf_output).strip()
+	nearest_text = ensure_text(nearest_symbol_output).strip()
+	if source_context_decisions is None:
+		source_context_decisions = {}
+	label_candidates = []
+	for raw_line in uf_text.splitlines():
+		line = ensure_text(raw_line).strip()
+		if line.endswith(":") and "!" in line:
+			label_candidates.append(line[:-1].strip())
+			break
+	for raw_line in nearest_text.splitlines():
+		line = ensure_text(raw_line).strip()
+		if "[" in line and "@" in line and "]" in line and "!" in line:
+			label_candidates.append(line)
+			break
+	source_path = ""
+	function_source_line = 0
+	for candidate in label_candidates:
+		source_ref = _extractSourceReferenceFromDisassemblyLabel(candidate)
+		if source_ref.get("path", "") != "":
+			source_path = source_ref.get("path", "")
+			function_source_line = source_ref.get("line", 0)
+			break
+	if source_path == "":
+		return result
+	requested_source_line = 0
+	if uf_text != "":
+		for raw_line in uf_text.splitlines():
+			line_no, matched_address = _extractSourceLineFromDisasmLine(raw_line, requested_address=address)
+			if matched_address == address and line_no > 0:
+				requested_source_line = line_no
+				break
+	target_line = requested_source_line if requested_source_line > 0 else function_source_line
+	if target_line <= 0:
+		return result
+	decision_key = source_path.lower()
+	include_source_context = source_context_decisions.get(decision_key, None)
+	if include_source_context is None and prompt_for_permission:
+		prompt_line = requested_source_line if requested_source_line > 0 else function_source_line
+		include_source_context = askForConfirmation(
+			"[?] Found source file '%s' (line %d). Include source lines from this file in the AI request?" % (
+				source_path,
+				prompt_line
+			),
+			default="N"
+		)
+		source_context_decisions[decision_key] = include_source_context
+	elif include_source_context is None:
+		include_source_context = False
+		source_context_decisions[decision_key] = include_source_context
+	if not include_source_context:
+		return result
+	source_context = _readSourceContextSnippet(source_path, target_line=target_line)
+	if source_context.get("snippet", "") == "":
+		return result
+	source_context["requested_address"] = PTR_PRINT % address if address > 0 else ""
+	if function_source_line > 0:
+		source_context["function_line"] = function_source_line
+	if requested_source_line > 0:
+		source_context["requested_line"] = requested_source_line
+	source_context["anchor"] = "requested_line" if requested_source_line > 0 else "function_line"
+	result = source_context
+	return result
+
+
 def _getChunkPointerDump(chunk_address, chunk_size, label="chunk"):
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
@@ -2244,12 +2412,14 @@ def _resolveFunctionStart(address):
 	return address, "", "fallback", False
 
 
-def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_address=False, forward_line_count=100, context_cache=None, active_keys=None):
+def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_address=False, forward_line_count=100, context_cache=None, active_keys=None, source_context_decisions=None, prompt_for_source_context=False):
 	mndbg.dbgp(get_current_function_name())
 	if context_cache is None:
 		context_cache = {}
 	if active_keys is None:
 		active_keys = set()
+	if source_context_decisions is None:
+		source_context_decisions = {}
 	cache_key = (
 		int(address) if isinstance(address, int) else 0,
 		int(follow_depth) if isinstance(follow_depth, int) else 1,
@@ -2485,6 +2655,20 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 				entry_context["registers"] = regs
 				context["near_entry_execution_context"] = entry_context
 
+			try:
+				source_context = _collectFunctionSourceContext(
+					address,
+					uf_output=context.get("uf_output", ""),
+					nearest_symbol_output=context.get("nearest_symbol_output", ""),
+					prompt_for_permission=bool(prompt_for_source_context),
+					source_context_decisions=source_context_decisions
+				)
+			if isinstance(source_context, dict) and len(source_context) > 0:
+				context["source_context"] = source_context
+		except Exception as e:
+			context["source_context_error"] = str(e)
+			mndbg.dbgp("tellme: source context collection failed: %s" % str(e), errormode=False)
+
 		context_cache[cache_key] = copy.deepcopy(context)
 		return context
 	finally:
@@ -2503,29 +2687,12 @@ def _parseDisassemblyTextEntries(disasm_text):
 		parts = line.split()
 		if len(parts) < 2:
 			continue
-		addr_index = 0
-		addr = _tryParseAddressToken(parts[addr_index])
-		# WinDBG `uf` output can prefix disassembly with a source line number:
-		# `14 12341010 55 push ebp`. In that case the real instruction address is
-		# the second token, not the first one.
-		if len(parts) >= 3:
-			second_addr = _tryParseAddressToken(parts[1])
-			first_token = ensure_text(parts[0]).strip().replace("`", "")
-			second_token = ensure_text(parts[1]).strip().replace("`", "")
-			if (
-				second_addr > 0 and
-				len(first_token) <= 5 and
-				len(second_token) >= 6 and
-				(addr <= 0 or addr < 0x100000)
-			):
-				addr_index = 1
-				addr = second_addr
+		addr, addr_index = _extractDisassemblyAddress(parts)
 		if addr <= 0:
 			continue
 		idx = addr_index + 1
 		while idx < len(parts):
-			token = parts[idx].replace("`", "")
-			if re.match(r"^[0-9a-fA-F?]+$", token) and len(token) >= 2:
+			if _looksLikeDisassemblyByteToken(parts[idx]):
 				idx += 1
 				continue
 			break
@@ -2541,6 +2708,71 @@ def _parseDisassemblyTextEntries(disasm_text):
 			("raw_line", raw_line.rstrip())
 		]))
 	return entries
+
+
+def _looksLikeDisassemblyByteToken(token):
+	mndbg.dbgp(get_current_function_name())
+	cleaned = ensure_text(token).strip().replace("`", "")
+	if cleaned == "":
+		return False
+	return re.match(r"^[0-9a-fA-F?]+$", cleaned) is not None and len(cleaned) >= 2
+
+
+def _scoreDisassemblyAddressToken(parts, candidate_index):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(parts, list) or candidate_index < 0 or candidate_index >= len(parts):
+		return -9999, 0
+	token = ensure_text(parts[candidate_index]).strip()
+	addr = _tryParseAddressToken(token)
+	if addr <= 0:
+		return -9999, 0
+	score = 0
+	cleaned = token.replace("`", "")
+	if token.lower().startswith("0x") or "`" in token or len(cleaned) >= 6:
+		score += 5
+	else:
+		score -= 3
+	if addr >= 0x100000:
+		score += 3
+	else:
+		score -= 2
+	if candidate_index > 0:
+		prev_token = ensure_text(parts[candidate_index - 1]).strip().replace("`", "")
+		if prev_token.isdigit() and len(prev_token) <= 6:
+			score += 2
+	next_index = candidate_index + 1
+	byte_count = 0
+	while next_index < len(parts):
+		if _looksLikeDisassemblyByteToken(parts[next_index]):
+			byte_count += 1
+			next_index += 1
+			continue
+		break
+	if byte_count > 0:
+		score += min(byte_count, 4)
+	if next_index < len(parts):
+		score += 2
+	return score, addr
+
+
+def _extractDisassemblyAddress(parts):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(parts, list) or len(parts) < 2:
+		return 0, -1
+	best_addr = 0
+	best_index = -1
+	best_score = -9999
+	for idx in range(min(len(parts), 4)):
+		score, addr = _scoreDisassemblyAddressToken(parts, idx)
+		if addr <= 0:
+			continue
+		if score > best_score:
+			best_score = score
+			best_addr = addr
+			best_index = idx
+	if best_addr <= 0:
+		return 0, -1
+	return best_addr, best_index
 
 
 def _normalizeDisassemblyTargetOperand(operand):
@@ -7710,6 +7942,7 @@ Use call_stack, additional_context_files, or poc_file only when they materially 
 		return _withMarkdownOutput("""You are an expert in assembly analysis, reverse engineering, annotation, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
 Focus on reconstructing what the code does, annotating the important instructions and blocks, explaining the function in clear human language, and identifying any security vulnerabilities or exploit-relevant weaknesses that are visible in the code path. Treat this as code-understanding work, not crash triage.
 Use the entries under 'variables' as the debugger context. Prioritize function_analyses, analysis_target, registers, modules, architecture, pointer_size, and any supplied additional_context_files or poc_file that clarify the code path. Ignore variables that are not useful and briefly say why only when that matters.
+If a function analysis includes source_context, use it as first-class evidence together with the disassembly. Prefer the anchored source lines when they materially clarify behavior, argument flow, safety checks, or vulnerable operations.
 Be concise, but make the analysis strong. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, branch conditions, or pseudocode fragments that support the conclusion.
 Analyze function_analyses in order. The live %s function is primary. If a second entry sourced from -a is present and not marked as duplicate, analyze that function too.
 When linked functions are provided through control_flow_targets or nested_control_flow_targets, analyze the important linked functions as supporting context, especially when they clarify branch decisions, object state, argument preparation, helper behavior, or the meaning of an indirect transfer.
@@ -8903,7 +9136,7 @@ def _buildReachabilityTargetContext(address):
 	return info
 
 
-def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, function_context_cache=None, function_context_active_keys=None):
+def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, function_context_cache=None, function_context_active_keys=None, source_context_decisions=None, prompt_for_source_context=False):
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("return_context", {}),
@@ -8919,6 +9152,8 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 		max_frames = 1
 	if not isinstance(follow_depth, int) or follow_depth < 1:
 		follow_depth = 1
+	if source_context_decisions is None:
+		source_context_decisions = {}
 	output = ensure_text(call_stack.get("output", "")).strip()
 	if output == "":
 		return result
@@ -8936,7 +9171,9 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 				forward_only_from_address=True,
 				forward_line_count=30,
 				context_cache=function_context_cache,
-				active_keys=function_context_active_keys
+				active_keys=function_context_active_keys,
+				source_context_decisions=source_context_decisions,
+				prompt_for_source_context=prompt_for_source_context
 			)
 			uf_output = ensure_text(caller_function.get("uf_output", "")).strip()
 			uf_line_count = len([line for line in uf_output.splitlines() if ensure_text(line).strip() != ""]) if uf_output != "" else 0
@@ -14665,19 +14902,17 @@ def _extractFunctionMetadataFromUfOutput(uf_output):
 	])
 	if not uf_output:
 		return result
+	entries = _parseDisassemblyTextEntries(uf_output)
+	if len(entries) > 0:
+		first_entry_address = entries[0].get("address", 0)
+		if isinstance(first_entry_address, int) and first_entry_address > 0:
+			result["function_start"] = first_entry_address
 	for raw_line in ensure_text(uf_output).splitlines():
 		line = raw_line.strip()
 		if line == "":
 			continue
 		if line.endswith(":") and "!" in line:
-			result["symbol"] = line[:-1].strip()
-			continue
-		parts = line.split()
-		if len(parts) < 2:
-			continue
-		addr = _tryParseAddressToken(parts[0])
-		if addr > 0:
-			result["function_start"] = addr
+			result["symbol"] = _normalizeDisassemblyLabel(line[:-1].strip())
 			break
 	return result
 	return struct.unpack(fmt, data)[0]
@@ -35273,6 +35508,7 @@ class MnAI(object):
 			function_context_cache = {}
 		if function_context_active_keys is None:
 			function_context_active_keys = set()
+		source_context_decisions = {}
 		total_steps = 2 if self.additional_target_address > 0 and self.additional_target_address != self.current_pc_address else 1
 		current_step = 1
 		self.logInfo("[%d/%d] Extending request context with function-level code flow analysis..." % (
@@ -35293,7 +35529,9 @@ class MnAI(object):
 					self.current_pc_address,
 					follow_depth=self.q2_follow_depth,
 					context_cache=function_context_cache,
-					active_keys=function_context_active_keys
+					active_keys=function_context_active_keys,
+					source_context_decisions=source_context_decisions,
+					prompt_for_source_context=True
 				)
 			context["current_function"]["source"] = PROGRAM_COUNTER.upper()
 			if "near_entry_execution_context" in context["current_function"]:
@@ -35326,7 +35564,9 @@ class MnAI(object):
 						self.additional_target_address,
 						follow_depth=self.q2_follow_depth,
 						context_cache=function_context_cache,
-						active_keys=function_context_active_keys
+						active_keys=function_context_active_keys,
+						source_context_decisions=source_context_decisions,
+						prompt_for_source_context=True
 					)
 					context["additional_function"]["source"] = "-a"
 					if "near_entry_execution_context" in context["additional_function"]:
@@ -35351,6 +35591,7 @@ class MnAI(object):
 			function_context_cache = {}
 		if function_context_active_keys is None:
 			function_context_active_keys = set()
+		source_context_decisions = {}
 		total_steps = 7
 		q3_startmoment = time.time()
 		def _format_major_step_elapsed(startmoment):
@@ -35415,7 +35656,9 @@ class MnAI(object):
 				self.current_pc_address,
 				follow_depth=self.q2_follow_depth,
 				context_cache=function_context_cache,
-				active_keys=function_context_active_keys
+				active_keys=function_context_active_keys,
+				source_context_decisions=source_context_decisions,
+				prompt_for_source_context=True
 			)
 		context["current_function"]["source"] = PROGRAM_COUNTER.upper()
 		_log_major_step_complete(current_step, step_label)
@@ -35429,7 +35672,9 @@ class MnAI(object):
 					self.reachability_target_address,
 					follow_depth=1,
 					context_cache=function_context_cache,
-					active_keys=function_context_active_keys
+					active_keys=function_context_active_keys,
+					source_context_decisions=source_context_decisions,
+					prompt_for_source_context=True
 				)
 			context["target_function"]["source"] = "-t"
 			_log_major_step_complete(current_step, step_label)
@@ -35442,7 +35687,9 @@ class MnAI(object):
 			max_frames=self.q2_follow_depth,
 			follow_depth=self.q2_follow_depth,
 			function_context_cache=function_context_cache,
-			function_context_active_keys=function_context_active_keys
+			function_context_active_keys=function_context_active_keys,
+			source_context_decisions=source_context_decisions,
+			prompt_for_source_context=True
 		)
 		for key, value in return_resume.items():
 			context[key] = value
