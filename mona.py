@@ -1777,7 +1777,7 @@ def _extractSourceReferenceFromDisassemblyLabel(label_text):
 	if not match:
 		return result
 	source_path = ensure_text(match.group(1)).strip()
-	source_line = _safe_int(match.group(2), 0)
+	source_line = _safe_int(match.group(2))
 	if source_path != "":
 		result["path"] = source_path
 	if source_line > 0:
@@ -1797,7 +1797,17 @@ def _extractSourceReferenceFromText(source_text):
 	match = re.search(r"\[([^\]]+?)\s*@\s*([0-9]+)\]", text_value, re.MULTILINE)
 	if match:
 		source_path = ensure_text(match.group(1)).strip()
-		source_line = _safe_int(match.group(2), 0)
+		source_line = _safe_int(match.group(2))
+		if source_path != "":
+			result["path"] = source_path
+		if source_line > 0:
+			result["line"] = source_line
+		if result.get("path", "") != "":
+			return result
+	match = re.search(r"([A-Za-z]:\\[^\r\n\]]+?)\s*@\s*([0-9]+)", text_value, re.MULTILINE)
+	if match:
+		source_path = ensure_text(match.group(1)).strip().rstrip(":")
+		source_line = _safe_int(match.group(2))
 		if source_path != "":
 			result["path"] = source_path
 		if source_line > 0:
@@ -1812,6 +1822,24 @@ def _extractSourceReferenceFromText(source_text):
 		if source_ref.get("path", "") != "":
 			return source_ref
 	return result
+
+
+def _findSourceCandidateInDebuggerText(uf_text="", nearest_text=""):
+	mndbg.dbgp(get_current_function_name())
+	sources = [
+		("uf", ensure_text(uf_text)),
+		("ln", ensure_text(nearest_text)),
+	]
+	for source_name, text_value in sources:
+		source_ref = _extractSourceReferenceFromText(text_value)
+		if source_ref.get("path", "") != "":
+			source_ref["source_name"] = source_name
+			return source_ref
+	return OrderedDict([
+		("path", ""),
+		("line", 0),
+		("source_name", "")
+	])
 
 
 def _extractSourceLineFromDisasmLine(raw_line, requested_address=0):
@@ -1830,7 +1858,7 @@ def _extractSourceLineFromDisasmLine(raw_line, requested_address=0):
 	if addr_index > 0:
 		source_token = ensure_text(parts[addr_index - 1]).strip()
 		if source_token.isdigit():
-			source_line = _safe_int(source_token, 0)
+			source_line = _safe_int(source_token)
 			if source_line > 0:
 				return source_line, addr
 	return 0, addr
@@ -2597,6 +2625,37 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 				context["uf_symbol"] = uf_symbol
 				if context.get("symbol", "") == "" or context.get("symbol", "") != uf_symbol:
 					context["symbol_from_uf"] = uf_symbol
+		if bool(prompt_for_source_context):
+			try:
+				source_ref = _findSourceCandidateInDebuggerText(
+					uf_text=context.get("uf_output", ""),
+					nearest_text=context.get("nearest_symbol_output", "")
+				)
+				source_path = ensure_text(source_ref.get("path", "")).strip()
+				source_line = int(source_ref.get("line", 0)) if isinstance(source_ref.get("line", 0), int) else _safe_int(source_ref.get("line", 0))
+				source_name = ensure_text(source_ref.get("source_name", "")).strip()
+				if source_path != "":
+					decision_key = source_path.lower()
+					if decision_key not in source_context_decisions:
+						dbg.log("[+] Found source file candidate for AI context from %s output: %s (line %d)" % (
+							source_name if source_name != "" else "debugger",
+							source_path,
+							source_line if source_line > 0 else 0
+						))
+						dbg.log("")
+						source_context_decisions[decision_key] = askForConfirmation(
+							"[?] Found source file '%s' (line %d). Include source lines from this file in the AI request?" % (
+								source_path,
+								source_line if source_line > 0 else 0
+							),
+							default="N"
+						)
+				else:
+					dbg.log("    Source context probe: no source marker found in uf/ln output")
+			except Exception as e:
+				context["source_prompt_error"] = str(e)
+				dbg.log("    Source context probe failed: %s" % str(e), highlight=1)
+				mndbg.dbgp("tellme: early source prompt failed: %s" % str(e), errormode=False)
 
 		disasm_source = ""
 		if context.get("uf_output", "") != "":
@@ -2677,22 +2736,22 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 				entry_context["registers"] = regs
 				context["near_entry_execution_context"] = entry_context
 
-			try:
-				source_context = _collectFunctionSourceContext(
-					address,
-					uf_output=context.get("uf_output", ""),
-					nearest_symbol_output=context.get("nearest_symbol_output", ""),
-					prompt_for_permission=bool(prompt_for_source_context),
-					source_context_decisions=source_context_decisions
-				)
-				if isinstance(source_context, dict) and len(source_context) > 0:
-					context["source_context"] = source_context
-			except Exception as e:
-				context["source_context_error"] = str(e)
-				mndbg.dbgp("tellme: source context collection failed: %s" % str(e), errormode=False)
+		try:
+			source_context = _collectFunctionSourceContext(
+				address,
+				uf_output=context.get("uf_output", ""),
+				nearest_symbol_output=context.get("nearest_symbol_output", ""),
+				prompt_for_permission=bool(prompt_for_source_context),
+				source_context_decisions=source_context_decisions
+			)
+			if isinstance(source_context, dict) and len(source_context) > 0:
+				context["source_context"] = source_context
+		except Exception as e:
+			context["source_context_error"] = str(e)
+			mndbg.dbgp("tellme: source context collection failed: %s" % str(e), errormode=False)
 
-			context_cache[cache_key] = copy.deepcopy(context)
-			return context
+		context_cache[cache_key] = copy.deepcopy(context)
+		return context
 	finally:
 		active_keys.discard(cache_key)
 
