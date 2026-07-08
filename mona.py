@@ -1773,7 +1773,7 @@ def _extractSourceReferenceFromDisassemblyLabel(label_text):
 	label = ensure_text(label_text).strip()
 	if label == "":
 		return result
-	match = re.search(r"\[([^\]]+?)\s+@\s+([0-9]+)\]\s*:?", label)
+	match = re.search(r"\[([^\]]+?)\s*@\s*([0-9]+)\]\s*:?", label)
 	if not match:
 		return result
 	source_path = ensure_text(match.group(1)).strip()
@@ -1794,6 +1794,16 @@ def _extractSourceReferenceFromText(source_text):
 	text_value = ensure_text(source_text)
 	if text_value.strip() == "":
 		return result
+	match = re.search(r"\[([^\]]+?)\s*@\s*([0-9]+)\]", text_value, re.MULTILINE)
+	if match:
+		source_path = ensure_text(match.group(1)).strip()
+		source_line = _safe_int(match.group(2), 0)
+		if source_path != "":
+			result["path"] = source_path
+		if source_line > 0:
+			result["line"] = source_line
+		if result.get("path", "") != "":
+			return result
 	for raw_line in text_value.splitlines():
 		line = ensure_text(raw_line).strip()
 		if line == "":
