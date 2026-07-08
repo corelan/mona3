@@ -1773,7 +1773,7 @@ def _extractSourceReferenceFromDisassemblyLabel(label_text):
 	label = ensure_text(label_text).strip()
 	if label == "":
 		return result
-	match = re.search(r"\[([^\]]+?)\s+@\s+([0-9]+)\]\s*:?\s*$", label)
+	match = re.search(r"\[([^\]]+?)\s+@\s+([0-9]+)\]\s*:?", label)
 	if not match:
 		return result
 	source_path = ensure_text(match.group(1)).strip()
@@ -1782,6 +1782,25 @@ def _extractSourceReferenceFromDisassemblyLabel(label_text):
 		result["path"] = source_path
 	if source_line > 0:
 		result["line"] = source_line
+	return result
+
+
+def _extractSourceReferenceFromText(source_text):
+	mndbg.dbgp(get_current_function_name())
+	result = OrderedDict([
+		("path", ""),
+		("line", 0),
+	])
+	text_value = ensure_text(source_text)
+	if text_value.strip() == "":
+		return result
+	for raw_line in text_value.splitlines():
+		line = ensure_text(raw_line).strip()
+		if line == "":
+			continue
+		source_ref = _extractSourceReferenceFromDisassemblyLabel(line)
+		if source_ref.get("path", "") != "":
+			return source_ref
 	return result
 
 
@@ -1861,25 +1880,14 @@ def _collectFunctionSourceContext(address, uf_output="", nearest_symbol_output="
 	nearest_text = ensure_text(nearest_symbol_output).strip()
 	if source_context_decisions is None:
 		source_context_decisions = {}
-	label_candidates = []
-	for raw_line in uf_text.splitlines():
-		line = ensure_text(raw_line).strip()
-		if line.endswith(":") and "!" in line:
-			label_candidates.append(line[:-1].strip())
-			break
-	for raw_line in nearest_text.splitlines():
-		line = ensure_text(raw_line).strip()
-		if "[" in line and "@" in line and "]" in line and "!" in line:
-			label_candidates.append(line)
-			break
 	source_path = ""
 	function_source_line = 0
-	for candidate in label_candidates:
-		source_ref = _extractSourceReferenceFromDisassemblyLabel(candidate)
-		if source_ref.get("path", "") != "":
-			source_path = source_ref.get("path", "")
-			function_source_line = source_ref.get("line", 0)
-			break
+	source_ref = _extractSourceReferenceFromText(uf_text)
+	if source_ref.get("path", "") == "":
+		source_ref = _extractSourceReferenceFromText(nearest_text)
+	if source_ref.get("path", "") != "":
+		source_path = source_ref.get("path", "")
+		function_source_line = source_ref.get("line", 0)
 	if source_path == "":
 		return result
 	requested_source_line = 0
@@ -1896,6 +1904,10 @@ def _collectFunctionSourceContext(address, uf_output="", nearest_symbol_output="
 	include_source_context = source_context_decisions.get(decision_key, None)
 	if include_source_context is None and prompt_for_permission:
 		prompt_line = requested_source_line if requested_source_line > 0 else function_source_line
+		dbg.log("[+] Found source file candidate for AI context: %s (line %d)" % (
+			source_path,
+			prompt_line
+		))
 		include_source_context = askForConfirmation(
 			"[?] Found source file '%s' (line %d). Include source lines from this file in the AI request?" % (
 				source_path,
@@ -2663,14 +2675,14 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 					prompt_for_permission=bool(prompt_for_source_context),
 					source_context_decisions=source_context_decisions
 				)
-			if isinstance(source_context, dict) and len(source_context) > 0:
-				context["source_context"] = source_context
-		except Exception as e:
-			context["source_context_error"] = str(e)
-			mndbg.dbgp("tellme: source context collection failed: %s" % str(e), errormode=False)
+				if isinstance(source_context, dict) and len(source_context) > 0:
+					context["source_context"] = source_context
+			except Exception as e:
+				context["source_context_error"] = str(e)
+				mndbg.dbgp("tellme: source context collection failed: %s" % str(e), errormode=False)
 
-		context_cache[cache_key] = copy.deepcopy(context)
-		return context
+			context_cache[cache_key] = copy.deepcopy(context)
+			return context
 	finally:
 		active_keys.discard(cache_key)
 
