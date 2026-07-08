@@ -7708,7 +7708,7 @@ Style rules:
 Use call_stack, additional_context_files, or poc_file only when they materially strengthen or weaken the diagnosis.""")
 	if question_type == "2":
 		return _withMarkdownOutput("""You are an expert in assembly analysis, reverse engineering, annotation, and decompilation of Windows code. You are analyzing a debugger snapshot from mona.py running under WinDBG.
-Focus on reconstructing what the code does, annotating the important instructions and blocks, and then explaining the function in clear human language. Treat this as code-understanding work, not crash triage.
+Focus on reconstructing what the code does, annotating the important instructions and blocks, explaining the function in clear human language, and identifying any security vulnerabilities or exploit-relevant weaknesses that are visible in the code path. Treat this as code-understanding work, not crash triage.
 Use the entries under 'variables' as the debugger context. Prioritize function_analyses, analysis_target, registers, modules, architecture, pointer_size, and any supplied additional_context_files or poc_file that clarify the code path. Ignore variables that are not useful and briefly say why only when that matters.
 Be concise, but make the analysis strong. Summarize evidence instead of transcribing debugger output, and cite only the symbols, instructions, register values, module facts, branch conditions, or pseudocode fragments that support the conclusion.
 Analyze function_analyses in order. The live %s function is primary. If a second entry sourced from -a is present and not marked as duplicate, analyze that function too.
@@ -7719,12 +7719,14 @@ For each analyzed function, cover:
 3. the main logic blocks, tests, branches, loops, and error paths
 4. annotated decompiled-style pseudocode that captures control flow and important data movement
 5. the meaning of important calls, unconditional jumps, and resolved control_flow_targets when available
-6. a short human explanation of what the function is doing and why
+6. any security vulnerabilities, memory-safety issues, dangerous API usage, trust-boundary mistakes, or exploit-relevant weaknesses visible in the function, with a short note on impact and why they matter
+7. a short human explanation of what the function is doing and why
 For linked functions, keep the analysis shorter than for the primary function, but still explain what each linked function appears to do and how it influences the caller.
 If near_entry_execution_context is present, use that live register and stack context explicitly. Explain what code path would most likely be taken from the start of the function given that concrete state, which checks are likely to pass or fail first, and where the execution would likely go next.
 If a location is invalid, say so clearly. If a containing function could not be resolved confidently, fall back to the supplied code window and explain the uncertainty.
 Reason from the start of the containing function, not from the single instruction offset alone. In effect, mentally decompile the routine before explaining the active instruction.
 Use symbol names when they are reliable. If symbols are missing or ambiguous, say so and infer behavior from uf output and target disassembly without inventing names or semantics.
+If no security issue is visible in a function, say that explicitly instead of forcing one.
 Do not focus on stack state, call stack, or broader crash context unless they are required to explain the function logic or near_entry_execution_context explicitly makes that necessary.
 Do not invent facts that are not present in the snapshot.""" % (
 			PROGRAM_COUNTER.upper(),
