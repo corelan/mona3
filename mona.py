@@ -2503,10 +2503,26 @@ def _parseDisassemblyTextEntries(disasm_text):
 		parts = line.split()
 		if len(parts) < 2:
 			continue
-		addr = _tryParseAddressToken(parts[0])
+		addr_index = 0
+		addr = _tryParseAddressToken(parts[addr_index])
+		# WinDBG `uf` output can prefix disassembly with a source line number:
+		# `14 12341010 55 push ebp`. In that case the real instruction address is
+		# the second token, not the first one.
+		if len(parts) >= 3:
+			second_addr = _tryParseAddressToken(parts[1])
+			first_token = ensure_text(parts[0]).strip().replace("`", "")
+			second_token = ensure_text(parts[1]).strip().replace("`", "")
+			if (
+				second_addr > 0 and
+				len(first_token) <= 5 and
+				len(second_token) >= 6 and
+				(addr <= 0 or addr < 0x100000)
+			):
+				addr_index = 1
+				addr = second_addr
 		if addr <= 0:
 			continue
-		idx = 1
+		idx = addr_index + 1
 		while idx < len(parts):
 			token = parts[idx].replace("`", "")
 			if re.match(r"^[0-9a-fA-F?]+$", token) and len(token) >= 2:
