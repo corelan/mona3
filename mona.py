@@ -43974,21 +43974,21 @@ def _heapShowChunks(mHeap, parent=None, addr=None, dump=False, find=None, neighb
 				dbg.log("")
 				return
 			_heapLog("[+] Chunks for heap %s (parent: %s) : %d" % (
-				PTR_PRINT % heapbase, parent, len(chunks)), logfile, loghandle)
+				_ptrUpper(heapbase), parent, len(chunks)), logfile, loghandle)
 			table_data = {}
 			table_seq = []
 			for chunk in chunks.values():
-				key = PTR_PRINT % chunk.chunkptr
+				key = _ptrUpper(chunk.chunkptr)
 				table_data[key] = [
-					chunk.size * HEAPGRANULARITY,
-					chunk.userptr,
-					chunk.displayUserSize,
+					"0x%x (%d)" % (chunk.size * HEAPGRANULARITY, chunk.size * HEAPGRANULARITY),
+					_ptrUpper(chunk.userptr),
+					"0x%x (%d)" % (chunk.displayUserSize, chunk.displayUserSize),
 					chunk.getState().upper(),
 				]
 				table_seq.append(key)
 			if table_seq:
 				headers = ["_HEAP_ENTRY", "Size", "UserPtr", "UserSize", "State"]
-				types = ["string", "size", "pointer", "size", "string"]
+				types = ["string", "string", "string", "string", "string"]
 				print_dict_table(table_data, headers, types, padding="    ",
 				                 itemsequence=table_seq, logobj=logfile, logfile=loghandle, mdstyle=True)
 			dbg.log("")
@@ -44001,7 +44001,7 @@ def _heapShowChunks(mHeap, parent=None, addr=None, dump=False, find=None, neighb
 			dbg.log("    [-] Failed to enumerate chunks: %s" % str(e))
 			dbg.log("")
 			return
-		_heapLog("[+] Chunk summary for heap %s:" % (PTR_PRINT % heapbase), logfile, loghandle)
+		_heapLog("[+] Chunk summary for heap %s:" % (_ptrUpper(heapbase)), logfile, loghandle)
 		_heapLog("    Segment (back-end) chunks : %d" % seg_n, logfile, loghandle)
 		_heapLog("    LFH (front-end) chunks    : %d" % lfh_n, logfile, loghandle)
 		_heapLog("    VirtualAllocd blocks      : %d" % va_n, logfile, loghandle)
