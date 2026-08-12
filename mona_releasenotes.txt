@@ -1,3 +1,24 @@
+[mona 3.0.3026]
+- Update revision (mona: 3026, windbglib: 3015)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/1861bc1">1861bc1</link> Heap output (#70)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/43313dc">43313dc</link> update help for mona compare
+  - <link cmd="https://github.com/corelan/mona3/commit/e7d9e4e">e7d9e4e</link> fix issue with safe_int
+  - <link cmd="https://github.com/corelan/mona3/commit/d0d6109">d0d6109</link> update routine to find sourcode
+  - <link cmd="https://github.com/corelan/mona3/commit/3f667ef">3f667ef</link> fix indentation
+  - <link cmd="https://github.com/corelan/mona3/commit/bd49dc3">bd49dc3</link> update q 2
+  - <link cmd="https://github.com/corelan/mona3/commit/988f27c">988f27c</link> update prompt for q 2
+  - <link cmd="https://github.com/corelan/mona3/commit/c3a298d">c3a298d</link> fix uf parsing
+  - <link cmd="https://github.com/corelan/mona3/commit/c6eabba">c6eabba</link> update -q 2
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/adf74bb">adf74bb</link> Update revision (mona: 3025, windbglib: 3014)
+
+[windbglib 3.0.3015]
+- Update revision (mona: 3026, windbglib: 3015)
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/adf74bb">adf74bb</link> Update revision (mona: 3025, windbglib: 3014)
+
 [mona 3.0.3025]
 - Update revision (mona: 3025, windbglib: 3014)
 BailOutHere:
@@ -188,21 +209,6 @@ corelanc0d3r:
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/e1adeb0">e1adeb0</link> Update revision (mona: 3015, windbglib: 3006) AI refinements
 
-[mona 3.0.3015]
-- Update revision (mona: 3015, windbglib: 3006) AI refinements
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/f7b81e4">f7b81e4</link> default to dryrun. update documentation
-  - <link cmd="https://github.com/corelan/mona3/commit/04c421d">04c421d</link> default to dryrun if no engine was specified
-  - <link cmd="https://github.com/corelan/mona3/commit/3545997">3545997</link> allow setting default ai engine through env var or mona config. streamline requests for anthropic
-  - <link cmd="https://github.com/corelan/mona3/commit/6bc4323">6bc4323</link> further refine context for AI
-  - <link cmd="https://github.com/corelan/mona3/commit/2c0072d">2c0072d</link> delay calling MnProc.ensure() until after arguments are validated
-  - <link cmd="https://github.com/corelan/mona3/commit/f699083">f699083</link> instruction on getting cyber approval for anthropic
-  - <link cmd="https://github.com/corelan/mona3/commit/cfad610">cfad610</link> add some extra checks for mona dumpobj
-  - <link cmd="https://github.com/corelan/mona3/commit/79b8af0">79b8af0</link> detect file differences within same version/revision and offer to run mona up -force
-  - <link cmd="https://github.com/corelan/mona3/commit/1dd7d84">1dd7d84</link> add diagnostics logging for mona up
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/14adae5">14adae5</link> Update revision (mona: 3014) improvements and bugfixes, mostly in AI integration
-
 [windbglib 3.0.3006]
 - Update revision (mona: 3015, windbglib: 3006) AI refinements
 - No file-specific commits found.
@@ -210,6 +216,3 @@ github-actions[bot]:
 [windbglib 3.0.3005]
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)
-
-[windbglib 3.0.3004]
-- No file-specific commits found.

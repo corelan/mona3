@@ -29,7 +29,7 @@ $Revision: 3333
 """
 
 __VERSION__ = '3.0'
-__REV__ = 3014
+__REV__ = 3015
 
 #
 # Wrapper library around pykd
