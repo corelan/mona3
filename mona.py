@@ -18069,10 +18069,17 @@ class MnNTHeap(MnHeap):
 		return self._list_hints
 
 	def lfhActivationCounter(self, bucket):
-		"""For an INACTIVE LFH size class, return the current consecutive-allocation count toward LFH
-		activation (an int), or None when the value is not a meaningful pre-activation counter
-		(caller prints '-'). Conservative: anything we cannot decode with confidence returns None."""
-		units = getattr(bucket, "BlockUnits", 0)
+		"""For an INACTIVE bucket, the consecutive-allocation count toward LFH activation of its TOP
+		size class (bucket.BlockUnits), or None. Thin wrapper over lfhActivationCounterUnits."""
+		return self.lfhActivationCounterUnits(getattr(bucket, "BlockUnits", 0))
+
+	def lfhActivationCounterUnits(self, units):
+		"""For an INACTIVE LFH size class *units* (block units), return the current consecutive-
+		allocation count toward LFH activation (an int), or None when the value is not a meaningful
+		pre-activation counter (caller prints '-'). Activation state is per size class: on Vista/7 it
+		lives in ListHints[units].Blink (activationFor); on Win8+ in FrontEndHeapUsageData[units]
+		(masked to the low 5 bits) gated by the FrontEndHeapStatusBitmap bit. Conservative: anything
+		we cannot decode with confidence returns None."""
 		if not units:
 			return None
 		try:
@@ -18104,6 +18111,34 @@ class MnNTHeap(MnHeap):
 		base = self.heapbase + self._offset("FrontEndHeapStatusBitmap")
 		byte = dbg.readMemory(base + (units >> 3), 1)
 		return bool(_ord(byte[0]) & (1 << (units & 7)))
+
+	def frontEndActiveClasses(self, lo, hi):
+		"""(active, total) over the INCLUSIVE block-unit size-class range [lo, hi]: how many classes
+		have their FrontEndHeapStatusBitmap bit set. Activation is per size class (block units), so a
+		granularity>1 bucket spans several classes -- this counts them all. The per-size-class bitmap
+		exists on Win8+ (MnNT8Heap defines the offset; MnNT10+ build-gate it); Vista/7 have no such
+		bitmap. Reads the covering bitmap bytes once, then tests each bit. Guarded: an unreadable
+		bitmap (or a Vista/7 heap with no FrontEndHeapStatusBitmap) yields (0, total) so callers fall
+		back to the counter."""
+		if not lo or not hi or lo > hi:
+			return (0, 0)
+		total = hi - lo + 1
+		try:
+			base = self.heapbase + self._offset("FrontEndHeapStatusBitmap")
+			first = base + (lo >> 3)
+			span = dbg.readMemory(first, ((hi >> 3) - (lo >> 3)) + 1)
+		except Exception:
+			return (0, total)
+		if not span:
+			return (0, total)
+		byte0 = lo >> 3
+		active = 0
+		for u in range(lo, hi + 1):
+			bi = (u >> 3) - byte0
+			if 0 <= bi < len(span) and (_ord(span[bi]) & (1 << (u & 7))):
+				active += 1
+		return (active, total)
+
 	def getSegments(self):
 		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
 		if getattr(self, '_segments', None) is None:
@@ -18915,7 +18950,10 @@ class MnNTVistaHeap(MnNTHeap):
 		return frontendheaptype == 0x2
 
 	def getFrontEndHeapUsageData(self):
-		"""Read the FrontEndHeapUsageData u16[] array (Win8+ NT heap)."""
+		"""Read the FrontEndHeapUsageData u16[] array (Win8+ NT heap). Cached per heap object, so a
+		per-size-class walk doesn't re-read the whole array for every class."""
+		if getattr(self, "_fe_usage_cache", None) is not None:
+			return self._fe_usage_cache
 		counters = []
 		try:
 			arr = readPtrSizeBytes(self.heapbase + self._offset("FrontEndHeapUsageData"))
@@ -18932,7 +18970,35 @@ class MnNTVistaHeap(MnNTHeap):
 				counters.append(struct.unpack('<H', data[i*2:(i+1)*2])[0])
 		except Exception:
 			pass
+		self._fe_usage_cache = counters
 		return counters
+
+	def frontEndUsageAddrFor(self, units):
+		"""Address of the FrontEndHeapUsageData[units] u16 counter slot (Win8+), or None. This is the
+		per-size-class activation-counter slot -- 'dw <addr>' reads the raw value the counter shows."""
+		if not units:
+			return None
+		try:
+			base = readPtrSizeBytes(self.heapbase + self._offset("FrontEndHeapUsageData"))
+		except Exception:
+			return None
+		return (base + units * 2) if base else None
+
+	def lfhUsageRawUnits(self, units):
+		"""Raw FrontEndHeapUsageData[units] u16 value (Win8+), or None. The activation counter is the
+		low 5 bits (counter & 0x1F, threshold 0x10); the full raw value matches 'dw' of
+		frontEndUsageAddrFor(units)."""
+		if not units:
+			return None
+		try:
+			if self.getFrontEndHeapType() != 2:
+				return None
+			usage = self.getFrontEndHeapUsageData()
+		except Exception:
+			return None
+		if not usage or not (0 <= units < len(usage)):
+			return None
+		return usage[units]
 
 
 class MnNT8Heap(MnNTVistaHeap):
@@ -21857,9 +21923,12 @@ class MnNTListHints(object):
 
 	def activationFor(self, n):
 		"""Blink slot (Vista/7): the LFH-activation state for size class n, or None. INFERRED from the
-		2-pointer stride (ExtraItem != 0); Returns
-		("count", low16_counter) while counting toward activation (LSB clear), or ("bucket",
-		MnNTLFHBucket) once LFH-active (LSB set => Blink is a pointer). Threshold ~0x20 (Win7)."""
+		2-pointer stride (ExtraItem != 0). Returns ("count", low16, full_counter) while counting toward
+		activation (LSB clear), or ("bucket", MnNTLFHBucket) once LFH-active (LSB set => Blink is a
+		pointer). On Win7 the raw Blink counter is incremented by 0x10002 per alloc and decremented by
+		0x2 per free, so its low 16 bits hold 2 * (busy count of that size) and its high 16 bits hold
+		the running allocation count; ntdll activates the LFH for the class when
+		(uint16)counter > 0x20 OR counter > 0x10000000. low16 == (full_counter & 0xFFFF)."""
 		if self.elt == archValue(4, 8):
 			return None
 		idx = n - self.bi.BaseIndex
@@ -21868,9 +21937,27 @@ class MnNTListHints(object):
 		blink = readPtr(self.base + idx * self.elt + archValue(4, 8))
 		if not blink:
 			return None
+		# LSB is the activation tag: while counting the Blink is an even counter (LSB clear); on
+		# activation ntdll stores FreeList[1] = &LFHContext->BlockUnits + 1, a pointer with the LSB
+		# SET. So (blink & 1) == 1 => LFH already active for this size class.
 		if blink & 1:
 			return ("bucket", self.heap.lfhBucketAt(blink & ~1))
-		return ("count", blink & 0xFFFF)
+		return ("count", blink & 0xFFFF, blink)
+
+	def blinkAddrFor(self, n):
+		"""Address of the Blink slot in ListHints[n] (Vista/7 only). This is the slot activationFor(n)
+		decodes: while counting toward LFH activation it holds the low-16 counter (LSB clear); once
+		active it holds a tagged _HEAP_BUCKET pointer (LSB set). Returned so the user can 'dps <addr>'
+		and read the raw value. None on Win8+ (single-pointer stride -- activation moved to
+		FrontEndHeapUsageData/StatusBitmap) or when n is outside the ListHints array."""
+		if self.elt == archValue(4, 8):   # single-pointer stride (Win8+): no Blink activation slot
+			return None
+		if not self.usesHints():
+			return None
+		idx = n - self.bi.BaseIndex
+		if idx < 0 or idx >= self.bi.ArraySize:
+			return None
+		return self.base + idx * self.elt + archValue(4, 8)
 
 	def getBins(self):
 		"""{size_units: [MnChunk]} -- one bin per populated size class, each the FreeLists run from
@@ -40999,7 +41086,7 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 		if dwords:
 			dbg.log("    ListsInUse bitmap (BlocksIndex) @ %s:" % _ptrUpper(hints.ListsInUseUlong))
 			dbg.log("    Value            : %s" % " ".join("0x%08x" % d for d in dwords))
-			inuse = hints.getInUseIndices()
+			inuse = hints.inUseIndices()
 			dbg.log("    Populated Bins: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"))
 		dbg.log("")
 
@@ -41062,7 +41149,7 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 					g_busy += ss.getBusyCount()
 					g_free += ss.getFreeCount()
 			dbg.log("    LFH Address: %s" % _ptrUpper(fe.address))
-			dbg.log("    Active Buckets: %d" % len(fe.getActiveBuckets()))
+			dbg.log(_lfhActiveBucketsLine(mHeap, fe))
 			dbg.log("    Total Chunks: %d (Busy: %d, Free: %d)" % (g_total, g_busy, g_free))
 			dbg.log("")
 
@@ -41082,14 +41169,9 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 					b_busy += ss.getBusyCount()
 					b_free += ss.getFreeCount()
 					b_total += ss.BlockCount
-				is_active = bucket.isActive()
-				if is_active:
-					activation = "ACTIVE"
-				else:
-					cnt = mHeap.lfhActivationCounter(bucket)
-					if not cnt:  # skip buckets that are neither active nor counting
-						continue
-					activation = "%d" % cnt
+				activation, is_active = _lfhActivationCell(mHeap, bucket, by_index)
+				if not is_active and activation in ("-", "0"):  # skip buckets neither active nor counting
+					continue
 				rows.append([
 					"%d" % bucket.bucket_index,
 					serves,
@@ -41207,27 +41289,190 @@ def _heapLog(text, logfile=None, loghandle=None, highlight=False):
 			pass
 
 
+def _bucketUnitRange(bucket, by_index):
+	"""(lo, hi) INCLUSIVE block-unit size classes a bucket covers. hi = bucket.BlockUnits (the
+	bucket's own block size, in 8-byte granularity units); lo = the previous bucket's BlockUnits + 1.
+	A granularity>1 bucket aggregates (hi - lo + 1) size classes, and EACH class has its own
+	FrontEndHeapUsageData counter and FrontEndHeapStatusBitmap activation bit (both indexed by block
+	units). by_index maps bucket_index -> bucket (the full _HEAP_BUCKET[]) for the previous-bucket
+	lookup. Returns (0, 0) for a corrupt/zero bucket. Single source of truth for the span, shared by
+	_lfhBucketServed and the activation logic."""
+	hi = getattr(bucket, "BlockUnits", 0) or 0
+	if hi <= 0:
+		return (0, 0)
+	prev = by_index.get(bucket.bucket_index - 1) if by_index else None
+	prev_units = prev.BlockUnits if (prev is not None and not getattr(prev, "corrupted", False) and prev.BlockUnits > 0) else 0
+	lo = prev_units + 1
+	if lo > hi:
+		lo = hi
+	return (lo, hi)
+
+
 def _lfhBucketServed(bucket, by_index):
 	"""(serves_bytes_str, gran_units) -- the USERSIZE RANGE (in bytes) a bucket services.
 
 	A bucket of granularity G (units) covers a G-unit-wide block-size window ending at its own
 	block size; converted to UserSize (header stripped) the span is
-	(block_bytes - G*HEAPGRANULARITY + 1 .. block_bytes] - header. The low bound is derived from G
-	(the value shown in the Granularity column), so the full span is shown for bigger-granularity
-	buckets too. G is (this_block_units - prev_block_units). by_index maps bucket_index -> bucket
-	(the full _HEAP_BUCKET[]), used to find the previous bucket's block size for the low bound."""
-	hi_units = bucket.BlockUnits
-	prev = by_index.get(bucket.bucket_index - 1)
-	prev_units = prev.BlockUnits if (prev is not None and not prev.corrupted and prev.BlockUnits > 0) else 0
-	gran = hi_units - prev_units
-	if gran < 1:
-		gran = 1
+	(block_bytes - G*HEAPGRANULARITY + 1 .. block_bytes] - header. The block-unit span [lo, hi] and
+	G = hi - lo + 1 come from _bucketUnitRange (shared with the activation logic)."""
+	lo_u, hi_u = _bucketUnitRange(bucket, by_index)
+	gran = max(1, hi_u - lo_u + 1)
 	hdr = HEAPGRANULARITY  # LFH per-block header
-	hi_b = max(0, hi_units * HEAPGRANULARITY - hdr)             # top UserSize of this bucket
-	lo_b = max(0, (hi_units - gran) * HEAPGRANULARITY - hdr + 1)  # bottom UserSize served
+	hi_b = max(0, hi_u * HEAPGRANULARITY - hdr)              # top UserSize of this bucket
+	lo_b = max(0, (lo_u - 1) * HEAPGRANULARITY - hdr + 1)    # bottom UserSize served
 	serves = ("0x%x (%d)" % (hi_b, hi_b)) if lo_b >= hi_b else (
 		"0x%x - 0x%x (%d - %d)" % (lo_b, hi_b, lo_b, hi_b))
 	return serves, gran
+
+
+def _lfhActivationCell(mHeap, bucket, by_index=None):
+	"""Compute the flat 'Activation Counter' cell for a per-BUCKET view (summary LFH / -lfh -i).
+
+	LFH activation state is per block-unit size class (both the FrontEndHeapStatusBitmap bit and the
+	FrontEndHeapUsageData counter are indexed by block units), so a bucket is treated as active when
+	ANY size class in its [lo, hi] unit range is active (or it has a live subsegment). The per-class
+	breakdown lives in the dedicated -lfh -counters view. Returns (text, is_active):
+	  'ACTIVE'       -- >=1 size class active (status bit set), or a live/working subsegment exists
+	  <number> / '-' -- no class active: pre-activation counter (top class), or '-' if undecodable
+	by_index maps bucket_index -> bucket; when omitted, only the bucket's top unit is inspected."""
+	try:
+		subseg_active = bucket.isActive()
+	except Exception:
+		subseg_active = False
+	hi_bu = getattr(bucket, "BlockUnits", 0) or 0
+	lo, hi = _bucketUnitRange(bucket, by_index) if by_index is not None else (hi_bu, hi_bu)
+	active, _total = mHeap.frontEndActiveClasses(lo, hi)
+	if active > 0 or subseg_active:
+		return ("ACTIVE", True)
+	# Not active by range/subsegment: show the top class's counter (Win8+ usage or Vista/7 Blink),
+	# with the full raw counter in parens -- same format as the -lfh -counters view.
+	cell = _lfhWin8CounterCell(mHeap, hi_bu) or _lfhVista7CounterCell(mHeap, hi_bu)
+	if cell is not None:
+		return (cell[0], cell[1])
+	return ("-", False)
+
+
+def _sizeClassServed(units):
+	"""UserSize window (bytes, '0x.. - 0x.. (dec)') a SINGLE block-unit size class serves -- the
+	8-byte (x86) window whose requests round to *units* block units: ((units-1)*G - hdr + 1 .. units*G - hdr]."""
+	hdr = HEAPGRANULARITY
+	hi_b = max(0, units * HEAPGRANULARITY - hdr)
+	lo_b = max(0, (units - 1) * HEAPGRANULARITY - hdr + 1)
+	if lo_b >= hi_b:
+		return "0x%x (%d)" % (hi_b, hi_b)
+	return "0x%x - 0x%x (%d - %d)" % (lo_b, hi_b, lo_b, hi_b)
+
+
+def _lfhWin8CounterCell(mHeap, units):
+	"""(text, is_active, count) for a Win8+ size class from FrontEndHeapStatusBitmap +
+	FrontEndHeapUsageData, or None when this heap has no per-class StatusBitmap (Vista/7). The status
+	bit set => ACTIVE; otherwise the raw usage counter is +0x21 per alloc, and ntdll activates when
+	(counter & 0x1F) > 0x10 OR counter > 0xFF00, so mona shows count = counter & 0x1F (limit 0x10)
+	with the FULL raw counter in parens after it, e.g. '31 (0x3ff)'. count is None when already active."""
+	try:
+		bit = mHeap._frontEndStatusBitmapBit(units)
+	except Exception:
+		return None   # no FrontEndHeapStatusBitmap => not a Win8+ heap (Vista/7 uses the Blink slot)
+	if bit:
+		return ("ACTIVE", True, None)
+	raw = mHeap.lfhUsageRawUnits(units)
+	if raw is None:
+		return None
+	count = raw & 0x1F
+	return ("%d (0x%x)" % (count, raw), False, count)
+
+
+def _lfhVista7CounterCell(mHeap, units):
+	"""(text, is_active, count) for a Vista/7 size class whose LFH-activation state lives in
+	ListHints[units].Blink, or None if this heap does not use the Blink activation (Win8+, or the
+	class has no Blink slot). Win7 encodes the Blink counter as +0x10002 per alloc / -0x2 per free
+	and activates when (uint16)counter > 0x20 OR counter > 0x10000000. Mona mirrors the low-16 check:
+	count = (counter & 0xFFFF) // 2 (so the display limit is 0x10), and prints the decoded count with
+	the FULL raw counter in parentheses after it, e.g. '5 (0xa000a)'. A tagged bucket pointer (LSB
+	set) => already active. count is None when already active, else (counter & 0xFFFF)//2 (0 == fully freed)."""
+	try:
+		act = mHeap.list_hints.activationFor(units)
+	except Exception:
+		return None
+	if act is None:
+		return None
+	if act[0] == "bucket":
+		return ("ACTIVE", True, None)
+	if act[0] == "count":
+		full = act[2] if len(act) > 2 else act[1]
+		count = (full & 0xFFFF) // 2
+		return ("%d (0x%x)" % (count, full), False, count)
+	return None
+
+
+def _lfhClassActivationCell(mHeap, units):
+	"""Per-SIZE-CLASS activation cell (text, is_active, interesting) for block-unit size class *units*:
+	  'ACTIVE'      -- status bit set (Win8+) or Blink is a tagged bucket pointer (Vista/7)
+	  '<n> (0x..)'  -- pre-activation counter n with the FULL raw counter in parens after it
+	                   (Win8+: n = counter & 0x1F; Vista/7: n = (Blink & 0xFFFF)//2; display limit 0x10)
+	  '-'           -- not decodable
+	interesting is True when active or the count is nonzero (drives the default skip)."""
+	cell = _lfhWin8CounterCell(mHeap, units) or _lfhVista7CounterCell(mHeap, units)
+	if cell is None:
+		return ("-", False, False)
+	text, is_active, count = cell
+	return (text, is_active, is_active or bool(count))
+
+
+def _lfhClassSlotAddr(mHeap, units):
+	"""Address of the per-size-class activation slot for the 'Address' column, so the user can inspect
+	the raw value: FrontEndHeapUsageData[units] on Win8+ ('dw <addr>'), or ListHints[units].Blink on
+	Vista/7 ('dps <addr>'). None if unresolvable."""
+	try:
+		a = mHeap.frontEndUsageAddrFor(units)   # Win8+ usage slot
+		if a:
+			return a
+	except Exception:
+		pass
+	try:
+		return mHeap.list_hints.blinkAddrFor(units)   # Vista/7 Blink slot
+	except Exception:
+		return None
+
+
+def _lfhStrongActiveCounts(mHeap, buckets):
+	"""Cross-check the two per-size-class LFH-active signals across all buckets and return
+	(union, subseg, bitmap_only):
+	  subseg      -- buckets with a live/working subsegment (bucket.isActive())
+	  bitmap_only -- buckets with NO working subsegment but whose FrontEndHeapStatusBitmap bit is
+	                 set (ntdll's authoritative 'LFH active' flag -- a strong active indicator)
+	  union       -- buckets active by EITHER signal (the strong-indicator active total)
+	Activation is per block-unit size class, so a bucket counts as bitmap-active if ANY size class in
+	its [lo, hi] unit range has its status bit set (not just the top unit). Mirrors _lfhActivationCell
+	so the header agrees with the per-bucket column. Guarded so older heaps (no FrontEndHeapStatusBitmap)
+	just report 0 for bitmap_only."""
+	by_index = {b.bucket_index: b for b in buckets if not getattr(b, "corrupted", False)}
+	subseg = bitmap_only = 0
+	for b in buckets:
+		try:
+			if getattr(b, "corrupted", False):
+				continue
+			if b.isActive():
+				subseg += 1
+				continue
+			lo, hi = _bucketUnitRange(b, by_index)
+			active, _total = mHeap.frontEndActiveClasses(lo, hi)
+			if active > 0:
+				bitmap_only += 1
+		except Exception:
+			pass
+	return (subseg + bitmap_only, subseg, bitmap_only)
+
+
+def _lfhActiveBucketsLine(mHeap, fe, indent="    "):
+	"""The 'Active Buckets' header line. Counts buckets active by EITHER signal -- a live/working
+	subsegment OR a set FrontEndHeapStatusBitmap bit (the strong indicator) -- reported as a single
+	plain count, consistent with the per-bucket ACTIVE marking."""
+	try:
+		union, subseg, bitmap_only = _lfhStrongActiveCounts(mHeap, fe.getBuckets())
+	except Exception:
+		return "%sActive Buckets: %d" % (indent, len(fe.getActiveBuckets()))
+	return "%sActive Buckets: %d" % (indent, union)
 
 
 def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=False, logfile=None, loghandle=None, show_header=True):
@@ -41277,7 +41522,7 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 	except Exception as e:
 		mndbg.dbgp("_heapShowLFH: complete-set utilization failed (%s); falling back to working set" % str(e), errormode=False)
 		total, busy, free = fe.getUtilization()
-	_heapLog("    Active Buckets: %d" % len(active_buckets), logfile, loghandle)
+	_heapLog(_lfhActiveBucketsLine(mHeap, fe), logfile, loghandle)
 	_heapLog("    Total Chunks: %d (Busy: %d, Free: %d)" % (total, busy, free), logfile, loghandle)
 	mndbg.dbgp("tellme: heap %s LFH at %s: %d active buckets, %d blocks (busy=%d free=%d)" % (
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
@@ -41418,11 +41663,11 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 			# Inactive size class: it has no subsegments/chunks yet, so the SubSegments and
 			# Busy/Free columns carry no information. Show the Activation Counter instead -- the
 			# consecutive-allocation progress toward LFH activation for this size class.
-			cnt = mHeap.lfhActivationCounter(bucket)
+			activation, _act_active = _lfhActivationCell(mHeap, bucket, by_index)
 			bucket_data = {bkey: [
 				serves,
 				"%d" % gran_units,
-				("%d" % cnt) if cnt is not None else "-",
+				activation,
 			]}
 			print_dict_table(bucket_data,
 			                 ["Bucket Index", "Serves", "Granularity", "Activation Counter"],
@@ -41477,8 +41722,12 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 
 		def _ssRole(ss):
 			# Working-set slot name (Active/Hint/CachedItems) if set, else the complete-set
-			# provenance (retired/deleted) title-cased -> "Retired" / "Deleted".
-			return getattr(ss, "role", None) or (getattr(ss, "complete_source", None) or "?").capitalize()
+			# provenance mapped to a display label: a "retired" subsegment (rotated off the working
+			# set because every block is in use) is shown as "Full"; "deleted" -> "Deleted".
+			if getattr(ss, "role", None):
+				return ss.role
+			src = getattr(ss, "complete_source", None) or "?"
+			return {"retired": "Full"}.get(src, src.capitalize())
 
 		if not extend:
 			# One combined SubSegment table for the whole bucket.
@@ -41547,14 +41796,17 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 
 
 def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
-	"""Per-bucket LFH counters, one row per bucket. Columns:
-	  Index / Served Size / Granularity / Chunks / SubSegments / Activation Counter
-	Served Size and Granularity match the main -lfh view's serve-range logic; Chunks and
-	SubSegments are counted over the COMPLETE subsegment set (working + retired + deleted), same as
-	-lfh; Chunks is Busy/Free (Total). Activation Counter is ACTIVE for a live bucket, otherwise the
-	pre-activation consecutive-allocation counter (a number, or - when it can't be decoded).
-	By default skips inactive all-zero buckets; show_all=True includes them."""
-	_heapLog("[+] FrontEnd Allocator : LFH per-bucket counters", logfile, loghandle)
+	"""Per-SIZE-CLASS LFH activation table, ONE ROW PER BLOCK-UNIT SIZE CLASS. Columns:
+	  Size Range (block units) / Address / UserSize / Bucket / Activation Counter
+	Activation state is per size class (the FrontEndHeapStatusBitmap bit + FrontEndHeapUsageData
+	counter on Win8+, ListHints[n].Blink on Vista/7), so each class is its own row -- a granularity>1
+	bucket expands into several rows, and the Bucket column maps each class back to its _HEAP_BUCKET.
+	Chunks/SubSegments are per-bucket (shared by a bucket's classes) and live in the !mona heap -lfh
+	view, not here. The Address column (right after the Size Range index) is that class's activation
+	slot -- FrontEndHeapUsageData[n] on Win8+ ('dw <addr>') or ListHints[n].Blink on Vista/7
+	('dps <addr>') -- so the user can read the raw value the Activation Counter is decoded from. By
+	default shows only active/counting classes; show_all=True includes every class in every bucket's range."""
+	_heapLog("[+] FrontEnd Allocator : LFH per-size-range activation", logfile, loghandle)
 	if not mHeap.usesLFH():
 		_heapLog("    LFH is not active for this heap", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
@@ -41568,59 +41820,35 @@ def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 		_heapLog("", logfile, loghandle)
 		return
 
-	# All buckets indexed by bucket_index (for the serve-range low-bound lookup).
+	# All buckets indexed by bucket_index (for each bucket's size-class unit range low bound).
 	by_index = {b.bucket_index: b for b in buckets}
-	# Complete subsegment set grouped by block size (units), same as the main -lfh view, so the
-	# Chunks / SubSegments columns match what -lfh renders.
-	subsegs_by_block = {}
-	try:
-		for ss in fe.getAllSubSegmentsComplete():
-			if getattr(ss, "BlockSize", 0):
-				subsegs_by_block.setdefault(ss.BlockSize, []).append(ss)
-	except Exception as e:
-		mndbg.dbgp("_heapShowLFHCounters: complete subsegment walk failed: %s" % str(e), errormode=False)
 
 	table_data = {}
 	table_seq = []
 	shown = 0
 	for bucket in buckets:
-		bkey = "%d" % bucket.bucket_index
-		if bucket.corrupted:
-			table_data[bkey] = ["*** CORRUPTED ***", "", "", "", ""]
-			table_seq.append(bkey)
-			shown += 1
+		if getattr(bucket, "corrupted", False):
 			continue
-		serves, gran_units = _lfhBucketServed(bucket, by_index)
-		subsegments = subsegs_by_block.get(bucket.BlockUnits) or bucket.getSubSegments()
-		b_busy = b_free = b_total = 0
-		for ss in subsegments:
-			if getattr(ss, "corrupted", False):
+		lo, hi = _bucketUnitRange(bucket, by_index)
+		if hi <= 0:
+			continue
+		for n in range(lo, hi + 1):
+			activation, is_active, interesting = _lfhClassActivationCell(mHeap, n)
+			# By default show only active/counting classes; -all includes every class.
+			if not show_all and not interesting:
 				continue
-			b_busy += ss.getBusyCount()
-			b_free += ss.getFreeCount()
-			b_total += ss.BlockCount
-		if bucket.isActive():
-			activation = "ACTIVE"
-		else:
-			cnt = mHeap.lfhActivationCounter(bucket)
-			activation = ("%d" % cnt) if cnt is not None else "-"
-		if not show_all and not bucket.isActive() and b_total == 0 and len(subsegments) == 0 and (activation == "-" or activation == "0"):
-			continue
-		table_data[bkey] = [
-			serves,
-			"%d" % gran_units,
-			"%d/%d (%d)" % (b_busy, b_free, b_total),
-			"%d" % len(subsegments),
-			activation,
-		]
-		table_seq.append(bkey)
-		shown += 1
+			addr = _lfhClassSlotAddr(mHeap, n)   # activation slot, right after the Size Range index
+			row = [_ptrUpper(addr) if addr else "-", _sizeClassServed(n), "%d" % bucket.bucket_index, activation]
+			key = "%d" % n
+			table_data[key] = row
+			table_seq.append(key)
+			shown += 1
 	if shown == 0:
-		_heapLog("    No active/populated buckets (use -all to include zero buckets)", logfile, loghandle)
+		_heapLog("    No active/counting size ranges (use -all to include every range)", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
-	headers = ["Index", "Served Size", "Granularity", "Chunks", "SubSegments", "Activation Counter"]
-	types = ["int", "string", "string", "string", "int", "string"]
+	headers = ["Size Range", "Address", "UserSize", "Bucket", "Activation Counter"]
+	types   = ["int", "string", "string", "int", "string"]
 	print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq,
 	                 logobj=logfile, logfile=loghandle, mdstyle=True)
 	_heapLog("", logfile, loghandle)
@@ -41715,21 +41943,12 @@ def _lhBinUserSizeServed(size_b, chunks):
 	return _lhRangeStr(us)
 
 
-def _lhBinBlock(label, us_str, size_str, chunks, fl_index, logfile=None, loghandle=None,
-                child_indent="        "):
-	"""One bin: a Bin header+detail table, then (if it has chunks) an indented child Chunk table.
-	Same parent/child style as -vablocks -extend. fl_index maps id(chunk)->its position in the full
-	free list (the FreeList Index column)."""
-	bin_data = {label: [us_str, size_str, "%d" % len(chunks)]}
-	print_dict_table(bin_data, ["Bin", "UserSize Served", "Size Served", "Chunks"],
-	                 ["string", "string", "string", "int"],
-	                 padding="    ", itemsequence=[label],
-	                 logobj=logfile, logfile=loghandle, mdstyle=True)
-	_heapLog("", logfile, loghandle)
+def _lhChunkTable(chunks, fl_index, logfile=None, loghandle=None, child_indent="        "):
+	"""The per-bin child Chunk table: Bin Index (position in this bin) / FreeList Index (position in
+	the full free list) / _HEAP_ENTRY / UserPtr / UserSize / Size / Flags. _HEAP_ENTRY is bold
+	(bold_col=2). fl_index maps id(chunk)->its position in the full free list. No-op when empty."""
 	if not chunks:
 		return
-	# Child Chunk table: Bin Index (position in this bin) / FreeList Index (position in the full
-	# free list) / _HEAP_ENTRY / UserPtr / UserSize / Size / Flags. _HEAP_ENTRY is bold (bold_col=2).
 	ck_data = {}
 	ck_seq = []
 	for bi, c in enumerate(chunks):
@@ -41750,6 +41969,38 @@ def _lhBinBlock(label, us_str, size_str, chunks, fl_index, logfile=None, loghand
 	                 ["int", "int", "string", "string", "string", "string", "string"],
 	                 padding=child_indent, itemsequence=ck_seq,
 	                 logobj=logfile, logfile=loghandle, mdstyle=True, bold_col=2)
+
+
+def _lhBinsTable(bin_entries, fl_index, logfile=None, loghandle=None, with_chunks=True):
+	"""Render a set of bins as ONE summary table: the Bin | UserSize Served | Size Served | Chunks
+	header is printed once at the top, then one row per bin (Bin[n] in the Bin column) -- the header
+	is NOT repeated per bin. Then, when with_chunks, each POPULATED bin's Chunk table is printed
+	below the summary (a compact "Bin[n]:" label + its chunk table), so the parent/child detail is
+	kept without repeating the column header per bin. bin_entries = [(label, us_str, size_str,
+	chunks)]."""
+	if not bin_entries:
+		return
+	rows = {}
+	seq = []
+	key_col = []
+	for i, (label, us_str, size_str, chunks) in enumerate(bin_entries):
+		k = "%d" % i
+		rows[k] = [us_str, size_str, "%d" % len(chunks)]
+		seq.append(k)
+		key_col.append(label)
+	print_dict_table(rows, ["Bin", "UserSize Served", "Size Served", "Chunks"],
+	                 ["string", "string", "string", "int"],
+	                 padding="    ", itemsequence=seq, key_col=key_col,
+	                 logobj=logfile, logfile=loghandle, mdstyle=True)
+	if not with_chunks:
+		return
+	for label, us_str, size_str, chunks in bin_entries:
+		if not chunks:
+			continue
+		_heapLog("", logfile, loghandle)
+		_heapLog("    %s:" % label, logfile, loghandle)
+		_heapLog("", logfile, loghandle)
+		_lhChunkTable(chunks, fl_index, logfile, loghandle)
 
 
 def _lhTiers(mHeap):
@@ -41805,7 +42056,7 @@ def _lhExtendedHeader(node, logfile=None, loghandle=None):
 	if dwords:
 		_heapLog("      ListsInUse bitmap (BlocksIndex) @ %s:" % _ptrUpper(lh.ListsInUseUlong), logfile, loghandle)
 		_heapLog("      Value            : %s" % " ".join("0x%08x" % d for d in dwords), logfile, loghandle)
-		inuse = lh.getInUseIndices()
+		inuse = lh.inUseIndices()
 		_heapLog("      Populated Bins: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"), logfile, loghandle)
 	_heapLog("", logfile, loghandle)
 
@@ -41818,7 +42069,7 @@ def _lhFlatBinsBody(mHeap, logfile=None, loghandle=None):
 	only shown under -extend (see _lhBinsListBody)."""
 	bins = mHeap.free_lists.getBins()
 	if len(bins) == 0:
-		_heapLog("    No populated ListHints size classes", logfile, loghandle)
+		_heapLog("    No populated ListHints size ranges", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
 	tiers = list(_lhTiers(mHeap))
@@ -41838,12 +42089,15 @@ def _lhFlatBinsBody(mHeap, logfile=None, loghandle=None):
 	rows = {}
 	seq = []
 	key_col = []
-	for idx, size_units, chunks in dedicated:
+	for _rel, size_units, chunks in dedicated:
 		size_b = size_units * HEAPGRANULARITY
-		k = "%d" % idx
+		# Index = the TRUE ListHints slot: the absolute block-unit size class n, i.e. Bin[n] and what
+		# -i n selects -- NOT the tier-relative offset (n - BaseIndex). Equal to n for the head tier
+		# (BaseIndex 0); for ExtendedLookup tiers it stays the absolute slot rather than restarting.
+		k = "%d" % size_units
 		rows[k] = [_lhBinUserSizeServed(size_b, chunks), _lhRangeStr(size_b), "%d" % len(chunks)]
 		seq.append(k)
-		key_col.append("%d" % idx)
+		key_col.append("%d" % size_units)
 	# Non-dedicated collapses everything past the head tier into one row, Index = nd_start (the
 	# first size class beyond the head's dedicated range), open-ended (>=) served ranges.
 	if nd:
@@ -41865,8 +42119,10 @@ def _lhFlatBinsBody(mHeap, logfile=None, loghandle=None):
 
 
 def _lhBinsListBody(mHeap, logfile=None, loghandle=None):
-	"""-listhints -extend / -extend summary "Bins List:" -- per-bin parent/child tables (Bin header
-	table + indented Chunk table).
+	"""-listhints -extend / -extend summary "Bins List:" -- ONE summary table per tier (the
+	Bin | UserSize Served | Size Served | Chunks header is printed once at the top, one row per bin),
+	then each populated bin's Chunk table below (a compact "Bin[n]:" label + table). The summary
+	column header is never repeated per bin.
 
 	The HEAD tier's Bins List ends with a Non-dedicated bin that COLLAPSES everything past the head
 	(the head tier's own overflow + every ExtendedLookup tier's chunks) -- same set the flat view
@@ -41878,7 +42134,7 @@ def _lhBinsListBody(mHeap, logfile=None, loghandle=None):
 	ordered_fl = mHeap.free_lists.getOrderedChunks()
 	fl_index = {id(c): i for i, c in enumerate(ordered_fl)}
 	if len(bins) == 0:
-		_heapLog("    No populated ListHints size classes", logfile, loghandle)
+		_heapLog("    No populated ListHints size ranges", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
 	tiers = list(_lhTiers(mHeap))
@@ -41892,45 +42148,49 @@ def _lhBinsListBody(mHeap, logfile=None, loghandle=None):
 				collapsed_nd.append((size_units, c))
 		collapsed_nd.extend(t[3])
 
-	# ---- Head tier ----
+	# ---- Head tier ---- (ONE summary table, header once; each populated bin's chunk table below)
 	_heapLog("    Bins List:", logfile, loghandle)
-	for idx, size_units, chunks in head_dedicated:
+	_heapLog("", logfile, loghandle)
+	entries = []
+	for _rel, size_units, chunks in head_dedicated:
 		size_b = size_units * HEAPGRANULARITY
-		_heapLog("", logfile, loghandle)
-		_lhBinBlock("Bin[%d]" % idx, _lhBinUserSizeServed(size_b, chunks), _lhRangeStr(size_b),
-		            chunks, fl_index, logfile, loghandle)
+		# Bin[n] = the TRUE absolute ListHints slot (block-unit size class), matching -i n.
+		entries.append(("Bin[%d]" % size_units, _lhBinUserSizeServed(size_b, chunks),
+		                _lhRangeStr(size_b), chunks))
 	if collapsed_nd:
 		nd_b = head_nd_start * HEAPGRANULARITY
 		nd_chunks = [c for _su, c in sorted(collapsed_nd, key=lambda t: (t[0], t[1].chunkptr))]
-		_heapLog("", logfile, loghandle)
-		_lhBinBlock("Bin[non-dedicated]", ">= 0x%x" % max(0, nd_b - hdr),
-		            ">= 0x%x" % nd_b, nd_chunks, fl_index, logfile, loghandle)
+		entries.append(("Bin[non-dedicated]", ">= 0x%x" % max(0, nd_b - hdr), ">= 0x%x" % nd_b, nd_chunks))
+	_lhBinsTable(entries, fl_index, logfile, loghandle)
 
 	# ---- ExtendedLookup tiers (breakdown of the collapsed Non-dedicated above) ----
 	for node, _t, dedicated, nd, nd_start in tiers[1:]:
-		# Extra vertical whitespace + rule so it's clear a new (tier) table begins here.
+		# Extra vertical whitespace so it's clear a new (tier) table begins here.
 		_heapLog("", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		_lhExtendedHeader(node, logfile, loghandle)
 		_heapLog("    Bins List:", logfile, loghandle)
-		for idx, size_units, chunks in dedicated:
+		_heapLog("", logfile, loghandle)
+		entries = []
+		for _rel, size_units, chunks in dedicated:
 			size_b = size_units * HEAPGRANULARITY
-			_heapLog("", logfile, loghandle)
-			_lhBinBlock("Bin[%d]" % idx, _lhBinUserSizeServed(size_b, chunks), _lhRangeStr(size_b),
-			            chunks, fl_index, logfile, loghandle)
+			# Bin[n] = the TRUE absolute ListHints slot, not the tier-relative offset -- so an
+			# ExtendedLookup tier's bins keep their real block-unit size class instead of restarting at 0.
+			entries.append(("Bin[%d]" % size_units, _lhBinUserSizeServed(size_b, chunks),
+			                _lhRangeStr(size_b), chunks))
 		if nd:
 			nd_b = nd_start * HEAPGRANULARITY
 			nd_chunks = [c for _su, c in sorted(nd, key=lambda t: (t[0], t[1].chunkptr))]
-			_heapLog("", logfile, loghandle)
-			_lhBinBlock("Bin[non-dedicated]", ">= 0x%x" % max(0, nd_b - hdr),
-			            ">= 0x%x" % nd_b, nd_chunks, fl_index, logfile, loghandle)
+			entries.append(("Bin[non-dedicated]", ">= 0x%x" % max(0, nd_b - hdr), ">= 0x%x" % nd_b, nd_chunks))
+		_lhBinsTable(entries, fl_index, logfile, loghandle)
 	_heapLog("", logfile, loghandle)
 
 
 def _heapShowListHints(mHeap, show_all=False, usersize=None, bin_index=None, extend=False, logfile=None, loghandle=None):
 	"""Display the ListHints (size-class index into the back-end free list).
 
-	extend    -> (from -extend) per-bin parent/child tables (Bin header + its Chunk table). Without
+	extend    -> (from -extend) one summary table per tier (Bin/UserSize Served/Size Served/Chunks
+	             header once, one row per bin) then each populated bin's Chunk table below. Without
 	             it, the default view is one flat Bins List table per tier (no chunk tables).
 	show_all  -> iterate the full BaseIndex..BaseIndex+ArraySize range, including empty classes.
 	usersize  -> (bytes, from -s) restrict to the ONE bin whose served UserSize range covers this
@@ -41946,7 +42206,7 @@ def _heapShowListHints(mHeap, show_all=False, usersize=None, bin_index=None, ext
 	if dwords:
 		_heapLog("    ListsInUse bitmap (BlocksIndex) @ %s:" % (_ptrUpper(hints.ListsInUseUlong)), logfile, loghandle)
 		_heapLog("      Value            : %s" % " ".join("0x%08x" % d for d in dwords), logfile, loghandle)
-		inuse = hints.getInUseIndices()
+		inuse = hints.inUseIndices()
 		_heapLog("      Populated Bins: %s" % (", ".join(str(i) for i in inuse) if inuse else "(none)"), logfile, loghandle)
 
 	# ---- Bin-rendering helpers (shared with the !mona heap -extend summary) ----
@@ -41957,9 +42217,6 @@ def _heapShowListHints(mHeap, show_all=False, usersize=None, bin_index=None, ext
 	_rangeStr = _lhRangeStr
 	_binUserSizeServed = _lhBinUserSizeServed
 
-	def _binBlock(label, us_str, size_str, chunks):
-		_lhBinBlock(label, us_str, size_str, chunks, fl_index, logfile, loghandle)
-
 	# Single bin, selected by served UserSize (bytes). Same round-up-to-bucket basis as
 	# -freelist -s: a request maps to the block-size class that would service it -- block =
 	# (usersize + header) rounded up to the granularity grid -- and we show that one bin.
@@ -41967,7 +42224,9 @@ def _heapShowListHints(mHeap, show_all=False, usersize=None, bin_index=None, ext
 		block_b = usersize + hdr
 		block_units = (block_b + HEAPGRANULARITY - 1) // HEAPGRANULARITY   # round up to grid
 		size_b = block_units * HEAPGRANULARITY
-		idx = hints.bucketForSize(block_units)["index"] if hints.usesHints() else block_units
+		# Bin[n] = the TRUE absolute ListHints slot (= block_units), matching -i n, not the
+		# tier-relative offset from bucketForSize()["index"].
+		idx = block_units
 		chunks = bins.get(block_units, [])
 		_heapLog("", logfile, loghandle)
 		_heapLog("    UserSize 0x%x -> Bin[%d] (Size Served %s, UserSize Served %s):" % (
@@ -41979,7 +42238,8 @@ def _heapShowListHints(mHeap, show_all=False, usersize=None, bin_index=None, ext
 				", ".join("0x%x" % s for s in present) if present else "(none)"), logfile, loghandle, highlight=True)
 			_heapLog("", logfile, loghandle)
 			return
-		_binBlock("Bin[%d]" % idx, _binUserSizeServed(size_b, chunks), _rangeStr(size_b), chunks)
+		# -s prints its own "UserSize X -> Bin[N] (...)" title above; just the chunk table here.
+		_lhChunkTable(chunks, fl_index, logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
 
@@ -42001,27 +42261,30 @@ def _heapShowListHints(mHeap, show_all=False, usersize=None, bin_index=None, ext
 			_heapLog("      No free chunks in that bin.", logfile, loghandle, highlight=True)
 			_heapLog("", logfile, loghandle)
 			return
-		_binBlock("Bin[%d]" % bin_index, _binUserSizeServed(size_b, chunks), _rangeStr(size_b), chunks)
+		# -i prints its own "Bin[N] (...)" title above; just the chunk table here.
+		_lhChunkTable(chunks, fl_index, logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
 
 	if show_all and hints.usesHints():
-		# Same Bin/Chunk table format as the default view, but over EVERY size class in the
-		# BaseIndex..ArraySize range (including empty bins), not just the populated ones.
+		# ONE summary table over EVERY size class in the BaseIndex..ArraySize range (including empty
+		# bins) -- header once at the top -- then each populated bin's chunk table below.
 		_heapLog("", logfile, loghandle)
-		_heapLog("    All ListHints size classes (BaseIndex 0x%x, ArraySize 0x%x):" % (
+		_heapLog("    All ListHints size ranges (BaseIndex 0x%x, ArraySize 0x%x):" % (
 			hints.BaseIndex, hints.ArraySize), logfile, loghandle)
+		_heapLog("", logfile, loghandle)
+		entries = []
 		for n in range(hints.BaseIndex, hints.BaseIndex + hints.ArraySize):
 			chunks = bins.get(n, [])
 			size_b = n * HEAPGRANULARITY
-			idx = hints.bucketForSize(n)["index"]
-			_heapLog("", logfile, loghandle)
-			_binBlock("Bin[%d]" % idx, _binUserSizeServed(size_b, chunks), _rangeStr(size_b), chunks)
+			# Bin[n] = the TRUE absolute ListHints slot (block-unit size class), matching -i n.
+			entries.append(("Bin[%d]" % n, _binUserSizeServed(size_b, chunks), _rangeStr(size_b), chunks))
+		_lhBinsTable(entries, fl_index, logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
 
-	# Default view: one flat Bins List table per tier (no per-bin chunk tables). -extend adds the
-	# per-bin parent/child tables (Bin header + its Chunk table), shared with the
+	# Default view: one flat Bins List table per tier (no per-bin chunk tables). -extend renders one
+	# summary table per tier (header once) + each populated bin's chunk table below, shared with the
 	# !mona heap -extend summary. Both walk the ExtendedLookup chain.
 	_heapLog("", logfile, loghandle)
 	if extend:
@@ -44383,7 +44646,9 @@ def procHeap(args):
 			present.append(na)
 
 	# Unknown subcommand-shaped token (a flag that is neither a known subcommand,
-	# an alias, nor a modifier) -> discoverability error with closest match.
+	# an alias, nor a modifier) -> non-fatal warning with a closest-match hint. The flag is
+	# discarded and the command keeps running, so a stray/unsupported flag (e.g. -cpb carried
+	# over from another mona command) never aborts the heap command.
 	known = set(SUBCMDS) | set(ALIASES.keys()) | MODIFIERS
 	unknown = [a for a in args if a not in known and _norm(a) not in SUBCMDS]
 	if unknown:
@@ -44392,9 +44657,7 @@ def procHeap(args):
 		for u in unknown:
 			sugg = difflib.get_close_matches(u, allnames, n=1)
 			hint = " ; did you mean -%s?" % sugg[0] if sugg else ""
-			dbg.log("[!] Unknown option -%s%s" % (u, hint), highlight=1)
-		dbg.log("    Valid subcommands: %s" % ", ".join("-%s" % s for s in SUBCMDS), highlight=1)
-		return
+			dbg.log("[!] Ignoring unknown option -%s%s" % (u, hint), highlight=1)
 
 	# Top-level "dump everything" is triggered by -extend with no subcommand (!mona heap -extend).
 	# -all remains a per-subcommand modifier only (e.g. -listhints -all / -lfh -counters -all show
@@ -44477,7 +44740,7 @@ def procHeap(args):
 		if _is_units:
 			_s = _s[:-1]
 		try:
-			_val = hexStrToInt(_s) if _s.startswith("0x") else int(_s)
+			_val = to_int(_s)   # accepts decimal or 0x-hex (auto-detected)
 		except Exception:
 			dbg.log("Please provide a valid size with -s (bytes, or append 'b' for granularity units e.g. -s 0x5b)", highlight=1)
 			return
@@ -44499,9 +44762,9 @@ def procHeap(args):
 	if "i" in args and type(args["i"]).__name__.lower() != "bool":
 		_iv = args["i"].replace('"', '').replace("'", "").strip()
 		try:
-			bin_index = hexStrToInt(_iv) if _iv.lower().startswith("0x") else int(_iv)
+			bin_index = to_int(_iv)   # accepts decimal or 0x-hex (auto-detected)
 		except Exception:
-			dbg.log("Please provide a valid bin index with -i (integer)", highlight=1)
+			dbg.log("Please provide a valid bin index with -i (decimal or 0x-hex)", highlight=1)
 			return
 		if bin_index < 0:
 			dbg.log("[!] -i index must be >= 0 (got %d)" % bin_index, highlight=1)
@@ -44511,9 +44774,9 @@ def procHeap(args):
 	radius = 2
 	if "n" in args and type(args["n"]).__name__.lower() != "bool":
 		try:
-			radius = int(args["n"])
+			radius = to_int(str(args["n"]).replace('"', '').replace("'", "").strip())   # decimal or 0x-hex
 		except Exception:
-			dbg.log("Please provide a valid -n radius (integer 1..5)", highlight=1)
+			dbg.log("Please provide a valid -n radius (1..5, decimal or 0x-hex)", highlight=1)
 			return
 		if radius < 1 or radius > 5:
 			dbg.log("[!] -n radius must be between 1 and 5 (got %d)" % radius, highlight=1)
@@ -44551,7 +44814,7 @@ def procHeap(args):
 	if "offset" in args and type(args["offset"]).__name__.lower() != "bool":
 		_ov = args["offset"].replace('"', '').replace("'", "")
 		try:
-			search_offset = hexStrToInt(_ov) if _ov.lower().startswith("0x") else int(_ov)
+			search_offset = to_int(_ov)   # accepts decimal or 0x-hex (auto-detected)
 		except Exception:
 			search_offset = None
 	search_busy = "free" not in args
