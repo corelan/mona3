@@ -41062,7 +41062,7 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 					g_busy += ss.getBusyCount()
 					g_free += ss.getFreeCount()
 			dbg.log("    LFH Address: %s" % _ptrUpper(fe.address))
-			dbg.log("    Active Buckets: %d" % len(fe.getActiveBuckets()))
+			dbg.log(_lfhActiveBucketsLine(mHeap, fe))
 			dbg.log("    Total Chunks: %d (Busy: %d, Free: %d)" % (g_total, g_busy, g_free))
 			dbg.log("")
 
@@ -41082,14 +41082,9 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 					b_busy += ss.getBusyCount()
 					b_free += ss.getFreeCount()
 					b_total += ss.BlockCount
-				is_active = bucket.isActive()
-				if is_active:
-					activation = "ACTIVE"
-				else:
-					cnt = mHeap.lfhActivationCounter(bucket)
-					if not cnt:  # skip buckets that are neither active nor counting
-						continue
-					activation = "%d" % cnt
+				activation, is_active = _lfhActivationCell(mHeap, bucket)
+				if not is_active and activation in ("-", "0"):  # skip buckets neither active nor counting
+					continue
 				rows.append([
 					"%d" % bucket.bucket_index,
 					serves,
@@ -41230,6 +41225,73 @@ def _lfhBucketServed(bucket, by_index):
 	return serves, gran
 
 
+def _lfhActivationCell(mHeap, bucket):
+	"""Compute the 'Activation Counter' cell for one bucket by CROSS-CHECKING the two independent
+	LFH-active signals for that size class:
+	  * bucket.isActive()            -- a live/working _HEAP_SUBSEGMENT exists (working-set truth)
+	  * FrontEndHeapStatusBitmap bit -- ntdll's authoritative per-size-class 'LFH active' flag,
+	                                    set on grant in RtlpAllocateHeap (mHeap._frontEndStatusBitmapBit)
+	Returns (text, is_active). Either signal being active marks the bucket ACTIVE (consistently --
+	a working subsegment and a set status bit are treated the same):
+	  'ACTIVE'       -- active by either signal (working subsegment present OR status bit set)
+	  <number> / '-' -- genuinely inactive: pre-activation counter, or '-' when undecodable
+	is_active is True for the ACTIVE label (drives bold rendering)."""
+	try:
+		subseg_active = bucket.isActive()
+	except Exception:
+		subseg_active = False
+	units = getattr(bucket, "BlockUnits", 0)
+	bitmap_active = None
+	if units:
+		try:
+			bitmap_active = mHeap._frontEndStatusBitmapBit(units)
+		except Exception:
+			bitmap_active = None
+	if subseg_active or bitmap_active:
+		# Active by either signal: a live/working subsegment OR ntdll's authoritative
+		# FrontEndHeapStatusBitmap bit. Shown consistently as ACTIVE.
+		return ("ACTIVE", True)
+	# Neither signal is active (bit clear or unreadable): show the pre-activation counter.
+	cnt = mHeap.lfhActivationCounter(bucket)
+	return (("%d" % cnt, False) if cnt is not None else ("-", False))
+
+
+def _lfhStrongActiveCounts(mHeap, buckets):
+	"""Cross-check the two per-size-class LFH-active signals across all buckets and return
+	(union, subseg, bitmap_only):
+	  subseg      -- buckets with a live/working subsegment (bucket.isActive())
+	  bitmap_only -- buckets with NO working subsegment but whose FrontEndHeapStatusBitmap bit is
+	                 set (ntdll's authoritative 'LFH active' flag -- a strong active indicator)
+	  union       -- buckets active by EITHER signal (the strong-indicator active total)
+	Mirrors _lfhActivationCell's ACTIVE / Active split so the header agrees with the per-bucket
+	column. Bitmap reads are guarded so older heaps (no FrontEndHeapStatusBitmap) just report 0."""
+	subseg = bitmap_only = 0
+	for b in buckets:
+		try:
+			if getattr(b, "corrupted", False):
+				continue
+			if b.isActive():
+				subseg += 1
+				continue
+			units = getattr(b, "BlockUnits", 0)
+			if units and mHeap._frontEndStatusBitmapBit(units):
+				bitmap_only += 1
+		except Exception:
+			pass
+	return (subseg + bitmap_only, subseg, bitmap_only)
+
+
+def _lfhActiveBucketsLine(mHeap, fe, indent="    "):
+	"""The 'Active Buckets' header line. Counts buckets active by EITHER signal -- a live/working
+	subsegment OR a set FrontEndHeapStatusBitmap bit (the strong indicator) -- reported as a single
+	plain count, consistent with the per-bucket ACTIVE marking."""
+	try:
+		union, subseg, bitmap_only = _lfhStrongActiveCounts(mHeap, fe.getBuckets())
+	except Exception:
+		return "%sActive Buckets: %d" % (indent, len(fe.getActiveBuckets()))
+	return "%sActive Buckets: %d" % (indent, union)
+
+
 def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=False, logfile=None, loghandle=None, show_header=True):
 	"""Display LFH (FrontEnd Allocator) as a composed Bucket -> SubSegment view (like -listhints):
 	each Bucket is a header+detail table, with an indented SubSegment table under it. When usersize
@@ -41277,7 +41339,7 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 	except Exception as e:
 		mndbg.dbgp("_heapShowLFH: complete-set utilization failed (%s); falling back to working set" % str(e), errormode=False)
 		total, busy, free = fe.getUtilization()
-	_heapLog("    Active Buckets: %d" % len(active_buckets), logfile, loghandle)
+	_heapLog(_lfhActiveBucketsLine(mHeap, fe), logfile, loghandle)
 	_heapLog("    Total Chunks: %d (Busy: %d, Free: %d)" % (total, busy, free), logfile, loghandle)
 	mndbg.dbgp("tellme: heap %s LFH at %s: %d active buckets, %d blocks (busy=%d free=%d)" % (
 		PTR_PRINT % mHeap.heapbase, PTR_PRINT % fe.address, len(active_buckets), total, busy, free), errormode=False)
@@ -41418,11 +41480,11 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 			# Inactive size class: it has no subsegments/chunks yet, so the SubSegments and
 			# Busy/Free columns carry no information. Show the Activation Counter instead -- the
 			# consecutive-allocation progress toward LFH activation for this size class.
-			cnt = mHeap.lfhActivationCounter(bucket)
+			activation, _act_active = _lfhActivationCell(mHeap, bucket)
 			bucket_data = {bkey: [
 				serves,
 				"%d" % gran_units,
-				("%d" % cnt) if cnt is not None else "-",
+				activation,
 			]}
 			print_dict_table(bucket_data,
 			                 ["Bucket Index", "Serves", "Granularity", "Activation Counter"],
@@ -41477,8 +41539,12 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 
 		def _ssRole(ss):
 			# Working-set slot name (Active/Hint/CachedItems) if set, else the complete-set
-			# provenance (retired/deleted) title-cased -> "Retired" / "Deleted".
-			return getattr(ss, "role", None) or (getattr(ss, "complete_source", None) or "?").capitalize()
+			# provenance mapped to a display label: a "retired" subsegment (rotated off the working
+			# set because every block is in use) is shown as "Full"; "deleted" -> "Deleted".
+			if getattr(ss, "role", None):
+				return ss.role
+			src = getattr(ss, "complete_source", None) or "?"
+			return {"retired": "Full"}.get(src, src.capitalize())
 
 		if not extend:
 			# One combined SubSegment table for the whole bucket.
@@ -41599,12 +41665,9 @@ def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 			b_busy += ss.getBusyCount()
 			b_free += ss.getFreeCount()
 			b_total += ss.BlockCount
-		if bucket.isActive():
-			activation = "ACTIVE"
-		else:
-			cnt = mHeap.lfhActivationCounter(bucket)
-			activation = ("%d" % cnt) if cnt is not None else "-"
-		if not show_all and not bucket.isActive() and b_total == 0 and len(subsegments) == 0 and (activation == "-" or activation == "0"):
+		activation, act_is_active = _lfhActivationCell(mHeap, bucket)
+		# Skip only buckets that are inactive by BOTH signals and carry no chunks/subsegments/counter.
+		if not show_all and not act_is_active and b_total == 0 and len(subsegments) == 0 and (activation == "-" or activation == "0"):
 			continue
 		table_data[bkey] = [
 			serves,
