@@ -41,6 +41,7 @@ __REV__ = 3026
 
 DEBUG_MODE = False
 _AI_MODEL_LIST_CACHE = {}
+_AI_OPENAI_GENERIC_ENDPOINT_CACHE = {}
 MONA_OPTIONAL_UPGRADE_PACKAGES = [
 	{
 		"pip_name": "keystone-engine",
@@ -166,6 +167,10 @@ import socket
 import subprocess
 import shlex
 import mimetypes
+try:
+	import ssl
+except Exception:
+	ssl = None
 
 from operator import itemgetter
 from collections import defaultdict, namedtuple
@@ -1356,7 +1361,7 @@ def _safe_int(v):
 
 def getAvailableAIEngines(reason="", refresh=False):
 	mndbg.dbgp(get_current_function_name())
-	engines = ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai"]
+	engines = ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai", "openai-generic"]
 	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
@@ -1385,7 +1390,7 @@ def getDefaultAIEngineEnvName():
 
 def _isSupportedAIEngine(engine_value):
 	mndbg.dbgp(get_current_function_name())
-	return engine_value in ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai"]
+	return engine_value in ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai", "openai-generic"]
 
 
 def ensureDefaultAIEngineConfig(mona_config, available_engines):
@@ -1408,7 +1413,7 @@ def resolveAIEngine(engine_arg, mona_config, available_engines):
 	mndbg.dbgp(get_current_function_name())
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
-		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|openrouter|ollama|customai>", False
+		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|openrouter|ollama|customai|openai-generic>", False
 	engine = _normalizeAIEngine(engine_arg)
 	if engine != "":
 		return engine, engine_source, "", False
@@ -5306,6 +5311,9 @@ def getAIModelAndKey(engine, mona_config):
 		env_model_name = "OLLAMA_MODEL"
 	elif engine == "customai":
 		env_model_name = "CUSTOMAI_MODEL"
+	elif engine == "openai-generic":
+		env_key_name = "OPENAIGENERIC_API_KEY"
+		env_model_name = "OPENAIGENERIC_MODEL"
 
 	if api_key == "" and env_key_name != "":
 		api_key = os.environ.get(env_key_name, "").strip()
@@ -5335,6 +5343,8 @@ def getAIUrl(engine, mona_config):
 		env_url_name = "OPENAIAGENTS_URL"
 	elif engine == "customai":
 		env_url_name = "CUSTOMAI_URL"
+	elif engine == "openai-generic":
+		env_url_name = "OPENAIGENERIC_URL"
 
 	if url_value == "" and env_url_name != "":
 		url_value = os.environ.get(env_url_name, "").strip()
@@ -5356,6 +5366,8 @@ def getAIResponseField(engine, mona_config):
 		env_field_name = "OLLAMA_RESPONSE_FIELD"
 	elif engine == "customai":
 		env_field_name = "CUSTOMAI_RESPONSE_FIELD"
+	elif engine == "openai-generic":
+		env_field_name = "OPENAIGENERIC_RESPONSE_FIELD"
 
 	if field_value == "" and env_field_name != "":
 		field_value = os.environ.get(env_field_name, "").strip()
@@ -5518,6 +5530,54 @@ def _collectAIOptions(engine, model, mona_config):
 	return merged_options
 
 
+def _setNestedOptionIfAbsent(target_dict, path_parts, option_value):
+	mndbg.dbgp(get_current_function_name())
+	if not isinstance(target_dict, dict) or len(path_parts) == 0:
+		return False
+	current_dict = target_dict
+	for path_part in path_parts[:-1]:
+		if path_part not in current_dict:
+			current_dict[path_part] = {}
+		if not isinstance(current_dict[path_part], dict):
+			return False
+		current_dict = current_dict[path_part]
+	final_key = path_parts[-1]
+	if final_key in current_dict:
+		return False
+	current_dict[final_key] = option_value
+	return True
+
+
+def _applyAIContextWindowOption(engine, options, context_window):
+	mndbg.dbgp(get_current_function_name())
+	try:
+		context_window = int(context_window)
+	except Exception:
+		context_window = 0
+	effective_options = copy.deepcopy(options) if isinstance(options, dict) else {}
+	if context_window <= 0:
+		return effective_options
+	engine = ensure_text(engine).strip().lower()
+	if engine in ["ollama", "customai", "openai-generic"]:
+		_setNestedOptionIfAbsent(effective_options, ["num_ctx"], context_window)
+	return effective_options
+
+
+def _applyAIMaxTokensOption(engine, options, max_tokens):
+	mndbg.dbgp(get_current_function_name())
+	try:
+		max_tokens = int(max_tokens)
+	except Exception:
+		max_tokens = 0
+	effective_options = copy.deepcopy(options) if isinstance(options, dict) else {}
+	if max_tokens <= 0:
+		return effective_options
+	engine = ensure_text(engine).strip().lower()
+	if engine == "ollama":
+		_setNestedOptionIfAbsent(effective_options, ["num_predict"], max_tokens)
+	return effective_options
+
+
 def getDefaultAIModel(engine):
 	mndbg.dbgp(get_current_function_name())
 	if engine == "openai" or engine == "openaiagents":
@@ -5594,10 +5654,11 @@ def getAITimeout(engine, mona_config, args=None):
 	timeout_name = "%s.timeout" % engine
 	timeout = 300.0
 	timeout_source = "default"
+	allow_no_timeout = (engine == "openai-generic")
 	timeout_raw = mona_config.get(timeout_name).strip()
 	if timeout_raw != "":
 		parsed_timeout, parsed_ok = getFloatArg(timeout_raw)
-		if parsed_ok and parsed_timeout > 0:
+		if parsed_ok and (parsed_timeout > 0 or (allow_no_timeout and parsed_timeout == 0)):
 			timeout = parsed_timeout
 			timeout_source = "config"
 			mndbg.dbgp("tellme: using configured timeout for %s via %s=%s" % (engine, timeout_name, timeout_raw))
@@ -5613,12 +5674,14 @@ def getAITimeout(engine, mona_config, args=None):
 		env_timeout_name = "OLLAMA_TIMEOUT"
 	elif engine == "customai":
 		env_timeout_name = "CUSTOMAI_TIMEOUT"
+	elif engine == "openai-generic":
+		env_timeout_name = "OPENAIGENERIC_TIMEOUT"
 
 	if timeout_raw == "" and env_timeout_name != "":
 		env_timeout = os.environ.get(env_timeout_name, "").strip()
 		if env_timeout != "":
 			parsed_timeout, parsed_ok = getFloatArg(env_timeout)
-			if parsed_ok and parsed_timeout > 0:
+			if parsed_ok and (parsed_timeout > 0 or (allow_no_timeout and parsed_timeout == 0)):
 				timeout = parsed_timeout
 				timeout_source = "env"
 				mndbg.dbgp("tellme: using environment fallback for %s.timeout via %s" % (engine, env_timeout_name))
@@ -5627,7 +5690,7 @@ def getAITimeout(engine, mona_config, args=None):
 		if type(args["timeout"]).__name__.lower() == "bool":
 			raise ValueError("Please specify a timeout value with -timeout <seconds>")
 		override_timeout, override_ok = getFloatArg(args["timeout"])
-		if not override_ok or override_timeout <= 0:
+		if not override_ok or override_timeout < 0 or (override_timeout == 0 and not allow_no_timeout):
 			raise ValueError("Invalid -timeout value '%s'. Please specify a positive number of seconds." % args["timeout"])
 		timeout = override_timeout
 		timeout_source = "arg"
@@ -5639,11 +5702,7 @@ def getAITimeout(engine, mona_config, args=None):
 def getAIMaxTokens(engine, mona_config):
 	mndbg.dbgp(get_current_function_name())
 	max_tokens_name = "%s.max_tokens" % engine
-	max_tokens = 4096
-	if engine == "openaiagents":
-		max_tokens = 8192
-	elif engine == "anthropic":
-		max_tokens = 8192
+	max_tokens = 0
 	max_tokens_source = "default"
 	max_tokens_raw = mona_config.get(max_tokens_name).strip()
 	if max_tokens_raw != "":
@@ -5660,6 +5719,14 @@ def getAIMaxTokens(engine, mona_config):
 		env_max_tokens_name = "OPENAI_MAX_TOKENS"
 	elif engine == "anthropic":
 		env_max_tokens_name = "ANTHROPIC_MAX_TOKENS"
+	elif engine == "openrouter":
+		env_max_tokens_name = "OPENROUTER_MAX_TOKENS"
+	elif engine == "ollama":
+		env_max_tokens_name = "OLLAMA_MAX_TOKENS"
+	elif engine == "customai":
+		env_max_tokens_name = "CUSTOMAI_MAX_TOKENS"
+	elif engine == "openai-generic":
+		env_max_tokens_name = "OPENAIGENERIC_MAX_TOKENS"
 
 	if max_tokens_raw == "" and env_max_tokens_name != "":
 		env_max_tokens = os.environ.get(env_max_tokens_name, "").strip()
@@ -5673,6 +5740,49 @@ def getAIMaxTokens(engine, mona_config):
 				))
 
 	return max_tokens, max_tokens_source
+
+
+def getAIContextWindow(engine, mona_config):
+	mndbg.dbgp(get_current_function_name())
+	context_window_name = "%s.context_window" % engine
+	context_window = 0
+	context_window_source = "default"
+	context_window_raw = mona_config.get(context_window_name).strip()
+	if context_window_raw != "":
+		parsed_window, parsed_ok = getIntArg(context_window_raw)
+		if parsed_ok and parsed_window > 0:
+			context_window = parsed_window
+			context_window_source = "config"
+			mndbg.dbgp("tellme: using configured context window for %s via %s=%s" % (
+				engine, context_window_name, context_window_raw
+			))
+
+	env_context_window_name = ""
+	if engine == "openai" or engine == "openaiagents":
+		env_context_window_name = "OPENAI_CONTEXT_WINDOW"
+	elif engine == "anthropic":
+		env_context_window_name = "ANTHROPIC_CONTEXT_WINDOW"
+	elif engine == "openrouter":
+		env_context_window_name = "OPENROUTER_CONTEXT_WINDOW"
+	elif engine == "ollama":
+		env_context_window_name = "OLLAMA_CONTEXT_WINDOW"
+	elif engine == "customai":
+		env_context_window_name = "CUSTOMAI_CONTEXT_WINDOW"
+	elif engine == "openai-generic":
+		env_context_window_name = "OPENAIGENERIC_CONTEXT_WINDOW"
+
+	if context_window_raw == "" and env_context_window_name != "":
+		env_context_window = os.environ.get(env_context_window_name, "").strip()
+		if env_context_window != "":
+			parsed_window, parsed_ok = getIntArg(env_context_window)
+			if parsed_ok and parsed_window > 0:
+				context_window = parsed_window
+				context_window_source = "env"
+				mndbg.dbgp("tellme: using environment fallback for %s.context_window via %s" % (
+					engine, env_context_window_name
+				))
+
+	return context_window, context_window_source
 
 
 def deriveOpenAIAgentsMaxTokensFromPrompt(prompt_text):
@@ -5768,6 +5878,11 @@ def _readHTTPResponseText(response_obj):
 	raw_body = response_obj.read()
 	if raw_body in [None, ""]:
 		return ""
+	if isinstance(raw_body, (dict, list)):
+		try:
+			return json.dumps(raw_body)
+		except Exception:
+			return ensure_text(raw_body)
 	if isinstance(raw_body, bytes_type):
 		return ensure_text(raw_body.decode("utf-8", "replace"))
 	return ensure_text(raw_body)
@@ -5923,7 +6038,7 @@ def _logOllamaError(err):
 def logAIProviderError(engine, err):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: formatting provider error for engine '%s'" % engine)
-	if engine == "openai":
+	if engine == "openai" or engine == "openai-generic":
 		try:
 			_logOpenAIError(err)
 			return
@@ -5951,7 +6066,7 @@ def logAIProviderError(engine, err):
 
 def _isTimeoutError(engine, err):
 	mndbg.dbgp(get_current_function_name())
-	if engine == "openai" and err.__class__.__name__ == "APITimeoutError":
+	if engine in ["openai", "openai-generic"] and err.__class__.__name__ == "APITimeoutError":
 		return True
 
 	err_cls = err.__class__.__name__
@@ -5959,12 +6074,32 @@ def _isTimeoutError(engine, err):
 		return True
 	if isinstance(err, socket.timeout):
 		return True
+	status_code = getattr(err, "status_code", None)
+	if status_code == 408:
+		return True
+	err_type = ensure_text(getattr(err, "type", "")).lower()
+	err_code = ensure_text(getattr(err, "code", "")).lower()
+	if "timeout" in err_type or "timeout" in err_code:
+		return True
 
 	try:
 		message = _getProviderErrorMessage(err).lower()
 	except Exception:
 		message = str(err).lower()
-	return ("timeout" in message) or ("timed out" in message)
+	timeout_markers = [
+		"timed out",
+		"read timed out",
+		"connect timed out",
+		"connection timed out",
+		"request timed out",
+		"operation timed out",
+		"deadline exceeded",
+		"deadline was exceeded",
+	]
+	for marker in timeout_markers:
+		if marker in message:
+			return True
+	return False
 
 
 def _shouldFallbackFromSDK(engine, err):
@@ -6010,6 +6145,98 @@ def _shouldFallbackFromSDK(engine, err):
 	return False
 
 
+def _isContextLimitError(err):
+	mndbg.dbgp(get_current_function_name())
+	status_code = getattr(err, "status_code", None)
+	if not isinstance(status_code, int) or status_code not in [400, 413, 422]:
+		return False
+	try:
+		message = _getProviderErrorMessage(err).lower()
+	except Exception:
+		message = str(err).lower()
+	for marker in [
+		"exceeds the available context size",
+		"maximum context length",
+		"context length",
+		"context size",
+		"too many tokens",
+		"prompt is too long",
+		"request is too large",
+		"input is too large"
+	]:
+		if marker in message:
+			return True
+	return False
+
+
+def _isOpenAIGenericFileUploadUnsupported(err):
+	mndbg.dbgp(get_current_function_name())
+	status_code = getattr(err, "status_code", None)
+	if isinstance(status_code, int) and status_code in [404, 405, 501]:
+		return True
+	try:
+		message = _getProviderErrorMessage(err).lower()
+	except Exception:
+		message = str(err).lower()
+	if "file not found" in message or "files endpoint" in message:
+		return True
+	if "unsupported" in message and "file" in message:
+		return True
+	return False
+
+
+def _splitTextIntoLineChunks(text_value, max_chars=16000):
+	mndbg.dbgp(get_current_function_name())
+	text_value = ensure_text(text_value)
+	if len(text_value) <= max_chars:
+		return [text_value]
+	chunks = []
+	current_lines = []
+	current_len = 0
+	for line in text_value.splitlines(True):
+		line_len = len(line)
+		if current_lines and current_len + line_len > max_chars:
+			chunks.append("".join(current_lines))
+			current_lines = []
+			current_len = 0
+		if line_len > max_chars:
+			if current_lines:
+				chunks.append("".join(current_lines))
+				current_lines = []
+				current_len = 0
+			for offset in xrange(0, line_len, max_chars):
+				chunks.append(line[offset:offset + max_chars])
+			continue
+		current_lines.append(line)
+		current_len += line_len
+	if current_lines:
+		chunks.append("".join(current_lines))
+	return [chunk for chunk in chunks if ensure_text(chunk).strip() != ""]
+
+
+def _trimAITextForPrompt(text_value, max_chars, omitted_label="content"):
+	mndbg.dbgp(get_current_function_name())
+	text_value = ensure_text(text_value)
+	try:
+		max_chars = int(max_chars)
+	except Exception:
+		max_chars = 0
+	if max_chars <= 0 or len(text_value) <= max_chars:
+		return text_value
+	notice = "\n\n[... %s truncated by Mona: kept %d of %d characters ...]\n" % (
+		omitted_label,
+		max_chars,
+		len(text_value)
+	)
+	if max_chars <= len(notice) + 32:
+		return text_value[:max_chars]
+	head_chars = int(max_chars * 0.70)
+	tail_chars = max_chars - head_chars - len(notice)
+	if tail_chars <= 0:
+		return text_value[:max_chars]
+	return text_value[:head_chars].rstrip() + notice + text_value[-tail_chars:].lstrip()
+
+
 def _normalizeUrlWithSuffix(base_url, suffix):
 	mndbg.dbgp(get_current_function_name())
 	base_url = ensure_text(base_url).strip().rstrip("/")
@@ -6026,6 +6253,147 @@ def _normalizeUrlWithSuffix(base_url, suffix):
 	if base_url.lower().endswith("/api"):
 		return base_url + suffix
 	return base_url + "/api" + suffix
+
+
+def _getOpenAICompatibleEndpointCache(base_url):
+	mndbg.dbgp(get_current_function_name())
+	cache_key = ensure_text(base_url).strip().rstrip("/").lower()
+	if cache_key == "":
+		return {}
+	return _AI_OPENAI_GENERIC_ENDPOINT_CACHE.get(cache_key, {})
+
+
+def _updateOpenAICompatibleEndpointCache(base_url, request_url="", models_url="", request_mode=""):
+	mndbg.dbgp(get_current_function_name())
+	cache_key = ensure_text(base_url).strip().rstrip("/").lower()
+	if cache_key == "":
+		return
+	cache_entry = dict(_AI_OPENAI_GENERIC_ENDPOINT_CACHE.get(cache_key, {}))
+	if request_url != "":
+		cache_entry["request_url"] = ensure_text(request_url).strip()
+	if models_url != "":
+		cache_entry["models_url"] = ensure_text(models_url).strip()
+	if request_mode != "":
+		cache_entry["request_mode"] = ensure_text(request_mode).strip()
+	_AI_OPENAI_GENERIC_ENDPOINT_CACHE[cache_key] = cache_entry
+
+
+def _deriveOpenAICompatibleModelsUrlFromRequestUrl(request_url):
+	mndbg.dbgp(get_current_function_name())
+	request_url = ensure_text(request_url).strip().rstrip("/")
+	request_url_l = request_url.lower()
+	if request_url == "":
+		return ""
+	if request_url_l.endswith("/v1/responses"):
+		return request_url[:-len("/responses")] + "/models"
+	if request_url_l.endswith("/v1/response"):
+		return request_url[:-len("/response")] + "/models"
+	if request_url_l.endswith("/v1/chat/completions"):
+		return request_url[:-len("/chat/completions")] + "/models"
+	if request_url_l.endswith("/v1/models"):
+		return request_url
+	if request_url_l.endswith("/v1"):
+		return request_url + "/models"
+	return request_url + "/v1/models"
+
+
+def _deriveOpenAICompatibleFilesUrlFromRequestUrl(request_url):
+	mndbg.dbgp(get_current_function_name())
+	request_url = ensure_text(request_url).strip().rstrip("/")
+	request_url_l = request_url.lower()
+	if request_url == "":
+		return ""
+	if request_url_l.endswith("/v1/responses"):
+		return request_url[:-len("/responses")] + "/files"
+	if request_url_l.endswith("/v1/response"):
+		return request_url[:-len("/response")] + "/files"
+	if request_url_l.endswith("/v1/chat/completions"):
+		return request_url[:-len("/chat/completions")] + "/files"
+	if request_url_l.endswith("/v1/models"):
+		return request_url[:-len("/models")] + "/files"
+	if request_url_l.endswith("/v1"):
+		return request_url + "/files"
+	return request_url + "/v1/files"
+
+
+def _buildOpenAICompatibleEndpointCandidates(base_url, purpose="request"):
+	mndbg.dbgp(get_current_function_name())
+	purpose = ensure_text(purpose).strip().lower()
+	normalized_url = ensure_text(base_url).strip().rstrip("/")
+	if normalized_url == "":
+		return []
+	normalized_url_l = normalized_url.lower()
+	candidates = []
+
+	def _append(url_value):
+		url_value = ensure_text(url_value).strip().rstrip("/")
+		if url_value == "" or url_value in candidates:
+			return
+		candidates.append(url_value)
+
+	if purpose == "models":
+		cache = _getOpenAICompatibleEndpointCache(base_url)
+		_append(cache.get("models_url", ""))
+		_append(_deriveOpenAICompatibleModelsUrlFromRequestUrl(cache.get("request_url", "")))
+	else:
+		cache = _getOpenAICompatibleEndpointCache(base_url)
+		_append(cache.get("request_url", ""))
+
+	if normalized_url_l.endswith("/v1/models"):
+		if purpose == "models":
+			_append(normalized_url)
+		else:
+			base_v1 = normalized_url[:-len("/models")]
+			_append(base_v1 + "/responses")
+			_append(base_v1 + "/chat/completions")
+	elif normalized_url_l.endswith("/v1/responses"):
+		if purpose == "request":
+			_append(normalized_url)
+			_append(normalized_url[:-len("/responses")] + "/chat/completions")
+		else:
+			_append(normalized_url[:-len("/responses")] + "/models")
+	elif normalized_url_l.endswith("/v1/response"):
+		if purpose == "request":
+			_append(normalized_url[:-len("/response")] + "/responses")
+			_append(normalized_url[:-len("/response")] + "/chat/completions")
+		else:
+			_append(normalized_url[:-len("/response")] + "/models")
+	elif normalized_url_l.endswith("/v1/chat/completions"):
+		if purpose == "request":
+			_append(normalized_url[:-len("/chat/completions")] + "/responses")
+			_append(normalized_url)
+		else:
+			_append(normalized_url[:-len("/chat/completions")] + "/models")
+	elif normalized_url_l.endswith("/v1"):
+		if purpose == "models":
+			_append(normalized_url + "/models")
+		else:
+			_append(normalized_url + "/responses")
+			_append(normalized_url + "/chat/completions")
+	else:
+		if purpose == "models":
+			_append(normalized_url + "/v1/models")
+		else:
+			_append(normalized_url + "/v1/responses")
+			_append(normalized_url + "/v1/chat/completions")
+
+	if purpose == "models":
+		request_candidates = _buildOpenAICompatibleEndpointCandidates(base_url, purpose="request")
+		for request_candidate in request_candidates:
+			_append(_deriveOpenAICompatibleModelsUrlFromRequestUrl(request_candidate))
+
+	return candidates
+
+
+def _getOpenAICompatibleAuthHeaders(api_key=""):
+	mndbg.dbgp(get_current_function_name())
+	headers = {
+		"user-agent": "mona-tellme/3.0"
+	}
+	api_key = ensure_text(api_key).strip()
+	if api_key != "":
+		headers["authorization"] = "Bearer %s" % api_key
+	return headers
 
 
 def _extractJsonPathValue(value, path_text):
@@ -10087,6 +10455,290 @@ def _fetchOllamaModelsDirect(base_url, timeout_seconds=20.0):
 	return _extractModelIdsFromOllamaTagsPayload(response_data)
 
 
+def _parseOpenAICompatibleError(http_error, provider_label="OpenAI-compatible"):
+	mndbg.dbgp(get_current_function_name())
+	status_code = getattr(http_error, "code", None)
+	raw_body = ""
+	parsed_body = {}
+	request_id = ""
+	try:
+		raw_body = _readHTTPResponseText(http_error)
+	except Exception:
+		raw_body = ""
+	try:
+		parsed_body = json.loads(raw_body) if raw_body.strip() != "" else {}
+	except Exception:
+		parsed_body = {"error": {"message": raw_body}} if raw_body.strip() != "" else {}
+	try:
+		request_id = http_error.headers.get("request-id", "") or http_error.headers.get("x-request-id", "")
+	except Exception:
+		request_id = ""
+	error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+	error_message = ""
+	error_code = ""
+	error_type = ""
+	error_param = ""
+	if isinstance(error_obj, dict):
+		error_message = ensure_text(error_obj.get("message", ""))
+		error_code = ensure_text(error_obj.get("code", ""))
+		error_type = ensure_text(error_obj.get("type", ""))
+		error_param = ensure_text(error_obj.get("param", ""))
+	if error_message == "":
+		error_message = "%s HTTP error %s" % (provider_label, str(status_code))
+	return AIProviderError(
+		error_message,
+		request_id=request_id,
+		status_code=status_code,
+		code=error_code,
+		param=error_param,
+		body=parsed_body if parsed_body else raw_body,
+		error_type=error_type or "HTTPError"
+	)
+
+
+def _buildOpenAICompatibleError(status_code, raw_body="", headers=None, provider_label="OpenAI-compatible"):
+	mndbg.dbgp(get_current_function_name())
+	headers = headers or {}
+	request_id = ensure_text(headers.get("request-id", "") or headers.get("x-request-id", "")).strip()
+	parsed_body = {}
+	try:
+		parsed_body = json.loads(ensure_text(raw_body)) if ensure_text(raw_body).strip() != "" else {}
+	except Exception:
+		parsed_body = {"error": {"message": ensure_text(raw_body)}} if ensure_text(raw_body).strip() != "" else {}
+	error_obj = parsed_body.get("error", parsed_body) if isinstance(parsed_body, dict) else {}
+	error_message = ""
+	error_code = ""
+	error_type = ""
+	error_param = ""
+	if isinstance(error_obj, dict):
+		error_message = ensure_text(error_obj.get("message", "")).strip()
+		error_code = ensure_text(error_obj.get("code", "")).strip()
+		error_type = ensure_text(error_obj.get("type", "")).strip()
+		error_param = ensure_text(error_obj.get("param", "")).strip()
+	if error_message == "":
+		error_message = "%s HTTP error %s" % (provider_label, str(status_code))
+	return AIProviderError(
+		error_message,
+		request_id=request_id,
+		status_code=status_code,
+		code=error_code,
+		param=error_param,
+		body=parsed_body if parsed_body else raw_body,
+		error_type=error_type or "HTTPError"
+	)
+
+
+def _decodeChunkedHTTPBody(body_bytes):
+	mndbg.dbgp(get_current_function_name())
+	decoded = []
+	offset = 0
+	total_length = len(body_bytes)
+	while offset < total_length:
+		line_end = body_bytes.find(b"\r\n", offset)
+		if line_end < 0:
+			break
+		size_line = body_bytes[offset:line_end].split(b";", 1)[0].strip()
+		if size_line == b"":
+			break
+		try:
+			chunk_size = int(size_line, 16)
+		except Exception:
+			break
+		offset = line_end + 2
+		if chunk_size == 0:
+			break
+		chunk_end = offset + chunk_size
+		if chunk_end > total_length:
+			decoded.append(body_bytes[offset:])
+			break
+		decoded.append(body_bytes[offset:chunk_end])
+		offset = chunk_end + 2
+	return b"".join(decoded)
+
+
+def _rawHttpRequest(url, method="GET", headers=None, body=None, timeout_seconds=60.0):
+	mndbg.dbgp(get_current_function_name())
+	parsed = urlparse(ensure_text(url).strip())
+	scheme = ensure_text(parsed.scheme).strip().lower()
+	if scheme not in ["http", "https"]:
+		raise AIProviderError(
+			"Unsupported URL scheme '%s' for OpenAI-compatible endpoint" % scheme,
+			body={"url": url},
+			error_type="UnsupportedSchemeError"
+		)
+	host = ensure_text(parsed.hostname).strip()
+	port = parsed.port
+	if port in [None, 0]:
+		port = 443 if scheme == "https" else 80
+	path = ensure_text(parsed.path or "/")
+	if ensure_text(parsed.query).strip() != "":
+		path += "?" + ensure_text(parsed.query)
+	request_headers = {
+		"Host": host if (scheme == "http" and port == 80) or (scheme == "https" and port == 443) else "%s:%d" % (host, port),
+		"Connection": "close",
+		"User-Agent": "mona-tellme/3.0",
+	}
+	if isinstance(headers, dict):
+		for header_name, header_value in headers.items():
+			request_headers[ensure_text(header_name)] = ensure_text(header_value)
+	body_bytes = b""
+	if body not in [None, ""]:
+		body_bytes = body if isinstance(body, bytes_type) else ensure_bytes(body, encoding="utf-8")
+		request_headers["Content-Length"] = str(len(body_bytes))
+	request_lines = ["%s %s HTTP/1.1" % (ensure_text(method).upper(), path)]
+	for header_name, header_value in request_headers.items():
+		request_lines.append("%s: %s" % (header_name, header_value))
+	request_payload = ("\r\n".join(request_lines) + "\r\n\r\n").encode("utf-8") + body_bytes
+	no_total_timeout = False
+	try:
+		timeout_seconds = float(timeout_seconds)
+	except Exception:
+		timeout_seconds = 60.0
+	if timeout_seconds <= 0:
+		no_total_timeout = True
+		connect_timeout = 30.0
+	else:
+		connect_timeout = min(max(timeout_seconds, 1.0), 30.0)
+	poll_timeout = 5.0
+	progress_interval = 60.0
+	start_time = time.time()
+	next_progress_time = start_time + progress_interval
+	deadline = None if no_total_timeout else start_time + timeout_seconds
+	sock = socket.create_connection((host, port), connect_timeout)
+	try:
+		if scheme == "https":
+			if ssl is None:
+				raise AIProviderError(
+					"HTTPS is not available in this Python runtime",
+					body={"url": url},
+					error_type="SSLUnavailableError"
+				)
+			try:
+				context = ssl.create_default_context()
+			except Exception:
+				context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+			sock = context.wrap_socket(sock, server_hostname=host)
+		sock.settimeout(poll_timeout)
+		sock.sendall(request_payload)
+		response_chunks = []
+		while True:
+			try:
+				chunk = sock.recv(65536)
+			except socket.timeout:
+				now = time.time()
+				if deadline is not None and now >= deadline:
+					raise
+				if now >= next_progress_time:
+					elapsed_seconds = now - start_time
+					if deadline is None:
+						progress_text = "still waiting for %s response from %s:%d after %.0fs (no timeout)" % (
+							ensure_text(method).upper(),
+							host,
+							port,
+							elapsed_seconds
+						)
+					else:
+						progress_text = "still waiting for %s response from %s:%d after %.0fs (timeout %.0fs)" % (
+							ensure_text(method).upper(),
+							host,
+							port,
+							elapsed_seconds,
+							timeout_seconds
+						)
+					try:
+						dbg.log("    %s" % progress_text)
+					except Exception:
+						mndbg.dbgp(progress_text)
+					interruptMona()
+					next_progress_time = now + progress_interval
+				continue
+			if not chunk:
+				break
+			response_chunks.append(chunk)
+	finally:
+		try:
+			sock.close()
+		except Exception:
+			pass
+	raw_response = b"".join(response_chunks)
+	header_end = raw_response.find(b"\r\n\r\n")
+	if header_end < 0:
+		raise AIProviderError(
+			"Received an invalid HTTP response from the OpenAI-compatible endpoint",
+			body={"url": url},
+			error_type="InvalidHTTPResponseError"
+		)
+	header_bytes = raw_response[:header_end]
+	body_bytes = raw_response[header_end + 4:]
+	header_lines = header_bytes.split(b"\r\n")
+	status_line = ensure_text(header_lines[0], encoding="iso-8859-1")
+	status_parts = status_line.split(" ", 2)
+	status_code = 0
+	if len(status_parts) >= 2:
+		try:
+			status_code = int(status_parts[1])
+		except Exception:
+			status_code = 0
+	response_headers = {}
+	for header_line in header_lines[1:]:
+		if b":" not in header_line:
+			continue
+		header_name, header_value = header_line.split(b":", 1)
+		response_headers[ensure_text(header_name, encoding="iso-8859-1").strip().lower()] = ensure_text(header_value, encoding="iso-8859-1").strip()
+	if response_headers.get("transfer-encoding", "").lower() == "chunked":
+		body_bytes = _decodeChunkedHTTPBody(body_bytes)
+	return status_code, response_headers, body_bytes
+
+
+def _fetchOpenAIGenericModelsDirect(base_url, api_key="", timeout_seconds=20.0):
+	mndbg.dbgp(get_current_function_name())
+	candidate_urls = _buildOpenAICompatibleEndpointCandidates(base_url, purpose="models")
+	last_error = None
+	for request_url in candidate_urls:
+		try:
+			status_code, response_headers, response_body = _rawHttpRequest(
+				request_url,
+				method="GET",
+				headers=_getOpenAICompatibleAuthHeaders(api_key),
+				timeout_seconds=timeout_seconds
+			)
+			response_text = ensure_text(response_body.decode("utf-8", "replace"))
+			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			if status_code < 200 or status_code >= 300:
+				last_error = _buildOpenAICompatibleError(
+					status_code,
+					raw_body=response_text,
+					headers=response_headers,
+					provider_label="OpenAI-compatible model list"
+				)
+				if getattr(last_error, "status_code", None) not in [404, 405, 501]:
+					raise last_error
+				continue
+			model_ids = _extractModelIdsFromListPayload(response_data)
+			_updateOpenAICompatibleEndpointCache(
+				base_url,
+				models_url=request_url
+			)
+			return model_ids
+		except socket.timeout:
+			raise
+		except Exception as e:
+			if isinstance(e, AIProviderError):
+				raise
+			raise AIProviderError(
+				"OpenAI-compatible model list setup failed: %s" % str(e),
+				body={"error": {"message": str(e)}},
+				error_type=e.__class__.__name__
+			)
+	if last_error is not None:
+		raise last_error
+	raise AIProviderError(
+		"Unable to resolve an OpenAI-compatible models endpoint from '%s'" % ensure_text(base_url).strip(),
+		body={"candidate_urls": candidate_urls},
+		error_type="EndpointResolutionError"
+	)
+
+
 def _fetchOpenRouterModelsDirect(api_key, timeout_seconds=20.0):
 	mndbg.dbgp(get_current_function_name())
 	request = urllib_Request(
@@ -10177,13 +10829,15 @@ def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, 
 		model_ids = _fetchOpenRouterModelsDirect(api_key, timeout_seconds=timeout_seconds)
 	elif engine == "ollama":
 		model_ids = _fetchOllamaModelsDirect(base_url, timeout_seconds=timeout_seconds)
+	elif engine == "openai-generic":
+		model_ids = _fetchOpenAIGenericModelsDirect(base_url, api_key=api_key, timeout_seconds=timeout_seconds)
 	else:
 		model_ids = []
 	_AI_MODEL_LIST_CACHE[cache_key] = list(model_ids)
 	return list(model_ids)
 
 
-def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None):
+def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None, max_tokens=0):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
@@ -10195,6 +10849,8 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 		request_kwargs["input"] = _buildOpenAIInputItems(request_prompt, file_ids=file_ids)
 	else:
 		request_kwargs["input"] = request_prompt
+	if max_tokens > 0:
+		request_kwargs["max_output_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		request_kwargs["extra_body"] = {"options": options}
 	response = client.responses.create(**request_kwargs)
@@ -10204,14 +10860,14 @@ def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60
 	output_text = getattr(response, "output_text", "")
 	if output_text:
 		# Check for truncation and append note if needed
-		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=0)
+		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=max_tokens)
 		if truncation_note != "":
 			output_text = "%s\n\n%s" % (output_text, truncation_note)
 		return output_text, request_id
 	try:
 		output_text = str(response.output[0].content[0].text)
 		# Check for truncation and append note if needed
-		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=0)
+		truncation_note = _buildGenericTruncationNote("openai", message=response, max_tokens=max_tokens)
 		if truncation_note != "":
 			output_text = "%s\n\n%s" % (output_text, truncation_note)
 		return output_text, request_id
@@ -10351,7 +11007,7 @@ def _encodeMultipartForm(fields, files):
 	return b"".join(body_chunks), boundary
 
 
-def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None):
+def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None, max_tokens=0):
 	"""Upload local files to OpenAI and submit a Responses API request that references those file IDs."""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI upload mode with %d file(s) and timeout %.1fs" % (len(file_paths), timeout_seconds))
@@ -10382,12 +11038,14 @@ def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text,
 		})
 	if ensure_text(instruction_text).strip() == "":
 		return "", "", uploaded_files
-	request_kwargs = {
-		"model": model,
-		"input": _buildOpenAIInputItems(instruction_text, file_ids=[item.get("file_id", "") for item in content_items if item.get("type") == "input_file"])
-	}
-	if isinstance(options, dict) and len(options) > 0:
-		request_kwargs["extra_body"] = {"options": options}
+		request_kwargs = {
+			"model": model,
+			"input": _buildOpenAIInputItems(instruction_text, file_ids=[item.get("file_id", "") for item in content_items if item.get("type") == "input_file"])
+		}
+		if max_tokens > 0:
+			request_kwargs["max_output_tokens"] = max_tokens
+		if isinstance(options, dict) and len(options) > 0:
+			request_kwargs["extra_body"] = {"options": options}
 	response = client.responses.create(**request_kwargs)
 	request_id = getattr(response, "_request_id", "")
 	if request_id:
@@ -10420,7 +11078,7 @@ def _extractOpenAIText(response_data):
 	return "\n".join([part for part in parts if part]).strip()
 
 
-def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None):
+def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None, max_tokens=0):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	request_prompt = _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=file_ids)
@@ -10431,6 +11089,8 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 		request_body["input"] = _buildOpenAIInputItems(request_prompt, file_ids=file_ids)
 	else:
 		request_body["input"] = request_prompt
+	if max_tokens > 0:
+		request_body["max_output_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -10525,6 +11185,113 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 	)
 
 
+def callAIOpenAIGenericDirect(base_url, api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None, response_field="", max_tokens=0):
+	mndbg.dbgp(get_current_function_name())
+	mndbg.dbgp("tellme: calling OpenAI-compatible model '%s' at '%s' with timeout %.1fs" % (
+		model, base_url, timeout_seconds
+	))
+	request_prompt = _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=file_ids)
+	candidate_urls = _buildOpenAICompatibleEndpointCandidates(base_url, purpose="request")
+	last_error = None
+	for request_url in candidate_urls:
+		request_url_l = request_url.lower()
+		use_chat_completions = request_url_l.endswith("/v1/chat/completions")
+		request_mode = "chat_completions" if use_chat_completions else "responses"
+		request_body = {
+			"model": model
+		}
+		if use_chat_completions:
+			request_body["messages"] = [{"role": "user", "content": request_prompt}]
+			if file_ids:
+				request_body["messages"][0]["content"] = request_prompt
+			if max_tokens > 0:
+				request_body["max_tokens"] = max_tokens
+		else:
+			if file_ids:
+				request_body["input"] = _buildOpenAIInputItems(request_prompt, file_ids=file_ids)
+			else:
+				request_body["input"] = request_prompt
+			if max_tokens > 0:
+				request_body["max_output_tokens"] = max_tokens
+		if isinstance(options, dict) and len(options) > 0:
+			if use_chat_completions:
+				for opt_key, opt_value in options.items():
+					request_body[opt_key] = opt_value
+			else:
+				request_body["options"] = options
+		request_data = json.dumps(request_body).encode("utf-8")
+		headers = _getOpenAICompatibleAuthHeaders(api_key)
+		headers["content-type"] = "application/json"
+		try:
+			status_code, response_headers, response_body = _rawHttpRequest(
+				request_url,
+				method="POST",
+				headers=headers,
+				body=request_data,
+				timeout_seconds=timeout_seconds
+			)
+			response_text = ensure_text(response_body.decode("utf-8", "replace"))
+			response_data = json.loads(response_text) if response_text.strip() != "" else {}
+			if status_code < 200 or status_code >= 300:
+				last_error = _buildOpenAICompatibleError(
+					status_code,
+					raw_body=response_text,
+					headers=response_headers,
+					provider_label="OpenAI-compatible"
+				)
+				if getattr(last_error, "status_code", None) in [404, 405, 415, 422, 501]:
+					continue
+				raise last_error
+			request_id = ""
+			if isinstance(response_data, dict):
+				request_id = ensure_text(response_headers.get("request-id", "") or response_headers.get("x-request-id", "") or response_data.get("id", "")).strip()
+			if use_chat_completions:
+				text = _extractCustomAIText(response_data, response_field=response_field)
+			else:
+				text = _extractOpenAIText(response_data)
+				if text == "" and response_field != "":
+					text = _extractCustomAIText(response_data, response_field=response_field)
+			if text:
+				_updateOpenAICompatibleEndpointCache(
+					base_url,
+					request_url=request_url,
+					models_url=_deriveOpenAICompatibleModelsUrlFromRequestUrl(request_url),
+					request_mode=request_mode
+				)
+				return text, request_id, request_url, request_mode
+			last_error = AIProviderError(
+				"OpenAI-compatible endpoint returned an empty or unexpected response payload",
+				request_id=request_id,
+				body={
+					"raw_response": response_data,
+					"request_url": request_url,
+					"request_mode": request_mode,
+					"response_field": response_field
+				},
+				error_type="UnexpectedPayloadError"
+			)
+			if not use_chat_completions:
+				continue
+			raise last_error
+		except socket.timeout:
+			raise
+		except Exception as e:
+			if isinstance(e, AIProviderError):
+				raise
+			raise AIProviderError(
+				"OpenAI-compatible request setup failed: %s" % str(e),
+				body={"error": {"message": str(e)}},
+				error_type=e.__class__.__name__
+			)
+	if last_error is not None:
+		raise last_error
+	raise AIProviderError(
+		"Unable to resolve a working OpenAI-compatible request endpoint from '%s'" % ensure_text(base_url).strip(),
+		body={"candidate_urls": candidate_urls},
+		error_type="EndpointResolutionError"
+	)
+
+
 def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 	mndbg.dbgp(get_current_function_name())
 	mime_type = _guessMimeType(file_path)
@@ -10579,7 +11346,7 @@ def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 	}
 
 
-def callAIOpenAIDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None):
+def callAIOpenAIDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None, max_tokens=0):
 	mndbg.dbgp(get_current_function_name())
 	uploaded_files = []
 	for file_path in file_paths:
@@ -10592,9 +11359,98 @@ def callAIOpenAIDirectWithFiles(api_key, model, instruction_text, file_paths, ti
 		instruction_text,
 		timeout_seconds=timeout_seconds,
 		options=options,
-		file_ids=[item.get("id", "") for item in uploaded_files]
+		file_ids=[item.get("id", "") for item in uploaded_files],
+		max_tokens=max_tokens
 	)
 	return response_text, request_id, uploaded_files
+
+
+def _openaiGenericUploadFileDirect(base_url, api_key, file_path, timeout_seconds=60.0):
+	mndbg.dbgp(get_current_function_name())
+	mime_type = _guessMimeType(file_path)
+	upload_name = _getProviderUploadFilename(file_path)
+	request_body, boundary = _encodeMultipartForm(
+		[("purpose", "user_data")],
+		[("file", file_path, mime_type, upload_name)]
+	)
+	candidate_urls = []
+	for request_url in _buildOpenAICompatibleEndpointCandidates(base_url, purpose="request"):
+		files_url = _deriveOpenAICompatibleFilesUrlFromRequestUrl(request_url)
+		if files_url != "" and files_url not in candidate_urls:
+			candidate_urls.append(files_url)
+	last_error = None
+	for request_url in candidate_urls:
+		headers = _getOpenAICompatibleAuthHeaders(api_key)
+		headers["content-type"] = "multipart/form-data; boundary=%s" % boundary
+		try:
+			status_code, response_headers, response_body = _rawHttpRequest(
+				request_url,
+				method="POST",
+				headers=headers,
+				body=request_body,
+				timeout_seconds=timeout_seconds
+			)
+			payload_text = ensure_text(response_body.decode("utf-8", "replace"))
+			payload = json.loads(payload_text) if payload_text.strip() != "" else {}
+			if status_code < 200 or status_code >= 300:
+				last_error = _buildOpenAICompatibleError(
+					status_code,
+					raw_body=payload_text,
+					headers=response_headers,
+					provider_label="OpenAI-compatible file upload"
+				)
+				if getattr(last_error, "status_code", None) in [404, 405, 415, 422, 501]:
+					continue
+				raise last_error
+			return {
+				"id": ensure_text(payload.get("id", "")).strip(),
+				"path": file_path,
+				"name": upload_name,
+				"mime_type": ensure_text(payload.get("mime_type", mime_type)).strip() or mime_type,
+				"upload_url": request_url
+			}
+		except socket.timeout:
+			raise
+		except Exception as e:
+			if isinstance(e, AIProviderError):
+				last_error = e
+				if getattr(e, "status_code", None) in [404, 405, 415, 422, 501]:
+					continue
+				raise
+			last_error = AIProviderError(
+				"OpenAI-compatible file upload failed: %s" % str(e),
+				body={"error": {"message": str(e)}, "request_url": request_url},
+				error_type="FileUploadError"
+			)
+			raise last_error
+	if last_error is not None:
+		raise last_error
+	raise AIProviderError(
+		"Unable to resolve an OpenAI-compatible files endpoint from '%s'" % ensure_text(base_url).strip(),
+		body={"candidate_urls": candidate_urls},
+		error_type="EndpointResolutionError"
+	)
+
+
+def callAIOpenAIGenericDirectWithFiles(base_url, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None, response_field="", max_tokens=0):
+	mndbg.dbgp(get_current_function_name())
+	uploaded_files = []
+	for file_path in file_paths:
+		uploaded_files.append(_openaiGenericUploadFileDirect(base_url, api_key, file_path, timeout_seconds=timeout_seconds))
+	if ensure_text(instruction_text).strip() == "":
+		return "", "", uploaded_files, "", ""
+	response_text, request_id, request_url, request_mode = callAIOpenAIGenericDirect(
+		base_url,
+		api_key,
+		model,
+		instruction_text,
+		timeout_seconds=timeout_seconds,
+		options=options,
+		file_ids=[item.get("id", "") for item in uploaded_files],
+		response_field=response_field,
+		max_tokens=max_tokens
+	)
+	return response_text, request_id, uploaded_files, request_url, request_mode
 
 
 def _anthropic_extract_text(message):
@@ -10687,7 +11543,10 @@ def _buildGenericTruncationNote(engine, message=None, max_tokens=0, stop_reason=
 		"openai": "OPENAI_MAX_TOKENS",
 		"openaiagents": "OPENAI_MAX_TOKENS",
 		"anthropic": "ANTHROPIC_MAX_TOKENS",
-		"openrouter": "OPENROUTER_MAX_TOKENS"
+		"openrouter": "OPENROUTER_MAX_TOKENS",
+		"ollama": "OLLAMA_MAX_TOKENS",
+		"customai": "CUSTOMAI_MAX_TOKENS",
+		"openai-generic": "OPENAIGENERIC_MAX_TOKENS"
 	}
 	env_var = env_var_map.get(engine, "")
 	
@@ -10707,7 +11566,7 @@ def _anthropicBuildTruncationNote(message, max_tokens=0):
 	return _buildGenericTruncationNote("anthropic", message=message, max_tokens=max_tokens, stop_reason=stop_reason)
 
 
-def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
+def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, options=None, referenced_files=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic SDK model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
@@ -10723,12 +11582,13 @@ def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_s
 	)
 	message_kwargs = {
 		"model": model,
-		"max_tokens": max_tokens,
 		"messages": [{
 			"role": "user",
 			"content": _buildAnthropicMessageContent(request_prompt, referenced_files=referenced_files)
 		}]
 	}
+	if max_tokens > 0:
+		message_kwargs["max_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		message_kwargs["extra_body"] = {"options": options}
 	use_files_beta = bool(referenced_files)
@@ -10757,7 +11617,7 @@ def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_s
 	)
 
 
-def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=4096, options=None, referenced_files=None):
+def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, options=None, referenced_files=None):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
@@ -10772,7 +11632,6 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 	)
 	request_body = {
 		"model": model,
-		"max_tokens": max_tokens,
 		"messages": [
 			{
 				"role": "user",
@@ -10780,6 +11639,8 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=409
 			}
 		]
 	}
+	if max_tokens > 0:
+		request_body["max_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -10931,7 +11792,7 @@ def _anthropicUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 	}
 
 
-def callAIAnthropicWithFiles(anthropic_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=4096, options=None):
+def callAIAnthropicWithFiles(anthropic_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=0, options=None):
 	mndbg.dbgp(get_current_function_name())
 	uploaded_files = []
 	for file_path in file_paths:
@@ -10951,7 +11812,7 @@ def callAIAnthropicWithFiles(anthropic_client_class, api_key, model, instruction
 	return response_text, request_id, uploaded_files
 
 
-def callAIAnthropicDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=4096, options=None):
+def callAIAnthropicDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=0, options=None):
 	mndbg.dbgp(get_current_function_name())
 	uploaded_files = []
 	for file_path in file_paths:
@@ -10996,7 +11857,7 @@ def _extractCustomAIText(response_data, response_field=""):
 	return ""
 
 
-def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="response", options=None):
+def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="response", options=None, max_tokens=0):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Ollama model '%s' at '%s' with timeout %.1fs" % (
 		model, base_url, timeout_seconds
@@ -11024,6 +11885,8 @@ def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="
 			"model": model,
 			"input": prompt
 		}
+		if max_tokens > 0:
+			request_body["max_output_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -11127,15 +11990,16 @@ def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="
 	)
 
 
-def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=8192, options=None):
+def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, options=None):
 	"""Send a chat completion request to OpenRouter using their OpenAI-compatible API."""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenRouter model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	request_body = {
 		"model": model,
-		"messages": [{"role": "user", "content": prompt}],
-		"max_tokens": max_tokens
+		"messages": [{"role": "user", "content": prompt}]
 	}
+	if max_tokens > 0:
+		request_body["max_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		for opt_key, opt_value in options.items():
 			request_body[opt_key] = opt_value
@@ -11248,7 +12112,7 @@ def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=81
 	)
 
 
-def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="", options=None):
+def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="", options=None, max_tokens=0):
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling customai model '%s' at '%s' with timeout %.1fs" % (
 		model, base_url, timeout_seconds
@@ -11257,6 +12121,8 @@ def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="
 		"model": model,
 		"prompt": prompt
 	}
+	if max_tokens > 0:
+		request_body["max_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -11272,16 +12138,27 @@ def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="
 		response = urllib_urlopen(request, timeout=timeout_seconds)
 		try:
 			raw_response = response.read()
-			response_text = ensure_text(raw_response.decode("utf-8", "replace"))
 			request_id = ""
 			try:
 				request_id = response.headers.get("request-id", "") or response.headers.get("x-request-id", "")
 			except Exception:
 				request_id = ""
-			try:
-				response_data = json.loads(response_text) if response_text.strip() != "" else {}
-			except Exception:
-				response_data = response_text
+			if isinstance(raw_response, dict):
+				response_data = raw_response
+			elif isinstance(raw_response, list):
+				response_data = raw_response
+			elif isinstance(raw_response, bytes_type):
+				response_text = ensure_text(raw_response.decode("utf-8", "replace"))
+				try:
+					response_data = json.loads(response_text) if response_text.strip() != "" else {}
+				except Exception:
+					response_data = response_text
+			else:
+				response_text = ensure_text(raw_response)
+				try:
+					response_data = json.loads(response_text) if response_text.strip() != "" else {}
+				except Exception:
+					response_data = response_text
 		finally:
 			try:
 				response.close()
@@ -11562,9 +12439,22 @@ def ensure_bytes(s, encoding='latin-1'):
 	return s.encode(encoding)
 
 def ensure_text(s, encoding='latin-1'):
-	if isinstance(s, str):
+	if s is None:
+		return ""
+	if isinstance(s, text_type):
 		return s
-	return s.decode(encoding)	
+	if isinstance(s, bytes_type):
+		try:
+			return s.decode(encoding, "replace")
+		except TypeError:
+			return s.decode(encoding)
+	try:
+		return s.decode(encoding)
+	except Exception:
+		try:
+			return text_type(s)
+		except Exception:
+			return repr(s)
 
 
 def getEffectiveLogEncoding(args=None, default_encoding="utf-8"):
@@ -11686,6 +12576,42 @@ def askForConfirmation(displaytext="",default="N"):
 		if answer in ["N", "NO"]:
 			return False
 		dbg.log("[!] Please answer Y or N", highlight=1)
+
+
+def promptForTextInput(displaytext="", default_value=""):
+	"""Prompt the user for a short text value with an optional default."""
+	prompt_text = str(displaytext).strip()
+	if prompt_text == "":
+		prompt_text = "[?] Enter a value"
+	default_text = ensure_text(default_value).strip()
+	if default_text != "":
+		full_prompt = "%s [%s] " % (prompt_text, default_text)
+	else:
+		full_prompt = prompt_text + " "
+	while True:
+		user_input = ""
+		try:
+			if hasattr(dbg, "inputBox"):
+				user_input = dbg.inputBox(full_prompt)
+			else:
+				try:
+					user_input = raw_input(full_prompt)
+				except NameError:
+					user_input = input(full_prompt)
+		except EOFError:
+			user_input = ""
+		except KeyboardInterrupt:
+			dbg.log("[!] Input interrupted by user", highlight=1)
+			return None
+		except Exception as e:
+			mndbg.dbgp("text input prompt failed: %s" % str(e), errormode=False)
+			user_input = ""
+		if user_input is None:
+			user_input = ""
+		text_value = ensure_text(user_input).strip()
+		if text_value == "":
+			return default_text
+		return text_value
 
 
 def toHex(n):
@@ -35072,13 +35998,19 @@ class MnAI(object):
 		self.timeout_seconds = 300.0
 		self.timeout_source = "default"
 		self.max_request_kb = 0
-		self.max_tokens = 8192
+		self.max_tokens = 0
 		self.max_tokens_source = "default"
+		self.context_window = 0
+		self.context_window_source = "default"
 		self.api_key = ""
 		self.api_url = ""
 		self.api_url_source = "default"
 		self.response_field = ""
 		self.response_field_source = "default"
+		self.resolved_request_url = ""
+		self.resolved_models_url = ""
+		self.resolved_request_mode = ""
+		self.endpoint_hint_logged = False
 		self.api_options = {}
 		self.bridge_python_command = getAIBridgePythonCommand(self.mona_config)
 		self.bridge_python = formatAIBridgePythonCommand(self.bridge_python_command)
@@ -35113,6 +36045,7 @@ class MnAI(object):
 		self.additional_context_files = []
 		self.poc_file = ""
 		self.prompt = ""
+		self.base_prompt = ""
 		self.response = ""
 		self.request_id = ""
 		self.request_logfile_path = ""
@@ -35122,10 +36055,14 @@ class MnAI(object):
 		self.available_model_ids = []
 		self.upload_requested = False
 		self.openai_upload_requested = False
+		self.openai_generic_staged_requested = False
 		self.provider_uploaded_files = []
 		self.openai_uploaded_files = []
 		self.referenced_file_ids = []
 		self.last_request_context = None
+		self.chat_history = []
+		self.chat_active = False
+		self.placeholder_api_key_in_use = False
 
 	def logInfo(self, message):
 		"""Write a top-level informational message using the standard AI output prefix."""
@@ -35142,6 +36079,435 @@ class MnAI(object):
 	def logErrorDetail(self, message):
 		"""Write an indented error continuation line aligned under the status prefix."""
 		dbg.log("    %s" % message, highlight=True)
+
+	def updateResolvedOpenAICompatibleUrls(self):
+		"""Refresh per-request endpoint hints from the shared OpenAI-compatible URL cache."""
+		mndbg.dbgp(get_current_function_name())
+		if self.engine != "openai-generic":
+			return
+		cache_entry = _getOpenAICompatibleEndpointCache(self.api_url)
+		self.resolved_request_url = ensure_text(cache_entry.get("request_url", "")).strip()
+		self.resolved_models_url = ensure_text(cache_entry.get("models_url", "")).strip()
+		self.resolved_request_mode = ensure_text(cache_entry.get("request_mode", "")).strip()
+
+	def maybeLogResolvedOpenAICompatibleUrls(self):
+		"""Print the discovered full OpenAI-compatible URLs once per request flow."""
+		mndbg.dbgp(get_current_function_name())
+		if self.engine != "openai-generic" or self.endpoint_hint_logged:
+			return
+		self.updateResolvedOpenAICompatibleUrls()
+		if self.resolved_request_url == "" and self.resolved_models_url == "":
+			return
+		configured_url = ensure_text(self.api_url).strip().rstrip("/")
+		if self.resolved_request_url != "":
+			self.logInfoDetail("Resolved request URL : %s" % self.resolved_request_url)
+		if self.resolved_models_url != "":
+			self.logInfoDetail("Resolved models URL  : %s" % self.resolved_models_url)
+		if configured_url != "" and self.resolved_request_url != "" and configured_url.lower() != self.resolved_request_url.lower():
+			self.logInfoDetail("Suggestion          : use '%s' as %s.url next time" % (
+				self.resolved_request_url,
+				self.engine
+			))
+		self.endpoint_hint_logged = True
+
+	def _getEffectiveApiKey(self, engine, api_key):
+		"""Return the runtime API key for the selected engine, inserting a local placeholder when useful."""
+		mndbg.dbgp(get_current_function_name())
+		api_key = ensure_text(api_key).strip()
+		self.placeholder_api_key_in_use = False
+		if engine in ["openai", "openaiagents", "anthropic", "openrouter", "openai-generic"] and api_key == "":
+			self.placeholder_api_key_in_use = True
+			return "corelan"
+		return api_key
+
+	def refreshActiveEngineSettings(self, allow_arg_model_override=True):
+		"""Reload provider configuration for the currently selected engine."""
+		mndbg.dbgp(get_current_function_name())
+		self.api_key, self.model = getAIModelAndKey(self.engine, self.mona_config)
+		self.api_key = self._getEffectiveApiKey(self.engine, self.api_key)
+		model_is_set, model_source_name, _model_source_value = self._getEngineOptionStatus("model")
+		self.model_source = self._formatValueSource(model_source_name if model_is_set else "default")
+		self.api_url = getAIUrl(self.engine, self.mona_config)
+		url_is_set, url_source_name, _url_source_value = self._getEngineOptionStatus("url")
+		self.api_url_source = self._formatValueSource(url_source_name if url_is_set else "default")
+		self.response_field = getAIResponseField(self.engine, self.mona_config)
+		field_is_set, field_source_name, _field_source_value = self._getEngineOptionStatus("response_field")
+		self.response_field_source = self._formatValueSource(field_source_name if field_is_set else "default")
+		if self.engine == "openaiagents":
+			self.bridge_python_command = getAIBridgePythonCommand(self.mona_config)
+			self.bridge_python = formatAIBridgePythonCommand(self.bridge_python_command)
+			self.bridge_python_source = "config" if self.mona_config.get("openaiagents.bridge.python").strip() != "" else "default"
+			self.reasoning_effort = getAIReasoningEffort(self.engine, self.mona_config)
+			effort_is_set, effort_source_name, _effort_source_value = self._getEngineOptionStatus("reasoning_effort")
+			self.reasoning_effort_source = self._formatValueSource(effort_source_name if effort_is_set else "default")
+			self.response_verbosity = getAIVerbosity(self.engine, self.mona_config)
+			verbosity_is_set, verbosity_source_name, _verbosity_source_value = self._getEngineOptionStatus("verbosity")
+			self.response_verbosity_source = self._formatValueSource(verbosity_source_name if verbosity_is_set else "default")
+			self.max_turns = getAIMaxTurns(self.engine, self.mona_config)
+			max_turns_is_set, max_turns_source_name, _max_turns_source_value = self._getEngineOptionStatus("max_turns")
+			self.max_turns_source = self._formatValueSource(max_turns_source_name if max_turns_is_set else "default")
+		try:
+			self.timeout_seconds, self.timeout_source = getAITimeout(self.engine, self.mona_config, args=self.args)
+		except ValueError as e:
+			self.logError(str(e))
+			return False
+			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
+			self.context_window, self.context_window_source = getAIContextWindow(self.engine, self.mona_config)
+		if allow_arg_model_override and "model" in self.args and type(self.args["model"]).__name__.lower() != "bool":
+			explicit_model = str(self.args["model"]).strip()
+			if explicit_model != "":
+				self.model = explicit_model
+				self.model_source = "arg"
+		if self.testmode:
+			test_model = getAITestModel(self.engine if self.engine != "offline" else "openai")
+			if test_model != "":
+				self.model = test_model
+				self.model_source = "test"
+		self.api_options = _collectAIOptions(self.engine, self.model, self.mona_config) if self.engine != "offline" else {}
+		if self.engine == "openai-generic":
+			self.endpoint_hint_logged = False
+			self.updateResolvedOpenAICompatibleUrls()
+		return True
+
+	def _previewEngineSelectionState(self, engine):
+		"""Return a lightweight summary of whether an engine is ready for interactive selection."""
+		mndbg.dbgp(get_current_function_name())
+		api_key, model = getAIModelAndKey(engine, self.mona_config)
+		url_value = getAIUrl(engine, self.mona_config)
+		reasons = []
+		if engine in ["openai", "openaiagents", "anthropic", "openrouter", "openai-generic"] and ensure_text(api_key).strip() == "":
+			reasons.append("API key missing, will use placeholder 'corelan'")
+		if engine in ["ollama", "customai", "openai-generic"] and ensure_text(url_value).strip() == "":
+			reasons.append("URL will be requested")
+		if ensure_text(model).strip() == "":
+			reasons.append("model will be requested")
+		reason = "ready"
+		if len(reasons) > 0:
+			reason = "; ".join(reasons)
+		return {
+			"engine": engine,
+			"model": ensure_text(model).strip(),
+			"url": ensure_text(url_value).strip(),
+			"api_key_present": (ensure_text(api_key).strip() != ""),
+			"usable": True,
+			"reason": reason
+		}
+
+	def _selectEngineFromMenu(self):
+		"""Prompt the user to select an engine, preferring the current proposal first."""
+		mndbg.dbgp(get_current_function_name())
+		engine_summaries = []
+		for engine_name in self.available_provider_engines:
+			engine_summaries.append(self._previewEngineSelectionState(engine_name))
+		if len(engine_summaries) == 0:
+			self.logError("No AI engines are available for submission.")
+			return ""
+		engine_names = [summary.get("engine", "") for summary in engine_summaries]
+		proposed_engine = self.engine if self.engine in engine_names and self.engine != "offline" else ""
+		if proposed_engine == "" and "openai-generic" in engine_names:
+			proposed_engine = "openai-generic"
+		if proposed_engine == "" and len(engine_summaries) > 0:
+			proposed_engine = engine_summaries[0].get("engine", "")
+		ordered = []
+		if proposed_engine != "":
+			for summary in engine_summaries:
+				if summary.get("engine", "") == proposed_engine:
+					ordered.append(summary)
+					break
+		for summary in engine_summaries:
+			if summary.get("engine", "") == proposed_engine:
+				continue
+			ordered.append(summary)
+		self.logInfo("Select AI engine for this tellme session:")
+		for index_value, summary in enumerate(ordered):
+			label = summary.get("engine", "")
+			if summary.get("model", "") != "":
+				label += " | model=%s" % summary.get("model", "")
+			if summary.get("url", "") != "":
+				label += " | url=%s" % summary.get("url", "")
+			if summary.get("reason", "") not in ["", "ready"]:
+				label += " | %s" % summary.get("reason", "")
+			if index_value == 0 and proposed_engine != "":
+				label += " | proposed"
+			self.logInfoDetail("%d. %s" % (index_value + 1, label))
+		selection_text = promptForTextInput("Engine number (or 'exit')", "1")
+		if selection_text is None:
+			return ""
+		selection_text = ensure_text(selection_text).strip().lower()
+		if selection_text in ["exit", "quit", "q"]:
+			return ""
+		selected_index, index_ok = getIntArg(selection_text)
+		if not index_ok or selected_index < 1 or selected_index > len(ordered):
+			self.logError("Invalid engine selection '%s'." % selection_text)
+			return self._selectEngineFromMenu()
+		return ordered[selected_index - 1].get("engine", "")
+
+	def promptForMissingEngineParameters(self):
+		"""Prompt for missing non-key engine parameters needed for this session only."""
+		mndbg.dbgp(get_current_function_name())
+		if self.engine in ["ollama", "customai", "openai-generic"] and ensure_text(self.api_url).strip() == "":
+			default_url = ""
+			if self.engine == "ollama":
+				default_url = "http://127.0.0.1:11434"
+			elif self.engine == "openai-generic":
+				default_url = "http://127.0.0.1:8080"
+			url_value = promptForTextInput("URL for %s" % self.engine, default_url)
+			if url_value is None:
+				return False
+			url_value = ensure_text(url_value).strip()
+			if url_value.lower() in ["exit", "quit", "q"] or url_value == "":
+				return False
+			self.api_url = url_value
+			self.api_url_source = "interactive"
+		if self.placeholder_api_key_in_use:
+			self.logInfo("No API key is configured for '%s'. Mona will use the placeholder value 'corelan' for this session." % self.engine)
+		return True
+
+	def _selectModelForCurrentEngine(self):
+		"""Prompt the user to select or confirm the model for the current engine."""
+		mndbg.dbgp(get_current_function_name())
+		default_model = ensure_text(self.model).strip()
+		models = []
+		try:
+			models = self.fetchAvailableModels(refresh=True, log_errors=False)
+		except Exception as e:
+			self.logInfo("Unable to retrieve available %s models. Falling back to manual model selection." % self.engine)
+			self.logInfoDetail(str(e))
+		if len(models) > 0:
+			if default_model not in models:
+				default_model = models[0]
+			default_index = models.index(default_model) + 1 if default_model in models else 1
+			self.logInfo("Select model for engine '%s':" % self.engine)
+			for index_value, model_id in enumerate(models):
+				label = model_id
+				if index_value + 1 == default_index:
+					label += " | proposed"
+				self.logInfoDetail("%d. %s" % (index_value + 1, label))
+			selection_text = promptForTextInput("Model number (or 'exit')", str(default_index))
+			if selection_text is None:
+				return ""
+			selection_text = ensure_text(selection_text).strip().lower()
+			if selection_text in ["exit", "quit", "q"]:
+				return ""
+			selected_index, index_ok = getIntArg(selection_text)
+			if not index_ok or selected_index < 1 or selected_index > len(models):
+				self.logError("Invalid model selection '%s'." % selection_text)
+				return self._selectModelForCurrentEngine()
+			return models[selected_index - 1]
+		if default_model == "":
+			default_model = getDefaultAIModel(self.engine)
+		if default_model != "":
+			self.logInfo("Using manual model entry for engine '%s'." % self.engine)
+		model_value = promptForTextInput("Model ID for %s (or 'exit')" % self.engine, default_model)
+		if model_value is None:
+			return ""
+		model_value = ensure_text(model_value).strip()
+		if model_value.lower() in ["exit", "quit", "q"]:
+			return ""
+		return model_value
+
+	def getEffectiveAIOptions(self):
+		"""Return configured provider options plus first-class optional local-model knobs."""
+		mndbg.dbgp(get_current_function_name())
+		options = _collectAIOptions(self.engine, self.model, self.mona_config)
+		options = _applyAIContextWindowOption(self.engine, options, self.context_window)
+		options = _applyAIMaxTokensOption(self.engine, options, self.max_tokens)
+		return options
+
+	def selectEngineAndModelInteractive(self):
+		"""Interactively confirm the engine/model combination after the evidence bundle was built."""
+		mndbg.dbgp(get_current_function_name())
+		while True:
+			selected_engine = self._selectEngineFromMenu()
+			if selected_engine == "":
+				return False
+			self.engine = selected_engine
+			self.engine_source = "interactive"
+			self.offline = ("offline" in self.args) or ("dryrun" in self.args) or (self.engine == "offline")
+			if not self.refreshActiveEngineSettings(allow_arg_model_override=(_normalizeAIEngine(self.args.get("e", "")) == self.engine)):
+				return False
+			if not self.promptForMissingEngineParameters():
+				return False
+			selected_model = self._selectModelForCurrentEngine()
+			if selected_model == "":
+				return False
+			self.model = selected_model
+			self.model_source = "interactive"
+			self.api_options = self.getEffectiveAIOptions() if self.engine != "offline" else {}
+			if not self.validateProviderConfiguration():
+				self.logInfo("Please select another engine/model combination.")
+				continue
+			self.logInfo("Selected engine/model for this session:")
+			self.logInfoDetail("Engine : %s" % self.engine)
+			self.logInfoDetail("Model  : %s" % self.model)
+			if self.api_url != "":
+				self.logInfoDetail("URL    : %s" % self.api_url)
+			if self.placeholder_api_key_in_use:
+				self.logInfoDetail("API key: using placeholder token 'corelan' for OpenAI-compatible auth")
+			if askForConfirmation("[?] Use this engine/model for the current tellme session?", default="Y"):
+				if not self.maybePersistInteractiveEngineSelection():
+					return False
+				return True
+
+	def prepareSubmitFastPath(self):
+		"""Resolve the non-interactive engine/model configuration used by -submit."""
+		mndbg.dbgp(get_current_function_name())
+		if self.engine == "offline":
+			self.logError("The -submit flag requires a provider engine. Offline mode cannot submit requests.")
+			return False
+		self.offline = ("offline" in self.args) or ("dryrun" in self.args) or (self.engine == "offline")
+		if not self.refreshActiveEngineSettings(allow_arg_model_override=True):
+			return False
+		if self.engine in ["ollama", "customai", "openai-generic"] and ensure_text(self.api_url).strip() == "":
+			self.logError("The -submit flag is non-interactive, so %s.url must already be configured." % self.engine)
+			return False
+		if self.model.strip() == "":
+			self.logError("The -submit flag is non-interactive, so %s.model must already be configured or provided with -model." % self.engine)
+			return False
+		if self.engine in ["openai", "openaiagents", "anthropic", "openrouter", "openai-generic"] and self.placeholder_api_key_in_use:
+			self.logInfo("No API key is configured for '%s'. Mona will use the placeholder value 'corelan' for this session." % self.engine)
+		self.logInfo("Using non-interactive -submit mode.")
+		self.logInfoDetail("Engine : %s" % self.engine)
+		self.logInfoDetail("Model  : %s" % self.model)
+		if self.api_url != "":
+			self.logInfoDetail("URL    : %s" % self.api_url)
+		if not self.validateProviderConfiguration():
+			return False
+		return True
+
+	def maybePersistInteractiveEngineSelection(self):
+		"""Offer to save the current interactive engine selection into mona.ini."""
+		mndbg.dbgp(get_current_function_name())
+		if self.submit_requested:
+			return True
+		config_entries = []
+		if ensure_text(self.model).strip() != "":
+			config_entries.append(("%s.model" % self.engine, self.model))
+		if ensure_text(self.api_url).strip() != "":
+			config_entries.append(("%s.url" % self.engine, self.api_url))
+		if len(config_entries) > 0:
+			self.logInfo("You entered runtime settings for this engine.")
+			for entry_name, entry_value in config_entries:
+				self.logInfoDetail("%s = %s" % (entry_name, entry_value))
+			if askForConfirmation("[?] Save these engine settings to mona.ini for future tellme sessions?", default="N"):
+				for entry_name, entry_value in config_entries:
+					self.mona_config.set(entry_name, entry_value)
+				self.logInfo("Saved tellme engine settings to mona.ini.")
+		current_default_engine = _normalizeAIEngine(self.mona_config.get(getDefaultAIEngineConfigName()))
+		if current_default_engine != self.engine:
+			if askForConfirmation("[?] Set '%s' as the default AI engine in mona.ini?" % self.engine, default="N"):
+				self.mona_config.set(getDefaultAIEngineConfigName(), self.engine)
+				self.logInfo("Updated mona.ai.engine to '%s'." % self.engine)
+		return True
+
+	def _formatChatHistoryForPrompt(self):
+		"""Serialize the in-session follow-up transcript into plain text."""
+		mndbg.dbgp(get_current_function_name())
+		lines = []
+		for entry in self.chat_history:
+			if not isinstance(entry, dict):
+				continue
+			role = ensure_text(entry.get("role", "")).strip().lower()
+			text_value = ensure_text(entry.get("text", "")).strip()
+			if text_value == "":
+				continue
+			if role == "assistant":
+				engine_name = ensure_text(entry.get("engine", "")).strip()
+				model_name = ensure_text(entry.get("model", "")).strip()
+				label = "Assistant"
+				if engine_name != "" or model_name != "":
+					label += " [%s%s%s]" % (
+						engine_name,
+						"/" if engine_name != "" and model_name != "" else "",
+						model_name
+					)
+			else:
+				label = "User"
+			lines.append("%s:\n%s" % (label, text_value))
+		return "\n\n".join(lines).strip()
+
+	def buildFollowupPrompt(self, user_message):
+		"""Build a follow-up prompt that keeps the original evidence bundle authoritative."""
+		mndbg.dbgp(get_current_function_name())
+		user_message = ensure_text(user_message).strip()
+		transcript_text = self._formatChatHistoryForPrompt()
+		parts = [
+			"You are continuing a prior mona tellme analysis session.",
+			"Treat the original evidence bundle below as the authoritative source material.",
+			"If the latest follow-up asks for something not supported by that evidence, say so clearly instead of inventing facts.",
+			"",
+			"ORIGINAL EVIDENCE REQUEST BEGIN",
+			self.base_prompt,
+			"ORIGINAL EVIDENCE REQUEST END",
+		]
+		if transcript_text != "":
+			parts.extend([
+				"",
+				"SESSION TRANSCRIPT BEGIN",
+				transcript_text,
+				"SESSION TRANSCRIPT END",
+			])
+		parts.extend([
+			"",
+			"LATEST USER FOLLOW-UP BEGIN",
+			user_message,
+			"LATEST USER FOLLOW-UP END",
+			"",
+			"Answer only the latest user follow-up while staying grounded in the original evidence bundle and the session transcript."
+		])
+		return "\n".join(parts)
+
+	def runManagedChatLoop(self):
+		"""Enter the post-submit chat loop, allowing follow-ups and engine switches."""
+		mndbg.dbgp(get_current_function_name())
+		if self.offline or self.engine == "offline":
+			return self.response
+		if self.engine == "openaiagents":
+			self.logInfo("Interactive chat loop is skipped for openaiagents because that engine runs asynchronously through the external bridge.")
+			return self.response
+		self.upload_requested = False
+		self.openai_upload_requested = False
+		self.openai_generic_staged_requested = False
+		self.chat_active = True
+		self.chat_history = [{
+			"role": "assistant",
+			"engine": self.engine,
+			"model": self.model,
+			"text": self.response
+		}]
+		self.logInfo("Interactive tellme chat is now active.")
+		self.logInfoDetail("Type follow-up text to continue, 'engine' to change engine/model, or 'exit' to stop.")
+		while True:
+			user_input = promptForTextInput("tellme", "")
+			if user_input is None:
+				break
+			user_input = ensure_text(user_input).strip()
+			if user_input == "":
+				continue
+			command_text = user_input.lower()
+			if command_text in ["exit", "quit", "q"]:
+				self.logInfo("Leaving the tellme chat session.")
+				break
+			if command_text == "engine":
+				if not self.selectEngineAndModelInteractive():
+					self.logInfo("Engine selection cancelled. Keeping the current engine/model.")
+				elif self.engine == "openaiagents":
+					self.logInfo("The selected engine is openaiagents. The next submitted follow-up will be queued through the bridge and the interactive chat loop will then stop.")
+				continue
+			self.chat_history.append({"role": "user", "text": user_input})
+			followup_prompt = self.buildFollowupPrompt(user_input)
+			self.request(prompt=followup_prompt)
+			self.chat_history.append({
+				"role": "assistant",
+				"engine": self.engine,
+				"model": self.model,
+				"text": self.response
+			})
+			if self.engine == "openaiagents":
+				self.logInfo("The follow-up was handed off to openaiagents. Ending the interactive chat loop because that engine completes asynchronously.")
+				break
+		self.chat_active = False
+		return self.response
 
 	def _getBridgePythonInstallCommands(self):
 		"""Return pip install commands for the configured bridge Python, plus a 32-bit launcher variant when relevant."""
@@ -35280,12 +36646,13 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine = self.engine
 		if engine == "openai":
-			return [
-				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
-				{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True, "default": "4096"},
-			]
+				return [
+					{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
+					{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+					{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
+					{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True},
+					{"name": "context_window", "required": False, "env": "OPENAI_CONTEXT_WINDOW", "show_value": True},
+				]
 		if engine == "openaiagents":
 			return [
 				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
@@ -35294,38 +36661,55 @@ class MnAI(object):
 				{"name": "bridge.python", "required": False, "env": "", "show_value": True, "default": formatAIBridgePythonCommand(getAIBridgePythonCommand(self.mona_config))},
 				{"name": "reasoning_effort", "required": False, "env": "OPENAIAGENTS_REASONING_EFFORT", "show_value": True, "default": "high"},
 				{"name": "verbosity", "required": False, "env": "OPENAIAGENTS_VERBOSITY", "show_value": True, "default": "low"},
-				{"name": "max_turns", "required": False, "env": "OPENAIAGENTS_MAX_TURNS", "show_value": True, "default": "8"},
-				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True, "default": "8192"},
-			]
+					{"name": "max_turns", "required": False, "env": "OPENAIAGENTS_MAX_TURNS", "show_value": True, "default": "8"},
+					{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
+					{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True},
+					{"name": "context_window", "required": False, "env": "OPENAI_CONTEXT_WINDOW", "show_value": True},
+				]
 		if engine == "anthropic":
 			return [
-				{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
-				{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True, "default": "8192"},
-			]
+					{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
+					{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+					{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
+					{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True},
+					{"name": "context_window", "required": False, "env": "ANTHROPIC_CONTEXT_WINDOW", "show_value": True},
+				]
 		if engine == "openrouter":
 			return [
-				{"name": "key", "required": True, "env": "OPENROUTER_API_KEY", "show_value": False},
-				{"name": "model", "required": False, "env": "OPENROUTER_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-				{"name": "timeout", "required": False, "env": "OPENROUTER_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "max_tokens", "required": False, "env": "OPENROUTER_MAX_TOKENS", "show_value": True, "default": "8192"},
-			]
+					{"name": "key", "required": True, "env": "OPENROUTER_API_KEY", "show_value": False},
+					{"name": "model", "required": False, "env": "OPENROUTER_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+					{"name": "timeout", "required": False, "env": "OPENROUTER_TIMEOUT", "show_value": True, "default": "300"},
+					{"name": "max_tokens", "required": False, "env": "OPENROUTER_MAX_TOKENS", "show_value": True},
+					{"name": "context_window", "required": False, "env": "OPENROUTER_CONTEXT_WINDOW", "show_value": True},
+				]
 		if engine == "ollama":
 			return [
 				{"name": "url", "required": True, "env": "OLLAMA_URL", "show_value": True},
-				{"name": "model", "required": True, "env": "OLLAMA_MODEL", "show_value": True},
-				{"name": "timeout", "required": False, "env": "OLLAMA_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "response_field", "required": False, "env": "OLLAMA_RESPONSE_FIELD", "show_value": True, "default": "response"},
-			]
+					{"name": "model", "required": True, "env": "OLLAMA_MODEL", "show_value": True},
+					{"name": "timeout", "required": False, "env": "OLLAMA_TIMEOUT", "show_value": True, "default": "300"},
+					{"name": "max_tokens", "required": False, "env": "OLLAMA_MAX_TOKENS", "show_value": True},
+					{"name": "context_window", "required": False, "env": "OLLAMA_CONTEXT_WINDOW", "show_value": True},
+					{"name": "response_field", "required": False, "env": "OLLAMA_RESPONSE_FIELD", "show_value": True, "default": "response"},
+				]
 		if engine == "customai":
 			return [
 				{"name": "url", "required": True, "env": "CUSTOMAI_URL", "show_value": True},
-				{"name": "model", "required": True, "env": "CUSTOMAI_MODEL", "show_value": True},
-				{"name": "timeout", "required": False, "env": "CUSTOMAI_TIMEOUT", "show_value": True, "default": "300"},
-				{"name": "response_field", "required": False, "env": "CUSTOMAI_RESPONSE_FIELD", "show_value": True},
-			]
+					{"name": "model", "required": True, "env": "CUSTOMAI_MODEL", "show_value": True},
+					{"name": "timeout", "required": False, "env": "CUSTOMAI_TIMEOUT", "show_value": True, "default": "300"},
+					{"name": "max_tokens", "required": False, "env": "CUSTOMAI_MAX_TOKENS", "show_value": True},
+					{"name": "context_window", "required": False, "env": "CUSTOMAI_CONTEXT_WINDOW", "show_value": True},
+					{"name": "response_field", "required": False, "env": "CUSTOMAI_RESPONSE_FIELD", "show_value": True},
+				]
+		if engine == "openai-generic":
+			return [
+				{"name": "url", "required": True, "env": "OPENAIGENERIC_URL", "show_value": True},
+					{"name": "key", "required": False, "env": "OPENAIGENERIC_API_KEY", "show_value": False},
+					{"name": "model", "required": True, "env": "OPENAIGENERIC_MODEL", "show_value": True},
+					{"name": "timeout", "required": False, "env": "OPENAIGENERIC_TIMEOUT", "show_value": True, "default": "300"},
+					{"name": "max_tokens", "required": False, "env": "OPENAIGENERIC_MAX_TOKENS", "show_value": True},
+					{"name": "context_window", "required": False, "env": "OPENAIGENERIC_CONTEXT_WINDOW", "show_value": True},
+					{"name": "response_field", "required": False, "env": "OPENAIGENERIC_RESPONSE_FIELD", "show_value": True},
+				]
 		return []
 
 	def _getEngineOptionStatus(self, option_name):
@@ -35429,8 +36813,10 @@ class MnAI(object):
 		self.model = getDefaultAIModel("openai")
 		self.timeout_seconds = 300.0
 		self.timeout_source = "default"
-		self.max_tokens = 4096
+		self.max_tokens = 0
 		self.max_tokens_source = "default"
+		self.context_window = 0
+		self.context_window_source = "default"
 		self.logInfo(reason)
 		if details:
 			self.logInfoDetail(details)
@@ -35452,7 +36838,7 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine_arg_raw = self.args.get("e", "")
 		if type(engine_arg_raw).__name__.lower() == "bool":
-			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|openrouter|ollama|customai>")
+			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|openrouter|ollama|customai|openai-generic>")
 			return False
 
 		explicit_engine = _normalizeAIEngine(engine_arg_raw)
@@ -35484,7 +36870,7 @@ class MnAI(object):
 			self.logInfoDetail("[+] The OpenAI Agents engine will briefly validate the external Python bridge environment before submission.")
 			self.logInfoDetail("    You'll briefly see a py.exe window, that's perfectly normal. It should close automatically.")
 		if self.engine not in self.available_engines:
-			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openaiagents, anthropic, openrouter, ollama, customai" % self.engine)
+			self.logError("Invalid AI engine '%s'. Valid values: offline, openai, openaiagents, anthropic, openrouter, ollama, customai, openai-generic" % self.engine)
 			return False
 		if self.engine != "offline" and self.engine not in self.available_provider_engines:
 			if self.isDefaultEngineSelection():
@@ -35533,7 +36919,7 @@ class MnAI(object):
 		if self.engine in ["openai", "openaiagents", "anthropic", "openrouter"] and self.api_key == "":
 			self.available_model_ids = []
 			return self.available_model_ids
-		if self.engine == "ollama" and self.api_url == "":
+		if self.engine in ["ollama", "openai-generic"] and self.api_url == "":
 			self.available_model_ids = []
 			return self.available_model_ids
 		timeout_seconds = self.timeout_seconds
@@ -35549,6 +36935,8 @@ class MnAI(object):
 				timeout_seconds=timeout_seconds,
 				refresh=refresh
 			)
+			if self.engine == "openai-generic":
+				self.updateResolvedOpenAICompatibleUrls()
 			return self.available_model_ids
 		except Exception as e:
 			self.available_model_ids = []
@@ -35597,7 +36985,7 @@ class MnAI(object):
 	def tryLogAvailableModelsForMissingModel(self):
 		"""Try to show provider-visible model IDs after a missing-model configuration error."""
 		mndbg.dbgp(get_current_function_name())
-		if self.engine not in ["openai", "openaiagents", "anthropic", "ollama", "openrouter"]:
+		if self.engine not in ["openai", "openaiagents", "anthropic", "ollama", "openrouter", "openai-generic"]:
 			return
 		try:
 			models = self.fetchAvailableModels(refresh=True, log_errors=False)
@@ -35629,10 +37017,12 @@ class MnAI(object):
 				self.logInfoDetail("Reasoning : %s (%s)" % (self.reasoning_effort, self._formatValueSource(self.reasoning_effort_source)))
 				self.logInfoDetail("Verbosity : %s (%s)" % (self.response_verbosity, self._formatValueSource(self.response_verbosity_source)))
 				self.logInfoDetail("Max turns : %d (%s)" % (self.max_turns, self._formatValueSource(self.max_turns_source)))
-			if self.max_tokens > 0:
-				self.logInfoDetail("Max tokens: %d (%s)" % (self.max_tokens, self._formatValueSource(self.max_tokens_source)))
-			if isinstance(self.api_options, dict) and len(self.api_options) > 0:
-				self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
+				if self.max_tokens > 0:
+					self.logInfoDetail("Max tokens: %d (%s)" % (self.max_tokens, self._formatValueSource(self.max_tokens_source)))
+				if self.context_window > 0:
+					self.logInfoDetail("Context  : %d tokens (%s)" % (self.context_window, self._formatValueSource(self.context_window_source)))
+				if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+					self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
 		self.logInfo("Specify a query profile with -q <1|2|3|9>.")
 		self.logInfoDetail("-q 1 : analyse the crash context")
 		self.logInfoDetail("-q 2 : analyse the current __PC__ function, plus optional -a function; use -d to include linked targets")
@@ -35657,6 +37047,7 @@ class MnAI(object):
 		dbg.log("")
 		self.logInfo("No AI request was submitted.")
 		self.logAvailableModels(models=models, error_mode=False)
+		self.maybeLogResolvedOpenAICompatibleUrls()
 		return True
 
 	def parseTargetAddress(self):
@@ -35751,6 +37142,7 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		self.upload_requested = ("upload" in self.args)
 		self.openai_upload_requested = self.upload_requested
+		self.openai_generic_staged_requested = False
 		self.referenced_file_ids = []
 		if "id" in self.args:
 			if type(self.args["id"]).__name__.lower() == "bool":
@@ -35773,61 +37165,33 @@ class MnAI(object):
 			mndbg.dbgp("tellme: using explicit -maxsize override '%s' KB" % str(self.args["maxsize"]))
 
 		if self.engine != "offline":
-			self.api_key, self.model = getAIModelAndKey(self.engine, self.mona_config)
-			model_is_set, model_source_name, _model_source_value = self._getEngineOptionStatus("model")
-			self.model_source = self._formatValueSource(model_source_name if model_is_set else "default")
-			self.api_url = getAIUrl(self.engine, self.mona_config)
-			url_is_set, url_source_name, _url_source_value = self._getEngineOptionStatus("url")
-			self.api_url_source = self._formatValueSource(url_source_name if url_is_set else "default")
-			self.response_field = getAIResponseField(self.engine, self.mona_config)
-			field_is_set, field_source_name, _field_source_value = self._getEngineOptionStatus("response_field")
-			self.response_field_source = self._formatValueSource(field_source_name if field_is_set else "default")
-			if self.engine == "openaiagents":
-				self.bridge_python_command = getAIBridgePythonCommand(self.mona_config)
-				self.bridge_python = formatAIBridgePythonCommand(self.bridge_python_command)
-				self.bridge_python_source = "config" if self.mona_config.get("openaiagents.bridge.python").strip() != "" else "default"
-				self.reasoning_effort = getAIReasoningEffort(self.engine, self.mona_config)
-				effort_is_set, effort_source_name, _effort_source_value = self._getEngineOptionStatus("reasoning_effort")
-				self.reasoning_effort_source = self._formatValueSource(effort_source_name if effort_is_set else "default")
-				self.response_verbosity = getAIVerbosity(self.engine, self.mona_config)
-				verbosity_is_set, verbosity_source_name, _verbosity_source_value = self._getEngineOptionStatus("verbosity")
-				self.response_verbosity_source = self._formatValueSource(verbosity_source_name if verbosity_is_set else "default")
-				self.max_turns = getAIMaxTurns(self.engine, self.mona_config)
-				max_turns_is_set, max_turns_source_name, _max_turns_source_value = self._getEngineOptionStatus("max_turns")
-				self.max_turns_source = self._formatValueSource(max_turns_source_name if max_turns_is_set else "default")
+			if not self.refreshActiveEngineSettings(allow_arg_model_override=True):
+				return False
 			mndbg.dbgp("tellme: config model for engine '%s' is '%s'" % (self.engine, self.model))
 			if self.api_url != "":
 				mndbg.dbgp("tellme: config url for engine '%s' is '%s'" % (self.engine, self.api_url))
 			if self.response_field != "":
 				mndbg.dbgp("tellme: config response_field for engine '%s' is '%s'" % (self.engine, self.response_field))
-			try:
-				self.timeout_seconds, self.timeout_source = getAITimeout(self.engine, self.mona_config, args=self.args)
-			except ValueError as e:
-				self.logError(str(e))
-				return False
 			if self.effective_question_type == "8" and self.timeout_source == "default":
 				self.timeout_seconds += 30.0
 				mndbg.dbgp("tellme: extending default timeout for q8 to %.1fs" % self.timeout_seconds)
-			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
-			mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
-				self.engine, self.timeout_seconds, self.timeout_source
-			))
-			mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
-				self.engine, self.max_tokens, self.max_tokens_source
-			))
-		else:
-			self.model = getDefaultAIModel("openai")
-			mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
-		if len(self.referenced_file_ids) > 0 and self.engine not in ["openai", "anthropic"]:
-			self.logError("The -id flag is currently only supported with the openai and anthropic engines.")
-			return False
+				mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
+					self.engine, self.timeout_seconds, self.timeout_source
+				))
+				mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
+					self.engine, self.max_tokens, self.max_tokens_source
+				))
+				mndbg.dbgp("tellme: effective context window for engine '%s' is %d (source=%s)" % (
+					self.engine, self.context_window, self.context_window_source
+				))
+			else:
+				self.model = getDefaultAIModel("openai")
+				mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
 
 		if "model" in self.args:
 			if type(self.args["model"]).__name__.lower() == "bool":
-				self.list_models_requested = True
-				self.question_profile_missing = True
-				self.logInfo("No model ID was supplied with -model. Listing available models instead.")
-				return True
+				self.logInfo("No explicit -model value was supplied. The interactive model selector will be shown before submission.")
+				self.list_models_requested = False
 			explicit_model = str(self.args["model"]).strip()
 			if explicit_model != "":
 				self.model = explicit_model
@@ -35841,15 +37205,12 @@ class MnAI(object):
 				self.logInfo("Test mode enabled, overriding model to '%s'" % self.model)
 				mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (self.model, self.engine))
 		if self.engine != "offline":
-			self.api_options = _collectAIOptions(self.engine, self.model, self.mona_config)
-			if isinstance(self.api_options, dict) and len(self.api_options) > 0:
-				mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
-					self.engine, json.dumps(self.api_options, sort_keys=True)
-				))
+				self.api_options = self.getEffectiveAIOptions()
+				if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+					mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
+						self.engine, json.dumps(self.api_options, sort_keys=True)
+					))
 		if self.upload_requested:
-			if self.engine not in ["openai", "anthropic"]:
-				self.logError("The -upload flag is currently only supported with the openai and anthropic engines.")
-				return False
 			self.logInfo("%s upload mode requested." % self.engine.capitalize())
 			self.logInfo("Mona will upload the saved request file plus any -l/-p files")
 			self.logInfoDetail("instead of embedding them in the submitted text prompt.")
@@ -35863,6 +37224,14 @@ class MnAI(object):
 		if self.offline or self.engine == "offline":
 			return True
 
+		if len(self.referenced_file_ids) > 0 and self.engine not in ["openai", "anthropic", "openai-generic"]:
+			self.logError("The -id flag is currently only supported with the openai, anthropic, and openai-generic engines.")
+			return False
+
+		if self.upload_requested and self.engine not in ["openai", "anthropic", "openai-generic"]:
+			self.logError("The -upload flag is currently only supported with the openai, anthropic, and openai-generic engines.")
+			return False
+
 		if self.engine in ["openai", "openaiagents", "anthropic", "openrouter"] and self.api_key == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
@@ -35874,7 +37243,7 @@ class MnAI(object):
 			self.logEngineConfigHelp("key")
 			return False
 
-		if self.engine in ["ollama", "customai"] and self.api_url == "":
+		if self.engine in ["ollama", "customai", "openai-generic"] and self.api_url == "":
 			if self.isDefaultEngineSelection():
 				self.switchToOfflineEngine(
 					"No URL was configured for the default engine '%s'. Falling back to offline mode." % self.engine,
@@ -35887,7 +37256,7 @@ class MnAI(object):
 		if self.engine == "openaiagents":
 			if not self.validateOpenAIAgentsBridgeDependencies():
 				return False
-		if self.list_models_requested and self.engine == "ollama":
+		if self.list_models_requested and self.engine in ["ollama", "openai-generic"]:
 			return True
 		if self.model == "":
 			self.logError("Missing required configuration for engine '%s'." % self.engine)
@@ -35905,6 +37274,8 @@ class MnAI(object):
 			self.logErrorDetail("Choose a model returned by the provider models API or override it with -model <id>.")
 			self.logAvailableModels(models=available_models, error_mode=True)
 			return False
+		if self.placeholder_api_key_in_use:
+				self.logInfoDetail("No API key was configured for '%s'. Using the placeholder token 'corelan' for this session." % self.engine)
 		return True
 
 	def _resolveContextFileArgs(self):
@@ -36414,14 +37785,6 @@ class MnAI(object):
 			prompt_bytes = len(self.prompt.encode("utf-8")) if isinstance(self.prompt, text_type) else len(self.prompt)
 			self.logInfoDetail("Request size: %.2f KB" % (float(prompt_bytes) / 1024.0))
 			self.warnLargeInlineFileContext(prompt_bytes)
-			if self.engine == "openaiagents" and self.max_tokens_source == "default":
-				derived_max_tokens, estimated_input_tokens = deriveOpenAIAgentsMaxTokensFromPrompt(self.prompt)
-				self.max_tokens = derived_max_tokens
-				self.max_tokens_source = "derived"
-				self.logInfoDetail("Derived max tokens: %d (estimated input tokens: %d)" % (
-					self.max_tokens,
-					estimated_input_tokens
-				))
 			if self.max_request_kb > 0:
 				self.logInfoDetail("Requested max size: %d KB" % self.max_request_kb)
 			return True
@@ -36648,8 +38011,8 @@ class MnAI(object):
 					file_index, len(self.referenced_file_ids), ensure_text(file_id).strip()
 				))
 
+		self.provider_uploaded_files = []
 		if self.engine == "openai":
-			self.provider_uploaded_files = []
 			try:
 				if openai_client_class is None:
 					raise AIProviderError("OpenAI SDK unavailable", error_type="SDKUnavailable")
@@ -36657,27 +38020,27 @@ class MnAI(object):
 					openai_client_class,
 					self.api_key,
 					self.model,
-					"",
-					upload_file_paths,
-					timeout_seconds=attempt_timeout,
-					options=self.api_options
-				)
+						"",
+						upload_file_paths,
+						timeout_seconds=attempt_timeout,
+						options=self.api_options,
+						max_tokens=self.max_tokens
+					)
 			except Exception as upload_err:
 				if not _shouldFallbackFromSDK(self.engine, upload_err):
 					raise
 				self.logInfo("OpenAI SDK upload path failed. Falling back to direct HTTPS upload.")
 				self.logInfoDetail(str(upload_err))
-				self.provider_uploaded_files = []
 				self.response, self.request_id, self.provider_uploaded_files = callAIOpenAIDirectWithFiles(
 					self.api_key,
 					self.model,
-					"",
-					upload_file_paths,
-					timeout_seconds=attempt_timeout,
-					options=self.api_options
-				)
+						"",
+						upload_file_paths,
+						timeout_seconds=attempt_timeout,
+						options=self.api_options,
+						max_tokens=self.max_tokens
+					)
 		elif self.engine == "anthropic":
-			self.provider_uploaded_files = []
 			try:
 				if anthropic_client_class is None:
 					raise AIProviderError("Anthropic SDK unavailable", error_type="SDKUnavailable")
@@ -36694,9 +38057,8 @@ class MnAI(object):
 			except Exception as upload_err:
 				if not _shouldFallbackFromSDK(self.engine, upload_err):
 					raise
-				self.logInfo("Anthropic SDK upload path failed. Falling back to direct HTTPS upload.")
+				self.logInfo("Anthropic SDK upload path failed. Falling back to direct HTTPS request.")
 				self.logInfoDetail(_describeProviderException(upload_err))
-				self.provider_uploaded_files = []
 				self.response, self.request_id, self.provider_uploaded_files = callAIAnthropicDirectWithFiles(
 					self.api_key,
 					self.model,
@@ -36706,6 +38068,20 @@ class MnAI(object):
 					max_tokens=self.max_tokens,
 					options=self.api_options
 				)
+		elif self.engine == "openai-generic":
+			self.response, self.request_id, self.provider_uploaded_files, self.resolved_request_url, self.resolved_request_mode = callAIOpenAIGenericDirectWithFiles(
+				self.api_url,
+				self.api_key,
+				self.model,
+				"",
+				upload_file_paths,
+				timeout_seconds=attempt_timeout,
+				options=self.api_options,
+				response_field=self.response_field,
+				max_tokens=self.max_tokens
+			)
+			self.resolved_models_url = _deriveOpenAICompatibleModelsUrlFromRequestUrl(self.resolved_request_url)
+			self.maybeLogResolvedOpenAICompatibleUrls()
 		else:
 			raise ValueError("Upload mode is not supported for engine '%s'" % self.engine)
 
@@ -36733,11 +38109,12 @@ class MnAI(object):
 						openai_client_class,
 						self.api_key,
 						self.model,
-						instruction_text,
-						timeout_seconds=attempt_timeout,
-						options=self.api_options,
-						file_ids=merged_upload_file_ids
-					)
+							instruction_text,
+							timeout_seconds=attempt_timeout,
+							options=self.api_options,
+							file_ids=merged_upload_file_ids,
+							max_tokens=self.max_tokens
+						)
 				except Exception as request_err:
 					if not _shouldFallbackFromSDK(self.engine, request_err):
 						raise
@@ -36746,11 +38123,12 @@ class MnAI(object):
 					self.response, self.request_id = callAIOpenAIDirect(
 						self.api_key,
 						self.model,
-						instruction_text,
-						timeout_seconds=attempt_timeout,
-						options=self.api_options,
-						file_ids=merged_upload_file_ids
-					)
+							instruction_text,
+							timeout_seconds=attempt_timeout,
+							options=self.api_options,
+							file_ids=merged_upload_file_ids,
+							max_tokens=self.max_tokens
+						)
 			elif self.engine == "anthropic":
 				try:
 					if anthropic_client_class is None:
@@ -36779,6 +38157,20 @@ class MnAI(object):
 						options=self.api_options,
 						referenced_files=merged_anthropic_references
 					)
+			elif self.engine == "openai-generic":
+				self.response, self.request_id, self.resolved_request_url, self.resolved_request_mode = callAIOpenAIGenericDirect(
+					self.api_url,
+					self.api_key,
+					self.model,
+					instruction_text,
+					timeout_seconds=attempt_timeout,
+					options=self.api_options,
+					file_ids=merged_upload_file_ids,
+					response_field=self.response_field,
+					max_tokens=self.max_tokens
+				)
+				self.resolved_models_url = _deriveOpenAICompatibleModelsUrlFromRequestUrl(self.resolved_request_url)
+				self.maybeLogResolvedOpenAICompatibleUrls()
 
 			self.logInfoDetail("%s upload mode created %d remote file(s):" % (self.engine.capitalize(), len(self.provider_uploaded_files)))
 			for uploaded_file in self.provider_uploaded_files:
@@ -36906,49 +38298,50 @@ class MnAI(object):
 			return True
 
 	def submitOpenAIAgentsBridgeJob(self):
-			"""Queue the current request for asynchronous execution via the local OpenAI Agents bridge."""
-			mndbg.dbgp(get_current_function_name())
-			self.getOpenAIAgentsBridgePaths()
-			if not self.ensureOpenAIAgentsBridgeRunning():
-				return self.response
-			bridge_payload = {
-				"request_id": self.request_id,
-				"api_key": self.api_key,
-				"model": self.model,
-				"prompt": self.prompt,
-				"output_file": self.bridge_output_file_path,
-				"status_file": self.bridge_status_file_path,
-				"raw_request_file": self.bridge_raw_request_file_path,
-				"raw_result_file": self.bridge_raw_result_file_path,
-				"question_type": self.question_type,
-				"template_file": self.template_file,
-				"target_address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
-				"target_address_source": self.target_address_source,
-				"reasoning_effort": self.reasoning_effort,
-				"verbosity": self.response_verbosity,
-				"max_turns": self.max_turns,
-				"max_tokens": self.max_tokens
-			}
-			try:
-				bridge_response = submitOpenAIAgentsBridgeRequest(self.api_url, bridge_payload, timeout_seconds=min(self.timeout_seconds, 10.0))
-			except Exception as e:
-				logAIProviderError(self.engine, e)
-				return self.response
-			self.writeRequestLog(request_id=self.request_id)
-			self.response = "The OpenAI Agents bridge accepted the request and will write the result to %s." % self.bridge_output_file_path
-			dbg.log("")
-			self.logInfo("OpenAI Agents bridge request accepted.")
-			self.logInfoDetail("Request id : %s" % self.request_id)
-			self.logInfoDetail("Bridge URL : %s" % self.api_url)
-			self.logInfoDetail("Status     : %s" % ensure_text(bridge_response.get("status", "queued")).strip())
-			self.logInfoDetail("Request    : %s" % self.request_logfile_path)
-			self.logInfoDetail("Output     : %s" % self.bridge_output_file_path)
-			self.logInfoDetail("Status file: %s" % self.bridge_status_file_path)
-			self.logInfoDetail("Raw request: %s" % self.bridge_raw_request_file_path)
-			self.logInfoDetail("Raw result : %s" % self.bridge_raw_result_file_path)
-			self.logInfoDetail("Bridge log : %s" % self.bridge_log_file_path)
-			self.logInfoDetail("The bridge runs outside the debugger and waits for the final result there.")
+		"""Queue the current request for asynchronous execution via the local OpenAI Agents bridge."""
+		mndbg.dbgp(get_current_function_name())
+		self.getOpenAIAgentsBridgePaths()
+		if not self.ensureOpenAIAgentsBridgeRunning():
 			return self.response
+		bridge_payload = {
+			"request_id": self.request_id,
+			"api_key": self.api_key,
+			"model": self.model,
+			"prompt": self.prompt,
+			"output_file": self.bridge_output_file_path,
+			"status_file": self.bridge_status_file_path,
+			"raw_request_file": self.bridge_raw_request_file_path,
+			"raw_result_file": self.bridge_raw_result_file_path,
+			"question_type": self.question_type,
+			"template_file": self.template_file,
+			"target_address": PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "",
+			"target_address_source": self.target_address_source,
+			"reasoning_effort": self.reasoning_effort,
+			"verbosity": self.response_verbosity,
+			"max_turns": self.max_turns
+		}
+		if self.max_tokens > 0:
+			bridge_payload["max_tokens"] = self.max_tokens
+		try:
+			bridge_response = submitOpenAIAgentsBridgeRequest(self.api_url, bridge_payload, timeout_seconds=min(self.timeout_seconds, 10.0))
+		except Exception as e:
+			logAIProviderError(self.engine, e)
+			return self.response
+		self.writeRequestLog(request_id=self.request_id)
+		self.response = "The OpenAI Agents bridge accepted the request and will write the result to %s." % self.bridge_output_file_path
+		dbg.log("")
+		self.logInfo("OpenAI Agents bridge request accepted.")
+		self.logInfoDetail("Request id : %s" % self.request_id)
+		self.logInfoDetail("Bridge URL : %s" % self.api_url)
+		self.logInfoDetail("Status     : %s" % ensure_text(bridge_response.get("status", "queued")).strip())
+		self.logInfoDetail("Request    : %s" % self.request_logfile_path)
+		self.logInfoDetail("Output     : %s" % self.bridge_output_file_path)
+		self.logInfoDetail("Status file: %s" % self.bridge_status_file_path)
+		self.logInfoDetail("Raw request: %s" % self.bridge_raw_request_file_path)
+		self.logInfoDetail("Raw result : %s" % self.bridge_raw_result_file_path)
+		self.logInfoDetail("Bridge log : %s" % self.bridge_log_file_path)
+		self.logInfoDetail("The bridge runs outside the debugger and waits for the final result there.")
+		return self.response
 
 	def handleUnexpectedPayloadFallback(self, err):
 			"""Preserve raw provider output when text extraction fails instead of treating it as a hard error."""
@@ -36976,6 +38369,123 @@ class MnAI(object):
 			self.logInfoDetail("Raw response saved to %s" % self.raw_response_logfile_path)
 			return True
 
+	def submitOpenAIGenericChunkedRequest(self, attempt_timeout):
+		"""Analyze an oversized OpenAI-compatible request in staged chunks, then ask the final question."""
+		mndbg.dbgp(get_current_function_name())
+		chunks = _splitTextIntoLineChunks(self.prompt, max_chars=16000)
+		if len(chunks) <= 1:
+			raise AIProviderError(
+				"Chunked fallback could not split the request into smaller parts",
+				error_type="ChunkingError"
+			)
+		self.logInfo("OpenAI-compatible file upload is unavailable. Falling back to staged chunk analysis.")
+		self.logInfoDetail("Evidence chunks: %d" % len(chunks))
+		staged_timeout = 0
+		self.logInfoDetail("Staged request timeout: no timeout")
+		chunk_summaries = []
+		try:
+			configured_context_window = int(self.context_window)
+		except Exception:
+			configured_context_window = 0
+		final_prompt_budget = 10000
+		if configured_context_window > 0:
+			final_prompt_budget = max(6000, min(14000, int(configured_context_window * 0.70)))
+		chunk_summary_budget = max(900, int((final_prompt_budget - 2500) / max(1, len(chunks))))
+		chunk_summary_budget = min(chunk_summary_budget, 2500)
+		self.logInfoDetail("Staged summary budget: %d bytes total, up to %d bytes per chunk" % (
+			final_prompt_budget,
+			chunk_summary_budget
+		))
+		final_request_url = ""
+		final_request_mode = ""
+		for chunk_index, chunk_text in enumerate(chunks, 1):
+			interruptMona()
+			chunk_prompt = "\n".join([
+				"You are analyzing one chunk of a larger mona tellme evidence bundle.",
+				"Extract the security-relevant facts from this chunk only.",
+				"Keep addresses, registers, exception details, heap observations, module names, and constraints exact.",
+				"Do not answer the final exploitability question yet.",
+				"Return concise structured notes that can be combined with other chunk notes.",
+				"Hard limit: keep your notes for this chunk under %d characters." % chunk_summary_budget,
+				"",
+				"CHUNK %d OF %d BEGIN" % (chunk_index, len(chunks)),
+				chunk_text,
+				"CHUNK %d OF %d END" % (chunk_index, len(chunks))
+			])
+			self.logInfoDetail("Analyzing evidence chunk %d/%d (%d bytes)" % (
+				chunk_index,
+				len(chunks),
+				len(chunk_text)
+			))
+			chunk_response, chunk_request_id, chunk_request_url, chunk_request_mode = callAIOpenAIGenericDirect(
+				self.api_url,
+				self.api_key,
+				self.model,
+				chunk_prompt,
+				timeout_seconds=staged_timeout,
+				options=self.api_options,
+				response_field=self.response_field,
+				max_tokens=self.max_tokens
+			)
+			if chunk_request_id != "":
+				self.request_id = chunk_request_id
+			final_request_url = chunk_request_url or final_request_url
+			final_request_mode = chunk_request_mode or final_request_mode
+			chunk_response_text = ensure_text(chunk_response)
+			chunk_summary_text = _trimAITextForPrompt(
+				chunk_response_text,
+				chunk_summary_budget,
+				"chunk %d summary" % chunk_index
+			)
+			chunk_summaries.append("CHUNK %d SUMMARY\n%s" % (chunk_index, chunk_summary_text))
+			self.logInfoDetail("Evidence chunk %d/%d submitted and processed (%d response bytes, %d retained for final summary)" % (
+				chunk_index,
+				len(chunks),
+				len(chunk_response_text),
+				len(chunk_summary_text)
+			))
+			interruptMona()
+		final_prompt = "\n".join([
+			"You are answering a mona tellme analysis request using staged evidence summaries.",
+			"The original evidence bundle was too large for the model context, so Mona submitted it in chunks.",
+			"Treat the chunk summaries below as the authoritative evidence. Do not invent facts not present in the summaries.",
+			"Call out any uncertainty introduced by chunking.",
+			"",
+			"ORIGINAL REQUEST TYPE: %s" % self.question_type,
+			"TARGET ADDRESS: %s" % (PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "not specified"),
+			"",
+			"STAGED EVIDENCE SUMMARIES BEGIN",
+			"\n\n".join(chunk_summaries),
+			"STAGED EVIDENCE SUMMARIES END",
+			"",
+			"Now answer the original mona tellme request as completely as the staged evidence allows."
+		])
+		interruptMona()
+		if len(final_prompt) > final_prompt_budget:
+			final_prompt = _trimAITextForPrompt(final_prompt, final_prompt_budget, "final staged prompt")
+		self.logInfoDetail("Submitting final staged analysis request (%d bytes after summary budgeting)" % len(final_prompt))
+		self.response, self.request_id, self.resolved_request_url, self.resolved_request_mode = callAIOpenAIGenericDirect(
+			self.api_url,
+			self.api_key,
+			self.model,
+			final_prompt,
+			timeout_seconds=staged_timeout,
+			options=self.api_options,
+			response_field=self.response_field,
+			max_tokens=self.max_tokens
+		)
+		if self.resolved_request_url == "":
+			self.resolved_request_url = final_request_url
+		if self.resolved_request_mode == "":
+			self.resolved_request_mode = final_request_mode
+		self.resolved_models_url = _deriveOpenAICompatibleModelsUrlFromRequestUrl(self.resolved_request_url)
+		self.maybeLogResolvedOpenAICompatibleUrls()
+		self.response = "%s\n\n[Staged analysis note]\nThe original request exceeded the model context window. Mona analyzed %d evidence chunks first, then asked the final question using the combined chunk summaries." % (
+			self.response,
+			len(chunks)
+		)
+		return self.response
+
 	def request(self, question_type=None, prompt=None):
 		"""Send the prepared request or save it offline, and keep the response text on the instance."""
 		mndbg.dbgp(get_current_function_name())
@@ -36994,15 +38504,8 @@ class MnAI(object):
 			return self.response
 
 		self.writeRequestLog()
-		if self.submit_requested:
-			self.logInfo("AI submission confirmed via -submit")
-		elif not askForConfirmation("[?] Submit this request to AI using %s model '%s'?" % (self.engine, self.model), default="N"):
-			self.response = ""
-			self.logInfo("AI submission cancelled by user. Request was saved without submitting it.")
-			if self.request_logfile_path != "":
-				self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
-			return self.response
-		elif not self.reloadPromptFromRequestLog():
+		self.logInfo("Submitting the prepared tellme request using %s model '%s'." % (self.engine, self.model))
+		if not self.reloadPromptFromRequestLog():
 			return self.response
 
 		if self.engine == "openaiagents":
@@ -37015,7 +38518,10 @@ class MnAI(object):
 		if self.engine == "openai" and not openai_use_http_fallback and openai_client_class is None:
 			return self.response
 		self.logInfo("Asking <b>%s</b> model '<b>%s</b>' using question profile %s" % (self.engine, self.model, self.question_type))
-		self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
+		if self.timeout_seconds <= 0:
+			self.logInfoDetail("Timeout   : no timeout")
+		else:
+			self.logInfoDetail("Timeout   : %.1f seconds" % self.timeout_seconds)
 		if self.engine == "openai":
 			if openai_sdk_version != "":
 				self.logInfoDetail("OpenAI SDK: %s" % openai_sdk_version)
@@ -37026,41 +38532,63 @@ class MnAI(object):
 				self.logInfoDetail("Anthropic SDK: %s" % anthropic_sdk_version)
 			elif anthropic_use_http_fallback:
 				self.logInfoDetail("Anthropic SDK: unavailable, using direct HTTPS fallback")
-		if self.engine in ["ollama", "customai"] and self.api_url != "":
+		if self.engine in ["ollama", "customai", "openai-generic"] and self.api_url != "":
 			self.logInfoDetail("URL       : %s" % self.api_url)
-		if self.engine in ["ollama", "customai"] and self.response_field != "":
+		if self.engine in ["ollama", "customai", "openai-generic"] and self.response_field != "":
 			self.logInfoDetail("Response  : %s" % self.response_field)
 		if isinstance(self.api_options, dict) and len(self.api_options) > 0:
 			self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
-		if self.engine == "anthropic":
+		if self.max_tokens > 0:
 			self.logInfoDetail("Max tokens: %d" % self.max_tokens)
+		if self.context_window > 0:
+			self.logInfoDetail("Context  : %d tokens" % self.context_window)
 
-		max_attempts = 5
-		retry_timeout_increment = min(self.timeout_seconds, 120.0)
+		max_timeout_seconds = 6000.0
+		retry_timeout_increment = min(self.timeout_seconds, 120.0) if self.timeout_seconds > 0 else 0
+		max_mode_fallbacks = 2 if self.engine == "openai-generic" else 0
+		if self.timeout_seconds > 0:
+			base_timeout = min(self.timeout_seconds, max_timeout_seconds)
+			if retry_timeout_increment > 0 and base_timeout < max_timeout_seconds:
+				max_timeout_attempts = int(math.ceil((max_timeout_seconds - base_timeout) / retry_timeout_increment)) + 1
+			else:
+				max_timeout_attempts = 1
+			max_attempts = max_timeout_attempts + max_mode_fallbacks
+		else:
+			max_attempts = 5 if self.engine == "openai-generic" else 1
 		self.response = ""
 		self.request_id = ""
+		timeout_retry_count = 0
 		for attempt in xrange(1, max_attempts + 1):
-			attempt_timeout = self.timeout_seconds + ((attempt - 1) * retry_timeout_increment)
-			timeout_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=attempt_timeout)
+			attempt_timeout = min(self.timeout_seconds + (timeout_retry_count * retry_timeout_increment), max_timeout_seconds) if self.timeout_seconds > 0 else 0
+			timeout_expires_text = "no timeout"
+			if attempt_timeout > 0:
+				timeout_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=attempt_timeout)
+				timeout_expires_text = timeout_expires_at.strftime("%Y-%m-%d %H:%M:%S")
 			dbg.log("")
-			self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs, expires at %s)" % (
-				self.engine,
-				attempt,
-				attempt_timeout,
-				timeout_expires_at.strftime("%Y-%m-%d %H:%M:%S")
-			))
+			if attempt_timeout > 0:
+				self.logInfoDetail("[+] Sending request to %s (attempt %d, timeout %.1fs, expires at %s)" % (
+					self.engine,
+					attempt,
+					attempt_timeout,
+					timeout_expires_text
+				))
+			else:
+				self.logInfoDetail("[+] Sending request to %s (attempt %d, no timeout)" % (
+					self.engine,
+					attempt
+				))
 			try:
 				if self.engine == "openai":
 					if self.upload_requested:
 						self.submitProviderUploadRequest(openai_client_class, anthropic_client_class, attempt_timeout)
 					elif openai_use_http_fallback:
 						self.response, self.request_id = callAIOpenAIDirect(
-							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
+							self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids, max_tokens=self.max_tokens
 						)
 					else:
 						try:
 							self.response, self.request_id = callAIOpenAI(
-								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
+								openai_client_class, self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids, max_tokens=self.max_tokens
 							)
 						except Exception as openai_sdk_err:
 							if not _shouldFallbackFromSDK(self.engine, openai_sdk_err):
@@ -37068,7 +38596,7 @@ class MnAI(object):
 							self.logInfo("OpenAI SDK request failed. Falling back to direct HTTPS request.")
 							self.logInfoDetail(str(openai_sdk_err))
 							self.response, self.request_id = callAIOpenAIDirect(
-								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids
+								self.api_key, self.model, self.prompt, timeout_seconds=attempt_timeout, options=self.api_options, file_ids=self.referenced_file_ids, max_tokens=self.max_tokens
 							)
 				elif self.engine == "anthropic":
 					if self.upload_requested:
@@ -37116,7 +38644,8 @@ class MnAI(object):
 						self.prompt,
 						timeout_seconds=attempt_timeout,
 						response_field=self.response_field or "response",
-						options=self.api_options
+						options=self.api_options,
+						max_tokens=self.max_tokens
 					)
 				elif self.engine == "openrouter":
 					self.response, self.request_id = callAIOpenRouter(
@@ -37127,6 +38656,25 @@ class MnAI(object):
 						max_tokens=self.max_tokens,
 						options=self.api_options
 					)
+				elif self.engine == "openai-generic":
+					if self.openai_generic_staged_requested:
+						self.submitOpenAIGenericChunkedRequest(attempt_timeout)
+					elif self.upload_requested:
+						self.submitProviderUploadRequest(openai_client_class, anthropic_client_class, attempt_timeout)
+					else:
+						self.response, self.request_id, self.resolved_request_url, self.resolved_request_mode = callAIOpenAIGenericDirect(
+							self.api_url,
+							self.api_key,
+							self.model,
+							self.prompt,
+							timeout_seconds=attempt_timeout,
+							options=self.api_options,
+							file_ids=self.referenced_file_ids,
+							response_field=self.response_field,
+							max_tokens=self.max_tokens
+						)
+					self.resolved_models_url = _deriveOpenAICompatibleModelsUrlFromRequestUrl(self.resolved_request_url)
+					self.maybeLogResolvedOpenAICompatibleUrls()
 				else:
 					self.response, self.request_id = callAICustom(
 						self.api_url,
@@ -37134,7 +38682,8 @@ class MnAI(object):
 						self.prompt,
 						timeout_seconds=attempt_timeout,
 						response_field=self.response_field,
-						options=self.api_options
+						options=self.api_options,
+						max_tokens=self.max_tokens
 					)
 				break
 			except Exception as e:
@@ -37143,24 +38692,42 @@ class MnAI(object):
 					max_attempts,
 					traceback.format_exc()
 				), errormode=False)
-				if _isTimeoutError(self.engine, e):
+				if self.engine == "openai-generic" and (not self.upload_requested) and (not self.openai_generic_staged_requested) and _isContextLimitError(e):
+					self.logInfo("The OpenAI-compatible endpoint rejected the inline prompt because it exceeds the context window.")
+					self.logInfoDetail("Retrying automatically in upload mode: Mona will upload the saved request and supporting files, then send a compact instruction.")
+					self.upload_requested = True
+					self.openai_upload_requested = True
+					continue
+				if self.engine == "openai-generic" and self.upload_requested and _isOpenAIGenericFileUploadUnsupported(e):
+					self.logInfo("The OpenAI-compatible endpoint does not expose a usable files API.")
+					self.logInfoDetail("Retrying with staged chunk analysis instead.")
+					self.upload_requested = False
+					self.openai_upload_requested = False
+					self.openai_generic_staged_requested = True
+					continue
+				timed_out = _isTimeoutError(self.engine, e)
+				if timed_out:
 					try:
 						error_body = getattr(e, "body", None)
 						if not isinstance(error_body, dict):
 							error_body = {}
 						error_body["attempt_timeout"] = attempt_timeout
-						error_body["suggested_timeout"] = attempt_timeout + retry_timeout_increment
+						error_body["suggested_timeout"] = min(attempt_timeout + retry_timeout_increment, max_timeout_seconds) if attempt_timeout > 0 else 0
+						error_body["max_timeout"] = max_timeout_seconds
 						e.body = error_body
 					except Exception:
 						pass
 				if self.handleUnexpectedPayloadFallback(e):
 					break
 				logAIProviderError(self.engine, e)
-				if not _isTimeoutError(self.engine, e) or attempt >= max_attempts:
+				if not timed_out:
 					return self.response
-				next_timeout = self.timeout_seconds + (attempt * retry_timeout_increment)
+				if attempt_timeout <= 0 or attempt_timeout >= max_timeout_seconds or attempt >= max_attempts:
+					return self.response
+				timeout_retry_count += 1
+				next_timeout = min(self.timeout_seconds + (timeout_retry_count * retry_timeout_increment), max_timeout_seconds)
 				retry_sleep_seconds = 10
-				self.logInfoDetail("Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
+				self.logInfoDetail("Timeout detected. Retrying in %d seconds... (attempt %d/%d, timeout %.1fs)" % (
 					retry_sleep_seconds, attempt + 1, max_attempts, next_timeout
 				))
 				time.sleep(retry_sleep_seconds)
@@ -37198,14 +38765,10 @@ class MnAI(object):
 			return ""
 		if not self.parseRequestSettings():
 			return ""
-		if self.printAvailableModelsOnDemand():
-			return ""
 		if not self.parseQuestionProfile():
 			self.maybePrintAvailableModelsWhenIdle()
 			return ""
 		if not self.validateInputFiles():
-			return ""
-		if not self.validateProviderConfiguration():
 			return ""
 		if not self.parseTargetAddress():
 			return ""
@@ -37234,7 +38797,21 @@ class MnAI(object):
 			return ""
 		if not self.buildRequestPrompt():
 			return ""
-		return self.request()
+		self.base_prompt = self.prompt
+		if self.submit_requested:
+			if not self.prepareSubmitFastPath():
+				return ""
+		else:
+			if not self.selectEngineAndModelInteractive():
+				self.logInfo("tellme session cancelled before submission.")
+				return ""
+		self.prompt = self.base_prompt
+		initial_response = self.request()
+		if self.response.strip() == "":
+			return initial_response
+		if self.submit_requested:
+			return initial_response
+		return self.runManagedChatLoop()
 
 
 # ----- tellme: Ask an AI engine to analyze the current debugger state ----- #
@@ -49378,13 +50955,23 @@ Optional arguments:
 
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
+	Workflow:
+	    - tellme first builds the full evidence bundle and saves the request to disk
+	    - before submission, tellme always shows an interactive engine/model selector
+	    - command-line or configured engine/model values are proposed first in that selector
+	    - API keys are only read from mona.ini or environment variables; tellme does not prompt for them
+	    - after the initial response, tellme enters an interactive chat loop
+	    - type 'engine' in that chat loop to switch engine/model, or 'exit' to stop
+
 	Supported engines:
 	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
 	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; prefers the OpenAI Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id)
 	    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
 	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; prefers the Anthropic Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces)
-    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
-    - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
+	    - openrouter (OpenAI-compatible chat-completions API via OpenRouter)
+	    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
+	    - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
+	    - openai-generic (OpenAI-compatible HTTP endpoint; if you configure only a base URL such as http://192.168.86.154:8080, Mona will probe and resolve the working full endpoint such as /v1/responses, /v1/chat/completions, and /v1/models; use a large timeout, or timeout 0 for no total deadline, with slow local models)
 
 Configuration:
     Choose one of these approaches:
@@ -49392,69 +50979,110 @@ Configuration:
     1. Store settings in mona.ini:
 	       __LAUNCHCMD__ config -set mona.ai.engine openai
 	       __LAUNCHCMD__ config -set openai.key <your OpenAI API key>
-	       __LAUNCHCMD__ config -set openai.model gpt-5-mini
-	       __LAUNCHCMD__ config -set openai.timeout 300
-	       __LAUNCHCMD__ config -set openai.max_tokens 4096
-	       __LAUNCHCMD__ config -set mona.ai.engine openaiagents
+		       __LAUNCHCMD__ config -set openai.model gpt-5-mini
+		       __LAUNCHCMD__ config -set openai.timeout 300
+		       Optional: __LAUNCHCMD__ config -set openai.max_tokens 4096
+		       Optional: __LAUNCHCMD__ config -set openai.context_window 128000
+		       __LAUNCHCMD__ config -set mona.ai.engine openaiagents
 	       __LAUNCHCMD__ config -set openaiagents.key <your OpenAI API key>
 	       __LAUNCHCMD__ config -set openaiagents.model gpt-5-mini
 	       __LAUNCHCMD__ config -set openaiagents.url http://127.0.0.1:8765
 	       __LAUNCHCMD__ config -set openaiagents.bridge.python py -3.14
 	       __LAUNCHCMD__ config -set openaiagents.reasoning_effort high
-	       __LAUNCHCMD__ config -set openaiagents.verbosity low
-	       __LAUNCHCMD__ config -set openaiagents.max_turns 8
-	       __LAUNCHCMD__ config -set openaiagents.max_tokens 8192
-       __LAUNCHCMD__ config -set mona.ai.engine anthropic
-       __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
-       __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
-       __LAUNCHCMD__ config -set anthropic.timeout 300
-       __LAUNCHCMD__ config -set anthropic.max_tokens 8192
-       __LAUNCHCMD__ config -set mona.ai.engine ollama
-       __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
-       __LAUNCHCMD__ config -set ollama.model llama3
-       __LAUNCHCMD__ config -set ollama.timeout 300
-       __LAUNCHCMD__ config -set ollama.response_field response
+		       __LAUNCHCMD__ config -set openaiagents.verbosity low
+		       __LAUNCHCMD__ config -set openaiagents.max_turns 8
+		       Optional: __LAUNCHCMD__ config -set openaiagents.max_tokens 8192
+		       Optional: __LAUNCHCMD__ config -set openaiagents.context_window 128000
+	       __LAUNCHCMD__ config -set mona.ai.engine anthropic
+	       __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
+	       __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
+	       __LAUNCHCMD__ config -set anthropic.timeout 300
+	       Optional: __LAUNCHCMD__ config -set anthropic.max_tokens 8192
+	       Optional: __LAUNCHCMD__ config -set anthropic.context_window 200000
+	       __LAUNCHCMD__ config -set mona.ai.engine ollama
+	       __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
+	       __LAUNCHCMD__ config -set ollama.model llama3
+	       __LAUNCHCMD__ config -set ollama.timeout 300
+	       Optional: __LAUNCHCMD__ config -set ollama.max_tokens 8192
+	       Optional: __LAUNCHCMD__ config -set ollama.context_window 256000
+	       __LAUNCHCMD__ config -set ollama.response_field response
        Recommended: use http://127.0.0.1:11434/api/generate for the simplest and most reliable plain-text Ollama response format.
        Use http://127.0.0.1:11434/v1/responses when you specifically want OpenAI-style Responses API compatibility and have confirmed that the model returns final assistant text there.
        A plain base URL such as http://127.0.0.1:11434 also works and will be treated as native Ollama.
        __LAUNCHCMD__ config -set mona.ai.engine customai
-       __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
-       __LAUNCHCMD__ config -set customai.model llama3
-       __LAUNCHCMD__ config -set customai.timeout 300
-       __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
-       __LAUNCHCMD__ config -set ollama.options.num_ctx 256000
-       __LAUNCHCMD__ config -set ollama.options.dolphin-llama3.num_ctx 256000
+	       __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
+	       __LAUNCHCMD__ config -set customai.model llama3
+	       __LAUNCHCMD__ config -set customai.timeout 300
+	       Optional: __LAUNCHCMD__ config -set customai.max_tokens 8192
+	       Optional: __LAUNCHCMD__ config -set customai.context_window 256000
+	       __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
+       __LAUNCHCMD__ config -set mona.ai.engine openai-generic
+		       __LAUNCHCMD__ config -set openai-generic.url http://127.0.0.1:8080
+		       __LAUNCHCMD__ config -set openai-generic.model llama3
+		       __LAUNCHCMD__ config -set openai-generic.timeout 300
+		       Optional: __LAUNCHCMD__ config -set openai-generic.max_tokens 8192
+		       Optional: __LAUNCHCMD__ config -set openai-generic.context_window 256000
+		       Use openai-generic.timeout 0 only when you want Mona to keep waiting indefinitely and print periodic progress.
+       Optional: __LAUNCHCMD__ config -set openai-generic.key <bearer token if the endpoint requires one>
+       Optional: __LAUNCHCMD__ config -set openai-generic.response_field choices.0.message.content
+       Mona will try /v1/responses first, fall back to /v1/chat/completions if needed, and use /v1/models for model discovery.
+	       If max_tokens or context_window is omitted, Mona does not send those request fields.
+	       For Ollama, context_window maps to options.num_ctx and max_tokens maps to options.num_predict.
+	       For customai/openai-generic, context_window maps to options.num_ctx unless an explicit <engine>.options.num_ctx already exists.
+	       OpenAI, Anthropic, OpenRouter, and OpenAI Agents do not expose a standard request-level context-window override.
+	       You can still use <engine>.options.* for provider/model-specific names not covered by these first-class settings.
 
     2. Or use environment variables instead:
        - MONA_AI_ENGINE
 	       - OPENAI_API_KEY
 	       - OPENAI_MODEL
-	       - OPENAI_TIMEOUT
-	       - OPENAI_MAX_TOKENS
-	       - OPENAIAGENTS_URL
+		       - OPENAI_TIMEOUT
+		       - OPENAI_MAX_TOKENS
+		       - OPENAI_CONTEXT_WINDOW
+		       - OPENAIAGENTS_URL
 	       - OPENAIAGENTS_REASONING_EFFORT
 	       - OPENAIAGENTS_VERBOSITY
-	       - OPENAIAGENTS_MAX_TURNS
-	       - ANTHROPIC_API_KEY
-       - ANTHROPIC_MODEL
-       - ANTHROPIC_TIMEOUT
-       - ANTHROPIC_MAX_TOKENS
-       - OLLAMA_URL
-       - OLLAMA_MODEL
-       - OLLAMA_TIMEOUT
-       - OLLAMA_RESPONSE_FIELD
-       - CUSTOMAI_URL
-       - CUSTOMAI_MODEL
-       - CUSTOMAI_TIMEOUT
-       - CUSTOMAI_RESPONSE_FIELD
+		       - OPENAIAGENTS_MAX_TURNS
+		       - ANTHROPIC_API_KEY
+	       - ANTHROPIC_MODEL
+	       - ANTHROPIC_TIMEOUT
+	       - ANTHROPIC_MAX_TOKENS
+	       - ANTHROPIC_CONTEXT_WINDOW
+	       - OPENROUTER_API_KEY
+	       - OPENROUTER_MODEL
+	       - OPENROUTER_TIMEOUT
+	       - OPENROUTER_MAX_TOKENS
+	       - OPENROUTER_CONTEXT_WINDOW
+	       - OLLAMA_URL
+	       - OLLAMA_MODEL
+	       - OLLAMA_TIMEOUT
+	       - OLLAMA_MAX_TOKENS
+	       - OLLAMA_CONTEXT_WINDOW
+	       - OLLAMA_RESPONSE_FIELD
+	       - CUSTOMAI_URL
+	       - CUSTOMAI_MODEL
+	       - CUSTOMAI_TIMEOUT
+	       - CUSTOMAI_MAX_TOKENS
+	       - CUSTOMAI_CONTEXT_WINDOW
+	       - CUSTOMAI_RESPONSE_FIELD
+	       - OPENAIGENERIC_URL
+	       - OPENAIGENERIC_API_KEY
+	       - OPENAIGENERIC_MODEL
+	       - OPENAIGENERIC_TIMEOUT
+	       - OPENAIGENERIC_MAX_TOKENS
+	       - OPENAIGENERIC_CONTEXT_WINDOW
+	       - OPENAIGENERIC_RESPONSE_FIELD
 
 Precedence:
-    If -e is specified, it overrides everything else
+    If -e is specified, it becomes the initially proposed engine in the selector
     If -e is omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE
     If both are present, mona.ini values take precedence over environment variables
     For a single request, -model and -timeout override both config and environment values
-    max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
-    response_field can be controlled via <engine>.response_field or the matching environment variable
+    The selector still runs before submission and proposes the effective engine/model first
+	    max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
+	    context_window can be controlled via <engine>.context_window or the matching environment variable
+	    If max_tokens or context_window is omitted, Mona leaves it unset and does not send a default value
+	    response_field can be controlled via <engine>.response_field or the matching environment variable
     Additional request options can be configured via <engine>.options.*
     If neither a default engine nor -e is specified, tellme uses offline as the default engine
     If the default engine has no required configuration or model configured, tellme falls back to offline
@@ -49463,57 +51091,60 @@ Precedence:
 	    - OpenAI   : gpt-5-mini
 	    - OpenAIAgents: gpt-5-mini
 	    - Anthropic: claude-sonnet-4-6
-    - Ollama   : none, must be configured
-    - CustomAI : none, must be configured
+	    - Ollama   : none, must be configured
+	    - CustomAI : none, must be configured
+	    - OpenAI-generic: none, must be configured
 
-Default timeout:
-    - 300 seconds base timeout per request
-    - q8 adds 30 seconds when no explicit timeout override is set
-    - On timeout, tellme retries up to 5 attempts total
-    - Each retry adds 120 seconds to the timeout and waits 10 seconds before retrying
-    - openaiagents derives a default max_tokens budget from request size when no explicit value is set
-      The derived budget uses a floor of 8192 and a cap of 24576
-    - For ollama or other local/self-hosted engines, increase the timeout to match the speed of the model and hardware.
-      Larger local models often need 300 seconds or more.
+	Default timeout:
+	    - 300 seconds base timeout per request
+	    - q8 adds 30 seconds when no explicit timeout override is set
+	    - Only actual timeout errors trigger timeout retries
+	    - Each timeout retry adds up to 120 seconds, waits 10 seconds before retrying, and caps at 6000 seconds
+	    - Context-window/file-upload fallbacks switch request mode without increasing the timeout
+	    - openai-generic supports timeout 0 for no total deadline; Mona will poll the socket and print periodic still-waiting messages
+	    - openai-generic staged chunk analysis uses no total deadline and prints still-waiting progress every minute
+	    - For ollama or other local/self-hosted engines, increase the timeout to match the speed of the model and hardware.
+	      Larger local models often need 300 seconds or more.
 
 	Common models:
 	    - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
 	    - Anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
-    - Ollama   : depends on what is installed locally, for example llama3
-    - CustomAI : depends on the target API
+	    - Ollama   : depends on what is installed locally, for example llama3
+	    - CustomAI : depends on the target API
+	    - OpenAI-generic: depends on the target API
 
 Official model docs:
     - OpenAI   : https://developers.openai.com/api/docs/models
     - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
 	Arguments:
-		    -e  <engine> : AI engine to use: offline, openai, openaiagents, anthropic, ollama, or customai.
+		    -e  <engine> : AI engine to propose first in the interactive selector: offline, openai, openaiagents, anthropic, openrouter, ollama, customai, or openai-generic.
 	                   If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
-	                   and otherwise defaults to offline.
-	                   If the selected default engine has no required configuration or model configured,
-	                   tellme also falls back to offline
-	                   If you omit -q and a provider engine is configured, tellme prints
-	                   the available models visible to that provider configuration instead of submitting a request
+	                   and otherwise proposes the first usable configured engine.
 	                   openaiagents briefly validates the external bridge Python environment before submission
 	                   openaiagents launches a persistent localhost bridge outside the debugger and queues the job there
-	                   For ollama/customai, a key is not required; those engines use <engine>.url instead
+	                   For ollama/customai/openai-generic, a key is not required; those engines use <engine>.url instead
 	                   Engine-specific request options can be configured generically via <engine>.options.*
-	    -model <id>  : Optional explicit model override. If specified, this wins over mona.ini and environment variables
-	    -timeout <s> : Optional base timeout in seconds for each provider request attempt
-	                   Use this when larger prompts or slower models time out
-	                   Timeout retries are attempted up to 5 times total
-	                   Each timeout retry adds 120 seconds and waits 10 seconds before resubmitting
-	                   For ollama and other local/self-hosted engines, you may need to increase this in line with
-	                   the performance of the local model and hardware
+	    -model <id>  : Optional explicit model override. If specified, this becomes the initially proposed model in the selector
+		    -timeout <s> : Optional base timeout in seconds for each provider request attempt
+		                   Use this when larger prompts or slower models time out
+		                   Timeout retries only happen after actual timeout errors
+		                   Each timeout retry adds up to 120 seconds, waits 10 seconds before resubmitting, and caps at 6000 seconds
+		                   Context-window/file-upload fallbacks do not increase the timeout
+		                   For ollama and other local/self-hosted engines, you may need to increase this in line with
+		                   the performance of the local model and hardware
+		                   For openai-generic only, -timeout 0 means no total deadline and periodic still-waiting output
 	                   For openaiagents response truncation, increase openaiagents.max_tokens or OPENAI_MAX_TOKENS
 	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
-	                   For ollama/customai response parsing, configure <engine>.response_field if the returned text is nested in JSON
+	                   For ollama/customai/openai-generic response parsing, configure <engine>.response_field if the returned text is nested in JSON
 	    -encoding <name> : Optional logfile text encoding override. Defaults to UTF-8 for generated files.
 	                   Use this only when a downstream tool requires a different codec, for example latin-1 or cp1252
 	    -maxsize <kb>: Optional q1 request-size target in kilobytes. By default, tellme keeps the larger evidence set
 	                   and only reports the final request size. If you set -maxsize, mona will try to reduce lower-priority
 	                   evidence to stay within that target and will record any reductions under [omitted_sections]
-	    -submit      : Skip the confirmation prompt and submit the AI request immediately
+	    -submit      : Strict non-interactive mode. tellme builds the evidence, submits immediately, prints the response, and stops.
+	                   No engine/model menu is shown and no post-response chat loop is started.
+	                   Required engine settings such as URL/model must already be configured or provided on the command line.
 	    -upload      : OpenAI and Anthropic. Upload the saved request file plus any -l/-p files and submit a short
 	                   inline instruction that tells the model to use the uploaded request file as the authoritative prompt source.
 	                   Mona asks the model to echo the unique file ID for each uploaded file so you can reuse them later with -id.
@@ -49602,6 +51233,10 @@ Official model docs:
 	    __LAUNCHCMD__ config -set customai.model llama3
 	    __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
 	    __LAUNCHCMD__ tellme -e customai -q 1
+	    __LAUNCHCMD__ config -set mona.ai.engine openai-generic
+	    __LAUNCHCMD__ config -set openai-generic.url http://192.168.86.154:8080
+	    __LAUNCHCMD__ config -set openai-generic.model llama3
+	    __LAUNCHCMD__ tellme -e openai-generic -q 1
 	    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
 	    __LAUNCHCMD__ tellme -e openai -q 3 -c poi(esp+4) -t kernel32!CreateFileW
 	    __LAUNCHCMD__ tellme -e openai -q 3 -c eax -t kernel32!VirtualProtect -d 2
