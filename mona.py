@@ -40,6 +40,7 @@ __VERSION__ = '3.0'
 __REV__ = 3026
 
 DEBUG_MODE = False
+_AI_PROVIDER_ENGINES = ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai", "openai-generic"]
 _AI_MODEL_LIST_CACHE = {}
 _AI_OPENAI_GENERIC_ENDPOINT_CACHE = {}
 MONA_OPTIONAL_UPGRADE_PACKAGES = [
@@ -1359,9 +1360,24 @@ def _safe_int(v):
 		return 0
 
 
+# =============================================================================
+# AI: Engine Registry And Naming
+# =============================================================================
+
+# AI naming conventions:
+# - Public AI workflow/config helpers use descriptive verb/object names without a leading underscore.
+# - Private helpers use a leading underscore only when they are implementation details of the nearby section.
+# - Provider names should be explicit in function names: OpenAI, OpenAICompatible, Anthropic, Ollama, OpenRouter, CustomAI.
+# - Each AI function should start with a short comment block describing purpose, inputs, return value, and side effects.
+
+
 def getAvailableAIEngines(reason="", refresh=False):
+	# Purpose: return the provider engines Mona can offer for AI submission.
+	# Inputs: optional debug reason and refresh flag retained for call-site consistency.
+	# Returns: ordered list of engine identifiers accepted by tellme/ai.
+	# Side effects: emits debug trace only.
 	mndbg.dbgp(get_current_function_name())
-	engines = ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai", "openai-generic"]
+	engines = list(_AI_PROVIDER_ENGINES)
 	mndbg.dbgp("getAvailableAIEngines(reason=%s, refresh=%s) -> %s" % (
 		reason or "unspecified",
 		str(refresh),
@@ -1370,7 +1386,11 @@ def getAvailableAIEngines(reason="", refresh=False):
 	return engines
 
 
-def _normalizeAIEngine(engine_value):
+def normalizeAIEngineName(engine_value):
+	# Purpose: normalize a user/config supplied AI engine name to Mona's canonical lowercase form.
+	# Inputs: raw engine value from args, config, environment, or menu state.
+	# Returns: normalized engine string, or an empty string when the value cannot be represented.
+	# Side effects: emits debug trace only.
 	mndbg.dbgp(get_current_function_name())
 	try:
 		return str(engine_value).strip().lower()
@@ -1379,24 +1399,40 @@ def _normalizeAIEngine(engine_value):
 
 
 def getDefaultAIEngineConfigName():
+	# Purpose: expose the config key that stores Mona's default AI engine.
+	# Inputs: none.
+	# Returns: mona.ini parameter name.
+	# Side effects: emits debug trace only.
 	mndbg.dbgp(get_current_function_name())
 	return "mona.ai.engine"
 
 
 def getDefaultAIEngineEnvName():
+	# Purpose: expose the environment variable that stores Mona's default AI engine.
+	# Inputs: none.
+	# Returns: environment variable name.
+	# Side effects: emits debug trace only.
 	mndbg.dbgp(get_current_function_name())
 	return "MONA_AI_ENGINE"
 
 
-def _isSupportedAIEngine(engine_value):
+def isSupportedAIEngineName(engine_value):
+	# Purpose: test whether an engine name is one of Mona's supported AI provider identifiers.
+	# Inputs: normalized or raw engine name.
+	# Returns: True when the engine is supported, otherwise False.
+	# Side effects: emits debug trace only.
 	mndbg.dbgp(get_current_function_name())
-	return engine_value in ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai", "openai-generic"]
+	return engine_value in _AI_PROVIDER_ENGINES
 
 
 def ensureDefaultAIEngineConfig(mona_config, available_engines):
+	# Purpose: initialize the default AI engine config when exactly one provider is available.
+	# Inputs: MnConfig instance and list of available provider engines.
+	# Returns: configured/default engine name, or an empty string if no default was set.
+	# Side effects: may write mona.ai.engine to mona.ini.
 	mndbg.dbgp(get_current_function_name())
 	config_name = getDefaultAIEngineConfigName()
-	current_engine = _normalizeAIEngine(mona_config.get(config_name))
+	current_engine = normalizeAIEngineName(mona_config.get(config_name))
 	if current_engine != "":
 		return current_engine
 	default_engine = ""
@@ -1410,23 +1446,27 @@ def ensureDefaultAIEngineConfig(mona_config, available_engines):
 
 
 def resolveAIEngine(engine_arg, mona_config, available_engines):
+	# Purpose: resolve the initial AI engine from -e, mona.ini, environment, or fallback order.
+	# Inputs: raw -e value, MnConfig instance, and available provider engine list.
+	# Returns: tuple(engine, source, error_message, used_fallback).
+	# Side effects: emits debug trace only.
 	mndbg.dbgp(get_current_function_name())
 	engine_source = "argument"
 	if type(engine_arg).__name__.lower() == "bool":
-		return "", engine_source, "Please specify an engine value with -e <openai|openaiagents|anthropic|openrouter|ollama|customai|openai-generic>", False
-	engine = _normalizeAIEngine(engine_arg)
+		return "", engine_source, "Please specify an engine value with -e <%s>" % "|".join(_AI_PROVIDER_ENGINES), False
+	engine = normalizeAIEngineName(engine_arg)
 	if engine != "":
 		return engine, engine_source, "", False
 
 	config_name = getDefaultAIEngineConfigName()
 	env_name = getDefaultAIEngineEnvName()
 
-	engine = _normalizeAIEngine(mona_config.get(config_name))
+	engine = normalizeAIEngineName(mona_config.get(config_name))
 	if engine != "":
 		engine_source = "config"
 		mndbg.dbgp("tellme: using default engine '%s' from %s" % (engine, config_name))
 	else:
-		engine = _normalizeAIEngine(os.environ.get(env_name, ""))
+		engine = normalizeAIEngineName(os.environ.get(env_name, ""))
 		if engine != "":
 			engine_source = "environment"
 			mndbg.dbgp("tellme: using default engine '%s' from %s" % (engine, env_name))
@@ -1440,6 +1480,10 @@ def resolveAIEngine(engine_arg, mona_config, available_engines):
 
 
 def _formatContextText(value, max_len=512):
+	"""Format debugger or AI evidence text for format context text.
+	Args: value, max_len.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		text = ensure_text(value)
@@ -1456,6 +1500,10 @@ def _formatContextText(value, max_len=512):
 
 
 def _formatHexAsciiPreview(raw, max_len=0x80):
+	"""Format debugger or AI evidence text for format hex ascii preview.
+	Args: raw, max_len.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if raw is None:
 		return {"hex": "", "ascii": ""}
@@ -1467,6 +1515,10 @@ def _formatHexAsciiPreview(raw, max_len=0x80):
 
 
 def _readMemoryPreview(address, size, label):
+	"""Read debugger memory or source text for read memory preview.
+	Args: address, size, label.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = {
 		"label": label,
@@ -1484,6 +1536,10 @@ def _readMemoryPreview(address, size, label):
 
 
 def _readFirstBytesPreview(address, size=0x10, label="first_bytes"):
+	"""Read debugger memory or source text for read first bytes preview.
+	Args: address, size, label.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = _readMemoryPreview(address, size, label)
 	return OrderedDict([
@@ -1496,6 +1552,10 @@ def _readFirstBytesPreview(address, size=0x10, label="first_bytes"):
 
 
 def _collectHeapDetails():
+	"""Collect debugger evidence for collect heap details.
+	Args: none.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: collecting heap_details")
 	dbg.log("[+] Enumerating heap details")
@@ -1648,6 +1708,10 @@ def _collectHeapDetails():
 
 
 def _getPointerDump(address, bytes_before=0x28, line_count=0x40, register_name=""):
+	"""Resolve debugger evidence for get pointer dump.
+	Args: address, bytes_before, line_count, register_name.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	reg_name_l = str(register_name).lower().strip()
@@ -1667,6 +1731,10 @@ def _getPointerDump(address, bytes_before=0x28, line_count=0x40, register_name="
 
 
 def _getCallStack(command="kb", max_lines=50):
+	"""Resolve debugger evidence for get call stack.
+	Args: command, max_lines.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["command"] = command
@@ -1684,6 +1752,10 @@ def _getCallStack(command="kb", max_lines=50):
 
 
 def _getWindbgAnalyze(command="!analyze -v", max_lines=0):
+	"""Resolve debugger evidence for get windbg analyze.
+	Args: command, max_lines.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["command"] = command
@@ -1701,6 +1773,10 @@ def _getWindbgAnalyze(command="!analyze -v", max_lines=0):
 
 
 def _getHeapChunkMetadata(address):
+	"""Resolve debugger evidence for get heap chunk metadata.
+	Args: address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
@@ -1726,6 +1802,10 @@ def _getHeapChunkMetadata(address):
 
 
 def _getHeapXMetadata(address):
+	"""Resolve debugger evidence for get heap xmetadata.
+	Args: address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
@@ -1750,6 +1830,10 @@ def _getHeapXMetadata(address):
 
 
 def _collectManualHeapTargetFallback(address):
+	"""Collect debugger evidence for collect manual heap target fallback.
+	Args: address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	info["address"] = PTR_PRINT % address
@@ -1760,6 +1844,10 @@ def _collectManualHeapTargetFallback(address):
 
 
 def _normalizeDisassemblyLabel(label_text):
+	"""Normalize debugger text for normalize disassembly label.
+	Args: label_text.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	label = ensure_text(label_text).strip().rstrip(":")
 	if label == "":
@@ -1770,6 +1858,10 @@ def _normalizeDisassemblyLabel(label_text):
 
 
 def _extractSourceReferenceFromDisassemblyLabel(label_text):
+	"""Extract debugger evidence for extract source reference from disassembly label.
+	Args: label_text.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("path", ""),
@@ -1791,6 +1883,10 @@ def _extractSourceReferenceFromDisassemblyLabel(label_text):
 
 
 def _extractSourceReferenceFromText(source_text):
+	"""Extract debugger evidence for extract source reference from text.
+	Args: source_text.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("path", ""),
@@ -1830,6 +1926,10 @@ def _extractSourceReferenceFromText(source_text):
 
 
 def _findSourceCandidateInDebuggerText(uf_text="", nearest_text=""):
+	"""Find debugger/source evidence for find source candidate in debugger text.
+	Args: uf_text, nearest_text.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	sources = [
 		("uf", ensure_text(uf_text)),
@@ -1848,6 +1948,10 @@ def _findSourceCandidateInDebuggerText(uf_text="", nearest_text=""):
 
 
 def _extractSourceLineFromDisasmLine(raw_line, requested_address=0):
+	"""Extract debugger evidence for extract source line from disasm line.
+	Args: raw_line, requested_address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	line = ensure_text(raw_line).strip()
 	if line == "" or line.endswith(":"):
@@ -1870,6 +1974,10 @@ def _extractSourceLineFromDisasmLine(raw_line, requested_address=0):
 
 
 def _readSourceContextSnippet(source_path, target_line=0, context_before=6, context_after=10, max_chars=6000):
+	"""Read debugger memory or source text for read source context snippet.
+	Args: source_path, target_line, context_before, context_after, max_chars.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("path", ensure_text(source_path).strip()),
@@ -1916,6 +2024,10 @@ def _readSourceContextSnippet(source_path, target_line=0, context_before=6, cont
 
 
 def _collectFunctionSourceContext(address, uf_output="", nearest_symbol_output="", prompt_for_permission=False, source_context_decisions=None):
+	"""Collect debugger evidence for collect function source context.
+	Args: address, uf_output, nearest_symbol_output, prompt_for_permission, source_context_decisions.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	address = int(address) if isinstance(address, int) else 0
@@ -1978,6 +2090,10 @@ def _collectFunctionSourceContext(address, uf_output="", nearest_symbol_output="
 
 
 def _getChunkPointerDump(chunk_address, chunk_size, label="chunk"):
+	"""Resolve debugger evidence for get chunk pointer dump.
+	Args: chunk_address, chunk_size, label.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["label"] = label
@@ -2002,6 +2118,10 @@ def _getChunkPointerDump(chunk_address, chunk_size, label="chunk"):
 
 
 def _describeChunkContext(chunk, mheap, va_blks):
+	"""Describe debugger evidence for describe chunk context.
+	Args: chunk, mheap, va_blks.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	for va, vi in va_blks.items():
 		if va <= chunk.chunkptr < va + vi["commit_size"]:
@@ -2015,6 +2135,10 @@ def _describeChunkContext(chunk, mheap, va_blks):
 
 
 def _serializeAdjacentChunk(label, chunk, mheap, va_blks):
+	"""Serialize debugger evidence for serialize adjacent chunk.
+	Args: label, chunk, mheap, va_blks.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if chunk is None:
 		return OrderedDict([
@@ -2044,6 +2168,10 @@ def _serializeAdjacentChunk(label, chunk, mheap, va_blks):
 
 
 def _collectAdjacentChunkContext(refvalue):
+	"""Collect debugger evidence for collect adjacent chunk context.
+	Args: refvalue.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	info["reference"] = PTR_PRINT % refvalue
@@ -2144,6 +2272,10 @@ def _collectAdjacentChunkContext(refvalue):
 
 
 def _getPageSummary(address):
+	"""Resolve debugger evidence for get page summary.
+	Args: address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summary = {"address": PTR_PRINT % address}
 	try:
@@ -2166,6 +2298,10 @@ def _getPageSummary(address):
 
 
 def _getModuleSummary(address):
+	"""Resolve debugger evidence for get module summary.
+	Args: address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summary = {"address": PTR_PRINT % address}
 	try:
@@ -2189,6 +2325,10 @@ def _getModuleSummary(address):
 
 
 def _getSymbolName(address):
+	"""Resolve debugger evidence for get symbol name.
+	Args: address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		funcinfo = dbglib.Function(dbg, address)
@@ -2209,6 +2349,10 @@ def _getSymbolName(address):
 
 
 def _getNearestSymbolOutput(address):
+	"""Resolve debugger evidence for get nearest symbol output.
+	Args: address.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		return _formatContextText(ensure_text(dbg.nativeCommand("ln %s" % (PTR_PRINT % address))).strip(), max_len=4096)
@@ -2218,6 +2362,10 @@ def _getNearestSymbolOutput(address):
 
 
 def _getInstructionWindow(address, depth_before=10, depth_after=10):
+	"""Resolve debugger evidence for get instruction window.
+	Args: address, depth_before, depth_after.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
@@ -2261,6 +2409,10 @@ def _getInstructionWindow(address, depth_before=10, depth_after=10):
 
 
 def _extractReturnPointerContext(raw_line):
+	"""Extract debugger evidence for extract return pointer context.
+	Args: raw_line.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	line_text = ensure_text(raw_line).strip()
 	if line_text == "":
@@ -2300,6 +2452,10 @@ def _extractReturnPointerContext(raw_line):
 
 
 def _getDisasmSummary(address, depth_before=10, depth_after=10):
+	"""Resolve debugger evidence for get disasm summary.
+	Args: address, depth_before, depth_after.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = {
 		"address": PTR_PRINT % address,
@@ -2316,6 +2472,10 @@ def _getDisasmSummary(address, depth_before=10, depth_after=10):
 
 
 def _isReturnInstructionText(instruction_text):
+	"""Evaluate a debugger evidence condition for is return instruction text.
+	Args: instruction_text.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	instruction = ensure_text(instruction_text).strip().lower()
 	if instruction == "":
@@ -2325,6 +2485,10 @@ def _isReturnInstructionText(instruction_text):
 
 
 def _sliceDisassemblyTextFromAddress(disasm_text, address, max_lines=0, stop_at_return=False):
+	"""Support AI evidence collection for slice disassembly text from address.
+	Args: disasm_text, address, max_lines, stop_at_return.
+	Returns: function-specific evidence data used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not disasm_text:
 		return ""
@@ -2357,6 +2521,10 @@ def _sliceDisassemblyTextFromAddress(disasm_text, address, max_lines=0, stop_at_
 
 
 def _getControlFlowDisasmSourceForAddress(address, slice_from_address=False, max_lines=0):
+	"""Resolve debugger evidence for get control flow disasm source for address.
+	Args: address, slice_from_address, max_lines.
+	Returns: text, structured evidence, or an empty value on failure.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	global _q3_control_flow_disasm_cache
 	global _q3_control_flow_uf_cache
@@ -2429,6 +2597,10 @@ def _getControlFlowDisasmSourceForAddress(address, slice_from_address=False, max
 
 
 def tellMeHasCurrentInstruction(address):
+	"""Check whether tellme can use tell me has current instruction.
+	Args: address.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(address, int) or address <= 0:
 		return False, "Program counter is not a valid address"
@@ -2450,12 +2622,24 @@ def tellMeHasCurrentInstruction(address):
 		return False, str(e)
 
 
+# =============================================================================
+# AI: Current Function Evidence Collection
+# =============================================================================
+
 def _tryParseAddressToken(token):
+	"""Support Mona AI workflow logic for try parse address token.
+	Args: token.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	return mndbg._parseAddressToken(token)
 
 
 def _resolveFunctionStart(address):
+	"""Resolve AI workflow input for resolve function start.
+	Args: address.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		ptr = MnPointer(address)
@@ -2468,6 +2652,10 @@ def _resolveFunctionStart(address):
 
 
 def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_address=False, forward_line_count=100, context_cache=None, active_keys=None, source_context_decisions=None, prompt_for_source_context=False):
+	"""Collect debugger evidence for collect ai current function context.
+	Args: address, follow_depth, forward_only_from_address, forward_line_count, context_cache, active_keys, source_context_decisions, prompt_for_source_context.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if context_cache is None:
 		context_cache = {}
@@ -2762,6 +2950,10 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 
 
 def _parseDisassemblyTextEntries(disasm_text):
+	"""Parse AI-related data for parse disassembly text entries.
+	Args: disasm_text.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	entries = []
 	if not disasm_text:
@@ -2797,6 +2989,10 @@ def _parseDisassemblyTextEntries(disasm_text):
 
 
 def _looksLikeDisassemblyByteToken(token):
+	"""Evaluate an AI workflow condition for looks like disassembly byte token.
+	Args: token.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	cleaned = ensure_text(token).strip().replace("`", "")
 	if cleaned == "":
@@ -2805,6 +3001,10 @@ def _looksLikeDisassemblyByteToken(token):
 
 
 def _scoreDisassemblyAddressToken(parts, candidate_index):
+	"""Support Mona AI workflow logic for score disassembly address token.
+	Args: parts, candidate_index.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(parts, list) or candidate_index < 0 or candidate_index >= len(parts):
 		return -9999, 0
@@ -2842,6 +3042,10 @@ def _scoreDisassemblyAddressToken(parts, candidate_index):
 
 
 def _extractDisassemblyAddress(parts):
+	"""Extract AI-related data for extract disassembly address.
+	Args: parts.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(parts, list) or len(parts) < 2:
 		return 0, -1
@@ -2862,6 +3066,10 @@ def _extractDisassemblyAddress(parts):
 
 
 def _normalizeDisassemblyTargetOperand(operand):
+	"""Normalize AI workflow input for normalize disassembly target operand.
+	Args: operand.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	normalized = ensure_text(operand).strip().lower()
 	if ";" in normalized:
@@ -2886,6 +3094,10 @@ def _normalizeDisassemblyTargetOperand(operand):
 
 
 def _resolveDisassemblyTargetOperand(operand, reg_names=None):
+	"""Resolve AI workflow input for resolve disassembly target operand.
+	Args: operand, reg_names.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("operand", ensure_text(operand).strip()),
@@ -2944,6 +3156,10 @@ def _resolveDisassemblyTargetOperand(operand, reg_names=None):
 
 
 def _classifyControlFlowInstruction(instruction):
+	"""Support Mona AI workflow logic for classify control flow instruction.
+	Args: instruction.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	instruction = ensure_text(instruction).strip().lower()
 	if instruction == "":
@@ -2962,6 +3178,10 @@ def _classifyControlFlowInstruction(instruction):
 
 
 def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, current_depth=1, visited_targets=None, target_context_cache=None, nested_target_cache=None, reg_names=None, disasm_entries_cache=None):
+	"""Collect debugger evidence for collect disassembly target contexts.
+	Args: disasm_text, max_targets, max_depth, current_depth, visited_targets, target_context_cache, nested_target_cache, reg_names, disasm_entries_cache.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	targets = []
 	disasm_text = ensure_text(disasm_text)
@@ -3197,6 +3417,10 @@ def _collectDisassemblyTargetContexts(disasm_text, max_targets=32, max_depth=1, 
 
 
 def _extractInstructionRegisters(instruction_text, regs):
+	"""Extract AI-related data for extract instruction registers.
+	Args: instruction_text, regs.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	registers = []
 	if not instruction_text or not regs:
@@ -3212,6 +3436,10 @@ def _extractInstructionRegisters(instruction_text, regs):
 
 
 def _findLayoutRegion(address, layout_regions):
+	"""Support Mona AI workflow logic for find layout region.
+	Args: address, layout_regions.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		mndbg.dbgp("tellme: searching layout regions for %s across %d candidate regions" % (
@@ -3311,6 +3539,10 @@ def _findLayoutRegion(address, layout_regions):
 
 
 def _collectLayoutRegionNeighbors(address, layout_regions):
+	"""Collect debugger evidence for collect layout region neighbors.
+	Args: address, layout_regions.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["reference"] = PTR_PRINT % address
@@ -3359,6 +3591,10 @@ def _collectLayoutRegionNeighbors(address, layout_regions):
 
 
 def _parseHeapHlChunkLine(line):
+	"""Parse AI-related data for parse heap hl chunk line.
+	Args: line.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	match = re.match(r"^(\s*)([0-9A-Fa-f`]+):\s+([0-9A-Fa-f]+)\s+-\s+(.+?)\s*$", line)
 	if not match:
@@ -3380,6 +3616,10 @@ def _parseHeapHlChunkLine(line):
 
 
 def _parseHeapHlOutput(output, target_address):
+	"""Parse AI-related data for parse heap hl output.
+	Args: output, target_address.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["matched"] = False
@@ -3466,6 +3706,10 @@ def _parseHeapHlOutput(output, target_address):
 
 
 def _getHeapHlContext(heap_address, target_address):
+	"""Resolve or return the configured AI value for get heap hl context.
+	Args: heap_address, target_address.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["heap"] = PTR_PRINT % heap_address
@@ -3510,6 +3754,10 @@ def _getHeapHlContext(heap_address, target_address):
 
 
 def _getSegmentHeapFallback(address, layout_region, layout_regions):
+	"""Resolve or return the configured AI value for get segment heap fallback.
+	Args: address, layout_region, layout_regions.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	if layout_region is None or layout_region.get("category", "") != "Segment":
@@ -3547,6 +3795,10 @@ def _getSegmentHeapFallback(address, layout_region, layout_regions):
 
 
 def _applyHeapHlChunkMatch(entry, heap_hl_result, reg_value, ref_name):
+	"""Support Mona AI workflow logic for apply heap hl chunk match.
+	Args: entry, heap_hl_result, reg_value, ref_name.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	matched_chunk = heap_hl_result.get("matched_chunk", {})
 	try:
@@ -3572,6 +3824,10 @@ def _applyHeapHlChunkMatch(entry, heap_hl_result, reg_value, ref_name):
 
 
 def _buildHeapReferenceEntry(ref_name, reg_value, ref_source, instruction_text, layout_regions):
+	"""Build the AI data structure or prompt text for build heap reference entry.
+	Args: ref_name, reg_value, ref_source, instruction_text, layout_regions.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	is_manual_heap_target = (ref_source == "q1_-a")
 	entry = OrderedDict()
@@ -3741,6 +3997,10 @@ def _buildHeapReferenceEntry(ref_name, reg_value, ref_source, instruction_text, 
 
 
 def _collectInstructionHeapContext(regs, pc, extra_references=None):
+	"""Collect debugger evidence for collect instruction heap context.
+	Args: regs, pc, extra_references.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = {
 		"instruction": "",
@@ -3883,6 +4143,10 @@ def _collectInstructionHeapContext(regs, pc, extra_references=None):
 
 
 def _collectHeapdynamicsContext(regs, pc, heapdynamics_file=""):
+	"""Collect debugger evidence for collect heapdynamics context.
+	Args: regs, pc, heapdynamics_file.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	info["instruction"] = ""
@@ -4009,6 +4273,10 @@ def _collectHeapdynamicsContext(regs, pc, heapdynamics_file=""):
 	return info
 
 def _readContextFile(file_path, label="context file"):
+	"""Support Mona AI workflow logic for read context file.
+	Args: file_path, label.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	info["file"] = file_path
@@ -4027,6 +4295,10 @@ def _readContextFile(file_path, label="context file"):
 
 
 def _isHeapdynamicsFile(file_path):
+	"""Detect whether a context file contains heap dynamics events.
+	Args: file_path.
+	Returns: tuple of boolean match status and parsed file info.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = _readContextFile(file_path, label="candidate context file")
 	if info.get("file_contents", "") == "":
@@ -4039,6 +4311,10 @@ def _isHeapdynamicsFile(file_path):
 
 
 def _collectHeapdynamicsContexts(regs, pc, heapdynamics_files=None):
+	"""Collect heap dynamics context files that reference current register state.
+	Args: regs, pc, heapdynamics_files.
+	Returns: list of matching heap dynamics context records.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	dbg.log("[+] Checking if files(s) contain heap dynamics")
 	contexts = []
@@ -4058,7 +4334,15 @@ def _collectHeapdynamicsContexts(regs, pc, heapdynamics_files=None):
 	return contexts
 
 
+# =============================================================================
+# AI: Evidence Collection And Prompt Assembly
+# =============================================================================
+
 def getAIPattern():
+	"""Resolve or return the configured AI value for get ai pattern.
+	Args: none.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	global g_tellme_pattern_cache
 	if g_tellme_pattern_cache is None:
@@ -4068,6 +4352,10 @@ def getAIPattern():
 
 
 def _getArchitectureName():
+	"""Resolve or return the configured AI value for get architecture name.
+	Args: none.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if arch == 64:
 		return "x64"
@@ -4075,6 +4363,10 @@ def _getArchitectureName():
 
 
 def _renderBadchars(raw_badchars):
+	"""Render debugger evidence text for render badchars.
+	Args: raw_badchars.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if raw_badchars in [None, b"", ""]:
 		return ""
@@ -4087,6 +4379,10 @@ def _renderBadchars(raw_badchars):
 
 
 def _readBlobHex(address, size, label="", chunk_size=0x1000):
+	"""Support Mona AI workflow logic for read blob hex.
+	Args: address, size, label, chunk_size.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		integer_types = (int, long)
@@ -4134,6 +4430,10 @@ def _readBlobHex(address, size, label="", chunk_size=0x1000):
 
 
 def _getModuleReturnWindows(module_obj, max_windows=None, context_before=16):
+	"""Resolve or return the configured AI value for get module return windows.
+	Args: module_obj, max_windows, context_before.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	windows = []
 	try:
@@ -4215,6 +4515,10 @@ def _getModuleReturnWindows(module_obj, max_windows=None, context_before=16):
 
 
 def _getModuleIatEntries(module_obj):
+	"""Resolve or return the configured AI value for get module iat entries.
+	Args: module_obj.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	entries = []
 	allowed_names = ["virtualalloc", "virtualprotect"]
@@ -4245,6 +4549,10 @@ def _getModuleIatEntries(module_obj):
 
 
 def _collectRopTargetModules(args):
+	"""Collect debugger evidence for collect rop target modules.
+	Args: args.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	has_module_scope = False
 	for scope_key in ["m", "cm", "cmp"]:
@@ -4307,6 +4615,10 @@ def _collectRopTargetModules(args):
 
 
 def collectAIContext(question_type="", heapdynamics_files=None, additional_context_files=None, poc_file="", heap_target_address=0, ai_args=None, collection_plan=None):
+	"""Collect debugger evidence for collect ai context.
+	Args: question_type, heapdynamics_files, additional_context_files, poc_file, heap_target_address, ai_args, collection_plan.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: collecting debugger context for question type '%s'" % question_type)
 	if collection_plan is None:
@@ -4376,7 +4688,7 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		try:
 			context["findmsp"] = _getFindMspSummary(args=ai_args or {})
 			if context["findmsp"].get("seh", []):
-				context["findseh"] = _getFindSehSummaryFromFindmsp(context["findmsp"], args=ai_args or {})
+				context["seh"] = _getSehSummaryFromFindmsp(context["findmsp"], args=ai_args or {})
 		except Exception as e:
 			context["findmsp_error"] = str(e)
 			context["findmsp_error_type"] = e.__class__.__name__
@@ -4434,6 +4746,10 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 
 
 def buildAIPrompt(question_type, context, maxsize_kb=0):
+	"""Build the AI data structure or prompt text for build ai prompt.
+	Args: question_type, context, maxsize_kb.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: building prompt for question type '%s'" % question_type)
 	if question_type == "1":
@@ -4463,6 +4779,10 @@ def buildAIPrompt(question_type, context, maxsize_kb=0):
 
 
 def generateAIRequestId():
+	"""Support Mona AI workflow logic for generate ai request id.
+	Args: none.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -4480,6 +4800,10 @@ def generateAIRequestId():
 
 
 def _normalizeLocalBridgeUrl(base_url, path_suffix=""):
+	"""Normalize AI workflow input for normalize local bridge url.
+	Args: base_url, path_suffix.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	base_url = ensure_text(base_url).strip()
 	path_suffix = ensure_text(path_suffix).strip()
@@ -4499,6 +4823,10 @@ def _normalizeLocalBridgeUrl(base_url, path_suffix=""):
 
 
 def _getLocalBridgeHostPort(base_url, default_host="127.0.0.1", default_port=8765):
+	"""Resolve or return the configured AI value for get local bridge host port.
+	Args: base_url, default_host, default_port.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	normalized_url = _normalizeLocalBridgeUrl(base_url)
 	host_value = default_host
@@ -4522,7 +4850,15 @@ def _getLocalBridgeHostPort(base_url, default_host="127.0.0.1", default_port=876
 	return host_value, port_value
 
 
+# =============================================================================
+# AI: OpenAI Agents Bridge Script Template
+# =============================================================================
+
 def _getOpenAIAgentsBridgeScriptText():
+	"""Resolve or return the configured AI value for get open ai agents bridge script text.
+	Args: none.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	return textwrap.dedent(r'''#!/usr/bin/env python
 from __future__ import print_function
@@ -5286,7 +5622,15 @@ if __name__ == "__main__":
 ''').replace("\r\n", "\n")
 
 
+# =============================================================================
+# AI: Provider Configuration And Runtime Options
+# =============================================================================
+
 def getAIModelAndKey(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai model and key.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	key_name = "%s.key" % engine
 	model_name = "%s.model" % engine
@@ -5332,6 +5676,10 @@ def getAIModelAndKey(engine, mona_config):
 
 
 def getAIUrl(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai url.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	url_name = "%s.url" % engine
 	url_value = mona_config.get(url_name).strip()
@@ -5357,6 +5705,10 @@ def getAIUrl(engine, mona_config):
 
 
 def getAIResponseField(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai response field.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	field_name = "%s.response_field" % engine
 	field_value = mona_config.get(field_name).strip()
@@ -5378,6 +5730,10 @@ def getAIResponseField(engine, mona_config):
 
 
 def getAIBridgePythonCommand(mona_config=None):
+	"""Resolve or return the configured AI value for get ai bridge python command.
+	Args: mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	python_value = ""
 	if mona_config is not None:
@@ -5393,6 +5749,10 @@ def getAIBridgePythonCommand(mona_config=None):
 
 
 def formatAIBridgePythonCommand(command_parts):
+	"""Format AI-related output for format ai bridge python command.
+	Args: command_parts.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(command_parts, (list, tuple)) or len(command_parts) == 0:
 		return ""
@@ -5400,6 +5760,10 @@ def formatAIBridgePythonCommand(command_parts):
 
 
 def getAIReasoningEffort(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai reasoning effort.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	effort_name = "%s.reasoning_effort" % engine
 	effort_value = mona_config.get(effort_name).strip()
@@ -5416,6 +5780,10 @@ def getAIReasoningEffort(engine, mona_config):
 
 
 def getAIVerbosity(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai verbosity.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	verbosity_name = "%s.verbosity" % engine
 	verbosity_value = mona_config.get(verbosity_name).strip()
@@ -5432,6 +5800,10 @@ def getAIVerbosity(engine, mona_config):
 
 
 def getAIMaxTurns(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai max turns.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	max_turns_name = "%s.max_turns" % engine
 	max_turns_value = 8
@@ -5451,6 +5823,10 @@ def getAIMaxTurns(engine, mona_config):
 
 
 def _coerceConfigOptionValue(raw_value):
+	"""Support Mona AI workflow logic for coerce config option value.
+	Args: raw_value.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	text = ensure_text(raw_value).strip()
 	if text == "":
@@ -5477,6 +5853,10 @@ def _coerceConfigOptionValue(raw_value):
 
 
 def _mergeNestedOptionValue(target_dict, path_parts, option_value):
+	"""Merge AI provider reference data for merge nested option value.
+	Args: target_dict, path_parts, option_value.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(target_dict, dict):
 		return
@@ -5494,6 +5874,10 @@ def _mergeNestedOptionValue(target_dict, path_parts, option_value):
 
 
 def _collectAIOptions(engine, model, mona_config):
+	"""Collect debugger evidence for collect ai options.
+	Args: engine, model, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	options_prefix = "%s.options." % engine.strip().lower()
 	all_entries = mona_config.getAll(prefix=options_prefix)
@@ -5519,6 +5903,10 @@ def _collectAIOptions(engine, model, mona_config):
 		_mergeNestedOptionValue(target_dict, path_parts, option_value)
 
 	def _merge_dicts(base_dict, override_dict):
+		"""Merge AI provider reference data for merge dicts.
+		Args: base_dict, override_dict.
+		Returns: the requested value or structured result.
+		"""
 		for merge_key in override_dict:
 			if merge_key in base_dict and isinstance(base_dict[merge_key], dict) and isinstance(override_dict[merge_key], dict):
 				_merge_dicts(base_dict[merge_key], override_dict[merge_key])
@@ -5531,6 +5919,10 @@ def _collectAIOptions(engine, model, mona_config):
 
 
 def _setNestedOptionIfAbsent(target_dict, path_parts, option_value):
+	"""Support Mona AI workflow logic for set nested option if absent.
+	Args: target_dict, path_parts, option_value.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(target_dict, dict) or len(path_parts) == 0:
 		return False
@@ -5549,6 +5941,10 @@ def _setNestedOptionIfAbsent(target_dict, path_parts, option_value):
 
 
 def _applyAIContextWindowOption(engine, options, context_window):
+	"""Support Mona AI workflow logic for apply ai context window option.
+	Args: engine, options, context_window.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		context_window = int(context_window)
@@ -5564,6 +5960,10 @@ def _applyAIContextWindowOption(engine, options, context_window):
 
 
 def _applyAIMaxTokensOption(engine, options, max_tokens):
+	"""Support Mona AI workflow logic for apply ai max tokens option.
+	Args: engine, options, max_tokens.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		max_tokens = int(max_tokens)
@@ -5579,6 +5979,10 @@ def _applyAIMaxTokensOption(engine, options, max_tokens):
 
 
 def getDefaultAIModel(engine):
+	"""Resolve or return the configured AI value for get default ai model.
+	Args: engine.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if engine == "openai" or engine == "openaiagents":
 		return "gpt-5-mini"
@@ -5590,6 +5994,10 @@ def getDefaultAIModel(engine):
 
 
 def _importOpenAI():
+	"""Support Mona AI workflow logic for import open ai.
+	Args: none.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: loading OpenAI SDK on demand")
 	try:
@@ -5606,6 +6014,10 @@ def _importOpenAI():
 
 
 def _importAnthropic():
+	"""Support Mona AI workflow logic for import anthropic.
+	Args: none.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: loading Anthropic SDK on demand")
 	try:
@@ -5622,6 +6034,10 @@ def _importAnthropic():
 
 
 def _guessMimeType(path_value):
+	"""Support Mona AI workflow logic for guess mime type.
+	Args: path_value.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		mime_type, _encoding = mimetypes.guess_type(path_value)
@@ -5633,6 +6049,10 @@ def _guessMimeType(path_value):
 
 
 def _splitFileIdArgument(raw_value):
+	"""Split AI input data for split file id argument.
+	Args: raw_value.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	file_ids = []
 	if raw_value in [None, False]:
@@ -5650,6 +6070,10 @@ def _splitFileIdArgument(raw_value):
 
 
 def getAITimeout(engine, mona_config, args=None):
+	"""Resolve or return the configured AI value for get ai timeout.
+	Args: engine, mona_config, args.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	timeout_name = "%s.timeout" % engine
 	timeout = 300.0
@@ -5700,6 +6124,10 @@ def getAITimeout(engine, mona_config, args=None):
 
 
 def getAIMaxTokens(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai max tokens.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	max_tokens_name = "%s.max_tokens" % engine
 	max_tokens = 0
@@ -5743,6 +6171,10 @@ def getAIMaxTokens(engine, mona_config):
 
 
 def getAIContextWindow(engine, mona_config):
+	"""Resolve or return the configured AI value for get ai context window.
+	Args: engine, mona_config.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	context_window_name = "%s.context_window" % engine
 	context_window = 0
@@ -5786,6 +6218,10 @@ def getAIContextWindow(engine, mona_config):
 
 
 def deriveOpenAIAgentsMaxTokensFromPrompt(prompt_text):
+	"""Derive an AI runtime setting for derive open ai agents max tokens from prompt.
+	Args: prompt_text.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if isinstance(prompt_text, text_type):
 		prompt_bytes = len(prompt_text.encode("utf-8"))
@@ -5806,6 +6242,10 @@ def deriveOpenAIAgentsMaxTokensFromPrompt(prompt_text):
 
 
 def getAITestModel(engine):
+	"""Resolve or return the configured AI value for get ai test model.
+	Args: engine.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if engine == "openai" or engine == "openaiagents":
 		return "gpt-5-nano"
@@ -5814,7 +6254,15 @@ def getAITestModel(engine):
 	return ""
 
 
+# =============================================================================
+# AI: Provider Error Handling
+# =============================================================================
+
 def _extractProviderErrorPayload(err):
+	"""Extract AI-related data for extract provider error payload.
+	Args: err.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	payload = {}
 	for attr in ["request_id", "status_code", "code", "param", "type"]:
@@ -5839,6 +6287,10 @@ def _extractProviderErrorPayload(err):
 
 
 def _getNestedErrorDict(err):
+	"""Resolve or return the configured AI value for get nested error dict.
+	Args: err.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	payload = _extractProviderErrorPayload(err)
 	body = payload.get("body", None)
@@ -5850,6 +6302,10 @@ def _getNestedErrorDict(err):
 
 
 def _getProviderErrorMessage(err):
+	"""Resolve or return the configured AI value for get provider error message.
+	Args: err.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	nested = _getNestedErrorDict(err)
 	for key in ["message", "error", "detail"]:
@@ -5863,6 +6319,10 @@ def _getProviderErrorMessage(err):
 
 
 def _describeProviderException(err):
+	"""Support Mona AI workflow logic for describe provider exception.
+	Args: err.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	err_cls = getattr(err.__class__, "__name__", type(err).__name__)
 	message = _getProviderErrorMessage(err)
@@ -5872,6 +6332,10 @@ def _describeProviderException(err):
 
 
 def _readHTTPResponseText(response_obj):
+	"""Support Mona AI workflow logic for read httpresponse text.
+	Args: response_obj.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if response_obj is None:
 		return ""
@@ -5889,6 +6353,10 @@ def _readHTTPResponseText(response_obj):
 
 
 def _logProviderErrorDetails(prefix, payload):
+	"""Log AI provider status or error details for log provider error details.
+	Args: prefix, payload.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if "request_id" in payload:
 		dbg.log("    %s request id : %s" % (prefix, payload["request_id"]), highlight=1)
@@ -5901,6 +6369,10 @@ def _logProviderErrorDetails(prefix, payload):
 
 
 def _logOpenAIError(err):
+	"""Log AI provider status or error details for log open ai error.
+	Args: err.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	payload = _extractProviderErrorPayload(err)
 	nested = _getNestedErrorDict(err)
@@ -5947,6 +6419,10 @@ def _logOpenAIError(err):
 
 
 def _logAnthropicError(err):
+	"""Log AI provider status or error details for log anthropic error.
+	Args: err.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	payload = _extractProviderErrorPayload(err)
 	message = _getProviderErrorMessage(err)
@@ -5985,6 +6461,10 @@ def _logAnthropicError(err):
 
 
 def _logOllamaError(err):
+	"""Log AI provider status or error details for log ollama error.
+	Args: err.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	payload = _extractProviderErrorPayload(err)
 	message = _getProviderErrorMessage(err)
@@ -6036,6 +6516,10 @@ def _logOllamaError(err):
 
 
 def logAIProviderError(engine, err):
+	"""Log AI provider status or error details for log ai provider error.
+	Args: engine, err.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: formatting provider error for engine '%s'" % engine)
 	if engine == "openai" or engine == "openai-generic":
@@ -6065,6 +6549,10 @@ def logAIProviderError(engine, err):
 
 
 def _isTimeoutError(engine, err):
+	"""Evaluate an AI workflow condition for is timeout error.
+	Args: engine, err.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if engine in ["openai", "openai-generic"] and err.__class__.__name__ == "APITimeoutError":
 		return True
@@ -6103,6 +6591,10 @@ def _isTimeoutError(engine, err):
 
 
 def _shouldFallbackFromSDK(engine, err):
+	"""Evaluate an AI workflow condition for should fallback from sdk.
+	Args: engine, err.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	err_cls = err.__class__.__name__.strip()
 	status_code = getattr(err, "status_code", None)
@@ -6146,6 +6638,10 @@ def _shouldFallbackFromSDK(engine, err):
 
 
 def _isContextLimitError(err):
+	"""Evaluate an AI workflow condition for is context limit error.
+	Args: err.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	status_code = getattr(err, "status_code", None)
 	if not isinstance(status_code, int) or status_code not in [400, 413, 422]:
@@ -6170,6 +6666,10 @@ def _isContextLimitError(err):
 
 
 def _isOpenAIGenericFileUploadUnsupported(err):
+	"""Evaluate an AI workflow condition for is open ai generic file upload unsupported.
+	Args: err.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	status_code = getattr(err, "status_code", None)
 	if isinstance(status_code, int) and status_code in [404, 405, 501]:
@@ -6185,7 +6685,15 @@ def _isOpenAIGenericFileUploadUnsupported(err):
 	return False
 
 
+# =============================================================================
+# AI: Prompt Text Utilities
+# =============================================================================
+
 def _splitTextIntoLineChunks(text_value, max_chars=16000):
+	"""Split AI input data for split text into line chunks.
+	Args: text_value, max_chars.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	text_value = ensure_text(text_value)
 	if len(text_value) <= max_chars:
@@ -6215,6 +6723,10 @@ def _splitTextIntoLineChunks(text_value, max_chars=16000):
 
 
 def _trimAITextForPrompt(text_value, max_chars, omitted_label="content"):
+	"""Trim AI input text for trim ai text for prompt.
+	Args: text_value, max_chars, omitted_label.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	text_value = ensure_text(text_value)
 	try:
@@ -6237,7 +6749,49 @@ def _trimAITextForPrompt(text_value, max_chars, omitted_label="content"):
 	return text_value[:head_chars].rstrip() + notice + text_value[-tail_chars:].lstrip()
 
 
+def _cleanStagedChunkSummary(text_value):
+	"""Clean AI-generated intermediate text for clean staged chunk summary.
+	Args: text_value.
+	Returns: the requested value or structured result.
+	"""
+	mndbg.dbgp(get_current_function_name())
+	cleaned_lines = []
+	for line in ensure_text(text_value).splitlines():
+		line_text = line.strip()
+		line_l = line_text.lower()
+		if line_l == "":
+			if cleaned_lines and cleaned_lines[-1] != "":
+				cleaned_lines.append("")
+			continue
+		echo_markers = [
+			"you are analyzing one chunk",
+			"extract only concrete",
+			"do not answer the final",
+			"do not summarize",
+			"the user's question",
+			"mona's instructions",
+			"hard limit:",
+			"chunk summaries below",
+			"the original request asks",
+			"the question asks",
+			"the prompt asks",
+			"this request asks",
+			"original evidence request",
+			"latest user follow-up",
+		]
+		if any(marker in line_l for marker in echo_markers):
+			continue
+		if re.match(r"^chunk\s+\d+\s+of\s+\d+\s+(begin|end)", line_l):
+			continue
+		cleaned_lines.append(line.rstrip())
+	return "\n".join(cleaned_lines).strip()
+
+
 def _normalizeUrlWithSuffix(base_url, suffix):
+	"""Normalize AI workflow input for normalize url with suffix.
+	Args: base_url, suffix.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	base_url = ensure_text(base_url).strip().rstrip("/")
 	suffix = ensure_text(suffix).strip()
@@ -6255,7 +6809,15 @@ def _normalizeUrlWithSuffix(base_url, suffix):
 	return base_url + "/api" + suffix
 
 
+# =============================================================================
+# AI: OpenAI-Compatible Endpoint Discovery
+# =============================================================================
+
 def _getOpenAICompatibleEndpointCache(base_url):
+	"""Resolve or return the configured AI value for get open ai compatible endpoint cache.
+	Args: base_url.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	cache_key = ensure_text(base_url).strip().rstrip("/").lower()
 	if cache_key == "":
@@ -6264,6 +6826,10 @@ def _getOpenAICompatibleEndpointCache(base_url):
 
 
 def _updateOpenAICompatibleEndpointCache(base_url, request_url="", models_url="", request_mode=""):
+	"""Support Mona AI workflow logic for update open ai compatible endpoint cache.
+	Args: base_url, request_url, models_url, request_mode.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	cache_key = ensure_text(base_url).strip().rstrip("/").lower()
 	if cache_key == "":
@@ -6279,6 +6845,10 @@ def _updateOpenAICompatibleEndpointCache(base_url, request_url="", models_url=""
 
 
 def _deriveOpenAICompatibleModelsUrlFromRequestUrl(request_url):
+	"""Derive an AI runtime setting for derive open ai compatible models url from request url.
+	Args: request_url.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	request_url = ensure_text(request_url).strip().rstrip("/")
 	request_url_l = request_url.lower()
@@ -6298,6 +6868,10 @@ def _deriveOpenAICompatibleModelsUrlFromRequestUrl(request_url):
 
 
 def _deriveOpenAICompatibleFilesUrlFromRequestUrl(request_url):
+	"""Derive an AI runtime setting for derive open ai compatible files url from request url.
+	Args: request_url.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	request_url = ensure_text(request_url).strip().rstrip("/")
 	request_url_l = request_url.lower()
@@ -6317,6 +6891,10 @@ def _deriveOpenAICompatibleFilesUrlFromRequestUrl(request_url):
 
 
 def _buildOpenAICompatibleEndpointCandidates(base_url, purpose="request"):
+	"""Build the AI data structure or prompt text for build open ai compatible endpoint candidates.
+	Args: base_url, purpose.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	purpose = ensure_text(purpose).strip().lower()
 	normalized_url = ensure_text(base_url).strip().rstrip("/")
@@ -6326,6 +6904,10 @@ def _buildOpenAICompatibleEndpointCandidates(base_url, purpose="request"):
 	candidates = []
 
 	def _append(url_value):
+		"""Append AI workflow data for append.
+		Args: url_value.
+		Returns: result data when needed, otherwise None/empty value.
+		"""
 		url_value = ensure_text(url_value).strip().rstrip("/")
 		if url_value == "" or url_value in candidates:
 			return
@@ -6386,6 +6968,10 @@ def _buildOpenAICompatibleEndpointCandidates(base_url, purpose="request"):
 
 
 def _getOpenAICompatibleAuthHeaders(api_key=""):
+	"""Resolve or return the configured AI value for get open ai compatible auth headers.
+	Args: api_key.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	headers = {
 		"user-agent": "mona-tellme/3.0"
@@ -6397,6 +6983,10 @@ def _getOpenAICompatibleAuthHeaders(api_key=""):
 
 
 def _extractJsonPathValue(value, path_text):
+	"""Extract AI-related data for extract json path value.
+	Args: value, path_text.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	current_value = value
 	path_text = ensure_text(path_text).strip()
@@ -6424,7 +7014,15 @@ def _extractJsonPathValue(value, path_text):
 	return current_value
 
 
+# =============================================================================
+# AI: Provider Response Formatting And File References
+# =============================================================================
+
 def _coerceAITextValue(value):
+	"""Support Mona AI workflow logic for coerce ai text value.
+	Args: value.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if isinstance(value, text_type):
 		return value.strip()
@@ -6434,6 +7032,10 @@ def _coerceAITextValue(value):
 
 
 def _captureAIRawResponse(value):
+	"""Support Mona AI workflow logic for capture ai raw response.
+	Args: value.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if isinstance(value, (dict, list)):
 		return value
@@ -6458,6 +7060,10 @@ def _captureAIRawResponse(value):
 
 
 def _previewAIResponseBody(value, max_len=800):
+	"""Support Mona AI workflow logic for preview ai response body.
+	Args: value, max_len.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		if isinstance(value, (dict, list)):
@@ -6476,6 +7082,10 @@ def _previewAIResponseBody(value, max_len=800):
 
 
 def _collectOpenAIOutputTexts(response_data):
+	"""Collect debugger evidence for collect open ai output texts.
+	Args: response_data.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	parts = []
 	if not isinstance(response_data, dict):
@@ -6493,6 +7103,10 @@ def _collectOpenAIOutputTexts(response_data):
 
 
 def _describeAIResponseShape(response_data):
+	"""Support Mona AI workflow logic for describe ai response shape.
+	Args: response_data.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(response_data, dict):
 		return ""
@@ -6528,6 +7142,10 @@ def _describeAIResponseShape(response_data):
 
 
 def _summarizeUnexpectedAIResponse(raw_payload):
+	"""Support Mona AI workflow logic for summarize unexpected ai response.
+	Args: raw_payload.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(raw_payload, dict):
 		return ""
@@ -6550,6 +7168,10 @@ def _summarizeUnexpectedAIResponse(raw_payload):
 
 
 def formatAIResponseLines(answer):
+	"""Format AI-related output for format ai response lines.
+	Args: answer.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	for raw_line in answer.splitlines():
@@ -6558,6 +7180,10 @@ def formatAIResponseLines(answer):
 
 
 def formatAIUploadedFileLines(uploaded_files=None):
+	"""Format AI-related output for format ai uploaded file lines.
+	Args: uploaded_files.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	if not isinstance(uploaded_files, list) or len(uploaded_files) == 0:
@@ -6582,6 +7208,10 @@ def formatAIUploadedFileLines(uploaded_files=None):
 
 
 def formatAIReferencedFileIdLines(file_ids=None):
+	"""Format AI-related output for format ai referenced file id lines.
+	Args: file_ids.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	if not isinstance(file_ids, list) or len(file_ids) == 0:
@@ -6606,6 +7236,10 @@ def formatAIReferencedFileIdLines(file_ids=None):
 
 
 def _buildFileReferenceUsageInstruction(referenced_file_ids=None, uploaded_files=None):
+	"""Build the AI data structure or prompt text for build file reference usage instruction.
+	Args: referenced_file_ids, uploaded_files.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	referenced_ids = []
 	seen_referenced_ids = set()
@@ -6647,6 +7281,10 @@ def _buildFileReferenceUsageInstruction(referenced_file_ids=None, uploaded_files
 
 
 def _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=None, uploaded_files=None):
+	"""Append AI workflow data for append file reference usage instruction.
+	Args: prompt, referenced_file_ids, uploaded_files.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	prompt_text = ensure_text(prompt).strip()
 	instruction_text = _buildFileReferenceUsageInstruction(
@@ -6661,6 +7299,10 @@ def _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=None, uploa
 
 
 def _mergeReferencedFileIds(primary_ids=None, extra_ids=None):
+	"""Merge AI provider reference data for merge referenced file ids.
+	Args: primary_ids, extra_ids.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	merged_ids = []
 	seen_ids = set()
@@ -6674,7 +7316,15 @@ def _mergeReferencedFileIds(primary_ids=None, extra_ids=None):
 	return merged_ids
 
 
+# =============================================================================
+# AI: Anthropic File Reference Helpers
+# =============================================================================
+
 def _mergeAnthropicReferencedFiles(primary_files=None, extra_ids=None):
+	"""Merge AI provider reference data for merge anthropic referenced files.
+	Args: primary_files, extra_ids.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	merged_files = []
 	seen_ids = set()
@@ -6697,6 +7347,10 @@ def _mergeAnthropicReferencedFiles(primary_files=None, extra_ids=None):
 
 
 def _renderAIRawPayloadText(raw_payload):
+	"""Render debugger evidence text for render ai raw payload text.
+	Args: raw_payload.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if isinstance(raw_payload, dict) and "raw_response" in raw_payload and len(raw_payload.keys()) == 1:
 		raw_payload = raw_payload.get("raw_response")
@@ -6711,6 +7365,10 @@ def _renderAIRawPayloadText(raw_payload):
 
 
 def _renderRegistersText():
+	"""Render debugger evidence text for render registers text.
+	Args: none.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	try:
@@ -6727,6 +7385,10 @@ def _renderRegistersText():
 
 
 def _renderStackText(max_bytes=0x1000):
+	"""Render debugger evidence text for render stack text.
+	Args: max_bytes.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	try:
@@ -6762,6 +7424,10 @@ def _renderStackText(max_bytes=0x1000):
 
 
 def _renderLayoutCategoriesText(categories, include_chunks=True):
+	"""Render debugger evidence text for render layout categories text.
+	Args: categories, include_chunks.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	try:
@@ -6781,6 +7447,10 @@ def _renderLayoutCategoriesText(categories, include_chunks=True):
 
 
 def _renderModulesText(focus_addresses=None, max_modules=25):
+	"""Render debugger evidence text for render modules text.
+	Args: focus_addresses, max_modules.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = []
 	try:
@@ -6805,6 +7475,10 @@ def _renderModulesText(focus_addresses=None, max_modules=25):
 
 
 def _getNtGlobalFlagSummary():
+	"""Resolve or return the configured AI value for get nt global flag summary.
+	Args: none.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	try:
@@ -6833,6 +7507,10 @@ def _getNtGlobalFlagSummary():
 
 
 def _getSehChainSummary():
+	"""Resolve or return the configured AI value for get seh chain summary.
+	Args: none.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	if arch != 32:
@@ -6902,6 +7580,10 @@ def _getSehChainSummary():
 
 
 def _getFindMspSummary(args=None):
+	"""Resolve or return the configured AI value for get find msp summary.
+	Args: args.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	osilent = None
@@ -7027,7 +7709,11 @@ def _getFindMspSummary(args=None):
 	return info
 
 
-def _getFindSehSummaryFromFindmsp(findmsp_summary, args=None):
+def _getSehSummaryFromFindmsp(findmsp_summary, args=None):
+	"""Build mona seh candidate evidence after findmsp confirms an SEH overwrite.
+	Args: findmsp_summary, args.
+	Returns: structured mona seh search criteria, overwrite records, and candidate handlers.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	seh_entries = []
@@ -7101,6 +7787,10 @@ def _getFindSehSummaryFromFindmsp(findmsp_summary, args=None):
 
 
 def _getJsonSizeBytes(value):
+	"""Resolve or return the configured AI value for get json size bytes.
+	Args: value.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
@@ -7112,6 +7802,10 @@ def _getJsonSizeBytes(value):
 
 
 def _appendOmittedSection(omitted_sections, name, original_value, reason, retrieval_hint=""):
+	"""Append AI workflow data for append omitted section.
+	Args: omitted_sections, name, original_value, reason, retrieval_hint.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	entry = OrderedDict()
 	entry["name"] = name
@@ -7123,6 +7817,10 @@ def _appendOmittedSection(omitted_sections, name, original_value, reason, retrie
 
 
 def _extractWindbgAnalyzeSummary(output):
+	"""Extract AI-related data for extract windbg analyze summary.
+	Args: output.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	if output == "":
@@ -7181,6 +7879,10 @@ def _extractWindbgAnalyzeSummary(output):
 
 
 def _simplifyWindbgAnalyze(analyze_info):
+	"""Support Mona AI workflow logic for simplify windbg analyze.
+	Args: analyze_info.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(analyze_info, dict):
 		return analyze_info
@@ -7199,6 +7901,10 @@ def _simplifyWindbgAnalyze(analyze_info):
 
 
 def _summarizeHeapCommandOutput(heap_info):
+	"""Support Mona AI workflow logic for summarize heap command output.
+	Args: heap_info.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summary = OrderedDict()
 	if not isinstance(heap_info, dict):
@@ -7242,6 +7948,10 @@ def _summarizeHeapCommandOutput(heap_info):
 
 
 def _serializeReturnPointerEvidence(return_pointer):
+	"""Support Mona AI workflow logic for serialize return pointer evidence.
+	Args: return_pointer.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(return_pointer, dict):
 		return return_pointer
@@ -7262,6 +7972,10 @@ def _serializeReturnPointerEvidence(return_pointer):
 
 
 def _compactHeapdynamicsContexts(heapdynamics):
+	"""Support Mona AI workflow logic for compact heapdynamics contexts.
+	Args: heapdynamics.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mini_contexts = []
 	evidence = OrderedDict([
@@ -7368,7 +8082,6 @@ _TEMPLATE_CRASH_PLACEHOLDERS = set([
 	"call_stack",
 	"evidence",
 	"findmsp",
-	"findseh",
 	"heap_analysis_target",
 	"heap_details",
 	"heapdynamics",
@@ -7384,6 +8097,7 @@ _TEMPLATE_CRASH_PLACEHOLDERS = set([
 	"pc_memory",
 	"pc_module",
 	"pc_page",
+	"seh",
 	"seh_chain",
 	"size_budget",
 	"stack_memory",
@@ -7426,7 +8140,15 @@ _TEMPLATE_ROP_PLACEHOLDERS = set([
 ])
 
 
+# =============================================================================
+# AI: Context Collection Planning
+# =============================================================================
+
 def _extractTemplatePlaceholderNames(text_value):
+	"""Extract AI-related data for extract template placeholder names.
+	Args: text_value.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	placeholder_names = set()
 	for placeholder_name in re.findall(r"\[([A-Za-z0-9_]+)\]", ensure_text(text_value or "")):
@@ -7435,6 +8157,10 @@ def _extractTemplatePlaceholderNames(text_value):
 
 
 def _loadTemplatePlaceholderNames(template_path):
+	"""Support Mona AI workflow logic for load template placeholder names.
+	Args: template_path.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		with open(template_path, "rb") as fh:
@@ -7448,6 +8174,10 @@ def _loadTemplatePlaceholderNames(template_path):
 
 
 def _buildAIContextCollectionPlan(question_type="", requested_placeholders=None):
+	"""Build the AI data structure or prompt text for build ai context collection plan.
+	Args: question_type, requested_placeholders.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	placeholder_names = set([ensure_text(name).strip().lower() for name in (requested_placeholders or set()) if ensure_text(name).strip() != ""])
 	plan = OrderedDict([
@@ -7515,6 +8245,10 @@ def _buildAIContextCollectionPlan(question_type="", requested_placeholders=None)
 
 
 def _serializeModuleSummaryForTellme(mod):
+	"""Support Mona AI workflow logic for serialize module summary for tellme.
+	Args: mod.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if mod is None:
 		return OrderedDict()
@@ -7532,11 +8266,19 @@ def _serializeModuleSummaryForTellme(mod):
 	return info
 
 def _collectRelevantModuleAddresses(context):
+	"""Collect debugger evidence for collect relevant module addresses.
+	Args: context.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	addresses = []
 	seen = set()
 
 	def _add_address(value):
+		"""Support Mona AI workflow logic for add address.
+		Args: value.
+		Returns: function-specific result used by the AI workflow.
+		"""
 		if not isinstance(value, int) or value <= 0 or value in seen:
 			return
 		seen.add(value)
@@ -7565,6 +8307,10 @@ def _collectRelevantModuleAddresses(context):
 
 
 def _buildCompactModulesSummary(context):
+	"""Build the AI data structure or prompt text for build compact modules summary.
+	Args: context.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if mnproc is None:
 		return "Unable to resolve current process context"
@@ -7580,6 +8326,10 @@ def _buildCompactModulesSummary(context):
 	relevant_seen = set()
 
 	def _add_relevant_module(mod):
+		"""Support Mona AI workflow logic for add relevant module.
+		Args: mod.
+		Returns: function-specific result used by the AI workflow.
+		"""
 		if mod is None:
 			return
 		module_key = ensure_text(mod.moduleKey).lower()
@@ -7619,6 +8369,10 @@ def _buildCompactModulesSummary(context):
 
 
 def _optimizeQ1RequestVariables(context, maxsize_kb=0):
+	"""Support Mona AI workflow logic for optimize q1 request variables.
+	Args: context, maxsize_kb.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	variables = _buildRequestVariables(context)
 	omitted_sections = []
@@ -7692,6 +8446,10 @@ def _optimizeQ1RequestVariables(context, maxsize_kb=0):
 
 
 def _safeTextValue(value):
+	"""Support Mona AI workflow logic for safe text value.
+	Args: value.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if value is None:
 		return ""
@@ -7707,6 +8465,10 @@ def _safeTextValue(value):
 
 
 def _getUniqueControlFlowDisasmRef(base_ref, control_flow_disasm, control_flow_disasm_map):
+	"""Resolve or return the configured AI value for get unique control flow disasm ref.
+	Args: base_ref, control_flow_disasm, control_flow_disasm_map.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	ref_value = _safeTextValue(base_ref).strip()
 	if ref_value == "":
@@ -7732,6 +8494,10 @@ def _getUniqueControlFlowDisasmRef(base_ref, control_flow_disasm, control_flow_d
 
 
 def _registerQ3ControlFlowDisasm(target_entry, control_flow_disasm, seen_control_flow_disasm, control_flow_disasm_map):
+	"""Support Mona AI workflow logic for register q3 control flow disasm.
+	Args: target_entry, control_flow_disasm, seen_control_flow_disasm, control_flow_disasm_map.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	control_flow_disasm = _safeTextValue(control_flow_disasm).strip()
 	if control_flow_disasm == "":
@@ -7766,6 +8532,10 @@ def _registerQ3ControlFlowDisasm(target_entry, control_flow_disasm, seen_control
 
 
 def _getUniqueControlFlowTargetRef(base_ref, target_entry, control_flow_target_map):
+	"""Resolve or return the configured AI value for get unique control flow target ref.
+	Args: base_ref, target_entry, control_flow_target_map.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	ref_value = _safeTextValue(base_ref).strip()
 	if ref_value == "":
@@ -7792,6 +8562,10 @@ def _getUniqueControlFlowTargetRef(base_ref, target_entry, control_flow_target_m
 
 
 def _registerQ3TargetEntry(target_entry, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map):
+	"""Support Mona AI workflow logic for register q3 target entry.
+	Args: target_entry, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(target_entry, dict):
 		return ""
@@ -7843,6 +8617,10 @@ def _registerQ3TargetEntry(target_entry, seen_control_flow_disasm, control_flow_
 
 
 def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map):
+	"""Support Mona AI workflow logic for compact q3 target entries.
+	Args: target_entries, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	target_refs = []
 	if not isinstance(target_entries, list):
@@ -7862,6 +8640,10 @@ def _compactQ3TargetEntries(target_entries, seen_control_flow_disasm, control_fl
 
 
 def _compactQ3TargetContainer(container, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map):
+	"""Support Mona AI workflow logic for compact q3 target container.
+	Args: container, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(container, dict):
 		return
@@ -7878,6 +8660,10 @@ def _compactQ3TargetContainer(container, seen_control_flow_disasm, control_flow_
 
 
 def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf=False):
+	"""Support Mona AI workflow logic for compact q3 function context.
+	Args: function_context, seen_control_flow_disasm, control_flow_disasm_map, seen_control_flow_targets, control_flow_target_map, preserve_full_uf.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(function_context, dict):
 		return
@@ -7914,6 +8700,10 @@ def _compactQ3FunctionContext(function_context, seen_control_flow_disasm, contro
 
 
 def _resolveQ3TargetEntries(target_entries, control_flow_target_map=None, target_refs=None):
+	"""Resolve AI workflow input for resolve q3 target entries.
+	Args: target_entries, control_flow_target_map, target_refs.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if isinstance(target_entries, list) and len(target_entries) > 0:
 		return target_entries
@@ -7931,6 +8721,10 @@ def _resolveQ3TargetEntries(target_entries, control_flow_target_map=None, target
 
 
 def _summarizeQ3TargetEntries(target_entries, max_entries=12, control_flow_target_map=None, target_refs=None):
+	"""Support Mona AI workflow logic for summarize q3 target entries.
+	Args: target_entries, max_entries, control_flow_target_map, target_refs.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summaries = []
 	target_entries = _resolveQ3TargetEntries(target_entries, control_flow_target_map=control_flow_target_map, target_refs=target_refs)
@@ -7970,6 +8764,10 @@ def _summarizeQ3TargetEntries(target_entries, max_entries=12, control_flow_targe
 
 
 def _summarizeCallerFunctionContext(function_context):
+	"""Support Mona AI workflow logic for summarize caller function context.
+	Args: function_context.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summary = OrderedDict()
 	if not isinstance(function_context, dict):
@@ -7992,6 +8790,10 @@ def _summarizeCallerFunctionContext(function_context):
 
 
 def _summarizeCallerResumeWindow(window, control_flow_target_map=None):
+	"""Support Mona AI workflow logic for summarize caller resume window.
+	Args: window, control_flow_target_map.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summary = OrderedDict()
 	if not isinstance(window, dict):
@@ -8029,6 +8831,10 @@ def _summarizeCallerResumeWindow(window, control_flow_target_map=None):
 
 
 def _buildCompactReturnResumeAnalysisForRequest(variables, control_flow_target_map=None):
+	"""Build the AI data structure or prompt text for build compact return resume analysis for request.
+	Args: variables, control_flow_target_map.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summary = OrderedDict()
 	if not isinstance(variables, dict):
@@ -8058,6 +8864,10 @@ def _buildCompactReturnResumeAnalysisForRequest(variables, control_flow_target_m
 
 
 def _buildCompactCallerChainForRequest(caller_chain, control_flow_target_map=None):
+	"""Build the AI data structure or prompt text for build compact caller chain for request.
+	Args: caller_chain, control_flow_target_map.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	compact_chain = []
 	if not isinstance(caller_chain, list):
@@ -8085,6 +8895,10 @@ def _buildCompactCallerChainForRequest(caller_chain, control_flow_target_map=Non
 
 
 def _optimizeQ3RequestVariables(context, maxsize_kb=0):
+	"""Support Mona AI workflow logic for optimize q3 request variables.
+	Args: context, maxsize_kb.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	variables = _buildRequestVariables(context)
 	seen_control_flow_disasm = {}
@@ -8120,6 +8934,10 @@ def _optimizeQ3RequestVariables(context, maxsize_kb=0):
 
 
 def _pruneEmptyRequestValues(value):
+	"""Support Mona AI workflow logic for prune empty request values.
+	Args: value.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if isinstance(value, dict):
 		pruned = OrderedDict() if isinstance(value, OrderedDict) else {}
@@ -8145,6 +8963,10 @@ def _pruneEmptyRequestValues(value):
 
 
 def _buildRequestVariables(context):
+	"""Build the AI data structure or prompt text for build request variables.
+	Args: context.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	variables = OrderedDict()
 	preferred_keys = [
@@ -8170,7 +8992,7 @@ def _buildRequestVariables(context):
 		"ntglobal_flag",
 		"seh_chain",
 		"findmsp",
-		"findseh",
+		"seh",
 		"call_stack",
 		"windbg_analyze",
 		"windbg_analyze_mini",
@@ -8220,13 +9042,16 @@ def _buildRequestVariables(context):
 
 
 def _buildTemplateRequestVariables(context, requested_placeholders=None, question_type="", maxsize_kb=0):
+	"""Build the AI data structure or prompt text for build template request variables.
+	Args: context, requested_placeholders, question_type, maxsize_kb.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	placeholder_names = set([ensure_text(name).strip().lower() for name in (requested_placeholders or set()) if ensure_text(name).strip() != ""])
 	variables = _buildRequestVariables(context)
 	crash_view_placeholders = set([
 		"evidence",
 		"findmsp",
-		"findseh",
 		"heap_analysis_target",
 		"heap_details",
 		"heapdynamics",
@@ -8236,6 +9061,7 @@ def _buildTemplateRequestVariables(context, requested_placeholders=None, questio
 		"modules_mini",
 		"ntglobal_flag",
 		"omitted_sections",
+		"seh",
 		"seh_chain",
 		"size_budget",
 		"windbg_analyze",
@@ -8258,6 +9084,10 @@ def _buildTemplateRequestVariables(context, requested_placeholders=None, questio
 
 
 def _buildRequestPayload(mode, question_type, variables, template_text="", template_file=""):
+	"""Build the AI data structure or prompt text for build request payload.
+	Args: mode, question_type, variables, template_text, template_file.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	request_payload = OrderedDict()
 	request_payload["mode"] = mode
@@ -8271,10 +9101,18 @@ def _buildRequestPayload(mode, question_type, variables, template_text="", templ
 
 
 def _getProfileInstructions(question_type, options=None):
+	"""Resolve or return the configured AI value for get profile instructions.
+	Args: question_type, options.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if options is None:
 		options = {}
 	def _withMarkdownOutput(profile_text):
+		"""Support Mona AI workflow logic for with markdown output.
+		Args: profile_text.
+		Returns: function-specific result used by the AI workflow.
+		"""
 		mndbg.dbgp(get_current_function_name())
 		profile_text = ensure_text(profile_text)
 		return """Output format:
@@ -8296,7 +9134,7 @@ def _getProfileInstructions(question_type, options=None):
 	if question_type == "1":
 		return _withMarkdownOutput("""You are an expert in Windows memory corruption analysis: assembly, reverse engineering, WinDBG, mona.py, and exploit development.
 Focus on crash triage and immediate exploit-relevant assessment from a single debugger snapshot.
-Use the keys under the 'variables' object as the debugger context. Prioritize registers, program_counter, pc_disasm, pc_page, pc_module, stack_memory, findmsp, findseh, seh_chain, windbg_analyze, instruction_heap_references, heap_details, heapdynamics, evidence.heap_blocks, pc_disasm.after, modules_full, and ntglobal_flag. Ignore low-value variables unless they materially affect the conclusion.
+Use the keys under the 'variables' object as the debugger context. Prioritize registers, program_counter, pc_disasm, pc_page, pc_module, stack_memory, findmsp, seh, seh_chain, windbg_analyze, instruction_heap_references, heap_details, heapdynamics, evidence.heap_blocks, pc_disasm.after, modules_full, and ntglobal_flag. Ignore low-value variables unless they materially affect the conclusion.
 
 INTERNAL REASONING GATE (do not output this section):
 Before answering, silently classify the crash:
@@ -8345,7 +9183,7 @@ If findmsp returned confirmed hits, report:
 - EIP/RIP offset, if confirmed
 - ESP/RSP offset and payload space beyond the saved return address when confirmed
 - EBP/RBP offset, if confirmed
-- SEH overwrite details: next_seh offset, handler offset, trailing length, and what findseh or the raw chain implies for pivot or handler control
+- SEH overwrite details: next_seh offset, handler offset, trailing length, and what mona seh results or the raw chain imply for pivot or handler control
 - stackcontains entries only if they materially affect exploitability
 If findmsp returned no register hits and no stackcontains entries despite distance > 0, state exactly: No cyclic pattern confirmed.
 Do not treat repeated values such as 0x41 bytes as pattern evidence unless findmsp confirms a specific offset.
@@ -8952,6 +9790,10 @@ Keep the answer concise, evidence-based, architecture-aware, and non-operational
 
 
 def _getProfileTemplateVariables(question_type):
+	"""Resolve or return the configured AI value for get profile template variables.
+	Args: question_type.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	common_vars = [
 		"debugger",
@@ -8975,7 +9817,7 @@ def _getProfileTemplateVariables(question_type):
 		"ntglobal_flag",
 		"seh_chain",
 		"findmsp",
-		"findseh",
+		"seh",
 		"call_stack",
 		"windbg_analyze",
 		"windbg_analyze_full",
@@ -9059,6 +9901,10 @@ def _getProfileTemplateVariables(question_type):
 
 
 def _buildProfileTemplateText(question_type):
+	"""Build the AI data structure or prompt text for build profile template text.
+	Args: question_type.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	request_payload = OrderedDict()
 	request_payload["mode"] = "profile"
@@ -9071,6 +9917,10 @@ def _buildProfileTemplateText(question_type):
 
 
 def _buildControlledChunkContext(address):
+	"""Build the AI data structure or prompt text for build controlled chunk context.
+	Args: address.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	info["requested_address"] = PTR_PRINT % address
@@ -9108,6 +9958,10 @@ def _buildControlledChunkContext(address):
 
 
 def _collectControlledChunkReferences(chunk_info, regs):
+	"""Collect debugger evidence for collect controlled chunk references.
+	Args: chunk_info, regs.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("registers_pointing_into_chunk", []),
@@ -9209,6 +10063,10 @@ def _collectControlledChunkReferences(chunk_info, regs):
 
 
 def _splitInstructionMnemonicAndOperands(instruction_text):
+	"""Split AI input data for split instruction mnemonic and operands.
+	Args: instruction_text.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	instruction_text = ensure_text(instruction_text).strip().lower()
 	if instruction_text == "":
@@ -9222,6 +10080,10 @@ def _splitInstructionMnemonicAndOperands(instruction_text):
 
 
 def _isWriteLikeInstruction(instruction_text):
+	"""Evaluate an AI workflow condition for is write like instruction.
+	Args: instruction_text.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mnemonic, operands = _splitInstructionMnemonicAndOperands(instruction_text)
 	if mnemonic == "":
@@ -9242,6 +10104,10 @@ def _isWriteLikeInstruction(instruction_text):
 
 
 def _extractWriteLikeInstructionsFromDisasm(disasm_text, symbol="", limit=16):
+	"""Extract AI-related data for extract write like instructions from disasm.
+	Args: disasm_text, symbol, limit.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	results = []
 	if not isinstance(limit, int) or limit < 1:
@@ -9264,6 +10130,10 @@ def _extractWriteLikeInstructionsFromDisasm(disasm_text, symbol="", limit=16):
 
 
 def _extractControlledRegistersFromChunkReferences(controlled_chunk_references):
+	"""Extract AI-related data for extract controlled registers from chunk references.
+	Args: controlled_chunk_references.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	controlled_regs = OrderedDict()
 	if not isinstance(controlled_chunk_references, dict):
@@ -9297,6 +10167,10 @@ def _extractControlledRegistersFromChunkReferences(controlled_chunk_references):
 
 
 def _extractRegistersFromOperandText(operand_text):
+	"""Extract AI-related data for extract registers from operand text.
+	Args: operand_text.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	registers = []
 	if not operand_text:
@@ -9316,6 +10190,10 @@ def _extractRegistersFromOperandText(operand_text):
 
 
 def _summarizeControlledRegisterState(tainted_regs):
+	"""Support Mona AI workflow logic for summarize controlled register state.
+	Args: tainted_regs.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	summary = []
 	if not isinstance(tainted_regs, dict):
@@ -9337,6 +10215,10 @@ def _summarizeControlledRegisterState(tainted_regs):
 
 
 def _collectControlledObjectCalleesFromFunction(function_context, controlled_chunk_references, source_label=""):
+	"""Collect debugger evidence for collect controlled object callees from function.
+	Args: function_context, controlled_chunk_references, source_label.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	results = []
 	if not isinstance(function_context, dict):
@@ -9541,6 +10423,10 @@ def _collectControlledObjectCalleesFromFunction(function_context, controlled_chu
 
 
 def _collectControlledObjectCallees(current_function, caller_function, caller_chain, controlled_chunk_references):
+	"""Collect debugger evidence for collect controlled object callees.
+	Args: current_function, caller_function, caller_chain, controlled_chunk_references.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	results = []
 	seen = set()
@@ -9573,6 +10459,10 @@ def _collectControlledObjectCallees(current_function, caller_function, caller_ch
 
 
 def _buildReachabilityTargetContext(address):
+	"""Build the AI data structure or prompt text for build reachability target context.
+	Args: address.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	info["address"] = PTR_PRINT % address
@@ -9586,6 +10476,10 @@ def _buildReachabilityTargetContext(address):
 
 
 def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, function_context_cache=None, function_context_active_keys=None, source_context_decisions=None, prompt_for_source_context=False):
+	"""Collect debugger evidence for collect return resume context.
+	Args: call_stack, max_frames, follow_depth, function_context_cache, function_context_active_keys, source_context_decisions, prompt_for_source_context.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict([
 		("return_context", {}),
@@ -9711,6 +10605,10 @@ def _collectReturnResumeContext(call_stack, max_frames=1, follow_depth=1, functi
 
 
 def _collectIndirectTransfersFromTargets(target_entries, destination, path_class="", source_label="", control_flow_target_map=None, target_refs=None):
+	"""Collect debugger evidence for collect indirect transfers from targets.
+	Args: target_entries, destination, path_class, source_label, control_flow_target_map, target_refs.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	target_entries = _resolveQ3TargetEntries(target_entries, control_flow_target_map=control_flow_target_map, target_refs=target_refs)
 	if not isinstance(target_entries, list):
@@ -9752,6 +10650,10 @@ def _collectIndirectTransfersFromTargets(target_entries, destination, path_class
 
 
 def _buildReturnResumeAnalysis(return_resume_context):
+	"""Build the AI data structure or prompt text for build return resume analysis.
+	Args: return_resume_context.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	analysis = OrderedDict()
 	if not isinstance(return_resume_context, dict):
@@ -9793,6 +10695,10 @@ def _buildReturnResumeAnalysis(return_resume_context):
 
 
 def _appendReachableFunctionCandidates(target_entries, destination, source_label, path_class, control_flow_target_map=None, target_refs=None):
+	"""Append AI workflow data for append reachable function candidates.
+	Args: target_entries, destination, source_label, path_class, control_flow_target_map, target_refs.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	target_entries = _resolveQ3TargetEntries(target_entries, control_flow_target_map=control_flow_target_map, target_refs=target_refs)
 	if not isinstance(target_entries, list):
@@ -9832,6 +10738,10 @@ def _appendReachableFunctionCandidates(target_entries, destination, source_label
 
 
 def _collectReachableFunctions(current_function, caller_function, caller_chain=None):
+	"""Collect debugger evidence for collect reachable functions.
+	Args: current_function, caller_function, caller_chain.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	reachable = []
 	seen = set()
@@ -9878,13 +10788,25 @@ def _collectReachableFunctions(current_function, caller_function, caller_chain=N
 
 
 def _getDefaultTemplateFilename(question_type):
+	"""Resolve or return the configured AI value for get default template filename.
+	Args: question_type.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if question_type in ["1", "2", "3", "8"]:
 		return "ai.q%s" % question_type
 	return ""
 
 
+# =============================================================================
+# AI: Prompt Template And Request File Parsing
+# =============================================================================
+
 def _guessTemplateQuestionType(template_path):
+	"""Support Mona AI workflow logic for guess template question type.
+	Args: template_path.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	template_name = os.path.basename(template_path).strip().lower()
 	if template_name == "ai.q1":
@@ -9899,6 +10821,10 @@ def _guessTemplateQuestionType(template_path):
 
 
 def _containsTemplatePlaceholders(text):
+	"""Evaluate an AI workflow condition for contains template placeholders.
+	Args: text.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	try:
 		return re.search(r"\[([A-Za-z0-9_]+)\]", text or "") is not None
@@ -9907,6 +10833,10 @@ def _containsTemplatePlaceholders(text):
 
 
 def _ensureDefaultTemplate(question_type, mona_config):
+	"""Ensure AI workflow data exists for ensure default template.
+	Args: question_type, mona_config.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	template_name = _getDefaultTemplateFilename(question_type)
 	if template_name == "":
@@ -9932,6 +10862,10 @@ def _ensureDefaultTemplate(question_type, mona_config):
 
 
 def _extractPrebuiltPrompt(template_path):
+	"""Extract AI-related data for extract prebuilt prompt.
+	Args: template_path.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: checking whether %s already contains a built request prompt" % template_path)
 	try:
@@ -9960,6 +10894,10 @@ def _extractPrebuiltPrompt(template_path):
 
 
 def _extractPromptBlockFromSavedRequestText(request_text):
+	"""Extract AI-related data for extract prompt block from saved request text.
+	Args: request_text.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	lines = ensure_text(request_text).splitlines()
 	prompt_begin = -1
@@ -9979,6 +10917,10 @@ def _extractPromptBlockFromSavedRequestText(request_text):
 
 
 def _readPromptFromSavedRequest(request_path):
+	"""Support Mona AI workflow logic for read prompt from saved request.
+	Args: request_path.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: reloading saved request from %s" % request_path)
 	try:
@@ -10005,6 +10947,10 @@ def _readPromptFromSavedRequest(request_path):
 
 
 def buildAIPromptFromTemplateFile(template_path, context, question_type="9", maxsize_kb=0):
+	"""Build the AI data structure or prompt text for build ai prompt from template file.
+	Args: template_path, context, question_type, maxsize_kb.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: building prompt from template file %s" % template_path)
 	try:
@@ -10064,6 +11010,10 @@ def buildAIPromptFromTemplateFile(template_path, context, question_type="9", max
 	return template_text.strip()
 
 
+# =============================================================================
+# AI: Request And Response Log Files
+# =============================================================================
+
 def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_id="", template_file="", target_address=0, target_address_source=""):
 	"""Write the shared AI metadata block used by request/response log files."""
 	logfile.write("", thislog)
@@ -10084,6 +11034,10 @@ def _writeAILogMetadata(logfile, thislog, engine, model, question_type, request_
 
 
 def writeAIRequestLog(engine, model, question_type, prompt, request_id="", template_file="", target_address=0, target_address_source="", referenced_file_ids=None):
+	"""Write AI request or response data for write ai request log.
+	Args: engine, model, question_type, prompt, request_id, template_file, target_address, target_address_source, referenced_file_ids.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	logfile = MnLog("tellme_request.md")
 	thislog = logfile.reset(showheader=False, skipModuleTable=True)
@@ -10110,6 +11064,10 @@ def writeAIRequestLog(engine, model, question_type, prompt, request_id="", templ
 
 
 def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lines, template_file="", target_address=0, target_address_source="", uploaded_files=None):
+	"""Write AI request or response data for write ai response log.
+	Args: engine, model, question_type, request_id, ai_response_lines, template_file, target_address, target_address_source, uploaded_files.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: writing AI response to tellme_response.md")
 	logfile = MnLog("tellme_response.md")
@@ -10135,6 +11093,10 @@ def writeAIResponseLog(engine, model, question_type, request_id, ai_response_lin
 
 
 def writeAIRawResponseLog(engine, model, question_type, request_id, raw_payload, template_file="", target_address=0, target_address_source=""):
+	"""Write AI request or response data for write ai raw response log.
+	Args: engine, model, question_type, request_id, raw_payload, template_file, target_address, target_address_source.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: writing raw AI response to tellme_response_raw.md")
 	logfile = MnLog("tellme_response_raw.md")
@@ -10158,6 +11120,10 @@ def writeAIRawResponseLog(engine, model, question_type, request_id, raw_payload,
 
 
 def writeAIOfflineLog(engine, model, question_type, prompt, template_file="", target_address=0, target_address_source=""):
+	"""Write AI request or response data for write ai offline log.
+	Args: engine, model, question_type, prompt, template_file, target_address, target_address_source.
+	Returns: result data when needed, otherwise None/empty value.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: writing offline prompt to tellme_request.md")
 	return writeAIRequestLog(
@@ -10173,6 +11139,10 @@ def writeAIOfflineLog(engine, model, question_type, prompt, template_file="", ta
 
 class AIProviderError(Exception):
 	def __init__(self, message, request_id="", status_code=None, code="", param="", body=None, error_type=""):
+		"""Support Mona AI workflow logic for init.
+		Args: message, request_id, status_code, code, param, body, error_type.
+		Returns: function-specific result used by the AI workflow.
+		"""
 		mndbg.dbgp(get_current_function_name())
 		Exception.__init__(self, message)
 		self.request_id = request_id
@@ -10183,7 +11153,15 @@ class AIProviderError(Exception):
 		self.type = error_type
 
 
+# =============================================================================
+# AI: Provider Model Discovery
+# =============================================================================
+
 def _extractModelIdsFromListPayload(payload):
+	"""Extract AI-related data for extract model ids from list payload.
+	Args: payload.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	model_ids = []
 	data_items = []
@@ -10207,6 +11185,10 @@ def _extractModelIdsFromListPayload(payload):
 
 
 def _extractModelIdsFromOllamaTagsPayload(payload):
+	"""Extract AI-related data for extract model ids from ollama tags payload.
+	Args: payload.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	model_ids = []
 	model_items = []
@@ -10223,6 +11205,10 @@ def _extractModelIdsFromOllamaTagsPayload(payload):
 
 
 def _fetchOpenAIModelsDirect(api_key, timeout_seconds=20.0):
+	"""Retrieve available AI model or engine data for fetch open ai models direct.
+	Args: api_key, timeout_seconds.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	request = urllib_Request(
 		"https://api.openai.com/v1/models",
@@ -10303,6 +11289,10 @@ def _fetchOpenAIModelsDirect(api_key, timeout_seconds=20.0):
 
 
 def _fetchAnthropicModelsDirect(api_key, timeout_seconds=20.0):
+	"""Retrieve available AI model or engine data for fetch anthropic models direct.
+	Args: api_key, timeout_seconds.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	request = urllib_Request(
 		"https://api.anthropic.com/v1/models?limit=1000",
@@ -10381,6 +11371,10 @@ def _fetchAnthropicModelsDirect(api_key, timeout_seconds=20.0):
 
 
 def _fetchOllamaModelsDirect(base_url, timeout_seconds=20.0):
+	"""Retrieve available AI model or engine data for fetch ollama models direct.
+	Args: base_url, timeout_seconds.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	normalized_url = ensure_text(base_url).strip()
 	normalized_url_l = normalized_url.lower()
@@ -10456,6 +11450,10 @@ def _fetchOllamaModelsDirect(base_url, timeout_seconds=20.0):
 
 
 def _parseOpenAICompatibleError(http_error, provider_label="OpenAI-compatible"):
+	"""Parse AI-related data for parse open ai compatible error.
+	Args: http_error, provider_label.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	status_code = getattr(http_error, "code", None)
 	raw_body = ""
@@ -10497,6 +11495,10 @@ def _parseOpenAICompatibleError(http_error, provider_label="OpenAI-compatible"):
 
 
 def _buildOpenAICompatibleError(status_code, raw_body="", headers=None, provider_label="OpenAI-compatible"):
+	"""Build the AI data structure or prompt text for build open ai compatible error.
+	Args: status_code, raw_body, headers, provider_label.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	headers = headers or {}
 	request_id = ensure_text(headers.get("request-id", "") or headers.get("x-request-id", "")).strip()
@@ -10529,6 +11531,10 @@ def _buildOpenAICompatibleError(status_code, raw_body="", headers=None, provider
 
 
 def _decodeChunkedHTTPBody(body_bytes):
+	"""Support Mona AI workflow logic for decode chunked httpbody.
+	Args: body_bytes.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	decoded = []
 	offset = 0
@@ -10557,6 +11563,10 @@ def _decodeChunkedHTTPBody(body_bytes):
 
 
 def _rawHttpRequest(url, method="GET", headers=None, body=None, timeout_seconds=60.0):
+	"""Support Mona AI workflow logic for raw http request.
+	Args: url, method, headers, body, timeout_seconds.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	parsed = urlparse(ensure_text(url).strip())
 	scheme = ensure_text(parsed.scheme).strip().lower()
@@ -10631,19 +11641,21 @@ def _rawHttpRequest(url, method="GET", headers=None, body=None, timeout_seconds=
 				if now >= next_progress_time:
 					elapsed_seconds = now - start_time
 					if deadline is None:
-						progress_text = "still waiting for %s response from %s:%d after %.0fs (no timeout)" % (
-							ensure_text(method).upper(),
-							host,
-							port,
-							elapsed_seconds
-						)
-					else:
-						progress_text = "still waiting for %s response from %s:%d after %.0fs (timeout %.0fs)" % (
+						progress_text = "Waiting for %s response from %s:%d after %.0fs (no timeout) - %s" % (
 							ensure_text(method).upper(),
 							host,
 							port,
 							elapsed_seconds,
-							timeout_seconds
+							mndbg.get_current_datetime()
+						)
+					else:
+						progress_text = "Waiting for %s response from %s:%d after %.0fs (timeout %.0fs) - %s" % (
+							ensure_text(method).upper(),
+							host,
+							port,
+							elapsed_seconds,
+							timeout_seconds,
+							mndbg.get_current_datetime()
 						)
 					try:
 						dbg.log("    %s" % progress_text)
@@ -10691,6 +11703,10 @@ def _rawHttpRequest(url, method="GET", headers=None, body=None, timeout_seconds=
 
 
 def _fetchOpenAIGenericModelsDirect(base_url, api_key="", timeout_seconds=20.0):
+	"""Retrieve available AI model or engine data for fetch open ai generic models direct.
+	Args: base_url, api_key, timeout_seconds.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	candidate_urls = _buildOpenAICompatibleEndpointCandidates(base_url, purpose="models")
 	last_error = None
@@ -10740,6 +11756,10 @@ def _fetchOpenAIGenericModelsDirect(base_url, api_key="", timeout_seconds=20.0):
 
 
 def _fetchOpenRouterModelsDirect(api_key, timeout_seconds=20.0):
+	"""Retrieve available AI model or engine data for fetch open router models direct.
+	Args: api_key, timeout_seconds.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	request = urllib_Request(
 		"https://openrouter.ai/api/v1/models",
@@ -10817,6 +11837,10 @@ def _fetchOpenRouterModelsDirect(api_key, timeout_seconds=20.0):
 
 
 def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, refresh=False):
+	"""Retrieve available AI model or engine data for get available ai models.
+	Args: engine, api_key, base_url, timeout_seconds, refresh.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	cache_key = (engine, api_key, base_url)
 	if not refresh and cache_key in _AI_MODEL_LIST_CACHE:
@@ -10837,7 +11861,15 @@ def getAvailableAIModels(engine, api_key="", base_url="", timeout_seconds=20.0, 
 	return list(model_ids)
 
 
+# =============================================================================
+# AI: OpenAI Provider Requests
+# =============================================================================
+
 def callAIOpenAI(openai_client_class, api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None, max_tokens=0):
+	"""Submit an AI provider request for call ai open ai.
+	Args: openai_client_class, api_key, model, prompt, timeout_seconds, options, file_ids, max_tokens.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	client = openai_client_class(api_key=api_key, timeout=timeout_seconds, max_retries=0)
@@ -10905,6 +11937,10 @@ def _buildUploadInstruction(primary_request_name, supporting_names, uploaded_fil
 
 
 def _buildOpenAIInputItems(prompt, file_ids=None):
+	"""Build the AI data structure or prompt text for build open ai input items.
+	Args: prompt, file_ids.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	content_items = []
 	for file_id in file_ids or []:
@@ -10925,7 +11961,15 @@ def _buildOpenAIInputItems(prompt, file_ids=None):
 	}]
 
 
+# =============================================================================
+# AI: Anthropic Provider Request Helpers
+# =============================================================================
+
 def _anthropicFileBlockFromReference(file_id, title="", mime_type=""):
+	"""Support Mona AI workflow logic for anthropic file block from reference.
+	Args: file_id, title, mime_type.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	file_id = ensure_text(file_id).strip()
 	title = ensure_text(title).strip()
@@ -10944,11 +11988,19 @@ def _anthropicFileBlockFromReference(file_id, title="", mime_type=""):
 
 
 def _getAnthropicUploadMimeType(file_path=""):
+	"""Resolve or return the configured AI value for get anthropic upload mime type.
+	Args: file_path.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	return "text/plain"
 
 
 def _buildAnthropicMessageContent(prompt, referenced_files=None):
+	"""Build the AI data structure or prompt text for build anthropic message content.
+	Args: prompt, referenced_files.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	content_items = []
 	for file_info in referenced_files or []:
@@ -10970,6 +12022,10 @@ def _buildAnthropicMessageContent(prompt, referenced_files=None):
 
 
 def _getProviderUploadFilename(file_path):
+	"""Resolve or return the configured AI value for get provider upload filename.
+	Args: file_path.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	basename = os.path.basename(ensure_text(file_path).strip())
 	if basename.lower() == "tellme_request.md":
@@ -10978,6 +12034,10 @@ def _getProviderUploadFilename(file_path):
 
 
 def _encodeMultipartForm(fields, files):
+	"""Support Mona AI workflow logic for encode multipart form.
+	Args: fields, files.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	boundary = "----mona-%s-%d" % (generateAIRequestId(), random.randint(100000, 999999))
 	body_chunks = []
@@ -11006,6 +12066,10 @@ def _encodeMultipartForm(fields, files):
 	body_chunks.append(("--%s--\r\n" % boundary).encode("utf-8"))
 	return b"".join(body_chunks), boundary
 
+
+# =============================================================================
+# AI: OpenAI File Upload Requests
+# =============================================================================
 
 def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None, max_tokens=0):
 	"""Upload local files to OpenAI and submit a Responses API request that references those file IDs."""
@@ -11038,14 +12102,14 @@ def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text,
 		})
 	if ensure_text(instruction_text).strip() == "":
 		return "", "", uploaded_files
-		request_kwargs = {
-			"model": model,
-			"input": _buildOpenAIInputItems(instruction_text, file_ids=[item.get("file_id", "") for item in content_items if item.get("type") == "input_file"])
-		}
-		if max_tokens > 0:
-			request_kwargs["max_output_tokens"] = max_tokens
-		if isinstance(options, dict) and len(options) > 0:
-			request_kwargs["extra_body"] = {"options": options}
+	request_kwargs = {
+		"model": model,
+		"input": _buildOpenAIInputItems(instruction_text, file_ids=[item.get("file_id", "") for item in content_items if item.get("type") == "input_file"])
+	}
+	if max_tokens > 0:
+		request_kwargs["max_output_tokens"] = max_tokens
+	if isinstance(options, dict) and len(options) > 0:
+		request_kwargs["extra_body"] = {"options": options}
 	response = client.responses.create(**request_kwargs)
 	request_id = getattr(response, "_request_id", "")
 	if request_id:
@@ -11068,6 +12132,10 @@ def callAIOpenAIWithFiles(openai_client_class, api_key, model, instruction_text,
 
 
 def _extractOpenAIText(response_data):
+	"""Extract AI-related data for extract open ai text.
+	Args: response_data.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if not isinstance(response_data, dict):
 		return ""
@@ -11078,7 +12146,15 @@ def _extractOpenAIText(response_data):
 	return "\n".join([part for part in parts if part]).strip()
 
 
+# =============================================================================
+# AI: OpenAI HTTP Fallback Requests
+# =============================================================================
+
 def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None, max_tokens=0):
+	"""Submit an AI provider request for call ai open ai direct.
+	Args: api_key, model, prompt, timeout_seconds, options, file_ids, max_tokens.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI HTTPS fallback for model '%s' with timeout %.1fs" % (model, timeout_seconds))
 	request_prompt = _appendFileReferenceUsageInstruction(prompt, referenced_file_ids=file_ids)
@@ -11185,7 +12261,15 @@ def callAIOpenAIDirect(api_key, model, prompt, timeout_seconds=60.0, options=Non
 	)
 
 
+# =============================================================================
+# AI: OpenAI-Compatible Provider Requests
+# =============================================================================
+
 def callAIOpenAIGenericDirect(base_url, api_key, model, prompt, timeout_seconds=60.0, options=None, file_ids=None, response_field="", max_tokens=0):
+	"""Submit an AI provider request for call ai open ai generic direct.
+	Args: base_url, api_key, model, prompt, timeout_seconds, options, file_ids, response_field, max_tokens.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling OpenAI-compatible model '%s' at '%s' with timeout %.1fs" % (
 		model, base_url, timeout_seconds
@@ -11292,7 +12376,15 @@ def callAIOpenAIGenericDirect(base_url, api_key, model, prompt, timeout_seconds=
 	)
 
 
+# =============================================================================
+# AI: OpenAI Direct File Upload Requests
+# =============================================================================
+
 def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
+	"""Support Mona AI workflow logic for openai upload file direct.
+	Args: api_key, file_path, timeout_seconds.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mime_type = _guessMimeType(file_path)
 	upload_name = _getProviderUploadFilename(file_path)
@@ -11347,6 +12439,10 @@ def _openaiUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 
 
 def callAIOpenAIDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None, max_tokens=0):
+	"""Submit an AI provider request for call ai open ai direct with files.
+	Args: api_key, model, instruction_text, file_paths, timeout_seconds, options, max_tokens.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	uploaded_files = []
 	for file_path in file_paths:
@@ -11365,7 +12461,15 @@ def callAIOpenAIDirectWithFiles(api_key, model, instruction_text, file_paths, ti
 	return response_text, request_id, uploaded_files
 
 
+# =============================================================================
+# AI: OpenAI-Compatible File Upload Requests
+# =============================================================================
+
 def _openaiGenericUploadFileDirect(base_url, api_key, file_path, timeout_seconds=60.0):
+	"""Support Mona AI workflow logic for openai generic upload file direct.
+	Args: base_url, api_key, file_path, timeout_seconds.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mime_type = _guessMimeType(file_path)
 	upload_name = _getProviderUploadFilename(file_path)
@@ -11433,6 +12537,10 @@ def _openaiGenericUploadFileDirect(base_url, api_key, file_path, timeout_seconds
 
 
 def callAIOpenAIGenericDirectWithFiles(base_url, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, options=None, response_field="", max_tokens=0):
+	"""Submit an AI provider request for call ai open ai generic direct with files.
+	Args: base_url, api_key, model, instruction_text, file_paths, timeout_seconds, options, response_field, max_tokens.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	uploaded_files = []
 	for file_path in file_paths:
@@ -11453,7 +12561,15 @@ def callAIOpenAIGenericDirectWithFiles(base_url, api_key, model, instruction_tex
 	return response_text, request_id, uploaded_files, request_url, request_mode
 
 
+# =============================================================================
+# AI: Anthropic Provider Requests
+# =============================================================================
+
 def _anthropic_extract_text(message):
+	"""Support Mona AI workflow logic for anthropic extract text.
+	Args: message.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	parts = []
 	content = []
@@ -11477,6 +12593,10 @@ def _anthropic_extract_text(message):
 
 
 def _anthropicGetStopReason(message):
+	"""Support Mona AI workflow logic for anthropic get stop reason.
+	Args: message.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if isinstance(message, dict):
 		return ensure_text(message.get("stop_reason", "")).strip()
@@ -11558,6 +12678,10 @@ def _buildGenericTruncationNote(engine, message=None, max_tokens=0, stop_reason=
 
 
 def _anthropicBuildTruncationNote(message, max_tokens=0):
+	"""Support Mona AI workflow logic for anthropic build truncation note.
+	Args: message, max_tokens.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	stop_reason = _anthropicGetStopReason(message)
 	if stop_reason != "max_tokens":
@@ -11567,6 +12691,10 @@ def _anthropicBuildTruncationNote(message, max_tokens=0):
 
 
 def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, options=None, referenced_files=None):
+	"""Submit an AI provider request for call ai anthropic sdk.
+	Args: anthropic_client_class, api_key, model, prompt, timeout_seconds, max_tokens, options, referenced_files.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic SDK model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
@@ -11618,6 +12746,10 @@ def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_s
 
 
 def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, options=None, referenced_files=None):
+	"""Submit an AI provider request for call ai anthropic.
+	Args: api_key, model, prompt, timeout_seconds, max_tokens, options, referenced_files.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
@@ -11740,6 +12872,10 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, 
 
 
 def _anthropicUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
+	"""Support Mona AI workflow logic for anthropic upload file direct.
+	Args: api_key, file_path, timeout_seconds.
+	Returns: function-specific result used by the AI workflow.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mime_type = _getAnthropicUploadMimeType(file_path)
 	upload_name = _getProviderUploadFilename(file_path)
@@ -11793,6 +12929,10 @@ def _anthropicUploadFileDirect(api_key, file_path, timeout_seconds=60.0):
 
 
 def callAIAnthropicWithFiles(anthropic_client_class, api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=0, options=None):
+	"""Submit an AI provider request for call ai anthropic with files.
+	Args: anthropic_client_class, api_key, model, instruction_text, file_paths, timeout_seconds, max_tokens, options.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	uploaded_files = []
 	for file_path in file_paths:
@@ -11813,6 +12953,10 @@ def callAIAnthropicWithFiles(anthropic_client_class, api_key, model, instruction
 
 
 def callAIAnthropicDirectWithFiles(api_key, model, instruction_text, file_paths, timeout_seconds=60.0, max_tokens=0, options=None):
+	"""Submit an AI provider request for call ai anthropic direct with files.
+	Args: api_key, model, instruction_text, file_paths, timeout_seconds, max_tokens, options.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	uploaded_files = []
 	for file_path in file_paths:
@@ -11831,7 +12975,15 @@ def callAIAnthropicDirectWithFiles(api_key, model, instruction_text, file_paths,
 	return response_text, request_id, uploaded_files
 
 
+# =============================================================================
+# AI: Custom Response Extraction Helpers
+# =============================================================================
+
 def _extractCustomAIText(response_data, response_field=""):
+	"""Extract AI-related data for extract custom ai text.
+	Args: response_data, response_field.
+	Returns: the requested value or structured result.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	if response_field != "":
 		return _coerceAITextValue(_extractJsonPathValue(response_data, response_field))
@@ -11853,11 +13005,19 @@ def _extractCustomAIText(response_data, response_field=""):
 					return content.strip()
 			text_value = first_choice.get("text", "")
 			if isinstance(text_value, text_type) and text_value.strip() != "":
-				return text_value.strip()
+					return text_value.strip()
 	return ""
 
 
+# =============================================================================
+# AI: Ollama Provider Requests
+# =============================================================================
+
 def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="response", options=None, max_tokens=0):
+	"""Submit an AI provider request for call ai ollama.
+	Args: base_url, model, prompt, timeout_seconds, response_field, options, max_tokens.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling Ollama model '%s' at '%s' with timeout %.1fs" % (
 		model, base_url, timeout_seconds
@@ -11990,6 +13150,10 @@ def callAIOllama(base_url, model, prompt, timeout_seconds=60.0, response_field="
 	)
 
 
+# =============================================================================
+# AI: OpenRouter Provider Requests
+# =============================================================================
+
 def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, options=None):
 	"""Send a chat completion request to OpenRouter using their OpenAI-compatible API."""
 	mndbg.dbgp(get_current_function_name())
@@ -12112,7 +13276,15 @@ def callAIOpenRouter(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0,
 	)
 
 
+# =============================================================================
+# AI: CustomAI Provider Requests
+# =============================================================================
+
 def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="", options=None, max_tokens=0):
+	"""Submit an AI provider request for call ai custom.
+	Args: base_url, model, prompt, timeout_seconds, response_field, options, max_tokens.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	mndbg.dbgp("tellme: calling customai model '%s' at '%s' with timeout %.1fs" % (
 		model, base_url, timeout_seconds
@@ -12220,7 +13392,15 @@ def callAICustom(base_url, model, prompt, timeout_seconds=60.0, response_field="
 	)
 
 
+# =============================================================================
+# AI: OpenAI Agents Bridge Client
+# =============================================================================
+
 def checkOpenAIAgentsBridgeHealth(base_url, timeout_seconds=5.0):
+	"""Check check open ai agents bridge health and report whether it is usable.
+	Args: base_url, timeout_seconds.
+	Returns: boolean status or status details.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	health_url = _normalizeLocalBridgeUrl(base_url, "/health")
 	request = urllib_Request(
@@ -12246,6 +13426,10 @@ def checkOpenAIAgentsBridgeHealth(base_url, timeout_seconds=5.0):
 
 
 def submitOpenAIAgentsBridgeRequest(base_url, payload, timeout_seconds=10.0):
+	"""Submit an AI bridge request for submit open ai agents bridge request.
+	Args: base_url, payload, timeout_seconds.
+	Returns: provider response text and related request metadata.
+	"""
 	mndbg.dbgp(get_current_function_name())
 	submit_url = _normalizeLocalBridgeUrl(base_url, "/submit")
 	request_data = json.dumps(payload).encode("utf-8")
@@ -35975,6 +37159,9 @@ def procInfo(args):
 
 
 
+# =============================================================================
+# AI: Tellme Session Workflow Controller
+# =============================================================================
 
 class MnAI(object):
 	"""Coordinate mona tellme engine selection, prompt building, request execution, and logging."""
@@ -36120,6 +37307,24 @@ class MnAI(object):
 			return "corelan"
 		return api_key
 
+	def _getCommandLineModelOverride(self):
+		"""Return the explicit model override from -model, or from -m when that alias is not reserved."""
+		mndbg.dbgp(get_current_function_name())
+		if "model" in self.args:
+			if type(self.args["model"]).__name__.lower() == "bool":
+				return "", "model", True
+			model_value = ensure_text(self.args["model"]).strip()
+			if model_value != "":
+				return model_value, "model", False
+		question_type = ensure_text(self.effective_question_type or self.args.get("q", "")).strip().lower()
+		if question_type != "8" and "m" in self.args:
+			if type(self.args["m"]).__name__.lower() == "bool":
+				return "", "m", True
+			model_value = ensure_text(self.args["m"]).strip()
+			if model_value != "":
+				return model_value, "m", False
+		return "", "", False
+
 	def refreshActiveEngineSettings(self, allow_arg_model_override=True):
 		"""Reload provider configuration for the currently selected engine."""
 		mndbg.dbgp(get_current_function_name())
@@ -36151,10 +37356,10 @@ class MnAI(object):
 		except ValueError as e:
 			self.logError(str(e))
 			return False
-			self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
-			self.context_window, self.context_window_source = getAIContextWindow(self.engine, self.mona_config)
-		if allow_arg_model_override and "model" in self.args and type(self.args["model"]).__name__.lower() != "bool":
-			explicit_model = str(self.args["model"]).strip()
+		self.max_tokens, self.max_tokens_source = getAIMaxTokens(self.engine, self.mona_config)
+		self.context_window, self.context_window_source = getAIContextWindow(self.engine, self.mona_config)
+		explicit_model, _model_arg_name, model_arg_missing = self._getCommandLineModelOverride()
+		if allow_arg_model_override and not model_arg_missing:
 			if explicit_model != "":
 				self.model = explicit_model
 				self.model_source = "arg"
@@ -36274,8 +37479,10 @@ class MnAI(object):
 			self.logInfo("Unable to retrieve available %s models. Falling back to manual model selection." % self.engine)
 			self.logInfoDetail(str(e))
 		if len(models) > 0:
-			if default_model not in models:
+			if default_model == "":
 				default_model = models[0]
+			elif default_model not in models:
+				models.insert(0, default_model)
 			default_index = models.index(default_model) + 1 if default_model in models else 1
 			self.logInfo("Select model for engine '%s':" % self.engine)
 			for index_value, model_id in enumerate(models):
@@ -36283,13 +37490,25 @@ class MnAI(object):
 				if index_value + 1 == default_index:
 					label += " | proposed"
 				self.logInfoDetail("%d. %s" % (index_value + 1, label))
-			selection_text = promptForTextInput("Model number (or 'exit')", str(default_index))
+			default_selection_text = "%d (%s)" % (default_index, default_model)
+			selection_text = promptForTextInput("Model number/name (or 'exit')", default_selection_text)
 			if selection_text is None:
 				return ""
-			selection_text = ensure_text(selection_text).strip().lower()
-			if selection_text in ["exit", "quit", "q"]:
+			selection_text = ensure_text(selection_text).strip()
+			if selection_text.lower() in ["exit", "quit", "q"]:
 				return ""
-			selected_index, index_ok = getIntArg(selection_text)
+			if selection_text == default_selection_text:
+				return default_model
+			if selection_text in models:
+				return selection_text
+			for model_id in models:
+				if selection_text.lower() == ensure_text(model_id).strip().lower():
+					return model_id
+			if selection_text.endswith(")") and " (" in selection_text:
+				selection_index_text = selection_text.split(" (", 1)[0].strip()
+			else:
+				selection_index_text = selection_text
+			selected_index, index_ok = getIntArg(selection_index_text)
 			if not index_ok or selected_index < 1 or selected_index > len(models):
 				self.logError("Invalid model selection '%s'." % selection_text)
 				return self._selectModelForCurrentEngine()
@@ -36314,17 +37533,21 @@ class MnAI(object):
 		options = _applyAIMaxTokensOption(self.engine, options, self.max_tokens)
 		return options
 
-	def selectEngineAndModelInteractive(self):
+	def selectEngineAndModelInteractive(self, skip_engine_menu=False):
 		"""Interactively confirm the engine/model combination after the evidence bundle was built."""
 		mndbg.dbgp(get_current_function_name())
 		while True:
-			selected_engine = self._selectEngineFromMenu()
-			if selected_engine == "":
-				return False
-			self.engine = selected_engine
-			self.engine_source = "interactive"
+			if skip_engine_menu:
+				selected_engine = self.engine
+				self.logInfo("Using AI engine specified with -e: %s" % self.engine)
+			else:
+				selected_engine = self._selectEngineFromMenu()
+				if selected_engine == "":
+					return False
+				self.engine = selected_engine
+				self.engine_source = "interactive"
 			self.offline = ("offline" in self.args) or ("dryrun" in self.args) or (self.engine == "offline")
-			if not self.refreshActiveEngineSettings(allow_arg_model_override=(_normalizeAIEngine(self.args.get("e", "")) == self.engine)):
+			if not self.refreshActiveEngineSettings(allow_arg_model_override=(normalizeAIEngineName(self.args.get("e", "")) == self.engine)):
 				return False
 			if not self.promptForMissingEngineParameters():
 				return False
@@ -36348,6 +37571,8 @@ class MnAI(object):
 				if not self.maybePersistInteractiveEngineSelection():
 					return False
 				return True
+			if skip_engine_menu:
+				return False
 
 	def prepareSubmitFastPath(self):
 		"""Resolve the non-interactive engine/model configuration used by -submit."""
@@ -36376,7 +37601,7 @@ class MnAI(object):
 		return True
 
 	def maybePersistInteractiveEngineSelection(self):
-		"""Offer to save the current interactive engine selection into mona.ini."""
+		"""Offer to save current engine-specific runtime settings into mona.ini."""
 		mndbg.dbgp(get_current_function_name())
 		if self.submit_requested:
 			return True
@@ -36393,14 +37618,9 @@ class MnAI(object):
 				for entry_name, entry_value in config_entries:
 					self.mona_config.set(entry_name, entry_value)
 				self.logInfo("Saved tellme engine settings to mona.ini.")
-		current_default_engine = _normalizeAIEngine(self.mona_config.get(getDefaultAIEngineConfigName()))
-		if current_default_engine != self.engine:
-			if askForConfirmation("[?] Set '%s' as the default AI engine in mona.ini?" % self.engine, default="N"):
-				self.mona_config.set(getDefaultAIEngineConfigName(), self.engine)
-				self.logInfo("Updated mona.ai.engine to '%s'." % self.engine)
 		return True
 
-	def _formatChatHistoryForPrompt(self):
+	def _formatChatHistoryForPrompt(self, max_chars=12000):
 		"""Serialize the in-session follow-up transcript into plain text."""
 		mndbg.dbgp(get_current_function_name())
 		lines = []
@@ -36423,22 +37643,95 @@ class MnAI(object):
 					)
 			else:
 				label = "User"
+			if role == "assistant":
+				text_value = _trimAITextForPrompt(text_value, 5000, "assistant turn")
 			lines.append("%s:\n%s" % (label, text_value))
-		return "\n\n".join(lines).strip()
+		return _trimAITextForPrompt("\n\n".join(lines).strip(), max_chars, "chat transcript")
+
+	def _extractFollowupEvidenceExcerpt(self, user_message, max_chars=14000):
+		"""Return a bounded excerpt from the original evidence that is relevant to a follow-up."""
+		mndbg.dbgp(get_current_function_name())
+		base_prompt = ensure_text(self.base_prompt)
+		user_message_l = ensure_text(user_message).lower()
+		if base_prompt.strip() == "":
+			return ""
+		keywords = set()
+		for token in re.split(r"[^a-zA-Z0-9_!.-]+", user_message_l):
+			token = token.strip().lower()
+			if len(token) >= 4:
+				keywords.add(token)
+		if "findmsp" in user_message_l or "msp" in user_message_l or "cyclic" in user_message_l or "pattern" in user_message_l:
+			keywords.update(["findmsp", "msp", "cyclic", "pattern", "offset", "registers_to", "stackcontains", "seh"])
+		if len(keywords) == 0:
+			return _trimAITextForPrompt(base_prompt, max_chars, "original evidence")
+		lines = base_prompt.splitlines()
+		selected = set()
+		for index_value, line in enumerate(lines):
+			line_l = line.lower()
+			if any(keyword in line_l for keyword in keywords):
+				start_index = max(0, index_value - 4)
+				end_index = min(len(lines), index_value + 9)
+				for selected_index in xrange(start_index, end_index):
+					selected.add(selected_index)
+		if len(selected) == 0:
+			return _trimAITextForPrompt(base_prompt, max_chars, "original evidence")
+		excerpt_lines = []
+		last_index = -2
+		for selected_index in sorted(selected):
+			if selected_index != last_index + 1 and len(excerpt_lines) > 0:
+				excerpt_lines.append("[...]")
+			excerpt_lines.append(lines[selected_index])
+			last_index = selected_index
+		return _trimAITextForPrompt("\n".join(excerpt_lines), max_chars, "relevant original evidence")
 
 	def buildFollowupPrompt(self, user_message):
-		"""Build a follow-up prompt that keeps the original evidence bundle authoritative."""
+		"""Build a bounded follow-up prompt grounded in prior output plus relevant evidence."""
 		mndbg.dbgp(get_current_function_name())
 		user_message = ensure_text(user_message).strip()
 		transcript_text = self._formatChatHistoryForPrompt()
+		evidence_excerpt = self._extractFollowupEvidenceExcerpt(user_message)
 		parts = [
 			"You are continuing a prior mona tellme analysis session.",
-			"Treat the original evidence bundle below as the authoritative source material.",
+			"Answer the latest follow-up directly. Do not restate the task, request, or prompt.",
+			"Use the prior answer, transcript, and relevant original evidence excerpt below.",
 			"If the latest follow-up asks for something not supported by that evidence, say so clearly instead of inventing facts.",
+		]
+		if transcript_text != "":
+			parts.extend([
+				"",
+				"SESSION TRANSCRIPT BEGIN",
+				transcript_text,
+				"SESSION TRANSCRIPT END",
+			])
+		if evidence_excerpt != "":
+			parts.extend([
+				"",
+				"RELEVANT ORIGINAL EVIDENCE EXCERPT BEGIN",
+				evidence_excerpt,
+				"RELEVANT ORIGINAL EVIDENCE EXCERPT END",
+			])
+		parts.extend([
 			"",
-			"ORIGINAL EVIDENCE REQUEST BEGIN",
-			self.base_prompt,
-			"ORIGINAL EVIDENCE REQUEST END",
+			"LATEST USER FOLLOW-UP BEGIN",
+			user_message,
+			"LATEST USER FOLLOW-UP END",
+			"",
+			"Answer only the latest user follow-up. Be concise and evidence-driven."
+		])
+		return "\n".join(parts)
+
+	def buildFileFollowupPrompt(self, file_path, file_contents, user_message):
+		"""Build a chat follow-up prompt that submits one user-selected file."""
+		mndbg.dbgp(get_current_function_name())
+		file_path = ensure_text(file_path).strip()
+		file_contents = ensure_text(file_contents)
+		user_message = ensure_text(user_message).strip()
+		transcript_text = self._formatChatHistoryForPrompt(max_chars=8000)
+		parts = [
+			"You are continuing a prior mona tellme analysis session.",
+			"The user submitted the contents of one file with a specific instruction.",
+			"Answer the instruction directly. Do not restate the task, request, prompt, or file contents.",
+			"If the instruction cannot be answered from the file and prior transcript, say what is missing.",
 		]
 		if transcript_text != "":
 			parts.extend([
@@ -36449,11 +37742,18 @@ class MnAI(object):
 			])
 		parts.extend([
 			"",
-			"LATEST USER FOLLOW-UP BEGIN",
-			user_message,
-			"LATEST USER FOLLOW-UP END",
+			"USER FILE BEGIN",
+			"Path: %s" % file_path,
+			"Bytes: %d" % len(file_contents),
 			"",
-			"Answer only the latest user follow-up while staying grounded in the original evidence bundle and the session transcript."
+			file_contents,
+			"USER FILE END",
+			"",
+			"USER INSTRUCTION BEGIN",
+			user_message,
+			"USER INSTRUCTION END",
+			"",
+			"Answer only the user instruction. Be concise and evidence-driven."
 		])
 		return "\n".join(parts)
 
@@ -36476,7 +37776,7 @@ class MnAI(object):
 			"text": self.response
 		}]
 		self.logInfo("Interactive tellme chat is now active.")
-		self.logInfoDetail("Type follow-up text to continue, 'engine' to change engine/model, or 'exit' to stop.")
+		self.logInfoDetail("Type follow-up text to continue, 'file' to submit a file, 'engine' to change engine/model, or 'exit' to stop.")
 		while True:
 			user_input = promptForTextInput("tellme", "")
 			if user_input is None:
@@ -36494,8 +37794,49 @@ class MnAI(object):
 				elif self.engine == "openaiagents":
 					self.logInfo("The selected engine is openaiagents. The next submitted follow-up will be queued through the bridge and the interactive chat loop will then stop.")
 				continue
-			self.chat_history.append({"role": "user", "text": user_input})
+			if command_text == "file":
+				file_path = promptForTextInput("File to submit (or 'exit')", "")
+				if file_path is None:
+					continue
+				file_path = ensure_text(file_path).strip()
+				if file_path.lower() in ["exit", "quit", "q"] or file_path == "":
+					self.logInfo("File submission cancelled.")
+					continue
+				file_info = _readContextFile(file_path, label="chat file")
+				if file_info.get("file_missing", False):
+					self.logError("Unable to find/read file %s" % file_path)
+					continue
+				if file_info.get("read_error", "") != "":
+					self.logError("Unable to read file %s" % file_path)
+					self.logErrorDetail(file_info.get("read_error", ""))
+					continue
+				file_contents = ensure_text(file_info.get("file_contents", ""))
+				self.logInfo("Prepared chat file submission.")
+				self.logInfoDetail("File : %s" % file_path)
+				self.logInfoDetail("Size : %d bytes (%.2f KB)" % (len(file_contents), float(len(file_contents)) / 1024.0))
+				file_prompt = promptForTextInput("Prompt/instruction for this file (or 'exit')", "")
+				if file_prompt is None:
+					self.logInfo("File submission cancelled.")
+					continue
+				file_prompt = ensure_text(file_prompt).strip()
+				if file_prompt.lower() in ["exit", "quit", "q"] or file_prompt == "":
+					self.logInfo("File submission cancelled.")
+					continue
+				followup_prompt = self.buildFileFollowupPrompt(file_path, file_contents, file_prompt)
+				self.chat_history.append({"role": "user", "text": "File submitted: %s\nInstruction: %s" % (file_path, file_prompt)})
+				self.request(prompt=followup_prompt)
+				self.chat_history.append({
+					"role": "assistant",
+					"engine": self.engine,
+					"model": self.model,
+					"text": self.response
+				})
+				if self.engine == "openaiagents":
+					self.logInfo("The file follow-up was handed off to openaiagents. Ending the interactive chat loop because that engine completes asynchronously.")
+					break
+				continue
 			followup_prompt = self.buildFollowupPrompt(user_input)
+			self.chat_history.append({"role": "user", "text": user_input})
 			self.request(prompt=followup_prompt)
 			self.chat_history.append({
 				"role": "assistant",
@@ -36646,13 +37987,13 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine = self.engine
 		if engine == "openai":
-				return [
-					{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
-					{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-					{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
-					{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True},
-					{"name": "context_window", "required": False, "env": "OPENAI_CONTEXT_WINDOW", "show_value": True},
-				]
+			return [
+				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "OPENAI_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True},
+				{"name": "context_window", "required": False, "env": "OPENAI_CONTEXT_WINDOW", "show_value": True},
+			]
 		if engine == "openaiagents":
 			return [
 				{"name": "key", "required": True, "env": "OPENAI_API_KEY", "show_value": False},
@@ -36661,61 +38002,65 @@ class MnAI(object):
 				{"name": "bridge.python", "required": False, "env": "", "show_value": True, "default": formatAIBridgePythonCommand(getAIBridgePythonCommand(self.mona_config))},
 				{"name": "reasoning_effort", "required": False, "env": "OPENAIAGENTS_REASONING_EFFORT", "show_value": True, "default": "high"},
 				{"name": "verbosity", "required": False, "env": "OPENAIAGENTS_VERBOSITY", "show_value": True, "default": "low"},
-					{"name": "max_turns", "required": False, "env": "OPENAIAGENTS_MAX_TURNS", "show_value": True, "default": "8"},
-					{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
-					{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True},
-					{"name": "context_window", "required": False, "env": "OPENAI_CONTEXT_WINDOW", "show_value": True},
-				]
+				{"name": "max_turns", "required": False, "env": "OPENAIAGENTS_MAX_TURNS", "show_value": True, "default": "8"},
+				{"name": "timeout", "required": False, "env": "OPENAI_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OPENAI_MAX_TOKENS", "show_value": True},
+				{"name": "context_window", "required": False, "env": "OPENAI_CONTEXT_WINDOW", "show_value": True},
+			]
 		if engine == "anthropic":
 			return [
-					{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
-					{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-					{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
-					{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True},
-					{"name": "context_window", "required": False, "env": "ANTHROPIC_CONTEXT_WINDOW", "show_value": True},
-				]
+				{"name": "key", "required": True, "env": "ANTHROPIC_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "ANTHROPIC_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "ANTHROPIC_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "ANTHROPIC_MAX_TOKENS", "show_value": True},
+				{"name": "context_window", "required": False, "env": "ANTHROPIC_CONTEXT_WINDOW", "show_value": True},
+			]
 		if engine == "openrouter":
 			return [
-					{"name": "key", "required": True, "env": "OPENROUTER_API_KEY", "show_value": False},
-					{"name": "model", "required": False, "env": "OPENROUTER_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
-					{"name": "timeout", "required": False, "env": "OPENROUTER_TIMEOUT", "show_value": True, "default": "300"},
-					{"name": "max_tokens", "required": False, "env": "OPENROUTER_MAX_TOKENS", "show_value": True},
-					{"name": "context_window", "required": False, "env": "OPENROUTER_CONTEXT_WINDOW", "show_value": True},
-				]
+				{"name": "key", "required": True, "env": "OPENROUTER_API_KEY", "show_value": False},
+				{"name": "model", "required": False, "env": "OPENROUTER_MODEL", "show_value": True, "default": getDefaultAIModel(engine)},
+				{"name": "timeout", "required": False, "env": "OPENROUTER_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OPENROUTER_MAX_TOKENS", "show_value": True},
+				{"name": "context_window", "required": False, "env": "OPENROUTER_CONTEXT_WINDOW", "show_value": True},
+			]
 		if engine == "ollama":
 			return [
 				{"name": "url", "required": True, "env": "OLLAMA_URL", "show_value": True},
-					{"name": "model", "required": True, "env": "OLLAMA_MODEL", "show_value": True},
-					{"name": "timeout", "required": False, "env": "OLLAMA_TIMEOUT", "show_value": True, "default": "300"},
-					{"name": "max_tokens", "required": False, "env": "OLLAMA_MAX_TOKENS", "show_value": True},
-					{"name": "context_window", "required": False, "env": "OLLAMA_CONTEXT_WINDOW", "show_value": True},
-					{"name": "response_field", "required": False, "env": "OLLAMA_RESPONSE_FIELD", "show_value": True, "default": "response"},
-				]
+				{"name": "model", "required": True, "env": "OLLAMA_MODEL", "show_value": True},
+				{"name": "timeout", "required": False, "env": "OLLAMA_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OLLAMA_MAX_TOKENS", "show_value": True},
+				{"name": "context_window", "required": False, "env": "OLLAMA_CONTEXT_WINDOW", "show_value": True},
+				{"name": "response_field", "required": False, "env": "OLLAMA_RESPONSE_FIELD", "show_value": True, "default": "response"},
+			]
 		if engine == "customai":
 			return [
 				{"name": "url", "required": True, "env": "CUSTOMAI_URL", "show_value": True},
-					{"name": "model", "required": True, "env": "CUSTOMAI_MODEL", "show_value": True},
-					{"name": "timeout", "required": False, "env": "CUSTOMAI_TIMEOUT", "show_value": True, "default": "300"},
-					{"name": "max_tokens", "required": False, "env": "CUSTOMAI_MAX_TOKENS", "show_value": True},
-					{"name": "context_window", "required": False, "env": "CUSTOMAI_CONTEXT_WINDOW", "show_value": True},
-					{"name": "response_field", "required": False, "env": "CUSTOMAI_RESPONSE_FIELD", "show_value": True},
-				]
+				{"name": "model", "required": True, "env": "CUSTOMAI_MODEL", "show_value": True},
+				{"name": "timeout", "required": False, "env": "CUSTOMAI_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "CUSTOMAI_MAX_TOKENS", "show_value": True},
+				{"name": "context_window", "required": False, "env": "CUSTOMAI_CONTEXT_WINDOW", "show_value": True},
+				{"name": "response_field", "required": False, "env": "CUSTOMAI_RESPONSE_FIELD", "show_value": True},
+			]
 		if engine == "openai-generic":
 			return [
 				{"name": "url", "required": True, "env": "OPENAIGENERIC_URL", "show_value": True},
-					{"name": "key", "required": False, "env": "OPENAIGENERIC_API_KEY", "show_value": False},
-					{"name": "model", "required": True, "env": "OPENAIGENERIC_MODEL", "show_value": True},
-					{"name": "timeout", "required": False, "env": "OPENAIGENERIC_TIMEOUT", "show_value": True, "default": "300"},
-					{"name": "max_tokens", "required": False, "env": "OPENAIGENERIC_MAX_TOKENS", "show_value": True},
-					{"name": "context_window", "required": False, "env": "OPENAIGENERIC_CONTEXT_WINDOW", "show_value": True},
-					{"name": "response_field", "required": False, "env": "OPENAIGENERIC_RESPONSE_FIELD", "show_value": True},
-				]
+				{"name": "key", "required": False, "env": "OPENAIGENERIC_API_KEY", "show_value": False},
+				{"name": "model", "required": True, "env": "OPENAIGENERIC_MODEL", "show_value": True},
+				{"name": "timeout", "required": False, "env": "OPENAIGENERIC_TIMEOUT", "show_value": True, "default": "300"},
+				{"name": "max_tokens", "required": False, "env": "OPENAIGENERIC_MAX_TOKENS", "show_value": True},
+				{"name": "context_window", "required": False, "env": "OPENAIGENERIC_CONTEXT_WINDOW", "show_value": True},
+				{"name": "response_field", "required": False, "env": "OPENAIGENERIC_RESPONSE_FIELD", "show_value": True},
+			]
 		return []
 
 	def _getEngineOptionStatus(self, option_name):
 		"""Resolve whether an engine option is currently set and from where."""
 		mndbg.dbgp(get_current_function_name())
 		engine = self.engine
+		if option_name == "model":
+			arg_value, _arg_name, arg_missing = self._getCommandLineModelOverride()
+			if not arg_missing and arg_value != "":
+				return True, "argument", arg_value
 		config_name = "%s.%s" % (engine, option_name)
 		config_value = self.mona_config.get(config_name).strip()
 		if config_value != "":
@@ -36731,10 +38076,6 @@ class MnAI(object):
 			if env_value != "":
 				return True, "environment", env_value
 
-		if option_name == "model" and "model" in self.args and type(self.args["model"]).__name__.lower() != "bool":
-			arg_value = str(self.args["model"]).strip()
-			if arg_value != "":
-				return True, "argument", arg_value
 		if option_name == "timeout" and "timeout" in self.args and type(self.args["timeout"]).__name__.lower() != "bool":
 			arg_value = str(self.args["timeout"]).strip()
 			if arg_value != "":
@@ -36825,10 +38166,10 @@ class MnAI(object):
 	def getConfiguredDefaultEngine(self):
 		"""Return the configured default engine from mona.ini or the environment."""
 		mndbg.dbgp(get_current_function_name())
-		config_engine = _normalizeAIEngine(self.mona_config.get(getDefaultAIEngineConfigName()))
+		config_engine = normalizeAIEngineName(self.mona_config.get(getDefaultAIEngineConfigName()))
 		if config_engine != "":
 			return config_engine, "config"
-		env_engine = _normalizeAIEngine(os.environ.get(getDefaultAIEngineEnvName(), ""))
+		env_engine = normalizeAIEngineName(os.environ.get(getDefaultAIEngineEnvName(), ""))
 		if env_engine != "":
 			return env_engine, "environment"
 		return "offline", "default"
@@ -36838,10 +38179,10 @@ class MnAI(object):
 		mndbg.dbgp(get_current_function_name())
 		engine_arg_raw = self.args.get("e", "")
 		if type(engine_arg_raw).__name__.lower() == "bool":
-			self.logError("Please specify an engine value with -e <offline|openai|openaiagents|anthropic|openrouter|ollama|customai|openai-generic>")
+			self.logError("Please specify an engine value with -e <%s>" % "|".join(["offline"] + list(_AI_PROVIDER_ENGINES)))
 			return False
 
-		explicit_engine = _normalizeAIEngine(engine_arg_raw)
+		explicit_engine = normalizeAIEngineName(engine_arg_raw)
 		if explicit_engine != "":
 			self.engine = explicit_engine
 			self.engine_source = "argument"
@@ -37172,31 +38513,31 @@ class MnAI(object):
 				mndbg.dbgp("tellme: config url for engine '%s' is '%s'" % (self.engine, self.api_url))
 			if self.response_field != "":
 				mndbg.dbgp("tellme: config response_field for engine '%s' is '%s'" % (self.engine, self.response_field))
-			if self.effective_question_type == "8" and self.timeout_source == "default":
+			if ensure_text(self.effective_question_type or self.args.get("q", "")).strip().lower() == "8" and self.timeout_source == "default":
 				self.timeout_seconds += 30.0
 				mndbg.dbgp("tellme: extending default timeout for q8 to %.1fs" % self.timeout_seconds)
-				mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
-					self.engine, self.timeout_seconds, self.timeout_source
-				))
-				mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
-					self.engine, self.max_tokens, self.max_tokens_source
-				))
-				mndbg.dbgp("tellme: effective context window for engine '%s' is %d (source=%s)" % (
-					self.engine, self.context_window, self.context_window_source
-				))
-			else:
-				self.model = getDefaultAIModel("openai")
-				mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
+			mndbg.dbgp("tellme: effective timeout for engine '%s' is %.1fs (source=%s)" % (
+				self.engine, self.timeout_seconds, self.timeout_source
+			))
+			mndbg.dbgp("tellme: effective max token budget for engine '%s' is %d (source=%s)" % (
+				self.engine, self.max_tokens, self.max_tokens_source
+			))
+			mndbg.dbgp("tellme: effective context window for engine '%s' is %d (source=%s)" % (
+				self.engine, self.context_window, self.context_window_source
+			))
+		else:
+			self.model = getDefaultAIModel("openai")
+			mndbg.dbgp("tellme: offline mode active, skipping provider config and SDK setup")
 
-		if "model" in self.args:
-			if type(self.args["model"]).__name__.lower() == "bool":
-				self.logInfo("No explicit -model value was supplied. The interactive model selector will be shown before submission.")
+		explicit_model, model_arg_name, model_arg_missing = self._getCommandLineModelOverride()
+		if model_arg_name != "":
+			if model_arg_missing:
+				self.logInfo("No explicit -%s value was supplied. The interactive model selector will be shown before submission." % model_arg_name)
 				self.list_models_requested = False
-			explicit_model = str(self.args["model"]).strip()
 			if explicit_model != "":
 				self.model = explicit_model
-				self.logInfo("Overriding model to '%s'" % self.model)
-				mndbg.dbgp("tellme: using explicit -model override '%s'" % self.model)
+				self.logInfo("Overriding model to '%s' from -%s" % (self.model, model_arg_name))
+				mndbg.dbgp("tellme: using explicit -%s override '%s'" % (model_arg_name, self.model))
 
 		if self.testmode:
 			test_model = getAITestModel(self.engine if self.engine != "offline" else "openai")
@@ -37205,11 +38546,11 @@ class MnAI(object):
 				self.logInfo("Test mode enabled, overriding model to '%s'" % self.model)
 				mndbg.dbgp("tellme: using cheap test model '%s' for engine '%s'" % (self.model, self.engine))
 		if self.engine != "offline":
-				self.api_options = self.getEffectiveAIOptions()
-				if isinstance(self.api_options, dict) and len(self.api_options) > 0:
-					mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
-						self.engine, json.dumps(self.api_options, sort_keys=True)
-					))
+			self.api_options = self.getEffectiveAIOptions()
+			if isinstance(self.api_options, dict) and len(self.api_options) > 0:
+				mndbg.dbgp("tellme: collected engine options for '%s': %s" % (
+					self.engine, json.dumps(self.api_options, sort_keys=True)
+				))
 		if self.upload_requested:
 			self.logInfo("%s upload mode requested." % self.engine.capitalize())
 			self.logInfo("Mona will upload the saved request file plus any -l/-p files")
@@ -37515,12 +38856,20 @@ class MnAI(object):
 		total_steps = 7
 		q3_startmoment = time.time()
 		def _format_major_step_elapsed(startmoment):
+			"""Format AI-related output for format major step elapsed.
+			Args: startmoment.
+			Returns: the requested value or structured result.
+			"""
 			try:
 				elapsed_seconds = max(0, int(round(time.time() - startmoment)))
 			except Exception:
 				elapsed_seconds = 0
 			return str(datetime.timedelta(seconds=elapsed_seconds))
 		def _log_step_header(step_number, title_text, first_step=False):
+			"""Log AI provider status or error details for log step header.
+			Args: step_number, title_text, first_step.
+			Returns: result data when needed, otherwise None/empty value.
+			"""
 			if not first_step:
 				dbg.log("")
 			self.logInfo("<b>[%d/%d] %s</b>" % (
@@ -37529,6 +38878,10 @@ class MnAI(object):
 				title_text
 			))
 		def _log_major_step_start(step_number, label):
+			"""Log AI provider status or error details for log major step start.
+			Args: step_number, label.
+			Returns: result data when needed, otherwise None/empty value.
+			"""
 			completed_steps = max(0, step_number - 1)
 			eta = get_eta(q3_startmoment, completed_steps, total_steps) if completed_steps > 0 else "calculating eta..."
 			self.logInfoDetail("<b>Phase tracker: starting step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
@@ -37539,6 +38892,10 @@ class MnAI(object):
 				eta
 			))
 		def _log_major_step_complete(step_number, label):
+			"""Log AI provider status or error details for log major step complete.
+			Args: step_number, label.
+			Returns: result data when needed, otherwise None/empty value.
+			"""
 			eta = get_eta(q3_startmoment, step_number, total_steps) if step_number < total_steps else "complete"
 			self.logInfoDetail("<b>Phase tracker: completed step %d/%d (%s) | elapsed %s | overall ETA %s</b>" % (
 				step_number,
@@ -37696,6 +39053,10 @@ class MnAI(object):
 		seen_paths = set()
 
 		def _add_file(path_value):
+			"""Support Mona AI workflow logic for add file.
+			Args: path_value.
+			Returns: function-specific result used by the AI workflow.
+			"""
 			path_value = ensure_text(path_value).strip()
 			if path_value == "":
 				return
@@ -37884,6 +39245,29 @@ class MnAI(object):
 		)
 		return self.request_logfile_path
 
+	def savePreparedRequestForOptionalSubmission(self):
+		"""Persist the built request before asking whether it should be submitted."""
+		mndbg.dbgp(get_current_function_name())
+		self.writeRequestLog()
+		request_file_size = 0
+		try:
+			request_file_size = os.path.getsize(self.request_logfile_path)
+		except Exception:
+			request_file_size = 0
+		self.logInfo("Prepared tellme request saved.")
+		self.logInfoDetail("Saved  : %s" % self.request_logfile_path)
+		self.logInfoDetail("Size   : %d bytes (%.2f KB)" % (request_file_size, float(request_file_size) / 1024.0))
+		return self.request_logfile_path
+
+	def logSavedRequestCanBeSubmittedManually(self):
+		"""Tell the user that a cancelled interactive submission still left a reusable request file."""
+		mndbg.dbgp(get_current_function_name())
+		if self.request_logfile_path == "":
+			return
+		self.logInfo("The prepared request was still saved and was not submitted.")
+		self.logInfoDetail("Saved request: %s" % self.request_logfile_path)
+		self.logInfoDetail("You can submit it later with -q 9 -f %s, or send the file contents to another model manually." % self.request_logfile_path)
+
 	def reloadPromptFromRequestLog(self):
 		"""Reload the prompt from the saved request file so confirmed submissions use the on-disk prompt."""
 		mndbg.dbgp(get_current_function_name())
@@ -37948,6 +39332,10 @@ class MnAI(object):
 		seen_paths = set()
 
 		def _add_file(path_value):
+			"""Support Mona AI workflow logic for add file.
+			Args: path_value.
+			Returns: function-specific result used by the AI workflow.
+			"""
 			path_value = ensure_text(path_value).strip()
 			if path_value == "":
 				return
@@ -38402,10 +39790,13 @@ class MnAI(object):
 			interruptMona()
 			chunk_prompt = "\n".join([
 				"You are analyzing one chunk of a larger mona tellme evidence bundle.",
-				"Extract the security-relevant facts from this chunk only.",
+				"Extract only concrete security-relevant facts from this chunk.",
 				"Keep addresses, registers, exception details, heap observations, module names, and constraints exact.",
 				"Do not answer the final exploitability question yet.",
-				"Return concise structured notes that can be combined with other chunk notes.",
+				"Do not summarize, quote, rewrite, or restate the user's question or Mona's instructions.",
+				"Do not include generic methodology. Do not include headings unless they name evidence categories found in this chunk.",
+				"If this chunk contains no relevant evidence, return exactly: NO_RELEVANT_FACTS.",
+				"Return concise bullet notes that can be combined with other chunk notes.",
 				"Hard limit: keep your notes for this chunk under %d characters." % chunk_summary_budget,
 				"",
 				"CHUNK %d OF %d BEGIN" % (chunk_index, len(chunks)),
@@ -38432,13 +39823,16 @@ class MnAI(object):
 			final_request_url = chunk_request_url or final_request_url
 			final_request_mode = chunk_request_mode or final_request_mode
 			chunk_response_text = ensure_text(chunk_response)
+			cleaned_chunk_response_text = _cleanStagedChunkSummary(chunk_response_text)
+			if cleaned_chunk_response_text == "":
+				cleaned_chunk_response_text = "NO_RELEVANT_FACTS"
 			chunk_summary_text = _trimAITextForPrompt(
-				chunk_response_text,
+				cleaned_chunk_response_text,
 				chunk_summary_budget,
 				"chunk %d summary" % chunk_index
 			)
 			chunk_summaries.append("CHUNK %d SUMMARY\n%s" % (chunk_index, chunk_summary_text))
-			self.logInfoDetail("Evidence chunk %d/%d submitted and processed (%d response bytes, %d retained for final summary)" % (
+			self.logInfoDetail("Evidence chunk %d/%d submitted and processed (%d response bytes, %d cleaned bytes retained for final summary)" % (
 				chunk_index,
 				len(chunks),
 				len(chunk_response_text),
@@ -38450,6 +39844,8 @@ class MnAI(object):
 			"The original evidence bundle was too large for the model context, so Mona submitted it in chunks.",
 			"Treat the chunk summaries below as the authoritative evidence. Do not invent facts not present in the summaries.",
 			"Call out any uncertainty introduced by chunking.",
+			"Do not restate the prompt, original request, or chunking process except for a short uncertainty note when relevant.",
+			"Answer directly with findings and evidence.",
 			"",
 			"ORIGINAL REQUEST TYPE: %s" % self.question_type,
 			"TARGET ADDRESS: %s" % (PTR_PRINT % self.target_address if isinstance(self.target_address, int) and self.target_address > 0 else "not specified"),
@@ -38798,12 +40194,17 @@ class MnAI(object):
 		if not self.buildRequestPrompt():
 			return ""
 		self.base_prompt = self.prompt
+		self.savePreparedRequestForOptionalSubmission()
 		if self.submit_requested:
 			if not self.prepareSubmitFastPath():
 				return ""
 		else:
-			if not self.selectEngineAndModelInteractive():
+			if not askForConfirmation("[?] Submit the saved tellme request to an AI engine now?", default="Y"):
+				self.logSavedRequestCanBeSubmittedManually()
+				return ""
+			if not self.selectEngineAndModelInteractive(skip_engine_menu=(self.engine_source == "argument")):
 				self.logInfo("tellme session cancelled before submission.")
+				self.logSavedRequestCanBeSubmittedManually()
 				return ""
 		self.prompt = self.base_prompt
 		initial_response = self.request()
@@ -50955,123 +52356,156 @@ Optional arguments:
 
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
-	Workflow:
-	    - tellme first builds the full evidence bundle and saves the request to disk
-	    - before submission, tellme always shows an interactive engine/model selector
-	    - command-line or configured engine/model values are proposed first in that selector
-	    - API keys are only read from mona.ini or environment variables; tellme does not prompt for them
-	    - after the initial response, tellme enters an interactive chat loop
-	    - type 'engine' in that chat loop to switch engine/model, or 'exit' to stop
+Workflow:
+    - tellme first builds the full evidence bundle and saves the request to disk
+    - before submission, tellme always shows an interactive engine/model selector
+    - command-line or configured engine/model values are proposed first in that selector
+    - API keys are only read from mona.ini or environment variables; tellme does not prompt for them
+    - after the initial response, tellme enters an interactive chat loop
+    - type 'engine' in that chat loop to switch engine/model, or 'exit' to stop
 
-	Supported engines:
-	    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
-	    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; prefers the OpenAI Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id)
-	    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
-	    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; prefers the Anthropic Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces)
-	    - openrouter (OpenAI-compatible chat-completions API via OpenRouter)
-	    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
-	    - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
-	    - openai-generic (OpenAI-compatible HTTP endpoint; if you configure only a base URL such as http://192.168.86.154:8080, Mona will probe and resolve the working full endpoint such as /v1/responses, /v1/chat/completions, and /v1/models; use a large timeout, or timeout 0 for no total deadline, with slow local models)
+Supported engines:
+    - offline (default when no mona.ini or MONA_AI_ENGINE default is configured; always saves the request without sending it)
+    - openai (recent common models: gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano; prefers the OpenAI Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id)
+    - openaiagents (launches a local helper outside the debugger and uses the OpenAI Agents SDK with reasoning settings)
+    - anthropic (recent common models: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5; prefers the Anthropic Python SDK and falls back to plain HTTPS; supports file uploads via -upload and later references via -id; Cyber Verification Program approval can reduce friction for legitimate dual-use work on supported Claude surfaces)
+    - openrouter (OpenAI-compatible chat-completions API via OpenRouter)
+    - ollama (supports either an OpenAI-style /v1/responses URL or a native Ollama /api/generate URL; for reliable plain-text tellme output, prefer /api/generate; if you provide only a base URL, mona will use the native /api/generate path)
+    - customai (generic POST JSON engine; posts {"model": ..., "prompt": ...} to <customai.url>)
+    - openai-generic (OpenAI-compatible HTTP endpoint; if you configure only a base URL such as http://127.0.0.1:8080, Mona will probe and resolve the working full endpoint such as /v1/responses, /v1/chat/completions, and /v1/models; use a large timeout, or timeout 0 for no total deadline, with slow local models)
 
 Configuration:
     Choose one of these approaches:
 
     1. Store settings in mona.ini:
-	       __LAUNCHCMD__ config -set mona.ai.engine openai
-	       __LAUNCHCMD__ config -set openai.key <your OpenAI API key>
-		       __LAUNCHCMD__ config -set openai.model gpt-5-mini
-		       __LAUNCHCMD__ config -set openai.timeout 300
-		       Optional: __LAUNCHCMD__ config -set openai.max_tokens 4096
-		       Optional: __LAUNCHCMD__ config -set openai.context_window 128000
-		       __LAUNCHCMD__ config -set mona.ai.engine openaiagents
-	       __LAUNCHCMD__ config -set openaiagents.key <your OpenAI API key>
-	       __LAUNCHCMD__ config -set openaiagents.model gpt-5-mini
-	       __LAUNCHCMD__ config -set openaiagents.url http://127.0.0.1:8765
-	       __LAUNCHCMD__ config -set openaiagents.bridge.python py -3.14
-	       __LAUNCHCMD__ config -set openaiagents.reasoning_effort high
-		       __LAUNCHCMD__ config -set openaiagents.verbosity low
-		       __LAUNCHCMD__ config -set openaiagents.max_turns 8
-		       Optional: __LAUNCHCMD__ config -set openaiagents.max_tokens 8192
-		       Optional: __LAUNCHCMD__ config -set openaiagents.context_window 128000
-	       __LAUNCHCMD__ config -set mona.ai.engine anthropic
-	       __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
-	       __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
-	       __LAUNCHCMD__ config -set anthropic.timeout 300
-	       Optional: __LAUNCHCMD__ config -set anthropic.max_tokens 8192
-	       Optional: __LAUNCHCMD__ config -set anthropic.context_window 200000
-	       __LAUNCHCMD__ config -set mona.ai.engine ollama
-	       __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
-	       __LAUNCHCMD__ config -set ollama.model llama3
-	       __LAUNCHCMD__ config -set ollama.timeout 300
-	       Optional: __LAUNCHCMD__ config -set ollama.max_tokens 8192
-	       Optional: __LAUNCHCMD__ config -set ollama.context_window 256000
-	       __LAUNCHCMD__ config -set ollama.response_field response
-       Recommended: use http://127.0.0.1:11434/api/generate for the simplest and most reliable plain-text Ollama response format.
-       Use http://127.0.0.1:11434/v1/responses when you specifically want OpenAI-style Responses API compatibility and have confirmed that the model returns final assistant text there.
-       A plain base URL such as http://127.0.0.1:11434 also works and will be treated as native Ollama.
-       __LAUNCHCMD__ config -set mona.ai.engine customai
-	       __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
-	       __LAUNCHCMD__ config -set customai.model llama3
-	       __LAUNCHCMD__ config -set customai.timeout 300
-	       Optional: __LAUNCHCMD__ config -set customai.max_tokens 8192
-	       Optional: __LAUNCHCMD__ config -set customai.context_window 256000
-	       __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
-       __LAUNCHCMD__ config -set mona.ai.engine openai-generic
-		       __LAUNCHCMD__ config -set openai-generic.url http://127.0.0.1:8080
-		       __LAUNCHCMD__ config -set openai-generic.model llama3
-		       __LAUNCHCMD__ config -set openai-generic.timeout 300
-		       Optional: __LAUNCHCMD__ config -set openai-generic.max_tokens 8192
-		       Optional: __LAUNCHCMD__ config -set openai-generic.context_window 256000
-		       Use openai-generic.timeout 0 only when you want Mona to keep waiting indefinitely and print periodic progress.
-       Optional: __LAUNCHCMD__ config -set openai-generic.key <bearer token if the endpoint requires one>
-       Optional: __LAUNCHCMD__ config -set openai-generic.response_field choices.0.message.content
-       Mona will try /v1/responses first, fall back to /v1/chat/completions if needed, and use /v1/models for model discovery.
-	       If max_tokens or context_window is omitted, Mona does not send those request fields.
-	       For Ollama, context_window maps to options.num_ctx and max_tokens maps to options.num_predict.
-	       For customai/openai-generic, context_window maps to options.num_ctx unless an explicit <engine>.options.num_ctx already exists.
-	       OpenAI, Anthropic, OpenRouter, and OpenAI Agents do not expose a standard request-level context-window override.
-	       You can still use <engine>.options.* for provider/model-specific names not covered by these first-class settings.
+       OpenAI:
+           __LAUNCHCMD__ config -set mona.ai.engine openai
+           __LAUNCHCMD__ config -set openai.key <your OpenAI API key>
+           __LAUNCHCMD__ config -set openai.model gpt-5-mini
+           __LAUNCHCMD__ config -set openai.timeout 300
+           Optional: __LAUNCHCMD__ config -set openai.max_tokens 4096
+           Optional: __LAUNCHCMD__ config -set openai.context_window 128000
+
+       OpenAI Agents:
+           __LAUNCHCMD__ config -set mona.ai.engine openaiagents
+           __LAUNCHCMD__ config -set openaiagents.key <your OpenAI API key>
+           __LAUNCHCMD__ config -set openaiagents.model gpt-5-mini
+           __LAUNCHCMD__ config -set openaiagents.url http://127.0.0.1:8765
+           __LAUNCHCMD__ config -set openaiagents.bridge.python py -3.14
+           __LAUNCHCMD__ config -set openaiagents.reasoning_effort high
+           __LAUNCHCMD__ config -set openaiagents.verbosity low
+           __LAUNCHCMD__ config -set openaiagents.max_turns 8
+           Optional: __LAUNCHCMD__ config -set openaiagents.max_tokens 8192
+           Optional: __LAUNCHCMD__ config -set openaiagents.context_window 128000
+
+       Anthropic:
+           __LAUNCHCMD__ config -set mona.ai.engine anthropic
+           __LAUNCHCMD__ config -set anthropic.key <your Anthropic API key>
+           __LAUNCHCMD__ config -set anthropic.model claude-sonnet-4-6
+           __LAUNCHCMD__ config -set anthropic.timeout 300
+           Optional: __LAUNCHCMD__ config -set anthropic.max_tokens 8192
+           Optional: __LAUNCHCMD__ config -set anthropic.context_window 200000
+
+       Ollama:
+           __LAUNCHCMD__ config -set mona.ai.engine ollama
+           __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
+           __LAUNCHCMD__ config -set ollama.model llama3
+           __LAUNCHCMD__ config -set ollama.timeout 300
+           __LAUNCHCMD__ config -set ollama.response_field response
+           Optional: __LAUNCHCMD__ config -set ollama.max_tokens 8192
+           Optional: __LAUNCHCMD__ config -set ollama.context_window 256000
+           Recommended URL: http://127.0.0.1:11434/api/generate
+           Alternative URL: http://127.0.0.1:11434/v1/responses if the model returns final assistant text there
+           Plain base URL: http://127.0.0.1:11434 is treated as native Ollama
+
+       CustomAI:
+           __LAUNCHCMD__ config -set mona.ai.engine customai
+           __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
+           __LAUNCHCMD__ config -set customai.model llama3
+           __LAUNCHCMD__ config -set customai.timeout 300
+           __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
+           Optional: __LAUNCHCMD__ config -set customai.max_tokens 8192
+           Optional: __LAUNCHCMD__ config -set customai.context_window 256000
+
+       OpenAI-compatible generic:
+           __LAUNCHCMD__ config -set mona.ai.engine openai-generic
+           __LAUNCHCMD__ config -set openai-generic.url http://127.0.0.1:8080
+           __LAUNCHCMD__ config -set openai-generic.model llama3
+           __LAUNCHCMD__ config -set openai-generic.timeout 300
+           Optional: __LAUNCHCMD__ config -set openai-generic.key <bearer token if required>
+           Optional: __LAUNCHCMD__ config -set openai-generic.response_field choices.0.message.content
+           Optional: __LAUNCHCMD__ config -set openai-generic.max_tokens 8192
+           Optional: __LAUNCHCMD__ config -set openai-generic.context_window 256000
+           Use openai-generic.timeout 0 only for no total deadline with periodic progress output.
+           Mona probes /v1/responses, /v1/chat/completions, and /v1/models when only a base URL is configured.
+
+       Request-size and provider-option notes:
+           If max_tokens or context_window is omitted, Mona does not send those request fields.
+           For Ollama, context_window maps to options.num_ctx and max_tokens maps to options.num_predict.
+           For customai/openai-generic, context_window maps to options.num_ctx unless an explicit <engine>.options.num_ctx already exists.
+           OpenAI, Anthropic, OpenRouter, and OpenAI Agents do not expose a standard request-level context-window override.
+           You can still use <engine>.options.* for provider/model-specific names not covered by these first-class settings.
 
     2. Or use environment variables instead:
-       - MONA_AI_ENGINE
-	       - OPENAI_API_KEY
-	       - OPENAI_MODEL
-		       - OPENAI_TIMEOUT
-		       - OPENAI_MAX_TOKENS
-		       - OPENAI_CONTEXT_WINDOW
-		       - OPENAIAGENTS_URL
-	       - OPENAIAGENTS_REASONING_EFFORT
-	       - OPENAIAGENTS_VERBOSITY
-		       - OPENAIAGENTS_MAX_TURNS
-		       - ANTHROPIC_API_KEY
-	       - ANTHROPIC_MODEL
-	       - ANTHROPIC_TIMEOUT
-	       - ANTHROPIC_MAX_TOKENS
-	       - ANTHROPIC_CONTEXT_WINDOW
-	       - OPENROUTER_API_KEY
-	       - OPENROUTER_MODEL
-	       - OPENROUTER_TIMEOUT
-	       - OPENROUTER_MAX_TOKENS
-	       - OPENROUTER_CONTEXT_WINDOW
-	       - OLLAMA_URL
-	       - OLLAMA_MODEL
-	       - OLLAMA_TIMEOUT
-	       - OLLAMA_MAX_TOKENS
-	       - OLLAMA_CONTEXT_WINDOW
-	       - OLLAMA_RESPONSE_FIELD
-	       - CUSTOMAI_URL
-	       - CUSTOMAI_MODEL
-	       - CUSTOMAI_TIMEOUT
-	       - CUSTOMAI_MAX_TOKENS
-	       - CUSTOMAI_CONTEXT_WINDOW
-	       - CUSTOMAI_RESPONSE_FIELD
-	       - OPENAIGENERIC_URL
-	       - OPENAIGENERIC_API_KEY
-	       - OPENAIGENERIC_MODEL
-	       - OPENAIGENERIC_TIMEOUT
-	       - OPENAIGENERIC_MAX_TOKENS
-	       - OPENAIGENERIC_CONTEXT_WINDOW
-	       - OPENAIGENERIC_RESPONSE_FIELD
+       Default:
+           MONA_AI_ENGINE
+
+       OpenAI:
+           OPENAI_API_KEY
+           OPENAI_MODEL
+           OPENAI_TIMEOUT
+           OPENAI_MAX_TOKENS
+           OPENAI_CONTEXT_WINDOW
+
+       OpenAI Agents:
+           OPENAI_API_KEY
+           OPENAI_MODEL
+           OPENAI_TIMEOUT
+           OPENAI_MAX_TOKENS
+           OPENAI_CONTEXT_WINDOW
+           OPENAIAGENTS_URL
+           OPENAIAGENTS_REASONING_EFFORT
+           OPENAIAGENTS_VERBOSITY
+           OPENAIAGENTS_MAX_TURNS
+
+       Anthropic:
+           ANTHROPIC_API_KEY
+           ANTHROPIC_MODEL
+           ANTHROPIC_TIMEOUT
+           ANTHROPIC_MAX_TOKENS
+           ANTHROPIC_CONTEXT_WINDOW
+
+       OpenRouter:
+           OPENROUTER_API_KEY
+           OPENROUTER_MODEL
+           OPENROUTER_TIMEOUT
+           OPENROUTER_MAX_TOKENS
+           OPENROUTER_CONTEXT_WINDOW
+
+       Ollama:
+           OLLAMA_URL
+           OLLAMA_MODEL
+           OLLAMA_TIMEOUT
+           OLLAMA_MAX_TOKENS
+           OLLAMA_CONTEXT_WINDOW
+           OLLAMA_RESPONSE_FIELD
+
+       CustomAI:
+           CUSTOMAI_URL
+           CUSTOMAI_MODEL
+           CUSTOMAI_TIMEOUT
+           CUSTOMAI_MAX_TOKENS
+           CUSTOMAI_CONTEXT_WINDOW
+           CUSTOMAI_RESPONSE_FIELD
+
+       OpenAI-compatible generic:
+           OPENAIGENERIC_URL
+           OPENAIGENERIC_API_KEY
+           OPENAIGENERIC_MODEL
+           OPENAIGENERIC_TIMEOUT
+           OPENAIGENERIC_MAX_TOKENS
+           OPENAIGENERIC_CONTEXT_WINDOW
+           OPENAIGENERIC_RESPONSE_FIELD
 
 Precedence:
     If -e is specified, it becomes the initially proposed engine in the selector
@@ -51079,302 +52513,305 @@ Precedence:
     If both are present, mona.ini values take precedence over environment variables
     For a single request, -model and -timeout override both config and environment values
     The selector still runs before submission and proposes the effective engine/model first
-	    max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
-	    context_window can be controlled via <engine>.context_window or the matching environment variable
-	    If max_tokens or context_window is omitted, Mona leaves it unset and does not send a default value
-	    response_field can be controlled via <engine>.response_field or the matching environment variable
+    max_tokens can be controlled via <engine>.max_tokens or the matching environment variable
+    context_window can be controlled via <engine>.context_window or the matching environment variable
+    If max_tokens or context_window is omitted, Mona leaves it unset and does not send a default value
+    response_field can be controlled via <engine>.response_field or the matching environment variable
     Additional request options can be configured via <engine>.options.*
     If neither a default engine nor -e is specified, tellme uses offline as the default engine
     If the default engine has no required configuration or model configured, tellme falls back to offline
     -offline still overrules a configured default engine for that one request
-	Default models:
-	    - OpenAI   : gpt-5-mini
-	    - OpenAIAgents: gpt-5-mini
-	    - Anthropic: claude-sonnet-4-6
-	    - Ollama   : none, must be configured
-	    - CustomAI : none, must be configured
-	    - OpenAI-generic: none, must be configured
 
-	Default timeout:
-	    - 300 seconds base timeout per request
-	    - q8 adds 30 seconds when no explicit timeout override is set
-	    - Only actual timeout errors trigger timeout retries
-	    - Each timeout retry adds up to 120 seconds, waits 10 seconds before retrying, and caps at 6000 seconds
-	    - Context-window/file-upload fallbacks switch request mode without increasing the timeout
-	    - openai-generic supports timeout 0 for no total deadline; Mona will poll the socket and print periodic still-waiting messages
-	    - openai-generic staged chunk analysis uses no total deadline and prints still-waiting progress every minute
-	    - For ollama or other local/self-hosted engines, increase the timeout to match the speed of the model and hardware.
-	      Larger local models often need 300 seconds or more.
+Default models:
+    - openai        : gpt-5-mini
+    - openaiagents : gpt-5-mini
+    - anthropic    : claude-sonnet-4-6
+    - ollama       : none, must be configured
+    - customai     : none, must be configured
+    - openai-generic: none, must be configured
 
-	Common models:
-	    - OpenAI   : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
-	    - Anthropic: claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
-	    - Ollama   : depends on what is installed locally, for example llama3
-	    - CustomAI : depends on the target API
-	    - OpenAI-generic: depends on the target API
+Default timeout:
+    - 300 seconds base timeout per request
+    - q8 adds 30 seconds when no explicit timeout override is set
+    - Only actual timeout errors trigger timeout retries
+    - Each timeout retry adds up to 120 seconds, waits 10 seconds before retrying, and caps at 6000 seconds
+    - Context-window/file-upload fallbacks switch request mode without increasing the timeout
+    - openai-generic supports timeout 0 for no total deadline; Mona will poll the socket and print periodic still-waiting messages
+    - openai-generic staged chunk analysis uses no total deadline and prints still-waiting progress every minute
+    - For ollama or other local/self-hosted engines, increase the timeout to match the speed of the model and hardware.
+      Larger local models often need 300 seconds or more.
+
+Common models:
+    - OpenAI         : gpt-5.5, gpt-5.1, gpt-5-mini, gpt-5-nano
+    - Anthropic     : claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5
+    - Ollama        : depends on what is installed locally, for example llama3
+    - CustomAI      : depends on the target API
+    - OpenAI-generic: depends on the target API
 
 Official model docs:
     - OpenAI   : https://developers.openai.com/api/docs/models
     - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
-	Arguments:
-		    -e  <engine> : AI engine to propose first in the interactive selector: offline, openai, openaiagents, anthropic, openrouter, ollama, customai, or openai-generic.
-	                   If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
-	                   and otherwise proposes the first usable configured engine.
-	                   openaiagents briefly validates the external bridge Python environment before submission
-	                   openaiagents launches a persistent localhost bridge outside the debugger and queues the job there
-	                   For ollama/customai/openai-generic, a key is not required; those engines use <engine>.url instead
-	                   Engine-specific request options can be configured generically via <engine>.options.*
-	    -model <id>  : Optional explicit model override. If specified, this becomes the initially proposed model in the selector
-		    -timeout <s> : Optional base timeout in seconds for each provider request attempt
-		                   Use this when larger prompts or slower models time out
-		                   Timeout retries only happen after actual timeout errors
-		                   Each timeout retry adds up to 120 seconds, waits 10 seconds before resubmitting, and caps at 6000 seconds
-		                   Context-window/file-upload fallbacks do not increase the timeout
-		                   For ollama and other local/self-hosted engines, you may need to increase this in line with
-		                   the performance of the local model and hardware
-		                   For openai-generic only, -timeout 0 means no total deadline and periodic still-waiting output
-	                   For openaiagents response truncation, increase openaiagents.max_tokens or OPENAI_MAX_TOKENS
-	                   For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
-	                   For ollama/customai/openai-generic response parsing, configure <engine>.response_field if the returned text is nested in JSON
-	    -encoding <name> : Optional logfile text encoding override. Defaults to UTF-8 for generated files.
-	                   Use this only when a downstream tool requires a different codec, for example latin-1 or cp1252
-	    -maxsize <kb>: Optional q1 request-size target in kilobytes. By default, tellme keeps the larger evidence set
-	                   and only reports the final request size. If you set -maxsize, mona will try to reduce lower-priority
-	                   evidence to stay within that target and will record any reductions under [omitted_sections]
-	    -submit      : Strict non-interactive mode. tellme builds the evidence, submits immediately, prints the response, and stops.
-	                   No engine/model menu is shown and no post-response chat loop is started.
-	                   Required engine settings such as URL/model must already be configured or provided on the command line.
-	    -upload      : OpenAI and Anthropic. Upload the saved request file plus any -l/-p files and submit a short
-	                   inline instruction that tells the model to use the uploaded request file as the authoritative prompt source.
-	                   Mona asks the model to echo the unique file ID for each uploaded file so you can reuse them later with -id.
-	                   Mona also prints the provider-assigned file IDs right after upload and writes them into tellme_response.md.
-	                   If this flag is not set, tellme embeds the rendered request and any extra file contents directly in the text prompt.
-	                   Mona tries the provider SDK first and falls back to direct HTTPS if the SDK is unavailable or fails.
-	    -id <ids>    : Comma- or space-separated file ID(s) to reference in a later request, for example:
-	                   -id file-abc123,file-def456
-	                   This works with any request profile, including -q 9 templates.
-	                   Use the file IDs printed by Mona after upload or the Uploaded file IDs section in tellme_response.md.
-	                   Mona passes the IDs through as-is, so make sure they belong to the provider you selected.
-	    -q <number>  : Required. Prompt profile to use:
-	                   1 = analyse the current crash state
-	                   2 = analyse the current __PC__ function as the primary target
-	                       and optionally analyse one extra function from -a
-	                       By default, q2 stays focused on just those one or two functions
-	                       Use -d to also expand linked call/jump targets from those functions
-	                   3 = analyse whether a controlled heap chunk can steer execution to a target address,
-	                       or, without -t, discover the best reachable chunk-modification paths and
-	                       controlled-data consumption sinks such as vftable use or indirect call/jmp
-	                   8 = analyse ROP primitive quality and feasibility
-	                   9 = load a request template from -f <file>
-	                   Running -q 1, -q 2, -q 3, or -q 8 also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
-	                   otherwise in the same folder as mona.ini
-	                   Those template files are not used automatically; use -q 9 -f <file> to apply one
-	    -a <address> : Optional address/register/module!symbol/expression to analyse.
-	                   With -q 1, this adds an extra heap target.
-	                   With -q 2, this adds a second function analysis rooted at that location,
-	                   while still keeping the live __PC__ function as the primary context.
-	                   It does not replace the current function.
-	    -c <address> : With -q 3, required controlled heap chunk address.
-	                   This should point at the chunk whose contents you can manipulate.
-	                   q3 treats that chunk as the attacker-controlled input and asks which
-	                   offsets and values would be needed to influence reachable code paths.
-	    -t <address> : With -q 3, optional target code address to reach.
-	                   If omitted, q3 switches to discovery mode and looks for reachable paths
-	                   that can modify the controlled chunk, use controlled-derived values as
-	                   write destinations or memory-modification targets elsewhere, or consume
-	                   controlled data in a way that could lead to EIP/RIP control.
-	                   If supplied, q3 switches to targeted mode and asks whether execution can
-	                   plausibly reach that address by changing only bytes inside the controlled chunk.
-	    -l <files>   : Optional comma-separated context files, for example -l "file1,file2"
-	                   Any file containing alloc()/free() lines is treated as a heapdynamics log
-	                   Other files are added as supporting context under [additional_context_files]
-	                   If no heapdynamics log is supplied, tellme will still look for c:\\alloc.txt
-	                   For -q 1, focused matches are exposed under [heapdynamics]
-	                   and the larger raw heapdynamics context remains available under [heapdynamics_full]
-	                   unless you explicitly ask mona to shrink the request with -maxsize
-	    -cpb <bytes> : Optional badchars for pointer filtering, for example '\\x00\\x0a\\x0d'
-	                   With -q 1, and with -q 9 when the template still resolves live [findmsp] context,
-	                   mona will use this list when looking for first trampoline candidates for registers
-	                   that point into the cyclic pattern, and for [findseh] candidates when findmsp
-	                   confirms an SEH overwrite. This is usually a good idea, otherwise the
-	                   suggested trampoline or SEH candidate may contain bytes you already know you cannot use
-	    -d <number>  : With -q 2, -q 3, or -q 3b, optional call/jump follow depth for control_flow_targets.
-	                   For -q 2, this controls how many levels of linked call/jump targets mona adds
-	                   on top of the current __PC__ function and the optional -a function.
-	                   -d 0 = do not include linked targets; analyze only the current function and optional -a function
-	                   -d 1 = include first-level linked targets reached directly from those functions
-	                   -d 2..4 = include deeper nested linked targets up to that depth
-	                   For -q 2, the default is 0 to keep the request small and focused.
-	                   For -q 3, the same depth is also used as the default number of caller frames
-	                   to inspect on the return-resume path.
-	                   q3 follows direct branches/calls/jumps, nested callees, and caller-side resume paths.
-	                   Default: q2=0, q3/q3b=2. Maximum: 4.
-	    -p <file>    : Optional PoC/trigger file. The full file contents are added under [poc_file]
-	    -f <file>    : Required for -q 9.
-	                   If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
-	                   If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:)
-	                   and no placeholders remain, mona reuses that request body directly instead of rebuilding debugger context
-	    -offline     : Force offline behavior for this request even when a default engine is configured
-	    -test        : Override the configured model with a lower-cost test model
+Arguments:
+    -e <engine>      : AI engine to propose first in the interactive selector: offline, openai, openaiagents, anthropic, openrouter, ollama, customai, or openai-generic.
+                       If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
+                       and otherwise proposes the first usable configured engine.
+                       openaiagents briefly validates the external bridge Python environment before submission
+                       openaiagents launches a persistent localhost bridge outside the debugger and queues the job there
+                       For ollama/customai/openai-generic, a key is not required; those engines use <engine>.url instead
+                       Engine-specific request options can be configured generically via <engine>.options.*
+    -model <id>     : Optional explicit model override. If specified, this becomes the initially proposed model in the selector
+    -m <id>         : Alias for -model on ai/tellme profiles where -m is not reserved for module filters
+    -timeout <s>    : Optional base timeout in seconds for each provider request attempt
+                       Use this when larger prompts or slower models time out
+                       Timeout retries only happen after actual timeout errors
+                       Each timeout retry adds up to 120 seconds, waits 10 seconds before resubmitting, and caps at 6000 seconds
+                       Context-window/file-upload fallbacks do not increase the timeout
+                       For ollama and other local/self-hosted engines, you may need to increase this in line with
+                       the performance of the local model and hardware
+                       For openai-generic only, -timeout 0 means no total deadline and periodic still-waiting output
+                       For openaiagents response truncation, increase openaiagents.max_tokens or OPENAI_MAX_TOKENS
+                       For response truncation, increase anthropic.max_tokens or ANTHROPIC_MAX_TOKENS
+                       For ollama/customai/openai-generic response parsing, configure <engine>.response_field if the returned text is nested in JSON
+    -encoding <name> : Optional logfile text encoding override. Defaults to UTF-8 for generated files.
+                       Use this only when a downstream tool requires a different codec, for example latin-1 or cp1252
+    -maxsize <kb>   : Optional q1 request-size target in kilobytes. By default, tellme keeps the larger evidence set
+                       and only reports the final request size. If you set -maxsize, mona will try to reduce lower-priority
+                       evidence to stay within that target and will record any reductions under [omitted_sections]
+    -submit         : Strict non-interactive mode. tellme builds the evidence, submits immediately, prints the response, and stops.
+                       No engine/model menu is shown and no post-response chat loop is started.
+                       Required engine settings such as URL/model must already be configured or provided on the command line.
+    -upload         : OpenAI and Anthropic. Upload the saved request file plus any -l/-p files and submit a short
+                       inline instruction that tells the model to use the uploaded request file as the authoritative prompt source.
+                       Mona asks the model to echo the unique file ID for each uploaded file so you can reuse them later with -id.
+                       Mona also prints the provider-assigned file IDs right after upload and writes them into tellme_response.md.
+                       If this flag is not set, tellme embeds the rendered request and any extra file contents directly in the text prompt.
+                       Mona tries the provider SDK first and falls back to direct HTTPS if the SDK is unavailable or fails.
+    -id <ids>       : Comma- or space-separated file ID(s) to reference in a later request, for example:
+                       -id file-abc123,file-def456
+                       This works with any request profile, including -q 9 templates.
+                       Use the file IDs printed by Mona after upload or the Uploaded file IDs section in tellme_response.md.
+                       Mona passes the IDs through as-is, so make sure they belong to the provider you selected.
+    -q <number>     : Required. Prompt profile to use:
+                       1 = analyse the current crash state
+                       2 = analyse the current __PC__ function as the primary target
+                           and optionally analyse one extra function from -a
+                           By default, q2 stays focused on just those one or two functions
+                           Use -d to also expand linked call/jump targets from those functions
+                       3 = analyse whether a controlled heap chunk can steer execution to a target address,
+                           or, without -t, discover the best reachable chunk-modification paths and
+                           controlled-data consumption sinks such as vftable use or indirect call/jmp
+                       8 = analyse ROP primitive quality and feasibility
+                       9 = load a request template from -f <file>
+                       Running -q 1, -q 2, -q 3, or -q 8 also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
+                       otherwise in the same folder as mona.ini
+                       Those template files are not used automatically; use -q 9 -f <file> to apply one
+    -a <address>    : Optional address/register/module!symbol/expression to analyse.
+                       With -q 1, this adds an extra heap target.
+                       With -q 2, this adds a second function analysis rooted at that location,
+                       while still keeping the live __PC__ function as the primary context.
+                       It does not replace the current function.
+    -c <address>    : With -q 3, required controlled heap chunk address.
+                       This should point at the chunk whose contents you can manipulate.
+                       q3 treats that chunk as the attacker-controlled input and asks which
+                       offsets and values would be needed to influence reachable code paths.
+    -t <address>    : With -q 3, optional target code address to reach.
+                       If omitted, q3 switches to discovery mode and looks for reachable paths
+                       that can modify the controlled chunk, use controlled-derived values as
+                       write destinations or memory-modification targets elsewhere, or consume
+                       controlled data in a way that could lead to EIP/RIP control.
+                       If supplied, q3 switches to targeted mode and asks whether execution can
+                       plausibly reach that address by changing only bytes inside the controlled chunk.
+    -l <files>      : Optional comma-separated context files, for example -l "file1,file2"
+                       Any file containing alloc()/free() lines is treated as a heapdynamics log
+                       Other files are added as supporting context under [additional_context_files]
+                       If no heapdynamics log is supplied, tellme will still look for c:\\alloc.txt
+                       For -q 1, focused matches are exposed under [heapdynamics]
+                       and the larger raw heapdynamics context remains available under [heapdynamics_full]
+                       unless you explicitly ask mona to shrink the request with -maxsize
+    -cpb <bytes>    : Optional badchars for pointer filtering, for example '\\x00\\x0a\\x0d'
+                       With -q 1, and with -q 9 when the template still resolves live [findmsp] context,
+                       mona will use this list when looking for first trampoline candidates for registers
+                       that point into the cyclic pattern, and for [seh] candidates when findmsp
+                       confirms an SEH overwrite. This is usually a good idea, otherwise the
+                       suggested trampoline or SEH candidate may contain bytes you already know you cannot use
+    -d <number>     : With -q 2, -q 3, or -q 3b, optional call/jump follow depth for control_flow_targets.
+                       For -q 2, this controls how many levels of linked call/jump targets mona adds
+                       on top of the current __PC__ function and the optional -a function.
+                       -d 0 = do not include linked targets; analyze only the current function and optional -a function
+                       -d 1 = include first-level linked targets reached directly from those functions
+                       -d 2..4 = include deeper nested linked targets up to that depth
+                       For -q 2, the default is 0 to keep the request small and focused.
+                       For -q 3, the same depth is also used as the default number of caller frames
+                       to inspect on the return-resume path.
+                       q3 follows direct branches/calls/jumps, nested callees, and caller-side resume paths.
+                       Default: q2=0, q3/q3b=2. Maximum: 4.
+    -p <file>       : Optional PoC/trigger file. The full file contents are added under [poc_file]
+    -f <file>       : Required for -q 9.
+                       If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
+                       If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:)
+                       and no placeholders remain, mona reuses that request body directly instead of rebuilding debugger context
+    -offline        : Force offline behavior for this request even when a default engine is configured
+    -test           : Override the configured model with a lower-cost test model
 
-	Examples:
-	    __LAUNCHCMD__ tellme -q 1
-	    __LAUNCHCMD__ config -set mona.ai.engine anthropic
-	    __LAUNCHCMD__ tellme -e anthropic -q 2
-	    __LAUNCHCMD__ config -set mona.ai.engine ollama
-	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
-	    __LAUNCHCMD__ config -set ollama.model llama3
-	    __LAUNCHCMD__ tellme -e ollama -q 1
-	    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/v1/responses
-	    __LAUNCHCMD__ tellme -e ollama -q 1 -timeout 300
-	    __LAUNCHCMD__ config -set mona.ai.engine customai
-	    __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
-	    __LAUNCHCMD__ config -set customai.model llama3
-	    __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
-	    __LAUNCHCMD__ tellme -e customai -q 1
-	    __LAUNCHCMD__ config -set mona.ai.engine openai-generic
-	    __LAUNCHCMD__ config -set openai-generic.url http://192.168.86.154:8080
-	    __LAUNCHCMD__ config -set openai-generic.model llama3
-	    __LAUNCHCMD__ tellme -e openai-generic -q 1
-	    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
-	    __LAUNCHCMD__ tellme -e openai -q 3 -c poi(esp+4) -t kernel32!CreateFileW
-	    __LAUNCHCMD__ tellme -e openai -q 3 -c eax -t kernel32!VirtualProtect -d 2
-	    __LAUNCHCMD__ tellme -e openai -q 3 -c eax
-	    __LAUNCHCMD__ tellme -e openaiagents -q 1 -submit
-	    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
-	    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
-	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
-	    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py -upload
-	    __LAUNCHCMD__ tellme -e anthropic -q 1 -l alloc.txt,triage.txt -p poc.py -upload
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -id file-abc123,file-def456
-	    __LAUNCHCMD__ tellme -e openai -model gpt-5-mini -q 1
-	    __LAUNCHCMD__ tellme -e anthropic -model claude-sonnet-4-6 -q 1
-	    __LAUNCHCMD__ tellme -e openai -q 1 -submit
-	    __LAUNCHCMD__ tellme -e openai -q 1 -timeout 120
-	    __LAUNCHCMD__ tellme -e openai -q 1 -maxsize 300
-	    __LAUNCHCMD__ tellme -e openai -q 1 -cpb '\\x00\\x0a\\x0d'
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f request.md
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -cpb '\\x00\\x0a\\x0d'
-	    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
-	    __LAUNCHCMD__ tellme -e openai -q 1 -offline
-	    __LAUNCHCMD__ tellme -e openai -q 1 -test
+Examples:
+    __LAUNCHCMD__ tellme -q 1
+    __LAUNCHCMD__ config -set mona.ai.engine anthropic
+    __LAUNCHCMD__ tellme -e anthropic -q 2
+    __LAUNCHCMD__ config -set mona.ai.engine ollama
+    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/api/generate
+    __LAUNCHCMD__ config -set ollama.model llama3
+    __LAUNCHCMD__ tellme -e ollama -q 1
+    __LAUNCHCMD__ config -set ollama.url http://127.0.0.1:11434/v1/responses
+    __LAUNCHCMD__ tellme -e ollama -q 1 -timeout 300
+    __LAUNCHCMD__ config -set mona.ai.engine customai
+    __LAUNCHCMD__ config -set customai.url http://127.0.0.1:8080/api/generate
+    __LAUNCHCMD__ config -set customai.model llama3
+    __LAUNCHCMD__ config -set customai.response_field choices.0.message.content
+    __LAUNCHCMD__ tellme -e customai -q 1
+    __LAUNCHCMD__ config -set mona.ai.engine openai-generic
+    __LAUNCHCMD__ config -set openai-generic.url http://127.0.0.1:8080
+    __LAUNCHCMD__ config -set openai-generic.model llama3
+    __LAUNCHCMD__ tellme -e openai-generic -q 1
+    __LAUNCHCMD__ tellme -e openai -q 2 -a kernel32!CreateFileW
+    __LAUNCHCMD__ tellme -e openai -q 3 -c poi(esp+4) -t kernel32!CreateFileW
+    __LAUNCHCMD__ tellme -e openai -q 3 -c eax -t kernel32!VirtualProtect -d 2
+    __LAUNCHCMD__ tellme -e openai -q 3 -c eax
+    __LAUNCHCMD__ tellme -e openaiagents -q 1 -submit
+    __LAUNCHCMD__ tellme -e openai -q 2 -d 2
+    __LAUNCHCMD__ tellme -e openai -q 2 -a eip
+    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py
+    __LAUNCHCMD__ tellme -e openai -q 1 -l alloc.txt,triage.txt -p poc.py -upload
+    __LAUNCHCMD__ tellme -e anthropic -q 1 -l alloc.txt,triage.txt -p poc.py -upload
+    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -id file-abc123,file-def456
+    __LAUNCHCMD__ tellme -e openai -model gpt-5-mini -q 1
+    __LAUNCHCMD__ tellme -e anthropic -model claude-sonnet-4-6 -q 1
+    __LAUNCHCMD__ tellme -e openai -q 1 -submit
+    __LAUNCHCMD__ tellme -e openai -q 1 -timeout 120
+    __LAUNCHCMD__ tellme -e openai -q 1 -maxsize 300
+    __LAUNCHCMD__ tellme -e openai -q 1 -cpb '\\x00\\x0a\\x0d'
+    __LAUNCHCMD__ tellme -e openai -q 9 -f request.md
+    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -l alloc.txt -p poc.py
+    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q1 -cpb '\\x00\\x0a\\x0d'
+    __LAUNCHCMD__ tellme -e openai -q 9 -f ai.q2 -a kernel32!CreateFileW
+    __LAUNCHCMD__ tellme -e openai -q 1 -offline
+    __LAUNCHCMD__ tellme -e openai -q 1 -test
 
-	Debugger context variables:
-	    [debugger]                 = debugger backend name
-	    [debugger_flavor]          = debugger flavor or front-end name
-	    [processname]              = debugged process image name
-	    [architecture]             = target architecture
-	    [pointer_size]             = pointer width in bytes
-	    [python_version]           = Python runtime version used to build the request
-	    [timestamp]                = local timestamp when the request was built
-	    [registers]                = current register set and values
-	    [program_counter]          = current instruction pointer
-	    [stack_pointer]            = current stack pointer
-	    [pc_disasm]                = current instruction plus nearby disassembly
-	    [pc_module]                = module summary for the current instruction pointer
-	    [pc_page]                  = memory page summary for the current instruction pointer
-	    [stack_page]               = memory page summary for the current stack pointer
-	    [pc_memory]                = raw bytes near the current instruction pointer
-	    [stack_memory]             = raw bytes near the current stack pointer
-	    [modules]                  = crash-focused module summary used by default for -q 1
-	    [modules_mini]             = explicit alias of the compact q1 module summary
-	    [modules_full]             = full loaded module listing
-	    [call_stack]               = WinDBG call stack output
-	    [windbg_analyze]           = compact !analyze -v crash summary used by default for -q 1
-	    [windbg_analyze_mini]      = explicit alias of the compact q1 !analyze -v summary
-	    [windbg_analyze_full]      = full raw !analyze -v output
-	    [findmsp]                  = cyclic-pattern analysis results
-	                                 For q1, and for q9 templates that still resolve live debugger context,
-	                                 registers that point into the pattern may also include a first
-	                                 trampoline candidate from findJMP(). Consider using -cpb so those
-	                                 candidates are filtered against known badchars
-	    [findseh]                  = automatic findSEH search results when findmsp confirms an SEH overwrite,
-	                                 using the same -cpb badchar filter when supplied
-	    [seh_chain]                = 32-bit SEH chain summary
-	    [instruction_heap_references] = heap and pointer context related to the current instruction
-	    [heap_details]             = heap, segment, VAD, and chunk summary
-	    [heap_analysis_target]     = extra heap-focused target from -a when using -q 1
-	    [heapdynamics]             = focused heapdynamics matches used by default for -q 1
-	    [heapdynamics_mini]        = explicit alias of the focused q1 heapdynamics matches
-	    [heapdynamics_full]        = larger raw heapdynamics context, including file-backed evidence when retained
-	    [evidence]                 = deduplicated shared heap and alloc/free evidence records
-	    [size_budget]              = final q1 request size and optional requested -maxsize target
-	    [omitted_sections]         = sections dropped or blanked only when mini evidence omits data or -maxsize forces reduction
-	    [additional_context_files] = supporting files from -l that are not heapdynamics logs
-	    [poc_file]                 = optional PoC/trigger file contents from -p
-	    [analysis_target]          = live __PC__ address/source used as the primary q2 context
-	    [q3_goal]                  = q3 mode selector: targeted reachability or untargeted discovery
-	    [current_function]         = function context for the live __PC__ location
-	    [additional_function]      = extra q2 function context collected from -a when it differs
-	    [additional_function_note] = note explaining when -a matched the live __PC__ location
-	    [function_analyses]        = ordered list of q2 function analyses, including invalid-location reports
-	    [reachability_target]      = q3 target address summary, disassembly, symbol, and page/module details
-	    [controlled_chunk]         = q3 controlled chunk metadata, memory preview, and chunk dump context
-	    [controlled_chunk_references] = q3 registers and stack slots that already point into the controlled chunk
-	    [target_function]          = q3 containing-function context for the target address
-	    [return_context]           = q3 saved return-site context when the current function needs to return first
-	    [return_resume_analysis]   = q3 caller-resume wrapper with retaddr, caller, resume disassembly, branch targets, and indirect transfers
-	    [controlled_object_callees]= q3 first-hop direct callees that likely receive controlled or controlled-derived object pointers, with full callee bodies and write-like instructions
-	    [control_flow_disasm_map]  = q3 canonical store for deduplicated full control-flow disassembly bodies referenced by control_flow_disasm_ref
-	    [control_flow_target_map]  = q3 canonical store for exhaustive control-flow target nodes referenced by control_flow_target_refs and nested_control_flow_target_refs
-	    [caller_function]          = q3 containing-function context for the immediate caller resume site
-	    [caller_chain]             = q3 list of caller resume frames inspected on the return-resume path
-	    [caller_resume_window]     = q3 bounded disassembly window after the saved return address
-	    [post_return_constraints]  = q3 caller-side instructions likely to consume return values or persistent state
-	    [reachable_functions]      = q3 flattened reachable call/jump targets from the current and caller-side code paths
-	    [rop_target_modules]       = q8 module, IAT, and compact return-ending windows for ROP analysis
-	For -q 1, -q 2, -q 3, and -q 8, the final request sent to the AI uses the structured 'variables' object.
-	For -q 1 specifically, compact variables are used by default, but larger *_full variables are still kept unless
-	you explicitly request shrinking with -maxsize.
-	For -q 9, mona reads the template file and replaces placeholders such as [registers] and [pc_disasm]
-	with the actual debugger values before submitting the resulting prompt.
-	For -q 9, q3/q8 placeholders such as [controlled_chunk], [return_resume_analysis], or [rop_target_modules]
-	trigger the corresponding live context collection as well.
-	Unknown placeholders are reported and left unchanged instead of aborting prompt generation.
+Debugger context variables:
+    [debugger]                    = debugger backend name
+    [debugger_flavor]             = debugger flavor or front-end name
+    [processname]                 = debugged process image name
+    [architecture]                = target architecture
+    [pointer_size]                = pointer width in bytes
+    [python_version]              = Python runtime version used to build the request
+    [timestamp]                   = local timestamp when the request was built
+    [registers]                   = current register set and values
+    [program_counter]             = current instruction pointer
+    [stack_pointer]               = current stack pointer
+    [pc_disasm]                   = current instruction plus nearby disassembly
+    [pc_module]                   = module summary for the current instruction pointer
+    [pc_page]                     = memory page summary for the current instruction pointer
+    [stack_page]                  = memory page summary for the current stack pointer
+    [pc_memory]                   = raw bytes near the current instruction pointer
+    [stack_memory]                = raw bytes near the current stack pointer
+    [modules]                     = crash-focused module summary used by default for -q 1
+    [modules_mini]                = explicit alias of the compact q1 module summary
+    [modules_full]                = full loaded module listing
+    [call_stack]                  = WinDBG call stack output
+    [windbg_analyze]              = compact !analyze -v crash summary used by default for -q 1
+    [windbg_analyze_mini]         = explicit alias of the compact q1 !analyze -v summary
+    [windbg_analyze_full]         = full raw !analyze -v output
+    [findmsp]                     = cyclic-pattern analysis results
+                                    For q1, and for q9 templates that still resolve live debugger context,
+                                    registers that point into the pattern may also include a first
+                                    trampoline candidate from findJMP(). Consider using -cpb so those
+                                    candidates are filtered against known badchars
+    [seh]                         = automatic mona seh search results when findmsp confirms an SEH overwrite,
+                                    using the same -cpb badchar filter when supplied
+    [seh_chain]                   = 32-bit SEH chain summary
+    [instruction_heap_references] = heap and pointer context related to the current instruction
+    [heap_details]                = heap, segment, VAD, and chunk summary
+    [heap_analysis_target]        = extra heap-focused target from -a when using -q 1
+    [heapdynamics]                = focused heapdynamics matches used by default for -q 1
+    [heapdynamics_mini]           = explicit alias of the focused q1 heapdynamics matches
+    [heapdynamics_full]           = larger raw heapdynamics context, including file-backed evidence when retained
+    [evidence]                    = deduplicated shared heap and alloc/free evidence records
+    [size_budget]                 = final q1 request size and optional requested -maxsize target
+    [omitted_sections]            = sections dropped or blanked only when mini evidence omits data or -maxsize forces reduction
+    [additional_context_files]    = supporting files from -l that are not heapdynamics logs
+    [poc_file]                    = optional PoC/trigger file contents from -p
+    [analysis_target]             = live __PC__ address/source used as the primary q2 context
+    [q3_goal]                     = q3 mode selector: targeted reachability or untargeted discovery
+    [current_function]            = function context for the live __PC__ location
+    [additional_function]         = extra q2 function context collected from -a when it differs
+    [additional_function_note]    = note explaining when -a matched the live __PC__ location
+    [function_analyses]           = ordered list of q2 function analyses, including invalid-location reports
+    [reachability_target]         = q3 target address summary, disassembly, symbol, and page/module details
+    [controlled_chunk]            = q3 controlled chunk metadata, memory preview, and chunk dump context
+    [controlled_chunk_references] = q3 registers and stack slots that already point into the controlled chunk
+    [target_function]             = q3 containing-function context for the target address
+    [return_context]              = q3 saved return-site context when the current function needs to return first
+    [return_resume_analysis]      = q3 caller-resume wrapper with retaddr, caller, resume disassembly, branch targets, and indirect transfers
+    [controlled_object_callees]   = q3 first-hop direct callees that likely receive controlled or controlled-derived object pointers, with full callee bodies and write-like instructions
+    [control_flow_disasm_map]     = q3 canonical store for deduplicated full control-flow disassembly bodies referenced by control_flow_disasm_ref
+    [control_flow_target_map]     = q3 canonical store for exhaustive control-flow target nodes referenced by control_flow_target_refs and nested_control_flow_target_refs
+    [caller_function]             = q3 containing-function context for the immediate caller resume site
+    [caller_chain]                = q3 list of caller resume frames inspected on the return-resume path
+    [caller_resume_window]        = q3 bounded disassembly window after the saved return address
+    [post_return_constraints]     = q3 caller-side instructions likely to consume return values or persistent state
+    [reachable_functions]         = q3 flattened reachable call/jump targets from the current and caller-side code paths
+    [rop_target_modules]          = q8 module, IAT, and compact return-ending windows for ROP analysis
 
-	Request generation notes:
-	    tellme can always build and save the request file, even if no supported OpenAI SDK is installed
-	    and/or no provider credentials or URL are configured.
-	    That means manual submission is a supported workflow:
-	    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
-	    If you prefer direct API calls from mona instead, install a supported SDK where needed and configure the engine settings.
-	    Before a live provider request is sent, tellme queries the provider models API and checks whether
-	    the configured model is available to that provider configuration when the engine supports model discovery.
-	    If mona.ini contains entries such as <engine>.options.name=value, tellme collects them into an
-	    'options' object and includes that object in the provider request body.
-	    Model-specific overrides are also supported via keys such as <engine>.options.<model>.name=value.
-	    Those entries are only applied when that exact model is selected, and they override generic
-	    <engine>.options.name values when both are present.
-	    Direct API requests ask for confirmation by default.
-	    Add -submit when you want mona to skip that prompt and send the request immediately.
-	    When you run -q 1, -q 2, -q 3, or -q 8, mona also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
-	    otherwise in the same folder as mona.ini.
-	    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
-	    They are provided for inspection or reuse and are not applied automatically during -q 1, -q 2, -q 3, or -q 8.
-	    To use one of those templates, run -q 9 -f ai.q1, ai.q2, ai.q3, or ai.q8.
-	    If the -q 9 file already contains a saved request prompt and no placeholders remain, mona submits that prompt body directly.
-	    With -offline, tellme saves the request file and prints only the saved file path instead of dumping the
-	    full request to the debugger console.
+For -q 1, -q 2, -q 3, and -q 8, the final request sent to the AI uses the structured 'variables' object.
+For -q 1 specifically, compact variables are used by default, but larger *_full variables are still kept unless
+you explicitly request shrinking with -maxsize.
+For -q 9, mona reads the template file and replaces placeholders such as [registers] and [pc_disasm]
+with the actual debugger values before submitting the resulting prompt.
+For -q 9, q3/q8 placeholders such as [controlled_chunk], [return_resume_analysis], or [rop_target_modules]
+trigger the corresponding live context collection as well.
+Unknown placeholders are reported and left unchanged instead of aborting prompt generation.
 
-	Question notes:
-	    -q 1 focuses on the current crash state, nearby memory, and related heap context.
-	    -q 2 focuses on the function containing the live __PC__ location and optionally a second function from -a.
-	    -q 3 focuses on whether a controlled heap chunk can steer execution from the current snapshot to a target address,
-	    including the case where the current function must return and execution resumes in the caller before the target is reached.
-	    If -t is omitted, q3 switches to discovery mode and instead looks for the most promising reachable
-	    chunk-modification paths, controlled-derived destination/write-target paths, or controlled-data
-	    consumption paths such as vftable use or indirect call/jmp.
-	    q3 asks the AI to explain the required chunk offsets and values for up to two strong scenarios.
-	    -q 8 focuses on ROP primitive quality and feasibility.
-	    With -q 2 and -q 3, -d controls how many nested call/jump levels mona will follow when collecting target disassembly.
-	    For -q 3, that same depth also controls how many caller frames mona inspects for return-resume analysis.
-	    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
+Request generation notes:
+    tellme can always build and save the request file, even if no supported OpenAI SDK is installed
+    and/or no provider credentials or URL are configured.
+    That means manual submission is a supported workflow:
+    you can generate the request file and paste it into ChatGPT, Grok, Claude, or another AI tool yourself.
+    If you prefer direct API calls from mona instead, install a supported SDK where needed and configure the engine settings.
+    Before a live provider request is sent, tellme queries the provider models API and checks whether
+    the configured model is available to that provider configuration when the engine supports model discovery.
+    If mona.ini contains entries such as <engine>.options.name=value, tellme collects them into an
+    'options' object and includes that object in the provider request body.
+    Model-specific overrides are also supported via keys such as <engine>.options.<model>.name=value.
+    Those entries are only applied when that exact model is selected, and they override generic
+    <engine>.options.name values when both are present.
+    Direct API requests ask for confirmation by default.
+    Add -submit when you want mona to skip that prompt and send the request immediately.
+    When you run -q 1, -q 2, -q 3, or -q 8, mona also rewrites ai.q1, ai.q2, ai.q3, or ai.q8 in the working folder if set,
+    otherwise in the same folder as mona.ini.
+    Those files are reusable request templates built with [variable] placeholders instead of live debugger values.
+    They are provided for inspection or reuse and are not applied automatically during -q 1, -q 2, -q 3, or -q 8.
+    To use one of those templates, run -q 9 -f ai.q1, ai.q2, ai.q3, or ai.q8.
+    If the -q 9 file already contains a saved request prompt and no placeholders remain, mona submits that prompt body directly.
+    With -offline, tellme saves the request file and prints only the saved file path instead of dumping the
+    full request to the debugger console.
 
-	Test model overrides:
-	    - OpenAI   : gpt-5-nano
-	    - Anthropic: claude-haiku-4-5
+Question notes:
+    -q 1 focuses on the current crash state, nearby memory, and related heap context.
+    -q 2 focuses on the function containing the live __PC__ location and optionally a second function from -a.
+    -q 3 focuses on whether a controlled heap chunk can steer execution from the current snapshot to a target address,
+    including the case where the current function must return and execution resumes in the caller before the target is reached.
+    If -t is omitted, q3 switches to discovery mode and instead looks for the most promising reachable
+    chunk-modification paths, controlled-derived destination/write-target paths, or controlled-data
+    consumption paths such as vftable use or indirect call/jmp.
+    q3 asks the AI to explain the required chunk offsets and values for up to two strong scenarios.
+    -q 8 focuses on ROP primitive quality and feasibility.
+    With -q 2 and -q 3, -d controls how many nested call/jump levels mona will follow when collecting target disassembly.
+    For -q 3, that same depth also controls how many caller frames mona inspects for return-resume analysis.
+    tellme is always registered under WinDBG. If the AI SDK import fails at runtime, mona will report the actual import error instead of hiding the command.
+
+Test model overrides:
+    - OpenAI   : gpt-5-nano
+    - Anthropic: claude-haiku-4-5
 		""".replace("__LAUNCHCMD__", launchcmd).replace("__PC__", PROGRAM_COUNTER.upper())
 
 
