@@ -1772,6 +1772,57 @@ def _getWindbgAnalyze(command="!analyze -v", max_lines=0):
 	return result
 
 
+def _snapshotAIOutputFolder():
+	"""Capture output-folder mtimes before an AI helper runs a Mona command."""
+	mndbg.dbgp(get_current_function_name())
+	snapshot = {}
+	try:
+		anchor_path = getAbsolutePath("tellme_ai_anchor.tmp")
+		working_folder = os.path.dirname(anchor_path)
+		if working_folder == "" or not os.path.isdir(working_folder):
+			return snapshot
+		for name in os.listdir(working_folder):
+			path_value = os.path.join(working_folder, name)
+			try:
+				if os.path.isfile(path_value):
+					snapshot[path_value] = os.path.getmtime(path_value)
+			except Exception:
+				pass
+	except Exception:
+		return snapshot
+	return snapshot
+
+
+def _getAIChangedFiles(before_snapshot):
+	"""Return output files created or changed since an AI helper snapshot."""
+	mndbg.dbgp(get_current_function_name())
+	changed = []
+	try:
+		after_snapshot = _snapshotAIOutputFolder()
+		for path_value, mtime_value in after_snapshot.items():
+			if path_value not in before_snapshot or before_snapshot.get(path_value, 0) != mtime_value:
+				changed.append(path_value)
+	except Exception:
+		return changed
+	changed.sort()
+	return changed
+
+
+def _readAIFilePreview(path_value, max_chars=32768):
+	"""Read a bounded text preview from an AI-generated output file."""
+	mndbg.dbgp(get_current_function_name())
+	try:
+		file_size = os.path.getsize(path_value)
+		with open(path_value, "rb") as fh:
+			data = fh.read(min(file_size, max_chars))
+		text_value = ensure_text(data, encoding="utf-8")
+		if file_size > len(data):
+			text_value += "\n\n[... file truncated at %d of %d bytes ...]" % (len(data), file_size)
+		return text_value
+	except Exception as e:
+		return "Unable to read %s: %s" % (path_value, str(e))
+
+
 def _getHeapChunkMetadata(address):
 	"""Resolve debugger evidence for get heap chunk metadata.
 	Args: address.
@@ -1780,24 +1831,33 @@ def _getHeapChunkMetadata(address):
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
-	global g_heap_cmd_prefix
-	if g_heap_cmd_prefix is None:
-		try:
-			_probe = dbg.nativeCommand("!ext.heap")
-			if _probe and "Unable to find" not in _probe and "No export" not in _probe:
-				g_heap_cmd_prefix = "!ext."
-			else:
-				g_heap_cmd_prefix = "!"
-		except Exception:
-			g_heap_cmd_prefix = "!"
-	cmd = "%sheap -p -a %s" % (g_heap_cmd_prefix, PTR_PRINT % address)
+	cmd = "%s heap -a %s" % (getAliasName(), PTR_PRINT % address)
 	result["command"] = cmd
+	before_snapshot = _snapshotAIOutputFolder()
 	try:
-		result["output"] = ensure_text(dbg.nativeCommand(cmd)).strip()
+		command_name, mona_args = _parse_mona_args_with_argparse(["heap", "-a", PTR_PRINT % address])
+		accepted = {}
+		for registered_name, registered_command in commands.items():
+			accepted[registered_name] = registered_command
+			alias_name = ensure_text(getattr(registered_command, "alias", "")).strip()
+			if alias_name != "":
+				accepted[alias_name] = registered_command
+		if command_name not in accepted:
+			raise ValueError("mona heap command is not registered")
+		accepted[command_name].parseProc(mona_args)
+		result["output"] = "mona heap command completed; inspect changed_files/file_previews for generated output"
 	except Exception as e:
 		result["error"] = str(e)
-		mndbg.dbgp("tellme: heap metadata lookup failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
-	result["heap_x"] = _getHeapXMetadata(address)
+		mndbg.dbgp("tellme: mona heap lookup failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
+	changed_files = _getAIChangedFiles(before_snapshot)
+	if len(changed_files) > 0:
+		result["changed_files"] = changed_files
+		result["file_previews"] = []
+		for path_value in changed_files[:4]:
+			result["file_previews"].append(OrderedDict([
+				("path", path_value),
+				("preview", _readAIFilePreview(path_value, max_chars=32768)),
+			]))
 	return result
 
 
@@ -1809,23 +1869,8 @@ def _getHeapXMetadata(address):
 	mndbg.dbgp(get_current_function_name())
 	result = OrderedDict()
 	result["address"] = PTR_PRINT % address
-	global g_heap_cmd_prefix
-	if g_heap_cmd_prefix is None:
-		try:
-			_probe = dbg.nativeCommand("!ext.heap")
-			if _probe and "Unable to find" not in _probe and "No export" not in _probe:
-				g_heap_cmd_prefix = "!ext."
-			else:
-				g_heap_cmd_prefix = "!"
-		except Exception:
-			g_heap_cmd_prefix = "!"
-	cmd = "%sheap -x %s" % (g_heap_cmd_prefix, PTR_PRINT % address)
-	result["command"] = cmd
-	try:
-		result["output"] = ensure_text(dbg.nativeCommand(cmd)).strip()
-	except Exception as e:
-		result["error"] = str(e)
-		mndbg.dbgp("tellme: heap -x lookup failed for %s using '%s': %s" % (PTR_PRINT % address, cmd, str(e)), errormode=False)
+	result["command"] = "%s heap -a %s" % (getAliasName(), PTR_PRINT % address)
+	result["note"] = "AI heap metadata collection uses !mona heap -a instead of WinDBG !heap -x."
 	return result
 
 
@@ -9146,13 +9191,13 @@ Use this internal classification to guide the rest of the answer.
 
 Trust order (highest to lowest):
 1. Raw register values, pc_disasm, stack_memory, findmsp offsets
-2. evidence.heap_blocks (!heap -p -a style output) and heapdynamics matched evidence
+2. evidence.heap_blocks (!mona heap -a style output) and heapdynamics matched evidence
 3. instruction_heap_references, pc_page access rights, ntglobal_flag
 4. call_stack and seh_chain
 5. windbg_analyze and windbg_analyze_full as heuristic only; validate them against items 1-4
 
 Confidence scale:
-- CONFIRMED: findmsp, !heap -p -a style evidence, or equivalent directly names the cause with no reasonable alternative
+- CONFIRMED: findmsp, !mona heap -a style evidence, or equivalent directly names the cause with no reasonable alternative
 - HIGH: multiple independent evidence sources agree; minor gaps remain
 - MEDIUM: primary evidence is present but important corroboration is missing or ambiguous
 - LOW: suggestive signals only; alternative explanations remain viable
@@ -9219,7 +9264,7 @@ Sub-section E - root cause:
 If a poc file is provided or referenced via an already uploaded file, and/or based on other evidence such as call stacks, heap dynamics logs and/or other files provided,  identify a possible root cause and trigger in the poc file (if any). 
 Style rules:
 - For stack corruption, be concise. The findmsp numbers are the primary deliverable.
-- For heap corruption, do not summarize away the key !heap -p -a style state or alloc/free chain when that is the root-cause evidence.
+- For heap corruption, do not summarize away the key !mona heap -a style state or alloc/free chain when that is the root-cause evidence.
 - Never transcribe raw hex dumps or long pattern strings. Quote only the bytes, values, offsets, or call-stack lines that support the conclusion.
 - Cite register values, offsets, chunk sizes, and addresses numerically.
 - Do not invent facts. Mark uncertain inferences clearly.
@@ -9430,7 +9475,7 @@ return-resume route
 List RetAddr, caller+offset, first resume basic block, visible branches followed, post-return indirect calls/jumps, post-return CD writes, source classifications, and missing commands if under-collected.
 
 10. Minimal next checks
-Smallest debugger checks to confirm/reject unresolved scenarios. Prefer bp, ba, u, uf, dd, dps, poi(...), r, ?, ln, !heap -p -a, !address, and useful !mona commands.
+Smallest debugger checks to confirm/reject unresolved scenarios. Prefer bp, ba, u, uf, dd, dps, poi(...), r, ?, ln, !mona heap -a, !address, and useful !mona commands.
 For each: scenario id, next step, exact location/register/field/offset, current control status, likelihood HIGH/MEDIUM/LOW, command(s), confirming observation, rejecting observation.
 
 11. Fallback breakpoint candidates
@@ -9635,7 +9680,7 @@ Sink ranking:
 
 Center the analysis on:
 1. chunk bytes and pointer-like fields inside the controlled chunk
-2. the exact !heap -p -a style probe captured for the requested -c address
+2. the exact !mona heap -a style probe captured for the requested -c address
 3. registers and stack slots that reference the chunk
 4. current function, reachable callees, branch targets, caller functions, and caller-resume sites
 5. direct callees reached with controlled-derived registers or stack arguments
@@ -12696,6 +12741,8 @@ def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_s
 	Returns: provider response text and related request metadata.
 	"""
 	mndbg.dbgp(get_current_function_name())
+	if not isinstance(max_tokens, int) or max_tokens <= 0:
+		max_tokens = 4096
 	mndbg.dbgp("tellme: calling Anthropic SDK model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
 	))
@@ -12715,8 +12762,7 @@ def callAIAnthropicSDK(anthropic_client_class, api_key, model, prompt, timeout_s
 			"content": _buildAnthropicMessageContent(request_prompt, referenced_files=referenced_files)
 		}]
 	}
-	if max_tokens > 0:
-		message_kwargs["max_tokens"] = max_tokens
+	message_kwargs["max_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		message_kwargs["extra_body"] = {"options": options}
 	use_files_beta = bool(referenced_files)
@@ -12751,6 +12797,8 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, 
 	Returns: provider response text and related request metadata.
 	"""
 	mndbg.dbgp(get_current_function_name())
+	if not isinstance(max_tokens, int) or max_tokens <= 0:
+		max_tokens = 4096
 	mndbg.dbgp("tellme: calling Anthropic model '%s' with timeout %.1fs and max_tokens=%d" % (
 		model, timeout_seconds, max_tokens
 	))
@@ -12771,8 +12819,7 @@ def callAIAnthropic(api_key, model, prompt, timeout_seconds=60.0, max_tokens=0, 
 			}
 		]
 	}
-	if max_tokens > 0:
-		request_body["max_tokens"] = max_tokens
+	request_body["max_tokens"] = max_tokens
 	if isinstance(options, dict) and len(options) > 0:
 		request_body["options"] = options
 	request_data = json.dumps(request_body).encode("utf-8")
@@ -37235,6 +37282,8 @@ class MnAI(object):
 		self.base_prompt = ""
 		self.response = ""
 		self.request_id = ""
+		self.last_request_failed = False
+		self.last_request_error = ""
 		self.request_logfile_path = ""
 		self.response_logfile_path = ""
 		self.raw_response_logfile_path = ""
@@ -37250,6 +37299,21 @@ class MnAI(object):
 		self.chat_history = []
 		self.chat_active = False
 		self.placeholder_api_key_in_use = False
+		self.agent_goal = ""
+		self.agent_max_steps = 24
+		self.agent_checkpoint_interval = 10
+		self.agent_checkpoint_source = "default"
+		self.agent_observation_max_chars = 12000
+		self.agent_transcript_path = ""
+		self.agent_evidence_path = ""
+		self.agent_final_report_path = ""
+		self.agent_evidence_records = []
+		self.agent_executed_commands = set()
+		self.agent_executed_semantic_commands = set()
+		self.agent_transcript_log = None
+		self.agent_evidence_log = None
+		self.agent_milestones = {}
+		self.agent_feedback = []
 
 	def logInfo(self, message):
 		"""Write a top-level informational message using the standard AI output prefix."""
@@ -37962,7 +38026,7 @@ class MnAI(object):
 			self.q2_follow_depth = 0
 		else:
 			self.q2_follow_depth = 2
-		if not self.needsFunctionContext() or "d" not in self.args:
+		if not (self.needsFunctionContext() or self.question_type == "0") or "d" not in self.args:
 			return True
 		if type(self.args["d"]).__name__.lower() == "bool":
 			if self.effective_question_type == "2":
@@ -38238,12 +38302,13 @@ class MnAI(object):
 			self.logInfoDetail("-q 1 : analyse the crash context")
 			self.logInfoDetail("-q 2 : analyse the current __PC__ function, plus optional -a function; use -d to include linked targets")
 			self.logInfoDetail("-q 3 : analyse whether a controlled heap chunk can steer execution to a target")
+			self.logInfoDetail("-q 0 : run the autonomous exploit-development agent loop")
 			#self.logInfoDetail("-q 8 : analyse ROP primitive quality and feasibility")
 			self.logInfoDetail("-q 9 : use a request template from -f <file>")
 			return False
 		if type(self.args["q"]).__name__.lower() == "bool":
 			self.question_profile_missing = True
-			self.logError("Please specify a question profile with -q <1|2|3|8|9>")
+			self.logError("Please specify a question profile with -q <0|1|2|3|8|9>")
 			return False
 
 		self.question_type = str(self.args.get("q", "")).strip()
@@ -38364,7 +38429,8 @@ class MnAI(object):
 					self.logInfoDetail("Context  : %d tokens (%s)" % (self.context_window, self._formatValueSource(self.context_window_source)))
 				if isinstance(self.api_options, dict) and len(self.api_options) > 0:
 					self.logInfoDetail("Options   : %s" % json.dumps(self.api_options, sort_keys=True))
-		self.logInfo("Specify a query profile with -q <1|2|3|9>.")
+		self.logInfo("Specify a query profile with -q <0|1|2|3|9>.")
+		self.logInfoDetail("-q 0 : run the autonomous exploit-development agent loop")
 		self.logInfoDetail("-q 1 : analyse the crash context")
 		self.logInfoDetail("-q 2 : analyse the current __PC__ function, plus optional -a function; use -d to include linked targets")
 		self.logInfoDetail("-q 3 : analyse whether a controlled heap chunk can steer execution to a target")
@@ -39882,6 +39948,1243 @@ class MnAI(object):
 		)
 		return self.response
 
+	def parseAgentSettings(self):
+		"""Parse q0 autonomous-agent options."""
+		mndbg.dbgp(get_current_function_name())
+		self.agent_goal = ensure_text(self.args.get("goal", "")).strip()
+		if self.agent_goal == "":
+			self.agent_goal = (
+				"Find concrete exploit-development primitives in the current debugger state, "
+				"including control over PC/SEH/returns or controlled pointers, useful modules, "
+				"candidate pivots, bad character constraints, and a practical payload or ROP plan."
+			)
+		if "steps" in self.args:
+			if type(self.args["steps"]).__name__.lower() == "bool":
+				self.logError("Please specify a positive integer with -steps <n>")
+				return False
+			value, ok = getIntArg(self.args["steps"])
+			if not ok or value < 1:
+				self.logError("Invalid -steps value '%s'. Please specify a positive integer." % self.args["steps"])
+				return False
+			self.agent_max_steps = min(value, 200)
+		config_checkpoint = ensure_text(self.mona_config.get("mona.ai.q0.checkpoint")).strip()
+		if config_checkpoint != "":
+			value, ok = getIntArg(config_checkpoint)
+			if not ok or value < 0:
+				self.logError("Invalid mona.ai.q0.checkpoint value '%s'. Please specify 0 or a positive integer." % config_checkpoint)
+				return False
+			self.agent_checkpoint_interval = min(value, 100)
+			self.agent_checkpoint_source = "config"
+		if "obsmax" in self.args:
+			if type(self.args["obsmax"]).__name__.lower() == "bool":
+				self.logError("Please specify a positive integer with -obsmax <chars>")
+				return False
+			value, ok = getIntArg(self.args["obsmax"])
+			if not ok or value < 1000:
+				self.logError("Invalid -obsmax value '%s'. Please specify at least 1000 characters." % self.args["obsmax"])
+				return False
+			self.agent_observation_max_chars = min(value, 200000)
+		if "checkpoint" in self.args:
+			if type(self.args["checkpoint"]).__name__.lower() == "bool":
+				self.logError("Please specify an integer with -checkpoint <n>. Use 0 to disable interactive checkpoints.")
+				return False
+			value, ok = getIntArg(self.args["checkpoint"])
+			if not ok or value < 0:
+				self.logError("Invalid -checkpoint value '%s'. Please specify 0 or a positive integer." % self.args["checkpoint"])
+				return False
+			self.agent_checkpoint_interval = min(value, 100)
+			self.agent_checkpoint_source = "arg"
+		return True
+
+	def enrichAgentInitialEvidence(self, context):
+		"""Add q2/q3-style code-flow evidence before the first q0 agent turn."""
+		mndbg.dbgp(get_current_function_name())
+		if not isinstance(context, dict):
+			return context
+		context["q0_initial_evidence_plan"] = OrderedDict([
+			("base_context", "collectAIContext(q1)"),
+			("base_collectors", [
+				"getWinDBGAnalyze(!analyze -v)",
+				"CallStack(kb)",
+				"FindMSP",
+				"instruction_heap_references",
+				"heap_details",
+				"modules",
+				"pc_context",
+				"stack_context",
+				"seh_chain"
+			]),
+			("code_flow_collectors", [
+				"collectAICurrentFunctionContext(%s)" % PROGRAM_COUNTER.upper(),
+				"_collectReturnResumeContext(call_stack)",
+				"_collectReachableFunctions(current_function, caller_function, caller_chain)",
+				"!mona heap -a for registers referenced by the current instruction when the crash is an access violation"
+			]),
+			("control_flow_follow_depth", self.q2_follow_depth),
+		])
+		function_context_cache = {}
+		function_context_active_keys = set()
+		source_context_decisions = {}
+		follow_depth = self.q2_follow_depth
+		if not isinstance(follow_depth, int) or follow_depth < 1:
+			follow_depth = 2
+		if follow_depth > 4:
+			follow_depth = 4
+		context["q0_initial_evidence_plan"]["control_flow_follow_depth"] = follow_depth
+		try:
+			regs = getAllRegisters()
+			self.current_pc_address = regs.get(PROGRAM_COUNTER, 0)
+		except Exception as e:
+			context["q0_register_refresh_error"] = str(e)
+			self.current_pc_address = 0
+			mndbg.dbgp("tellme: q0 unable to refresh registers for code-flow preflight: %s" % str(e), errormode=False)
+		if isinstance(self.current_pc_address, int) and self.current_pc_address > 0:
+			context["analysis_target"] = {
+				"address": PTR_PRINT % self.current_pc_address,
+				"source": PROGRAM_COUNTER.upper()
+			}
+			try:
+				has_instr, instr_reason = tellMeHasCurrentInstruction(self.current_pc_address)
+				context["q0_current_instruction_check"] = OrderedDict([
+					("address", PTR_PRINT % self.current_pc_address),
+					("valid_location", bool(has_instr)),
+					("reason", instr_reason),
+				])
+			except Exception as e:
+				has_instr = False
+				context["q0_current_instruction_check_error"] = str(e)
+				mndbg.dbgp("tellme: q0 current-instruction check failed: %s" % str(e), errormode=False)
+			if has_instr:
+				try:
+					analyze_text = ""
+					if isinstance(context.get("windbg_analyze"), dict):
+						analyze_text = ensure_text(context.get("windbg_analyze", {}).get("output", "")).lower()
+					is_access_violation = ("access violation" in analyze_text or "c0000005" in analyze_text)
+					if is_access_violation:
+						instruction_heap_context = context.get("instruction_heap_references", {})
+						referenced_registers = []
+						if isinstance(instruction_heap_context, dict):
+							referenced_registers = instruction_heap_context.get("referenced_registers", [])
+						lower_regs = {}
+						for reg_name, reg_value in regs.items():
+							lower_regs[str(reg_name).lower()] = reg_value
+						heap_probes = []
+						seen_values = set()
+						for reg_name in referenced_registers:
+							interruptMona()
+							reg_name_l = ensure_text(reg_name).strip().lower()
+							reg_value = lower_regs.get(reg_name_l, 0)
+							if not isinstance(reg_value, int) or reg_value <= 0:
+								continue
+							if reg_value in seen_values:
+								continue
+							seen_values.add(reg_value)
+							mona_heap_command = "heap -a %s" % (PTR_PRINT % reg_value)
+							self.logInfoDetail("Collecting !mona %s for referenced register %s=%s" % (
+								mona_heap_command,
+								reg_name_l,
+								PTR_PRINT % reg_value
+							))
+							heap_probe = self.executeAgentMonaCommand(mona_heap_command)
+							if (
+								isinstance(heap_probe, dict) and
+								ensure_text(heap_probe.get("output", "")).strip() == "" and
+								ensure_text(heap_probe.get("error", "")).strip() == ""
+							):
+								heap_probe["empty_output"] = True
+								heap_probe["classification"] = "no heap metadata returned"
+							heap_probes.append(OrderedDict([
+								("register", reg_name_l),
+								("value", PTR_PRINT % reg_value),
+								("command", mona_heap_command),
+								("heap_probe", heap_probe),
+							]))
+						context["q0_referenced_register_heap_probes"] = heap_probes
+					else:
+						context["q0_referenced_register_heap_probes_note"] = "Skipped because initial !analyze -v did not identify an access violation."
+				except Exception as e:
+					context["q0_referenced_register_heap_probes_error"] = str(e)
+					mndbg.dbgp("tellme: q0 referenced-register heap probes failed:\n%s" % safeTracebackText(), errormode=False)
+				try:
+					self.logInfo("Extending q0 initial evidence with current-function code-flow analysis...")
+					if "function_analyses" not in context or not isinstance(context.get("function_analyses"), list):
+						context["function_analyses"] = []
+					context["current_function"] = collectAICurrentFunctionContext(
+						self.current_pc_address,
+						follow_depth=follow_depth,
+						context_cache=function_context_cache,
+						active_keys=function_context_active_keys,
+						source_context_decisions=source_context_decisions,
+						prompt_for_source_context=True
+					)
+					context["current_function"]["source"] = PROGRAM_COUNTER.upper()
+					context["function_analyses"].append(context["current_function"])
+				except Exception as e:
+					context["current_function_error"] = str(e)
+					mndbg.dbgp("tellme: q0 current-function preflight failed:\n%s" % safeTracebackText(), errormode=False)
+		else:
+			context["q0_current_instruction_check"] = OrderedDict([
+				("address", ""),
+				("valid_location", False),
+				("reason", "No current %s value was available" % PROGRAM_COUNTER.upper()),
+			])
+		try:
+			self.logInfo("Extending q0 initial evidence with caller-side continuation paths...")
+			return_resume = _collectReturnResumeContext(
+				context.get("call_stack", {}),
+				max_frames=follow_depth,
+				follow_depth=follow_depth,
+				function_context_cache=function_context_cache,
+				function_context_active_keys=function_context_active_keys,
+				source_context_decisions=source_context_decisions,
+				prompt_for_source_context=True
+			)
+			for key, value in return_resume.items():
+				context[key] = value
+		except Exception as e:
+			context["return_resume_context_error"] = str(e)
+			mndbg.dbgp("tellme: q0 return-resume preflight failed:\n%s" % safeTracebackText(), errormode=False)
+		try:
+			context["reachable_functions"] = _collectReachableFunctions(
+				context.get("current_function", {}),
+				context.get("caller_function", {}),
+				context.get("caller_chain", [])
+			)
+		except Exception as e:
+			context["reachable_functions_error"] = str(e)
+			mndbg.dbgp("tellme: q0 reachable-function preflight failed:\n%s" % safeTracebackText(), errormode=False)
+		return context
+
+	def initializeAgentMilestones(self):
+		"""Initialize q0 exploit-development guard milestones."""
+		mndbg.dbgp(get_current_function_name())
+		self.agent_milestones = {
+			"crash_context": {
+				"attempted": True,
+				"status": "done",
+				"evidence": ["collectAIContext(q1)"]
+			},
+			"primitive_discovery": {
+				"attempted": False,
+				"status": "pending",
+				"required": True,
+				"description": "Identify PC/SEH/return/control-data primitives, offsets, and controllability evidence. Useful sources include findmsp, !analyze -v, register dumps, stack traces/windows, exception records, pattern-offset checks, and q2/q3-style function or controlled-data analysis."
+			},
+			"code_path_analysis": {
+				"attempted": False,
+				"status": "pending",
+				"required": False,
+				"description": "Analyze relevant code paths, stack traces, caller/callee logic, q2-style current-function context, q3-style controlled-data reachability, and branches/calls that consume attacker-controlled state."
+			},
+			"module_triage": {
+				"attempted": False,
+				"status": "pending",
+				"required": True,
+				"description": "Identify useful modules and mitigations such as ASLR, Rebase, NX/DEP, SafeSEH, CFG, and OS-module suitability. Prefer modules or lm/!address evidence."
+			},
+			"trampoline_pivot_search": {
+				"attempted": False,
+				"status": "pending",
+				"required": True,
+				"description": "Look for trampoline, SEH, JMP/CALL register, POP/POP/RET, or stack-pivot candidates using badchar-aware searches when badchars are known."
+			},
+			"badchar_constraints": {
+				"attempted": False,
+				"status": "pending",
+				"required": False,
+				"description": "Collect or validate bad character constraints using supplied -cpb, bytearray, compare, or evidence from generated artifacts."
+			},
+			"rop_chain": {
+				"attempted": False,
+				"status": "pending",
+				"required": True,
+				"must_attempt": True,
+				"description": "DEP is assumed active. Generate or concretely attempt a ROP chain for DEP/NX bypass. Prefer mona rop, ropfunc, stackpivot, or VirtualProtect/VirtualAlloc-oriented gadget evidence; NXCompat=False is not enough to satisfy this milestone."
+			}
+		}
+		return self.agent_milestones
+
+	def updateAgentMilestonesFromAction(self, action, observation=None):
+		"""Mark q0 guard milestones based on executed command intent."""
+		mndbg.dbgp(get_current_function_name())
+		if not isinstance(action, dict):
+			return
+		action_name = ensure_text(action.get("action", "")).strip().lower()
+		command_text = ensure_text(action.get("command", "")).strip().lower()
+		reason_text = ensure_text(action.get("reason", "")).strip().lower()
+		intent_text = "%s %s %s" % (action_name, command_text, reason_text)
+
+		def _mark(name, evidence):
+			if name not in self.agent_milestones:
+				return
+			self.agent_milestones[name]["attempted"] = True
+			self.agent_milestones[name]["status"] = "attempted"
+			self.agent_milestones[name].setdefault("evidence", [])
+			if evidence not in self.agent_milestones[name]["evidence"]:
+				self.agent_milestones[name]["evidence"].append(evidence)
+
+		evidence = command_text
+		if "findmsp" in intent_text or "!analyze" in intent_text or ".exr" in intent_text or ".ecxr" in intent_text or "pattern" in intent_text or "offset" in intent_text or "register" in intent_text or "stack" in intent_text or re.search(r"\br[abcds]x?\b|\beip\b|\brip\b|\besp\b|\brsp\b|\bk\b|\bkb\b|\bkv\b", intent_text):
+			_mark("primitive_discovery", evidence)
+		if " q2" in intent_text or " q3" in intent_text or "function" in intent_text or "call stack" in intent_text or "caller" in intent_text or "callee" in intent_text or "control-flow" in intent_text or "control flow" in intent_text or "reachable" in intent_text or "controlled chunk" in intent_text or "uf " in intent_text or re.search(r"\bu\b|\bub\b|\buf\b|\bk\b|\bkb\b|\bkv\b", intent_text):
+			_mark("code_path_analysis", evidence)
+		if "modules" in intent_text or re.search(r"\blm\b", intent_text) or "!address" in intent_text or "aslr" in intent_text or "safeseh" in intent_text or "rebase" in intent_text or " nx" in intent_text or " dep" in intent_text or "cfg" in intent_text:
+			_mark("module_triage", evidence)
+		if " jmp" in intent_text or intent_text.startswith("mona jmp") or " seh" in intent_text or "stackpivot" in intent_text or "pivot" in intent_text or "trampoline" in intent_text or "pop pop ret" in intent_text or "p/p/r" in intent_text:
+			_mark("trampoline_pivot_search", evidence)
+		if "bytearray" in intent_text or "compare" in intent_text or "badchar" in intent_text or "-cpb" in intent_text:
+			_mark("badchar_constraints", evidence)
+		if re.search(r"\brop\b", command_text) or "ropfunc" in command_text or "stackpivot" in command_text or "virtualprotect" in command_text or "virtualalloc" in command_text:
+			_mark("rop_chain", evidence)
+		if isinstance(observation, dict) and not observation.get("ok", False):
+			for milestone_name, milestone_info in self.agent_milestones.items():
+				if evidence in milestone_info.get("evidence", []):
+					milestone_info["last_error"] = ensure_text(observation.get("error", ""))
+
+	def getIncompleteRequiredAgentMilestones(self, finish_action=None):
+		"""Return q0 required milestones that were neither attempted nor explicitly blocked."""
+		mndbg.dbgp(get_current_function_name())
+		blockers = {}
+		if isinstance(finish_action, dict) and isinstance(finish_action.get("blockers", {}), dict):
+			blockers = finish_action.get("blockers", {})
+		incomplete = []
+		for name, info in self.agent_milestones.items():
+			if not info.get("required", False):
+				continue
+			if info.get("attempted", False):
+				continue
+			if info.get("must_attempt", False):
+				incomplete.append(name)
+				continue
+			blocker_text = ensure_text(blockers.get(name, "")).strip()
+			if blocker_text != "":
+				info["status"] = "blocked"
+				info["blocker"] = blocker_text
+				continue
+			incomplete.append(name)
+		return incomplete
+
+	def maybeRunAgentCheckpoint(self, step_index, state):
+		"""Ask for operator feedback at q0 checkpoints in interactive mode."""
+		mndbg.dbgp(get_current_function_name())
+		interruptMona()
+		if self.submit_requested:
+			return True
+		if self.agent_checkpoint_interval <= 0:
+			return True
+		if step_index <= 0 or (step_index % self.agent_checkpoint_interval) != 0:
+			return True
+		dbg.log("")
+		self.logInfo("q0 checkpoint reached after step %d." % step_index)
+		self.logInfoDetail("Transcript: %s" % self.getAgentTranscriptPath())
+		self.logInfoDetail("Evidence  : %s" % self.getAgentEvidencePath())
+		interruptMona()
+		if not askForConfirmation("[?] Continue q0 agent execution?", default="Y"):
+			state["operator_stop"] = "Stopped by operator at checkpoint after step %d" % step_index
+			self.writeAgentTranscriptEvent({"event": "checkpoint_stop", "step": step_index, "time": mndbg.get_current_datetime()})
+			return False
+		interruptMona()
+		feedback_text = promptForTextInput("Optional q0 feedback for the next rounds (blank for none)", "")
+		interruptMona()
+		if feedback_text is None:
+			feedback_text = ""
+		feedback_text = ensure_text(feedback_text).strip()
+		if feedback_text != "":
+			feedback_record = {
+				"step": step_index,
+				"text": feedback_text,
+				"time": mndbg.get_current_datetime()
+			}
+			self.agent_feedback.append(feedback_record)
+			state["operator_feedback"] = list(self.agent_feedback[-5:])
+			self.writeAgentTranscriptEvent({"event": "checkpoint_feedback", "step": step_index, "feedback": feedback_text})
+			self.writeAgentEvidenceRecord({
+				"kind": "operator_feedback",
+				"step": step_index,
+				"tool": "operator",
+				"command": "checkpoint feedback",
+				"ok": True,
+				"text": feedback_text
+			})
+		interruptMona()
+		return True
+
+	def getAgentTranscriptPath(self):
+		"""Return the q0 JSONL transcript path."""
+		mndbg.dbgp(get_current_function_name())
+		if self.agent_transcript_path == "":
+			self.agent_transcript_log = MnLog("tellme_agent_%s.jsonl" % generateAIRequestId())
+			self.agent_transcript_path = self.agent_transcript_log.reset(
+				clear=True,
+				showheader=False,
+				skipModuleTable=True
+			)
+		return self.agent_transcript_path
+
+	def getAgentEvidencePath(self):
+		"""Return the q0 evidence JSONL path."""
+		mndbg.dbgp(get_current_function_name())
+		if self.agent_evidence_path == "":
+			base_path = self.getAgentTranscriptPath()
+			if base_path.endswith(".jsonl"):
+				evidence_name = base_path[:-6] + "_evidence.jsonl"
+			else:
+				evidence_name = "tellme_agent_evidence_%s.jsonl" % generateAIRequestId()
+			self.agent_evidence_log = MnLog(evidence_name)
+			self.agent_evidence_path = self.agent_evidence_log.reset(
+				clear=True,
+				showheader=False,
+				skipModuleTable=True
+			)
+		return self.agent_evidence_path
+
+	def writeAgentTranscriptEvent(self, event):
+		"""Append one q0 agent event as JSONL."""
+		mndbg.dbgp(get_current_function_name())
+		path_value = self.getAgentTranscriptPath()
+		try:
+			if self.agent_transcript_log is None:
+				self.agent_transcript_log = MnLog(path_value)
+			self.agent_transcript_log.write(json.dumps(event, sort_keys=True), path_value)
+		except Exception as e:
+			self.logError("Unable to write agent transcript %s" % path_value)
+			self.logErrorDetail(str(e))
+		return path_value
+
+	def writeAgentEvidenceRecord(self, record):
+		"""Append one q0 evidence record as JSONL and keep it retrievable in memory."""
+		mndbg.dbgp(get_current_function_name())
+		if not isinstance(record, dict):
+			return ""
+		record["id"] = "evidence-%04d" % (len(self.agent_evidence_records) + 1)
+		record["time"] = mndbg.get_current_datetime()
+		text_value = ensure_text(record.get("text", ""))
+		record["text"] = text_value
+		record["keywords"] = self.extractAgentEvidenceKeywords(text_value)
+		self.agent_evidence_records.append(record)
+		path_value = self.getAgentEvidencePath()
+		try:
+			if self.agent_evidence_log is None:
+				self.agent_evidence_log = MnLog(path_value)
+			self.agent_evidence_log.write(json.dumps(record, sort_keys=True), path_value)
+		except Exception as e:
+			self.logError("Unable to write agent evidence %s" % path_value)
+			self.logErrorDetail(str(e))
+		return record.get("id", "")
+
+	def addAgentInputFileEvidence(self, context):
+		"""Store supplied q0 input files as first-class retrievable evidence records."""
+		mndbg.dbgp(get_current_function_name())
+		if not isinstance(context, dict):
+			return []
+		record_ids = []
+		input_files = []
+		poc_info = context.get("poc_file", {})
+		if isinstance(poc_info, dict):
+			input_files.append(("poc_file", "PoC/trigger file supplied with -p", poc_info))
+		for context_info in context.get("additional_context_files", []):
+			if isinstance(context_info, dict):
+				input_files.append(("supporting_context_file", "Supporting evidence file supplied with -l", context_info))
+		for heap_info in context.get("heapdynamics_full", []):
+			if isinstance(heap_info, dict):
+				input_files.append(("heapdynamics_file", "Heap dynamics file supplied with -l or found by default", heap_info))
+		seen_file_chunks = set()
+		for kind, label, file_info in input_files:
+			file_path = ensure_text(file_info.get("file", "")).strip()
+			file_contents = ensure_text(file_info.get("file_contents", ""))
+			if file_path == "" or file_contents.strip() == "":
+				continue
+			for chunk_index, chunk_text in enumerate(self.splitAgentEvidenceText(file_contents), 1):
+				dedup_key = (kind, file_path, chunk_index)
+				if dedup_key in seen_file_chunks:
+					continue
+				seen_file_chunks.add(dedup_key)
+				record_ids.append(self.writeAgentEvidenceRecord({
+					"kind": kind,
+					"step": 0,
+					"tool": "file",
+					"command": label,
+					"path": file_path,
+					"ok": True,
+					"chunk": chunk_index,
+					"text": "\n".join([
+						"Input file kind: %s" % kind,
+						"Path: %s" % file_path,
+						"Label: %s" % label,
+						"Contents:",
+						chunk_text
+					])
+				}))
+		return record_ids
+
+	def summarizeAgentInputFiles(self, context):
+		"""Return compact q0 state entries for supplied PoC and context files."""
+		mndbg.dbgp(get_current_function_name())
+		if not isinstance(context, dict):
+			return []
+		summaries = []
+		input_files = []
+		poc_info = context.get("poc_file", {})
+		if isinstance(poc_info, dict):
+			input_files.append(("poc_file", "PoC/trigger file supplied with -p", poc_info))
+		for context_info in context.get("additional_context_files", []):
+			if isinstance(context_info, dict):
+				input_files.append(("supporting_context_file", "Supporting evidence file supplied with -l", context_info))
+		for kind, label, file_info in input_files:
+			file_path = ensure_text(file_info.get("file", "")).strip()
+			file_contents = ensure_text(file_info.get("file_contents", ""))
+			if file_path == "":
+				continue
+			summary = OrderedDict([
+				("kind", kind),
+				("path", file_path),
+				("label", label),
+				("bytes", len(file_contents)),
+			])
+			if file_contents != "":
+				summary["preview"] = self.trimAgentObservation(file_contents[:1200])
+			if "read_error" in file_info:
+				summary["read_error"] = ensure_text(file_info.get("read_error", ""))
+			if file_info.get("file_missing", False):
+				summary["file_missing"] = True
+			summaries.append(summary)
+		return summaries
+
+	def summarizeAgentSeedEvidence(self, context):
+		"""Return compact q0 state entries for evidence collected before step 1."""
+		mndbg.dbgp(get_current_function_name())
+		summary = OrderedDict()
+		if not isinstance(context, dict):
+			return summary
+		findmsp = context.get("findmsp", {})
+		if isinstance(findmsp, dict):
+			findmsp_summary = OrderedDict()
+			for key in ["distance", "registers", "registers_to", "seh", "stackcontains"]:
+				if key in findmsp:
+					findmsp_summary[key] = findmsp.get(key)
+			if len(findmsp_summary) > 0:
+				summary["findmsp"] = findmsp_summary
+		heap_probes = context.get("q0_referenced_register_heap_probes", [])
+		if isinstance(heap_probes, list) and len(heap_probes) > 0:
+			summary["referenced_register_heap_probes"] = heap_probes
+		if isinstance(context.get("windbg_analyze"), dict):
+			analyze_info = context.get("windbg_analyze", {})
+			output_text = ensure_text(analyze_info.get("output", "")).strip()
+			summary["windbg_analyze"] = OrderedDict([
+				("command", analyze_info.get("command", "")),
+				("preview", self.trimAgentObservation(output_text[:2000])),
+			])
+		return summary
+
+	def extractAgentEvidenceKeywords(self, text_value):
+		"""Extract simple retriever keywords from q0 evidence text."""
+		mndbg.dbgp(get_current_function_name())
+		text_value = ensure_text(text_value).lower()
+		terms = set()
+		for match in re.findall(r"0x[0-9a-f]+|[a-z_][a-z0-9_!.\-]{2,}", text_value):
+			if len(match) > 48:
+				continue
+			terms.add(match)
+		return sorted(terms)[:300]
+
+	def splitAgentEvidenceText(self, text_value, chunk_chars=6000):
+		"""Split q0 evidence into prompt-sized chunks."""
+		mndbg.dbgp(get_current_function_name())
+		text_value = ensure_text(text_value)
+		if len(text_value) <= chunk_chars:
+			return [text_value]
+		chunks = []
+		for start in xrange(0, len(text_value), chunk_chars):
+			chunks.append(text_value[start:start + chunk_chars])
+		return chunks
+
+	def normalizeAgentCommand(self, action_name, command_text):
+		"""Return a stable q0 command key used for duplicate prevention."""
+		mndbg.dbgp(get_current_function_name())
+		action_name = ensure_text(action_name).strip().lower()
+		command_text = ensure_text(command_text).strip()
+		if command_text.lower().startswith("!mona "):
+			action_name = "mona"
+			command_text = command_text[6:].strip()
+		elif command_text.lower().startswith("mona "):
+			action_name = "mona"
+			command_text = command_text[5:].strip()
+		normalized_command = " ".join(command_text.split()).lower()
+		normalized_command = re.sub(r"\s*;\s*", ";", normalized_command)
+		return "%s:%s" % (action_name, normalized_command)
+
+	def normalizeAgentSemanticCommand(self, action_name, command_text):
+		"""Return a coarse q0 command key for evidence collectors that should not be repeated with option tweaks."""
+		mndbg.dbgp(get_current_function_name())
+		action_name = ensure_text(action_name).strip().lower()
+		command_text = ensure_text(command_text).strip()
+		if command_text.lower().startswith("!mona "):
+			action_name = "mona"
+			command_text = command_text[6:].strip()
+		elif command_text.lower().startswith("mona "):
+			action_name = "mona"
+			command_text = command_text[5:].strip()
+		command_name = command_text.split()[0].lower() if command_text.split() else ""
+		if action_name == "mona" and command_name in ["findmsp", "findmsf"]:
+			return "mona:findmsp"
+		if action_name == "windbg" and command_text.strip().lower().startswith("!analyze"):
+			return "windbg:!analyze"
+		if action_name == "windbg" and command_name in ["k", "kb", "kp", "kv"]:
+			return "windbg:callstack"
+		if action_name == "mona" and command_name == "modules":
+			return "mona:modules"
+		return self.normalizeAgentCommand(action_name, command_text)
+
+	def addAgentEvidenceFromObservation(self, step_index, action, observation):
+		"""Store q0 command output and generated file previews as retrievable evidence."""
+		mndbg.dbgp(get_current_function_name())
+		if not isinstance(action, dict) or not isinstance(observation, dict):
+			return []
+		record_ids = []
+		tool_name = ensure_text(action.get("action", "")).strip().lower()
+		command_text = ensure_text(action.get("command", "")).strip()
+		base_metadata = {
+			"step": step_index,
+			"tool": tool_name,
+			"command": command_text,
+			"ok": observation.get("ok", False),
+			"elapsed_seconds": observation.get("elapsed_seconds", 0)
+		}
+		output_text = ensure_text(observation.get("output", ""))
+		error_text = ensure_text(observation.get("error", ""))
+		if output_text.strip() != "" or error_text.strip() != "":
+			combined_text = "\n".join([
+				"Step: %d" % step_index,
+				"Tool: %s" % tool_name,
+				"Command: %s" % command_text,
+				"OK: %s" % str(observation.get("ok", False)),
+				"Error: %s" % error_text,
+				"Output:",
+				output_text
+			]).strip()
+			for chunk_index, chunk_text in enumerate(self.splitAgentEvidenceText(combined_text), 1):
+				record = dict(base_metadata)
+				record.update({
+					"kind": "command_output",
+					"chunk": chunk_index,
+					"text": chunk_text
+				})
+				record_ids.append(self.writeAgentEvidenceRecord(record))
+		for file_info in observation.get("file_previews", []):
+			if not isinstance(file_info, dict):
+				continue
+			file_text = ensure_text(file_info.get("preview", ""))
+			if file_text.strip() == "":
+				continue
+			for chunk_index, chunk_text in enumerate(self.splitAgentEvidenceText(file_text), 1):
+				record = dict(base_metadata)
+				record.update({
+					"kind": "file_preview",
+					"path": ensure_text(file_info.get("path", "")),
+					"size": file_info.get("size", 0),
+					"chunk": chunk_index,
+					"text": chunk_text
+				})
+				record_ids.append(self.writeAgentEvidenceRecord(record))
+		return record_ids
+
+	def retrieveAgentEvidence(self, query_text, limit=8):
+		"""Retrieve q0 evidence records with a small keyword/address scorer."""
+		mndbg.dbgp(get_current_function_name())
+		query_terms = set(self.extractAgentEvidenceKeywords(query_text))
+		if len(query_terms) == 0:
+			return []
+		scored = []
+		for record in self.agent_evidence_records:
+			record_terms = set(record.get("keywords", []))
+			score = len(query_terms & record_terms)
+			command_text = ensure_text(record.get("command", "")).lower()
+			for term in query_terms:
+				if term in command_text:
+					score += 2
+			if score <= 0:
+				continue
+			scored.append((score, record))
+		scored.sort(key=lambda item: (-item[0], ensure_text(item[1].get("id", ""))))
+		results = []
+		for score, record in scored[:limit]:
+			results.append({
+				"id": record.get("id", ""),
+				"score": score,
+				"step": record.get("step", 0),
+				"kind": record.get("kind", ""),
+				"tool": record.get("tool", ""),
+				"command": record.get("command", ""),
+				"path": record.get("path", ""),
+				"text": self.trimAgentObservation(record.get("text", ""))
+			})
+		return results
+
+	def trimAgentObservation(self, text_value):
+		"""Trim debugger or file output before feeding it back into q0."""
+		mndbg.dbgp(get_current_function_name())
+		text_value = ensure_text(text_value)
+		if len(text_value) <= self.agent_observation_max_chars:
+			return text_value
+		head_chars = int(self.agent_observation_max_chars * 0.65)
+		tail_chars = self.agent_observation_max_chars - head_chars
+		return "%s\n\n[... q0 observation truncated: %d bytes omitted ...]\n\n%s" % (
+			text_value[:head_chars],
+			max(0, len(text_value) - self.agent_observation_max_chars),
+			text_value[-tail_chars:]
+		)
+
+	def snapshotAgentWorkingFolder(self):
+		"""Capture working-folder mtimes so mona output files can be detected after an action."""
+		mndbg.dbgp(get_current_function_name())
+		snapshot = {}
+		try:
+			anchor_path = getAbsolutePath("tellme_agent_anchor.tmp")
+			working_folder = os.path.dirname(anchor_path)
+			if working_folder == "" or not os.path.isdir(working_folder):
+				return snapshot
+			for name in os.listdir(working_folder):
+				path_value = os.path.join(working_folder, name)
+				try:
+					if os.path.isfile(path_value):
+						snapshot[path_value] = os.path.getmtime(path_value)
+				except Exception:
+					pass
+		except Exception:
+			return snapshot
+		return snapshot
+
+	def getAgentChangedFiles(self, before_snapshot):
+		"""Return files created or modified since a q0 mona action started."""
+		mndbg.dbgp(get_current_function_name())
+		changed = []
+		after_snapshot = self.snapshotAgentWorkingFolder()
+		for path_value, mtime_value in after_snapshot.items():
+			if path_value not in before_snapshot or before_snapshot.get(path_value, 0) != mtime_value:
+				changed.append(path_value)
+		changed.sort()
+		return changed
+
+	def readAgentFilePreview(self, path_value):
+		"""Read a bounded text preview from a q0 output file."""
+		mndbg.dbgp(get_current_function_name())
+		try:
+			file_size = os.path.getsize(path_value)
+			with open(path_value, "rb") as fh:
+				data = fh.read(min(file_size, self.agent_observation_max_chars))
+			text_value = ensure_text(data, encoding="utf-8")
+			if file_size > len(data):
+				text_value += "\n\n[... file truncated at %d of %d bytes ...]" % (len(data), file_size)
+			return text_value
+		except Exception as e:
+			return "Unable to read %s: %s" % (path_value, str(e))
+
+	def parseAgentAction(self, response_text):
+		"""Extract the single JSON action object returned by the q0 model."""
+		mndbg.dbgp(get_current_function_name())
+		text_value = ensure_text(response_text).strip()
+		if text_value.startswith("```"):
+			lines = text_value.splitlines()
+			if len(lines) >= 3:
+				text_value = "\n".join(lines[1:-1]).strip()
+		try:
+			action = json.loads(text_value)
+		except Exception:
+			start = text_value.find("{")
+			end = text_value.rfind("}")
+			if start < 0 or end <= start:
+				raise ValueError("AI response did not contain a JSON action object")
+			action = json.loads(text_value[start:end + 1])
+		if not isinstance(action, dict):
+			raise ValueError("AI action must be a JSON object")
+		return action
+
+	def validateAgentActionShape(self, action):
+		"""Require q0 model responses to be concrete command actions or finish."""
+		mndbg.dbgp(get_current_function_name())
+		if not isinstance(action, dict):
+			return False, "AI action must be a JSON object"
+		action_name = ensure_text(action.get("action", "")).strip().lower()
+		if action_name == "finish":
+			if ensure_text(action.get("summary", "")).strip() == "":
+				return False, "finish action requires a summary"
+			return True, ""
+		if action_name not in ["windbg", "mona"]:
+			return False, "action must be windbg, mona, or finish"
+		command_text = ensure_text(action.get("command", "")).strip()
+		if command_text == "":
+			return False, "%s action requires a non-empty command" % action_name
+		vague_terms = [
+			"next step",
+			"next steps",
+			"what should",
+			"how should",
+			"analyze further",
+			"further analysis",
+			"investigate",
+			"look into"
+		]
+		lower_command = command_text.lower()
+		for vague_term in vague_terms:
+			if vague_term in lower_command:
+				return False, "q0 requires a concrete WinDBG or mona command, not a vague analysis request"
+		if action_name == "mona":
+			stripped = lower_command
+			if stripped.startswith("!mona "):
+				stripped = stripped[6:].strip()
+			elif stripped.startswith("mona "):
+				stripped = stripped[5:].strip()
+			if stripped == "":
+				return False, "mona action requires a command after !mona/mona"
+			try:
+				tokens = shlex.split(command_text, posix=False)
+			except Exception as e:
+				return False, "unable to parse mona command: %s" % str(e)
+			if len(tokens) > 0:
+				if tokens[0].lower() == "!mona":
+					tokens = tokens[1:]
+				elif tokens[0].lower() == "mona":
+					tokens = tokens[1:]
+			if len(tokens) > 1 and tokens[0].lower() in ["findmsp", "findmsf"]:
+				return False, "q0 collects findmsp during initial evidence; do not request findmsp with additional arguments"
+		return True, ""
+
+	def validateAgentWindbgCommand(self, command_text):
+		"""Reject debugger commands that are unsafe for autonomous q0 execution."""
+		mndbg.dbgp(get_current_function_name())
+		command_text = ensure_text(command_text).strip()
+		if command_text == "":
+			return False, "empty WinDBG command"
+		deny_prefixes = [".shell", ".restart", ".reboot", ".crash", ".server", ".clients"]
+		for part in command_text.split(";"):
+			part = part.strip()
+			lower_part = part.lower()
+			for denied in deny_prefixes:
+				if lower_part == denied or lower_part.startswith(denied + " ") or lower_part.startswith(denied + "\t"):
+					return False, "denied WinDBG command prefix: %s" % denied
+			if re.match(r"^(d|da|db|dc|dd|dds|dps|dq|du|u|ub|uf)\s+[a-z]:\\", lower_part):
+				return False, "WinDBG memory/disassembly commands require a debugger address or expression, not a filesystem path. Use existing q0 file previews from mona output evidence instead."
+		return True, ""
+
+	def executeAgentWindbgCommand(self, command_text):
+		"""Run one allowed WinDBG command for q0 and return an observation."""
+		mndbg.dbgp(get_current_function_name())
+		command_text = ensure_text(command_text).strip()
+		if command_text.lower().startswith("!mona ") or command_text.lower().startswith("mona "):
+			return self.executeAgentMonaCommand(command_text)
+		ok, reason = self.validateAgentWindbgCommand(command_text)
+		if not ok:
+			return {"ok": False, "error": reason, "output": ""}
+		self.logInfoDetail("WinDBG> %s" % command_text)
+		start_time = time.time()
+		try:
+			output = ensure_text(dbg.nativeCommand(command_text)).strip()
+			elapsed = time.time() - start_time
+			return {
+				"ok": True,
+				"elapsed_seconds": elapsed,
+				"output": self.trimAgentObservation(output)
+			}
+		except Exception as e:
+			elapsed = time.time() - start_time
+			return {
+				"ok": False,
+				"elapsed_seconds": elapsed,
+				"error": str(e),
+				"output": self.trimAgentObservation(safeTracebackText())
+			}
+
+	def executeAgentMonaCommand(self, command_text):
+		"""Run one allowed mona command for q0 and return output plus changed file previews."""
+		mndbg.dbgp(get_current_function_name())
+		command_text = ensure_text(command_text).strip()
+		if command_text.lower().startswith("!mona "):
+			command_text = command_text[6:].strip()
+		elif command_text.lower().startswith("mona "):
+			command_text = command_text[5:].strip()
+		if command_text == "":
+			return {"ok": False, "error": "empty mona command", "output": ""}
+		try:
+			tokens = shlex.split(command_text, posix=False)
+		except Exception as e:
+			return {"ok": False, "error": "unable to parse mona command: %s" % str(e), "output": ""}
+		if len(tokens) == 0:
+			return {"ok": False, "error": "empty mona command", "output": ""}
+		command_name, mona_args = _parse_mona_args_with_argparse(tokens)
+		if command_name in ["tellme", "ai"]:
+			return {"ok": False, "error": "nested tellme/ai execution is not allowed in q0", "output": ""}
+		accepted = {}
+		for mona_command in commands:
+			accepted[commands[mona_command].name] = commands[mona_command]
+			accepted[commands[mona_command].alias] = commands[mona_command]
+		if command_name not in accepted:
+			return {"ok": False, "error": "unknown mona command '%s'" % command_name, "output": ""}
+		invoking_command = accepted[command_name]
+		if arch not in invoking_command.supportedarchs:
+			return {"ok": False, "error": "mona command '%s' is not supported in %s-bit" % (command_name, str(arch)), "output": ""}
+		self.logInfoDetail("mona> %s" % command_text)
+		before_snapshot = self.snapshotAgentWorkingFolder()
+		start_time = time.time()
+		error_text = ""
+		try:
+			invoking_command.parseProc(mona_args)
+		except Exception as e:
+			error_text = "%s\n%s" % (str(e), safeTracebackText())
+		elapsed = time.time() - start_time
+		changed_files = self.getAgentChangedFiles(before_snapshot)
+		file_previews = []
+		for path_value in changed_files[:8]:
+			try:
+				file_size = os.path.getsize(path_value) if os.path.isfile(path_value) else 0
+			except Exception:
+				file_size = 0
+			file_previews.append({
+				"path": path_value,
+				"size": file_size,
+				"preview": self.trimAgentObservation(self.readAgentFilePreview(path_value))
+			})
+		return {
+			"ok": error_text == "",
+			"elapsed_seconds": elapsed,
+			"error": self.trimAgentObservation(error_text),
+			"changed_files": changed_files,
+			"file_previews": file_previews,
+			"output": "mona command completed; inspect changed_files/file_previews for generated output"
+		}
+
+	def buildAgentPrompt(self, state):
+		"""Build a q0 step prompt requesting exactly one structured action."""
+		mndbg.dbgp(get_current_function_name())
+		retrieval_query = " ".join([
+			self.agent_goal,
+			ensure_text(state.get("last_reason", "")),
+			ensure_text(state.get("last_command", "")),
+			ensure_text(state.get("last_observation_summary", ""))
+		])
+		retrieved_evidence = self.retrieveAgentEvidence(retrieval_query)
+		state_for_prompt = dict(state)
+		observations = state.get("observations", [])
+		if isinstance(observations, list) and len(observations) > 5:
+			state_for_prompt["observations"] = observations[-5:]
+			state_for_prompt["older_observation_count"] = len(observations) - 5
+		state_for_prompt["retrieved_evidence"] = retrieved_evidence
+		state_for_prompt["executed_commands"] = sorted(list(self.agent_executed_commands))
+		state_for_prompt["executed_semantic_commands"] = sorted(list(self.agent_executed_semantic_commands))
+		state_for_prompt["milestones"] = self.agent_milestones
+		return "\n".join([
+			"You are mona q0, an autonomous exploit-development assistant running inside WinDBG.",
+			"Your job in each non-finish turn is to choose one concrete WinDBG or mona command for Mona to run now.",
+			"Return only one JSON object and no markdown.",
+			"Do not ask Mona or the user vague questions such as what the next steps are. Pick the exact command that should be executed next.",
+			"Mona will execute that command, capture stdout and/or output files, store the evidence, retrieve relevant evidence, and feed the observation back into your next turn.",
+			"Goal: %s" % self.agent_goal,
+			"",
+			"Allowed actions:",
+			'{"action":"windbg","command":"<WinDBG command>","reason":"<why this exact command should be run now>"}',
+			'{"action":"mona","command":"<mona command without leading !mona>","reason":"<why this exact command should be run now>"}',
+			'{"action":"finish","status":"success|partial|failed","summary":"<final report>","artifacts":["<file or command evidence>", "..."],"blockers":{"<milestone>":"<specific reason if not attempted>"}}',
+			"",
+			"Rules:",
+			"- Use WinDBG commands freely except .shell, .restart, .reboot, .crash, .server, and .clients.",
+			"- Do not use WinDBG memory/disassembly commands such as dds, dps, db, dd, dq, u, ub, or uf on filesystem paths. Mona output files are already captured as q0 file_previews evidence.",
+			"- Use WinDBG and mona evidence broadly: !analyze -v, stack traces, registers, memory windows, uf/u/ub disassembly, modules, findmsp, q2/q3-style function and controlled-data reasoning, jmp, seh, bytearray, compare, stackpivot, ropfunc, and rop.",
+			"- Do not request any command listed in executed_commands. If you need similar evidence, vary the command meaningfully.",
+			"- Do not rerun seeded semantic collectors listed in executed_semantic_commands, including findmsp, !analyze, and call stack collection.",
+			"- Treat seed_evidence.findmsp as authoritative initial findmsp evidence; do not request findmsp again unless operator_feedback explicitly asks for a fresh cyclic-pattern scan.",
+			"- Assume DEP is active regardless of NXCompat/module flags. You must ask for concrete ROP evidence and attempt ROP-chain generation or ROP gadget discovery before finish.",
+			"- Before finish, required milestones must be attempted: primitive_discovery, module_triage, trampoline_pivot_search, rop_chain.",
+			"- If a required milestone cannot be attempted, finish may include blockers with a concrete per-milestone reason grounded in evidence, except rop_chain must be attempted because DEP is assumed active.",
+			"- Prefer this rough workflow: crash/exception/stack evidence, primitive and offset evidence, function/control-flow analysis, modules/mitigations, trampoline or pivot candidates, badchar constraints if available, then explicit ROP chain generation for DEP bypass.",
+			"- If a PoC/trigger or supporting file was supplied with -p or -l, use that file evidence to correlate offsets, input structure, trigger fields, heap activity, and payload constraints.",
+			"- Treat operator_feedback in state as authoritative guidance for the next action.",
+			"- Non-finish turns must contain a concrete command string in command. Do not respond with prose-only analysis, questions, plans, or generic next-step descriptions.",
+			"- Keep each command bounded and purposeful. Some mona commands may take time; wait for the observation before deciding the next action.",
+			"- Prefer evidence-producing commands before speculative final answers.",
+			"- Finish only when you have concrete primitives/artifacts, or when the remaining blocker is clear.",
+			"",
+			"Current agent state JSON, including retrieved_evidence from the local evidence store:",
+			json.dumps(state_for_prompt, indent=2, sort_keys=True)
+		])
+
+	def runAgentMode(self):
+		"""Run q0 autonomous debugger/mona loop."""
+		mndbg.dbgp(get_current_function_name())
+		if self.engine == "openaiagents":
+			self.logError("-q 0 currently requires a synchronous AI engine. openaiagents is asynchronous in this build.")
+			return ""
+		if self.offline or self.engine == "offline":
+			self.logError("-q 0 requires a provider engine. Offline mode can save prompts, but cannot drive an agent loop.")
+			return ""
+		if not self.validateProviderConfiguration():
+			return ""
+		if not self.parseAgentSettings():
+			return ""
+		context = collectAIContext(
+			"1",
+			heapdynamics_files=self.heapdynamics_files,
+			additional_context_files=self.additional_context_files,
+			poc_file=self.poc_file,
+			heap_target_address=self.heap_target_address,
+			ai_args=self.args,
+			collection_plan=_buildAIContextCollectionPlan("1")
+		)
+		context = self.enrichAgentInitialEvidence(context)
+		context_text = json.dumps(context, indent=2, sort_keys=True)
+		context_summary = {
+			"stored_as_evidence": True,
+			"keys": sorted(context.keys()) if isinstance(context, dict) else [],
+			"bytes": len(context_text)
+		}
+		if isinstance(context, dict):
+			for summary_key in ["processname", "architecture", "pointer_size", "program_counter", "stack_pointer", "pc_module", "pc_page", "stack_page"]:
+				if summary_key in context:
+					context_summary[summary_key] = context.get(summary_key)
+		self.initializeAgentMilestones()
+		if isinstance(context, dict) and isinstance(context.get("findmsp"), dict):
+			findmsp_summary = self.summarizeAgentSeedEvidence(context).get("findmsp", {})
+			if isinstance(findmsp_summary, dict) and len(findmsp_summary) > 0:
+				self.agent_milestones["primitive_discovery"]["attempted"] = True
+				self.agent_milestones["primitive_discovery"]["status"] = "seeded"
+				self.agent_milestones["primitive_discovery"].setdefault("evidence", [])
+				if "q0 initial findmsp preflight" not in self.agent_milestones["primitive_discovery"]["evidence"]:
+					self.agent_milestones["primitive_discovery"]["evidence"].append("q0 initial findmsp preflight")
+		if isinstance(context, dict) and (
+			isinstance(context.get("current_function"), dict) or
+			len(context.get("caller_chain", [])) > 0 or
+			len(context.get("reachable_functions", [])) > 0
+		):
+			self.agent_milestones["code_path_analysis"]["attempted"] = True
+			self.agent_milestones["code_path_analysis"]["status"] = "seeded"
+			self.agent_milestones["code_path_analysis"].setdefault("evidence", [])
+			self.agent_milestones["code_path_analysis"]["evidence"].append("q0 initial function/continuation preflight")
+		for seed_action, seed_command in [
+			("windbg", "!analyze -v"),
+			("windbg", "kb"),
+			("mona", "findmsp"),
+		]:
+			self.agent_executed_commands.add(self.normalizeAgentCommand(seed_action, seed_command))
+			self.agent_executed_semantic_commands.add(self.normalizeAgentSemanticCommand(seed_action, seed_command))
+		if isinstance(context, dict):
+			for heap_probe in context.get("q0_referenced_register_heap_probes", []):
+				if not isinstance(heap_probe, dict):
+					continue
+				probe_command = ensure_text(heap_probe.get("command", "")).strip()
+				if probe_command == "":
+					probe_info = heap_probe.get("heap_probe", {})
+					if isinstance(probe_info, dict):
+						probe_command = ensure_text(probe_info.get("command", "")).strip()
+				if probe_command != "":
+					self.agent_executed_commands.add(self.normalizeAgentCommand("mona", probe_command))
+					self.agent_executed_semantic_commands.add(self.normalizeAgentSemanticCommand("mona", probe_command))
+		state = {
+			"goal": self.agent_goal,
+			"assumptions": [
+				"DEP is active and requires ROP-oriented evidence before finish."
+			],
+			"max_steps": self.agent_max_steps,
+			"step": 0,
+			"initial_context": context_summary,
+			"observations": []
+		}
+		input_file_summaries = self.summarizeAgentInputFiles(context)
+		if len(input_file_summaries) > 0:
+			state["input_files"] = input_file_summaries
+		seed_evidence_summary = self.summarizeAgentSeedEvidence(context)
+		if len(seed_evidence_summary) > 0:
+			state["seed_evidence"] = seed_evidence_summary
+		self.logInfo("Starting q0 autonomous exploit-development agent.")
+		self.logInfoDetail("Steps     : %d" % self.agent_max_steps)
+		self.logInfoDetail("Checkpoint: %d (%s)" % (self.agent_checkpoint_interval, self.agent_checkpoint_source))
+		self.logInfoDetail("Obs limit : %d chars" % self.agent_observation_max_chars)
+		self.logInfoDetail("Transcript: %s" % self.getAgentTranscriptPath())
+		self.logInfoDetail("Evidence  : %s" % self.getAgentEvidencePath())
+		self.logInfoDetail("Seed data : crash, findmsp, heap, stack, function, and continuation-path evidence")
+		if len(input_file_summaries) > 0:
+			self.logInfoDetail("Input file evidence: %d file(s)" % len(input_file_summaries))
+		self.writeAgentTranscriptEvent({"event": "start", "state": state, "time": mndbg.get_current_datetime()})
+		initial_evidence_ids = []
+		for chunk_index, chunk_text in enumerate(self.splitAgentEvidenceText(context_text), 1):
+			initial_evidence_ids.append(self.writeAgentEvidenceRecord({
+				"kind": "initial_context",
+				"step": 0,
+				"tool": "mona",
+				"command": "collectAIContext(q1)+q0PreflightCodePath",
+				"ok": True,
+				"chunk": chunk_index,
+				"text": chunk_text
+			}))
+		self.writeAgentTranscriptEvent({"event": "initial_evidence", "ids": initial_evidence_ids})
+		input_file_evidence_ids = self.addAgentInputFileEvidence(context)
+		if len(input_file_evidence_ids) > 0:
+			state["input_file_evidence_ids"] = input_file_evidence_ids
+			self.writeAgentTranscriptEvent({"event": "input_file_evidence", "ids": input_file_evidence_ids})
+		final_action = None
+		for step_index in xrange(1, self.agent_max_steps + 1):
+			interruptMona()
+			state["step"] = step_index
+			self.logInfo("q0 step %d/%d: asking model for next action." % (step_index, self.agent_max_steps))
+			prompt = self.buildAgentPrompt(state)
+			interruptMona()
+			self.request(question_type="0", prompt=prompt)
+			interruptMona()
+			if getattr(self, "last_request_failed", False):
+				provider_error = ensure_text(getattr(self, "last_request_error", "")).strip()
+				if provider_error == "":
+					provider_error = "AI provider request failed"
+				observation = {
+					"ok": False,
+					"error": provider_error,
+					"output": "q0 stopped because the AI provider request failed before returning an action."
+				}
+				state["observations"].append({"step": step_index, "action": {"action": "provider_error"}, "observation": observation})
+				self.writeAgentTranscriptEvent({"event": "provider_error", "step": step_index, "observation": observation})
+				self.addAgentEvidenceFromObservation(step_index, {"action": "provider", "command": self.engine, "reason": "AI request failed"}, observation)
+				final_action = {
+					"action": "finish",
+					"status": "failed",
+					"summary": "q0 stopped because the %s request failed: %s" % (self.engine, provider_error),
+					"artifacts": [self.getAgentTranscriptPath(), self.getAgentEvidencePath()]
+				}
+				break
+			response_text = ensure_text(self.response).strip()
+			try:
+				action = self.parseAgentAction(response_text)
+			except Exception as e:
+				observation = {"ok": False, "error": "invalid AI action: %s" % str(e), "raw_response": self.trimAgentObservation(response_text)}
+				state["observations"].append({"step": step_index, "action": {"action": "invalid"}, "observation": observation})
+				self.writeAgentTranscriptEvent({"event": "invalid_action", "step": step_index, "observation": observation})
+				interruptMona()
+				continue
+			interruptMona()
+			valid_shape, shape_error = self.validateAgentActionShape(action)
+			if not valid_shape:
+				observation = {
+					"ok": False,
+					"error": "invalid q0 action: %s" % shape_error,
+					"output": "Return a JSON action containing action=windbg or action=mona and a concrete command to execute, or a valid finish action."
+				}
+				state["observations"].append({"step": step_index, "action": action, "observation": observation})
+				state["last_reason"] = "q0 action shape rejected"
+				state["last_command"] = ensure_text(action.get("command", ""))
+				state["last_observation_summary"] = observation.get("error", "")
+				self.writeAgentTranscriptEvent({"event": "invalid_action_shape", "step": step_index, "observation": observation})
+				self.addAgentEvidenceFromObservation(step_index, {"action": "guard", "command": "action shape", "reason": "concrete command required"}, observation)
+				interruptMona()
+				continue
+			action_name = ensure_text(action.get("action", "")).strip().lower()
+			self.writeAgentTranscriptEvent({"event": "action", "step": step_index, "action": action})
+			interruptMona()
+			if action_name == "finish":
+				incomplete_milestones = self.getIncompleteRequiredAgentMilestones(finish_action=action)
+				if len(incomplete_milestones) > 0:
+					observation = {
+						"ok": False,
+						"error": "finish rejected; required q0 milestones have not been attempted or explicitly blocked: %s" % ", ".join(incomplete_milestones),
+						"output": "Continue the workflow. Request a command for one missing milestone, or finish with blockers that explain why each missing milestone cannot be attempted from the current evidence."
+					}
+					state["observations"].append({
+						"step": step_index,
+						"action": action,
+						"observation": observation
+					})
+					state["last_reason"] = "finish rejected by q0 milestone guard"
+					state["last_command"] = "finish"
+					state["last_observation_summary"] = observation.get("error", "")
+					self.writeAgentTranscriptEvent({"event": "finish_rejected", "step": step_index, "observation": observation})
+					self.addAgentEvidenceFromObservation(step_index, {"action": "guard", "command": "finish", "reason": "milestone guard"}, observation)
+					interruptMona()
+					continue
+				final_action = action
+				break
+			command_key = self.normalizeAgentCommand(action_name, action.get("command", ""))
+			semantic_command_key = self.normalizeAgentSemanticCommand(action_name, action.get("command", ""))
+			duplicate_key = ""
+			duplicate_kind = ""
+			if command_key in self.agent_executed_commands:
+				duplicate_key = command_key
+				duplicate_kind = "exact"
+			elif semantic_command_key in self.agent_executed_semantic_commands:
+				duplicate_key = semantic_command_key
+				duplicate_kind = "semantic"
+			if duplicate_key != "":
+				observation = {
+					"ok": False,
+					"error": "duplicate %s command rejected: %s" % (duplicate_kind, duplicate_key),
+					"output": "q0 will not repeat the same normalized command or equivalent seeded collector. Use the existing evidence, request a meaningfully different command, or finish."
+				}
+				state["observations"].append({
+					"step": step_index,
+					"action": action,
+					"observation": observation
+				})
+				state["last_reason"] = ensure_text(action.get("reason", ""))
+				state["last_command"] = ensure_text(action.get("command", ""))
+				state["last_observation_summary"] = observation.get("error", "")
+				self.writeAgentTranscriptEvent({"event": "duplicate_command", "step": step_index, "observation": observation})
+				self.addAgentEvidenceFromObservation(step_index, action, observation)
+				interruptMona()
+				continue
+			interruptMona()
+			if action_name == "windbg":
+				observation = self.executeAgentWindbgCommand(action.get("command", ""))
+			elif action_name == "mona":
+				observation = self.executeAgentMonaCommand(action.get("command", ""))
+			else:
+				observation = {"ok": False, "error": "unknown action '%s'" % action_name, "output": ""}
+			interruptMona()
+			if action_name in ["windbg", "mona"]:
+				self.agent_executed_commands.add(command_key)
+				self.agent_executed_semantic_commands.add(semantic_command_key)
+				self.updateAgentMilestonesFromAction(action, observation=observation)
+			state["observations"].append({
+				"step": step_index,
+				"action": action,
+				"observation": observation
+			})
+			state["last_reason"] = ensure_text(action.get("reason", ""))
+			state["last_command"] = ensure_text(action.get("command", ""))
+			state["last_observation_summary"] = self.trimAgentObservation(
+				"%s\n%s" % (ensure_text(observation.get("error", "")), ensure_text(observation.get("output", "")))
+			)
+			self.writeAgentTranscriptEvent({"event": "observation", "step": step_index, "observation": observation})
+			evidence_ids = self.addAgentEvidenceFromObservation(step_index, action, observation)
+			if len(evidence_ids) > 0:
+				self.writeAgentTranscriptEvent({"event": "evidence", "step": step_index, "ids": evidence_ids})
+			interruptMona()
+			self.logInfoDetail("Action complete: ok=%s elapsed=%s" % (
+				str(observation.get("ok", False)),
+				str(round(float(observation.get("elapsed_seconds", 0.0)), 2)) if "elapsed_seconds" in observation else "n/a"
+			))
+			interruptMona()
+			if not self.maybeRunAgentCheckpoint(step_index, state):
+				final_action = {
+					"action": "finish",
+					"status": "partial",
+					"summary": "q0 stopped at operator checkpoint after step %d. Review the transcript and evidence files for collected primitives and pending milestones." % step_index,
+					"artifacts": [self.getAgentTranscriptPath(), self.getAgentEvidencePath()]
+				}
+				break
+		if final_action is None:
+			final_action = {
+				"action": "finish",
+				"status": "partial",
+				"summary": "q0 reached the step limit before the model emitted a finish action.",
+				"artifacts": [self.getAgentTranscriptPath()]
+			}
+		self.writeAgentTranscriptEvent({"event": "finish", "action": final_action, "time": mndbg.get_current_datetime()})
+		self.response = ensure_text(final_action.get("summary", "")).strip()
+		if self.response == "":
+			self.response = json.dumps(final_action, indent=2, sort_keys=True)
+		ai_response_lines, self.agent_final_report_path = self.writeResponseLog()
+		dbg.log("")
+		self.logInfo("q0 final report:")
+		for line in ai_response_lines:
+			self.logInfoDetail(line)
+		self.logInfoDetail("Transcript saved to %s" % self.getAgentTranscriptPath())
+		self.logInfoDetail("Evidence saved to %s" % self.getAgentEvidencePath())
+		self.logInfoDetail("Final report saved to %s" % self.agent_final_report_path)
+		return self.response
+
 	def request(self, question_type=None, prompt=None):
 		"""Send the prepared request or save it offline, and keep the response text on the instance."""
 		mndbg.dbgp(get_current_function_name())
@@ -39953,6 +41256,8 @@ class MnAI(object):
 			max_attempts = 5 if self.engine == "openai-generic" else 1
 		self.response = ""
 		self.request_id = ""
+		self.last_request_failed = False
+		self.last_request_error = ""
 		timeout_retry_count = 0
 		for attempt in xrange(1, max_attempts + 1):
 			attempt_timeout = min(self.timeout_seconds + (timeout_retry_count * retry_timeout_increment), max_timeout_seconds) if self.timeout_seconds > 0 else 0
@@ -40116,6 +41421,8 @@ class MnAI(object):
 				if self.handleUnexpectedPayloadFallback(e):
 					break
 				logAIProviderError(self.engine, e)
+				self.last_request_failed = True
+				self.last_request_error = _getProviderErrorMessage(e)
 				if not timed_out:
 					return self.response
 				if attempt_timeout <= 0 or attempt_timeout >= max_timeout_seconds or attempt >= max_attempts:
@@ -40189,6 +41496,20 @@ class MnAI(object):
 			return ""
 		if not self.parseRopModuleSelection():
 			return ""
+		if self.question_type == "0":
+			if not self.parseAgentSettings():
+				return ""
+			if self.submit_requested:
+				if not self.prepareSubmitFastPath():
+					return ""
+			else:
+				if not askForConfirmation("[?] Start the q0 autonomous exploit-development agent now?", default="Y"):
+					self.logInfo("q0 agent session cancelled before start.")
+					return ""
+				if not self.selectEngineAndModelInteractive(skip_engine_menu=(self.engine_source == "argument")):
+					self.logInfo("q0 agent session cancelled before start.")
+					return ""
+			return self.runAgentMode()
 		if not self.validateCurrentInstruction():
 			return ""
 		if not self.buildRequestPrompt():
@@ -52445,6 +53766,7 @@ Configuration:
            For customai/openai-generic, context_window maps to options.num_ctx unless an explicit <engine>.options.num_ctx already exists.
            OpenAI, Anthropic, OpenRouter, and OpenAI Agents do not expose a standard request-level context-window override.
            You can still use <engine>.options.* for provider/model-specific names not covered by these first-class settings.
+           q0 checkpoints can be configured with mona.ai.q0.checkpoint. Use 0 to disable interactive checkpoints.
 
     2. Or use environment variables instead:
        Default:
@@ -52593,6 +53915,21 @@ Arguments:
                        Use the file IDs printed by Mona after upload or the Uploaded file IDs section in tellme_response.md.
                        Mona passes the IDs through as-is, so make sure they belong to the provider you selected.
     -q <number>     : Required. Prompt profile to use:
+                       0 = run an autonomous exploit-development agent loop.
+                           The model can request one allowed WinDBG or mona command per step,
+                           Mona executes it, captures output or generated files, and feeds the
+                           observation back until the model emits a finish action or -steps is reached.
+                           q0 asks the model for concrete debugger/mona commands to run, not
+                           vague next-step advice, and rejects non-finish turns without a command.
+                           Captured evidence is stored in tellme_agent_<id>_evidence.jsonl and
+                           retrieved into later prompts with a local keyword/address retriever.
+                           q0 refuses to execute the same normalized command more than once.
+                           q0 also guards finish actions until required exploit-workflow milestones
+                           have been attempted or explicitly blocked: primitive discovery, module
+                           triage, trampoline/pivot search, and ROP-chain feasibility/generation.
+                           Useful evidence can include !analyze output, stack traces, registers,
+                           disassembly, q2/q3-style function and controlled-data analysis, module
+                           metadata, trampoline candidates, badchar comparisons, and ROP output.
                        1 = analyse the current crash state
                        2 = analyse the current __PC__ function as the primary target
                            and optionally analyse one extra function from -a
@@ -52625,6 +53962,7 @@ Arguments:
     -l <files>      : Optional comma-separated context files, for example -l "file1,file2"
                        Any file containing alloc()/free() lines is treated as a heapdynamics log
                        Other files are added as supporting context under [additional_context_files]
+                       With -q 0, these files are also stored as first-class retrievable agent evidence.
                        If no heapdynamics log is supplied, tellme will still look for c:\\alloc.txt
                        For -q 1, focused matches are exposed under [heapdynamics]
                        and the larger raw heapdynamics context remains available under [heapdynamics_full]
@@ -52635,7 +53973,8 @@ Arguments:
                        that point into the cyclic pattern, and for [seh] candidates when findmsp
                        confirms an SEH overwrite. This is usually a good idea, otherwise the
                        suggested trampoline or SEH candidate may contain bytes you already know you cannot use
-    -d <number>     : With -q 2, -q 3, or -q 3b, optional call/jump follow depth for control_flow_targets.
+    -d <number>     : With -q 0, -q 2, -q 3, or -q 3b, optional call/jump follow depth for control_flow_targets.
+                       With -q 0, this controls initial current-function and continuation-path evidence collection.
                        For -q 2, this controls how many levels of linked call/jump targets mona adds
                        on top of the current __PC__ function and the optional -a function.
                        -d 0 = do not include linked targets; analyze only the current function and optional -a function
@@ -52645,16 +53984,27 @@ Arguments:
                        For -q 3, the same depth is also used as the default number of caller frames
                        to inspect on the return-resume path.
                        q3 follows direct branches/calls/jumps, nested callees, and caller-side resume paths.
-                       Default: q2=0, q3/q3b=2. Maximum: 4.
+                       Default: q2=0, q0/q3/q3b=2. Maximum: 4.
     -p <file>       : Optional PoC/trigger file. The full file contents are added under [poc_file]
+                       With -q 0, the file is also stored as first-class retrievable agent evidence.
     -f <file>       : Required for -q 9.
                        If the file contains [variable] placeholders, mona resolves them against the debugger context variables below.
                        If the file already contains a built request (PROMPT BEGIN/PROMPT END or a raw prompt with Debugger request JSON:)
                        and no placeholders remain, mona reuses that request body directly instead of rebuilding debugger context
+    -goal <text>    : With -q 0, optional agent objective. Defaults to exploit primitive and ROP-plan discovery.
+    -steps <n>      : With -q 0, maximum model/action loop iterations. Default: 24. Maximum: 200.
+    -checkpoint <n> : With -q 0 interactive mode, ask every n completed steps whether to continue
+                       and optionally collect operator feedback for the next rounds.
+                       Default: mona.ai.q0.checkpoint if set, otherwise 10. Use 0 to disable checkpoints.
+                       The command-line -checkpoint value overrides mona.ai.q0.checkpoint. -submit disables checkpoints.
+    -obsmax <chars> : With -q 0, maximum command/file observation characters retained per step. Default: 12000.
     -offline        : Force offline behavior for this request even when a default engine is configured
     -test           : Override the configured model with a lower-cost test model
 
 Examples:
+    __LAUNCHCMD__ tellme -e openai -q 0 -submit -steps 12
+    __LAUNCHCMD__ tellme -e openai -q 0 -steps 40 -checkpoint 10
+    __LAUNCHCMD__ tellme -e ollama -q 0 -submit -timeout 0 -goal "Find PC control and build a DEP-bypass ROP plan"
     __LAUNCHCMD__ tellme -q 1
     __LAUNCHCMD__ config -set mona.ai.engine anthropic
     __LAUNCHCMD__ tellme -e anthropic -q 2
