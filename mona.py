@@ -53677,7 +53677,71 @@ Optional arguments:
 
 	tellmeUsage = """Ask an AI engine to analyze the current WinDBG debugger context.
 
-Workflow:
+Usage:
+    __LAUNCHCMD__ ai -q <0|1|2|3|8|9> [-e <engine>] [-model <id>] [-submit] [options]
+
+Main arguments:
+    -q <number>     : Required analysis mode.
+                       0 = autonomous exploit-development agent loop
+                       1 = crash-context analysis
+                       2 = current-function analysis, plus optional -a function
+                       3 = controlled heap chunk reachability/discovery
+                       8 = ROP primitive quality and feasibility
+                       9 = load a prompt/template from -f <file>
+    -e <engine>     : Engine to propose first or use with -submit:
+                       offline, openai, openaiagents, anthropic, openrouter, ollama, customai, openai-generic
+    -model <id>     : Optional model override for this request
+    -submit         : Non-interactive mode. Build evidence, submit immediately, print response, and stop.
+    -offline        : Build and save the request without sending it to a provider.
+    -timeout <s>    : Provider request timeout. Use larger values, or openai-generic -timeout 0, for slow local models.
+    -upload         : OpenAI/Anthropic upload mode. Upload the saved request plus -l/-p files instead of embedding everything inline.
+    -id <ids>       : Reuse provider-uploaded file IDs in a later request.
+    -a <address>    : Extra analysis target. Used by q1/q2, depending on mode.
+    -c <address>    : q3 controlled chunk address.
+    -t <address>    : q3 target code address.
+    -d <number>     : q0/q2/q3 call/jump follow depth.
+    -l <files>      : Supporting context files. Heap logs are detected; other files become additional context.
+    -p <file>       : PoC/trigger file.
+    -f <file>       : q9 template or saved request file.
+    -cpb <bytes>    : Badchars for pointer/trampoline filtering, for example '\\x00\\x0a\\x0d'.
+    -goal <text>    : q0 objective override.
+    -steps <n>      : q0 maximum model/action loop iterations. Default: 24.
+    -checkpoint <n> : q0 interactive checkpoint interval. Default: mona.ai.q0.checkpoint or 10; 0 disables.
+    -obsmax <chars> : q0 maximum retained observation text per step. Default: 12000.
+
+Operational modes:
+    Interactive:
+        __LAUNCHCMD__ ai -q 1
+        Builds evidence, saves the request, shows engine/model selection, submits after confirmation,
+        then starts a chat loop. Type 'engine' in chat to switch model, or 'exit' to stop.
+
+    Non-interactive:
+        __LAUNCHCMD__ ai -e anthropic -q 1 -submit
+        Requires configured engine credentials/model or command-line overrides. No selector or chat loop.
+
+    Offline/manual:
+        __LAUNCHCMD__ ai -q 1 -offline
+        Saves the request file so it can be inspected, edited, or submitted manually elsewhere.
+
+    Autonomous q0:
+        __LAUNCHCMD__ ai -e anthropic -q 0 -p poc.py -steps 40 -checkpoint 10
+        Collects initial crash/findmsp/heap/stack/function evidence, then lets the model request one
+        allowed WinDBG or mona command per step. Mona runs the command, stores evidence JSONL in the
+        output folder, retrieves relevant evidence for later turns, rejects repeated commands, assumes
+        DEP is active, and requires primitive/module/trampoline/ROP work before finish.
+
+    Template q9:
+        __LAUNCHCMD__ ai -e openai -q 9 -f ai.q1
+        Resolves placeholders such as [registers] and [pc_disasm], or resubmits a saved request body.
+
+Common examples:
+    __LAUNCHCMD__ ai -e anthropic -q 0 -p poc.py -steps 40 -checkpoint 10
+    __LAUNCHCMD__ ai -e openai -q 1 -l alloc.txt,triage.txt -p poc.py -upload
+    __LAUNCHCMD__ ai -e openai -q 2 -a kernel32!CreateFileW -d 2
+    __LAUNCHCMD__ ai -e openai -q 3 -c eax -t kernel32!VirtualProtect
+    __LAUNCHCMD__ ai -e openai -q 9 -f request.md
+
+Detailed workflow:
     - tellme first builds the full evidence bundle and saves the request to disk
     - before submission, tellme always shows an interactive engine/model selector
     - command-line or configured engine/model values are proposed first in that selector
@@ -53874,7 +53938,7 @@ Official model docs:
     - OpenAI   : https://developers.openai.com/api/docs/models
     - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
 
-Arguments:
+Detailed arguments:
     -e <engine>      : AI engine to propose first in the interactive selector: offline, openai, openaiagents, anthropic, openrouter, ollama, customai, or openai-generic.
                        If omitted, mona checks mona.ai.engine first, then MONA_AI_ENGINE,
                        and otherwise proposes the first usable configured engine.
@@ -54001,7 +54065,7 @@ Arguments:
     -offline        : Force offline behavior for this request even when a default engine is configured
     -test           : Override the configured model with a lower-cost test model
 
-Examples:
+Additional examples:
     __LAUNCHCMD__ tellme -e openai -q 0 -submit -steps 12
     __LAUNCHCMD__ tellme -e openai -q 0 -steps 40 -checkpoint 10
     __LAUNCHCMD__ tellme -e ollama -q 0 -submit -timeout 0 -goal "Find PC control and build a DEP-bypass ROP plan"
