@@ -40919,79 +40919,7 @@ class MnAI(object):
 			return ""
 		if not self.parseAgentSettings():
 			return ""
-		context = collectAIContext(
-			"1",
-			heapdynamics_files=self.heapdynamics_files,
-			additional_context_files=self.additional_context_files,
-			poc_file=self.poc_file,
-			heap_target_address=self.heap_target_address,
-			ai_args=self.args,
-			collection_plan=_buildAIContextCollectionPlan("1")
-		)
-		context = self.enrichAgentInitialEvidence(context)
-		context_text = json.dumps(context, indent=2, sort_keys=True)
-		context_summary = {
-			"stored_as_evidence": True,
-			"keys": sorted(context.keys()) if isinstance(context, dict) else [],
-			"bytes": len(context_text)
-		}
-		if isinstance(context, dict):
-			for summary_key in ["processname", "architecture", "pointer_size", "program_counter", "stack_pointer", "pc_module", "pc_page", "stack_page"]:
-				if summary_key in context:
-					context_summary[summary_key] = context.get(summary_key)
-		self.initializeAgentMilestones()
-		if isinstance(context, dict) and isinstance(context.get("findmsp"), dict):
-			findmsp_summary = self.summarizeAgentSeedEvidence(context).get("findmsp", {})
-			if isinstance(findmsp_summary, dict) and len(findmsp_summary) > 0:
-				self.agent_milestones["primitive_discovery"]["attempted"] = True
-				self.agent_milestones["primitive_discovery"]["status"] = "seeded"
-				self.agent_milestones["primitive_discovery"].setdefault("evidence", [])
-				if "q0 initial findmsp preflight" not in self.agent_milestones["primitive_discovery"]["evidence"]:
-					self.agent_milestones["primitive_discovery"]["evidence"].append("q0 initial findmsp preflight")
-		if isinstance(context, dict) and (
-			isinstance(context.get("current_function"), dict) or
-			len(context.get("caller_chain", [])) > 0 or
-			len(context.get("reachable_functions", [])) > 0
-		):
-			self.agent_milestones["code_path_analysis"]["attempted"] = True
-			self.agent_milestones["code_path_analysis"]["status"] = "seeded"
-			self.agent_milestones["code_path_analysis"].setdefault("evidence", [])
-			self.agent_milestones["code_path_analysis"]["evidence"].append("q0 initial function/continuation preflight")
-		for seed_action, seed_command in [
-			("windbg", "!analyze -v"),
-			("windbg", "kb"),
-			("mona", "findmsp"),
-		]:
-			self.agent_executed_commands.add(self.normalizeAgentCommand(seed_action, seed_command))
-			self.agent_executed_semantic_commands.add(self.normalizeAgentSemanticCommand(seed_action, seed_command))
-		if isinstance(context, dict):
-			for heap_probe in context.get("q0_referenced_register_heap_probes", []):
-				if not isinstance(heap_probe, dict):
-					continue
-				probe_command = ensure_text(heap_probe.get("command", "")).strip()
-				if probe_command == "":
-					probe_info = heap_probe.get("heap_probe", {})
-					if isinstance(probe_info, dict):
-						probe_command = ensure_text(probe_info.get("command", "")).strip()
-				if probe_command != "":
-					self.agent_executed_commands.add(self.normalizeAgentCommand("mona", probe_command))
-					self.agent_executed_semantic_commands.add(self.normalizeAgentSemanticCommand("mona", probe_command))
-		state = {
-			"goal": self.agent_goal,
-			"assumptions": [
-				"DEP is active and requires ROP-oriented evidence before finish."
-			],
-			"max_steps": self.agent_max_steps,
-			"step": 0,
-			"initial_context": context_summary,
-			"observations": []
-		}
-		input_file_summaries = self.summarizeAgentInputFiles(context)
-		if len(input_file_summaries) > 0:
-			state["input_files"] = input_file_summaries
-		seed_evidence_summary = self.summarizeAgentSeedEvidence(context)
-		if len(seed_evidence_summary) > 0:
-			state["seed_evidence"] = seed_evidence_summary
+		state, context_text, input_file_summaries = self.prepareAgentInitialState()
 		self.logInfo("Starting q0 autonomous exploit-development agent.")
 		self.logInfoDetail("Steps     : %d" % self.agent_max_steps)
 		self.logInfoDetail("Checkpoint: %d (%s)" % (self.agent_checkpoint_interval, self.agent_checkpoint_source))
@@ -41014,7 +40942,7 @@ class MnAI(object):
 				"text": chunk_text
 			}))
 		self.writeAgentTranscriptEvent({"event": "initial_evidence", "ids": initial_evidence_ids})
-		input_file_evidence_ids = self.addAgentInputFileEvidence(context)
+		input_file_evidence_ids = self.addAgentInputFileEvidence(self.last_request_context)
 		if len(input_file_evidence_ids) > 0:
 			state["input_file_evidence_ids"] = input_file_evidence_ids
 			self.writeAgentTranscriptEvent({"event": "input_file_evidence", "ids": input_file_evidence_ids})
@@ -41184,6 +41112,94 @@ class MnAI(object):
 		self.logInfoDetail("Evidence saved to %s" % self.getAgentEvidencePath())
 		self.logInfoDetail("Final report saved to %s" % self.agent_final_report_path)
 		return self.response
+
+	def prepareAgentInitialState(self):
+		"""Collect q0 seed evidence and return the first agent state without contacting a provider."""
+		mndbg.dbgp(get_current_function_name())
+		context = collectAIContext(
+			"1",
+			heapdynamics_files=self.heapdynamics_files,
+			additional_context_files=self.additional_context_files,
+			poc_file=self.poc_file,
+			heap_target_address=self.heap_target_address,
+			ai_args=self.args,
+			collection_plan=_buildAIContextCollectionPlan("1")
+		)
+		context = self.enrichAgentInitialEvidence(context)
+		context_text = json.dumps(context, indent=2, sort_keys=True)
+		context_summary = {
+			"stored_as_evidence": True,
+			"keys": sorted(context.keys()) if isinstance(context, dict) else [],
+			"bytes": len(context_text)
+		}
+		if isinstance(context, dict):
+			for summary_key in ["processname", "architecture", "pointer_size", "program_counter", "stack_pointer", "pc_module", "pc_page", "stack_page"]:
+				if summary_key in context:
+					context_summary[summary_key] = context.get(summary_key)
+		self.initializeAgentMilestones()
+		if isinstance(context, dict) and isinstance(context.get("findmsp"), dict):
+			findmsp_summary = self.summarizeAgentSeedEvidence(context).get("findmsp", {})
+			if isinstance(findmsp_summary, dict) and len(findmsp_summary) > 0:
+				self.agent_milestones["primitive_discovery"]["attempted"] = True
+				self.agent_milestones["primitive_discovery"]["status"] = "seeded"
+				self.agent_milestones["primitive_discovery"].setdefault("evidence", [])
+				if "q0 initial findmsp preflight" not in self.agent_milestones["primitive_discovery"]["evidence"]:
+					self.agent_milestones["primitive_discovery"]["evidence"].append("q0 initial findmsp preflight")
+		if isinstance(context, dict) and (
+			isinstance(context.get("current_function"), dict) or
+			len(context.get("caller_chain", [])) > 0 or
+			len(context.get("reachable_functions", [])) > 0
+		):
+			self.agent_milestones["code_path_analysis"]["attempted"] = True
+			self.agent_milestones["code_path_analysis"]["status"] = "seeded"
+			self.agent_milestones["code_path_analysis"].setdefault("evidence", [])
+			self.agent_milestones["code_path_analysis"]["evidence"].append("q0 initial function/continuation preflight")
+		for seed_action, seed_command in [
+			("windbg", "!analyze -v"),
+			("windbg", "kb"),
+			("mona", "findmsp"),
+		]:
+			self.agent_executed_commands.add(self.normalizeAgentCommand(seed_action, seed_command))
+			self.agent_executed_semantic_commands.add(self.normalizeAgentSemanticCommand(seed_action, seed_command))
+		if isinstance(context, dict):
+			for heap_probe in context.get("q0_referenced_register_heap_probes", []):
+				if not isinstance(heap_probe, dict):
+					continue
+				probe_command = ensure_text(heap_probe.get("command", "")).strip()
+				if probe_command == "":
+					probe_info = heap_probe.get("heap_probe", {})
+					if isinstance(probe_info, dict):
+						probe_command = ensure_text(probe_info.get("command", "")).strip()
+				if probe_command != "":
+					self.agent_executed_commands.add(self.normalizeAgentCommand("mona", probe_command))
+					self.agent_executed_semantic_commands.add(self.normalizeAgentSemanticCommand("mona", probe_command))
+		state = {
+			"goal": self.agent_goal,
+			"assumptions": [
+				"DEP is active and requires ROP-oriented evidence before finish."
+			],
+			"max_steps": self.agent_max_steps,
+			"step": 0,
+			"initial_context": context_summary,
+			"observations": []
+		}
+		input_file_summaries = self.summarizeAgentInputFiles(context)
+		if len(input_file_summaries) > 0:
+			state["input_files"] = input_file_summaries
+		seed_evidence_summary = self.summarizeAgentSeedEvidence(context)
+		if len(seed_evidence_summary) > 0:
+			state["seed_evidence"] = seed_evidence_summary
+		self.last_request_context = context
+		return state, context_text, input_file_summaries
+
+	def writeOfflineAgentRequest(self):
+		"""Save the initial q0 agent prompt without starting the interactive agent loop."""
+		mndbg.dbgp(get_current_function_name())
+		state, _context_text, _input_file_summaries = self.prepareAgentInitialState()
+		state["step"] = 1
+		self.prompt = self.buildAgentPrompt(state)
+		self.question_type = "0"
+		return self.writeOfflineRequest()
 
 	def request(self, question_type=None, prompt=None):
 		"""Send the prepared request or save it offline, and keep the response text on the instance."""
@@ -41499,6 +41515,10 @@ class MnAI(object):
 		if self.question_type == "0":
 			if not self.parseAgentSettings():
 				return ""
+			if self.engine == "offline":
+				self.writeOfflineAgentRequest()
+				return ""
+			self.offline = False
 			if self.submit_requested:
 				if not self.prepareSubmitFastPath():
 					return ""
@@ -41515,6 +41535,9 @@ class MnAI(object):
 		if not self.buildRequestPrompt():
 			return ""
 		self.base_prompt = self.prompt
+		if self.offline or self.engine == "offline":
+			self.writeOfflineRequest()
+			return ""
 		self.savePreparedRequestForOptionalSubmission()
 		if self.submit_requested:
 			if not self.prepareSubmitFastPath():
@@ -53692,7 +53715,7 @@ Main arguments:
                        offline, openai, openaiagents, anthropic, openrouter, ollama, customai, openai-generic
     -model <id>     : Optional model override for this request
     -submit         : Non-interactive mode. Build evidence, submit immediately, print response, and stop.
-    -offline        : Build and save the request without sending it to a provider.
+    -offline        : Non-q0 only. Build and save the request without sending it to a provider.
     -timeout <s>    : Provider request timeout. Use larger values, or openai-generic -timeout 0, for slow local models.
     -upload         : OpenAI/Anthropic upload mode. Upload the saved request plus -l/-p files instead of embedding everything inline.
     -id <ids>       : Reuse provider-uploaded file IDs in a later request.
@@ -53721,7 +53744,7 @@ Operational modes:
 
     Offline/manual:
         __LAUNCHCMD__ ai -q 1 -offline
-        Saves the request file so it can be inspected, edited, or submitted manually elsewhere.
+        For non-q0 profiles, saves the request file so it can be inspected, edited, or submitted manually elsewhere.
 
     Autonomous q0:
         __LAUNCHCMD__ ai -e anthropic -q 0 -p poc.py -steps 40 -checkpoint 10
@@ -53729,6 +53752,8 @@ Operational modes:
         allowed WinDBG or mona command per step. Mona runs the command, stores evidence JSONL in the
         output folder, retrieves relevant evidence for later turns, rejects repeated commands, assumes
         DEP is active, and requires primitive/module/trampoline/ROP work before finish.
+        If q0 resolves to the offline engine because no provider/default engine is configured, Mona
+        saves the first q0 agent request without requiring -offline.
 
     Template q9:
         __LAUNCHCMD__ ai -e openai -q 9 -f ai.q1
@@ -53743,7 +53768,8 @@ Common examples:
 
 Detailed workflow:
     - tellme first builds the full evidence bundle and saves the request to disk
-    - before submission, tellme always shows an interactive engine/model selector
+    - before interactive submission, tellme shows an engine/model selector
+    - with -offline on non-q0 profiles, tellme only writes the request file and never prompts for submission
     - command-line or configured engine/model values are proposed first in that selector
     - API keys are only read from mona.ini or environment variables; tellme does not prompt for them
     - after the initial response, tellme enters an interactive chat loop
@@ -53906,7 +53932,7 @@ Precedence:
     Additional request options can be configured via <engine>.options.*
     If neither a default engine nor -e is specified, tellme uses offline as the default engine
     If the default engine has no required configuration or model configured, tellme falls back to offline
-    -offline still overrules a configured default engine for that one request
+    For non-q0 profiles, -offline still overrules a configured default engine for that one request
 
 Default models:
     - openai        : gpt-5-mini
@@ -54062,7 +54088,7 @@ Detailed arguments:
                        Default: mona.ai.q0.checkpoint if set, otherwise 10. Use 0 to disable checkpoints.
                        The command-line -checkpoint value overrides mona.ai.q0.checkpoint. -submit disables checkpoints.
     -obsmax <chars> : With -q 0, maximum command/file observation characters retained per step. Default: 12000.
-    -offline        : Force offline behavior for this request even when a default engine is configured
+    -offline        : Non-q0 only. Force offline behavior for this request even when a default engine is configured
     -test           : Override the configured model with a lower-cost test model
 
 Additional examples:
@@ -54206,7 +54232,7 @@ Request generation notes:
     They are provided for inspection or reuse and are not applied automatically during -q 1, -q 2, -q 3, or -q 8.
     To use one of those templates, run -q 9 -f ai.q1, ai.q2, ai.q3, or ai.q8.
     If the -q 9 file already contains a saved request prompt and no placeholders remain, mona submits that prompt body directly.
-    With -offline, tellme saves the request file and prints only the saved file path instead of dumping the
+    With -offline on non-q0 profiles, tellme saves the request file and prints only the saved file path instead of dumping the
     full request to the debugger console.
 
 Question notes:
