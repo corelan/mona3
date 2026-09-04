@@ -36274,6 +36274,12 @@ def procCreatePATTERN(args):
 			size = 0
 
 	if size == 0:
+		if "s" in args:
+			size, sizeok = getIntArg(args["s"])
+			if not sizeok:
+				size = 0
+
+	if size == 0:
 		dbg.log("Please enter a valid size",highlight=1)
 	else:
 		pattern = createPattern(size,args)
