@@ -18973,6 +18973,33 @@ class MnNTVistaHeap(MnNTHeap):
 		self._fe_usage_cache = counters
 		return counters
 
+	def frontEndUsageAddrFor(self, units):
+		"""Address of the FrontEndHeapUsageData[units] u16 counter slot (Win8+), or None. This is the
+		per-size-class activation-counter slot -- 'dw <addr>' reads the raw value the counter shows."""
+		if not units:
+			return None
+		try:
+			base = readPtrSizeBytes(self.heapbase + self._offset("FrontEndHeapUsageData"))
+		except Exception:
+			return None
+		return (base + units * 2) if base else None
+
+	def lfhUsageRawUnits(self, units):
+		"""Raw FrontEndHeapUsageData[units] u16 value (Win8+), or None. The activation counter is the
+		low 5 bits (counter & 0x1F, threshold 0x10); the full raw value matches 'dw' of
+		frontEndUsageAddrFor(units)."""
+		if not units:
+			return None
+		try:
+			if self.getFrontEndHeapType() != 2:
+				return None
+			usage = self.getFrontEndHeapUsageData()
+		except Exception:
+			return None
+		if not usage or not (0 <= units < len(usage)):
+			return None
+		return usage[units]
+
 
 class MnNT8Heap(MnNTVistaHeap):
 	"""
@@ -41317,11 +41344,12 @@ def _lfhActivationCell(mHeap, bucket, by_index=None):
 	active, _total = mHeap.frontEndActiveClasses(lo, hi)
 	if active > 0 or subseg_active:
 		return ("ACTIVE", True)
-	v7 = _lfhVista7CounterCell(mHeap, hi_bu)   # Vista/7: Blink counter for the bucket's top class
-	if v7 is not None:
-		return (v7[0], v7[1])
-	cnt = mHeap.lfhActivationCounter(bucket)   # Win8+ usage counter
-	return (("%d" % cnt, False) if cnt is not None else ("-", False))
+	# Not active by range/subsegment: show the top class's counter (Win8+ usage or Vista/7 Blink),
+	# with the full raw counter in parens -- same format as the -lfh -counters view.
+	cell = _lfhWin8CounterCell(mHeap, hi_bu) or _lfhVista7CounterCell(mHeap, hi_bu)
+	if cell is not None:
+		return (cell[0], cell[1])
+	return ("-", False)
 
 
 def _sizeClassServed(units):
@@ -41333,6 +41361,25 @@ def _sizeClassServed(units):
 	if lo_b >= hi_b:
 		return "0x%x (%d)" % (hi_b, hi_b)
 	return "0x%x - 0x%x (%d - %d)" % (lo_b, hi_b, lo_b, hi_b)
+
+
+def _lfhWin8CounterCell(mHeap, units):
+	"""(text, is_active, count) for a Win8+ size class from FrontEndHeapStatusBitmap +
+	FrontEndHeapUsageData, or None when this heap has no per-class StatusBitmap (Vista/7). The status
+	bit set => ACTIVE; otherwise the raw usage counter is +0x21 per alloc, and ntdll activates when
+	(counter & 0x1F) > 0x10 OR counter > 0xFF00, so mona shows count = counter & 0x1F (limit 0x10)
+	with the FULL raw counter in parens after it, e.g. '31 (0x3ff)'. count is None when already active."""
+	try:
+		bit = mHeap._frontEndStatusBitmapBit(units)
+	except Exception:
+		return None   # no FrontEndHeapStatusBitmap => not a Win8+ heap (Vista/7 uses the Blink slot)
+	if bit:
+		return ("ACTIVE", True, None)
+	raw = mHeap.lfhUsageRawUnits(units)
+	if raw is None:
+		return None
+	count = raw & 0x1F
+	return ("%d (0x%x)" % (count, raw), False, count)
 
 
 def _lfhVista7CounterCell(mHeap, units):
@@ -41359,26 +41406,33 @@ def _lfhVista7CounterCell(mHeap, units):
 
 
 def _lfhClassActivationCell(mHeap, units):
-	"""Per-SIZE-CLASS activation cell (text, is_active, interesting) for block-unit size class *units*
-	(no bucket-level aggregation):
-	  'ACTIVE'       -- Win8+ FrontEndHeapStatusBitmap bit set, or Vista/7 Blink is a tagged bucket ptr
-	  '<n> (0x..)'   -- Vista/7 Blink counter: n = (counter & 0xFFFF)//2, full raw counter in parens
-	  <number>       -- Win8+ counting toward activation (usage[units] & 0x1F)
-	  '-'            -- not decodable
-	interesting is True when the class is active or has a nonzero count (drives the default skip)."""
+	"""Per-SIZE-CLASS activation cell (text, is_active, interesting) for block-unit size class *units*:
+	  'ACTIVE'      -- status bit set (Win8+) or Blink is a tagged bucket pointer (Vista/7)
+	  '<n> (0x..)'  -- pre-activation counter n with the FULL raw counter in parens after it
+	                   (Win8+: n = counter & 0x1F; Vista/7: n = (Blink & 0xFFFF)//2; display limit 0x10)
+	  '-'           -- not decodable
+	interesting is True when active or the count is nonzero (drives the default skip)."""
+	cell = _lfhWin8CounterCell(mHeap, units) or _lfhVista7CounterCell(mHeap, units)
+	if cell is None:
+		return ("-", False, False)
+	text, is_active, count = cell
+	return (text, is_active, is_active or bool(count))
+
+
+def _lfhClassSlotAddr(mHeap, units):
+	"""Address of the per-size-class activation slot for the 'Address' column, so the user can inspect
+	the raw value: FrontEndHeapUsageData[units] on Win8+ ('dw <addr>'), or ListHints[units].Blink on
+	Vista/7 ('dps <addr>'). None if unresolvable."""
 	try:
-		if mHeap._frontEndStatusBitmapBit(units):     # Win8+ authoritative per-class bit
-			return ("ACTIVE", True, True)
+		a = mHeap.frontEndUsageAddrFor(units)   # Win8+ usage slot
+		if a:
+			return a
 	except Exception:
 		pass
-	v7 = _lfhVista7CounterCell(mHeap, units)           # Vista/7 Blink-based active/counter
-	if v7 is not None:
-		text, is_active, count = v7
-		return (text, is_active, is_active or bool(count))
-	cnt = mHeap.lfhActivationCounterUnits(units)        # Win8+ usage counter
-	if cnt is None:
-		return ("-", False, False)
-	return ("%d" % cnt, False, cnt > 0)
+	try:
+		return mHeap.list_hints.blinkAddrFor(units)   # Vista/7 Blink slot
+	except Exception:
+		return None
 
 
 def _lfhStrongActiveCounts(mHeap, buckets):
@@ -41743,14 +41797,15 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 
 def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 	"""Per-SIZE-CLASS LFH activation table, ONE ROW PER BLOCK-UNIT SIZE CLASS. Columns:
-	  Size Class (block units) / UserSize / Bucket / Activation Counter / [ListHint.Blink]
+	  Size Class (block units) / Address / UserSize / Bucket / Activation Counter
 	Activation state is per size class (the FrontEndHeapStatusBitmap bit + FrontEndHeapUsageData
 	counter on Win8+, ListHints[n].Blink on Vista/7), so each class is its own row -- a granularity>1
 	bucket expands into several rows, and the Bucket column maps each class back to its _HEAP_BUCKET.
 	Chunks/SubSegments are per-bucket (shared by a bucket's classes) and live in the !mona heap -lfh
-	view, not here. On Vista/7 a ListHint.Blink column gives each class's Blink slot address so the
-	user can 'dps <addr>' and read the raw value the counter is decoded from. By default shows only
-	active/counting classes; show_all=True includes every class in every bucket's range."""
+	view, not here. The Address column (right after the Size Class index) is that class's activation
+	slot -- FrontEndHeapUsageData[n] on Win8+ ('dw <addr>') or ListHints[n].Blink on Vista/7
+	('dps <addr>') -- so the user can read the raw value the Activation Counter is decoded from. By
+	default shows only active/counting classes; show_all=True includes every class in every bucket's range."""
 	_heapLog("[+] FrontEnd Allocator : LFH per-size-class activation", logfile, loghandle)
 	if not mHeap.usesLFH():
 		_heapLog("    LFH is not active for this heap", logfile, loghandle)
@@ -41767,17 +41822,6 @@ def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 
 	# All buckets indexed by bucket_index (for each bucket's size-class unit range low bound).
 	by_index = {b.bucket_index: b for b in buckets}
-	# Vista/7 store per-class activation in ListHints[n].Blink (2-pointer stride) -> add a
-	# "ListHint.Blink" column with the slot address so the user can 'dps <addr>' and read the raw
-	# value. On Win8+ (single-pointer stride) activation lives in FrontEndHeapUsageData/StatusBitmap,
-	# so there is no Blink slot and the column is omitted.
-	lh = None
-	show_blink = False
-	try:
-		lh = mHeap.list_hints
-		show_blink = bool(lh is not None and lh.usesHints() and lh.elt != archValue(4, 8))
-	except Exception:
-		lh, show_blink = None, False
 
 	table_data = {}
 	table_seq = []
@@ -41793,14 +41837,8 @@ def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 			# By default show only active/counting classes; -all includes every class.
 			if not show_all and not interesting:
 				continue
-			row = []
-			if show_blink:   # Address (ListHints[n].Blink slot) goes right after the Size Class index
-				try:
-					baddr = lh.blinkAddrFor(n)
-				except Exception:
-					baddr = None
-				row.append(_ptrUpper(baddr) if baddr else "-")
-			row += [_sizeClassServed(n), "%d" % bucket.bucket_index, activation]
+			addr = _lfhClassSlotAddr(mHeap, n)   # activation slot, right after the Size Class index
+			row = [_ptrUpper(addr) if addr else "-", _sizeClassServed(n), "%d" % bucket.bucket_index, activation]
 			key = "%d" % n
 			table_data[key] = row
 			table_seq.append(key)
@@ -41809,13 +41847,8 @@ def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 		_heapLog("    No active/counting size classes (use -all to include every class)", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
-	headers = ["Size Class"]
-	types   = ["int"]
-	if show_blink:
-		headers.append("Address")
-		types.append("string")
-	headers += ["UserSize", "Bucket", "Activation Counter"]
-	types   += ["string", "int", "string"]
+	headers = ["Size Class", "Address", "UserSize", "Bucket", "Activation Counter"]
+	types   = ["int", "string", "string", "int", "string"]
 	print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq,
 	                 logobj=logfile, logfile=loghandle, mdstyle=True)
 	_heapLog("", logfile, loghandle)
