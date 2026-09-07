@@ -21896,9 +21896,12 @@ class MnNTListHints(object):
 
 	def activationFor(self, n):
 		"""Blink slot (Vista/7): the LFH-activation state for size class n, or None. INFERRED from the
-		2-pointer stride (ExtraItem != 0); Returns
-		("count", low16_counter) while counting toward activation (LSB clear), or ("bucket",
-		MnNTLFHBucket) once LFH-active (LSB set => Blink is a pointer). Threshold ~0x20 (Win7)."""
+		2-pointer stride (ExtraItem != 0). Returns ("count", low16, full_counter) while counting toward
+		activation (LSB clear), or ("bucket", MnNTLFHBucket) once LFH-active (LSB set => Blink is a
+		pointer). On Win7 the raw Blink counter is incremented by 0x10002 per alloc and decremented by
+		0x2 per free, so its low 16 bits hold 2 * (busy count of that size) and its high 16 bits hold
+		the running allocation count; ntdll activates the LFH for the class when
+		(uint16)counter > 0x20 OR counter > 0x10000000. low16 == (full_counter & 0xFFFF)."""
 		if self.elt == archValue(4, 8):
 			return None
 		idx = n - self.bi.BaseIndex
@@ -21907,9 +21910,12 @@ class MnNTListHints(object):
 		blink = readPtr(self.base + idx * self.elt + archValue(4, 8))
 		if not blink:
 			return None
+		# LSB is the activation tag: while counting the Blink is an even counter (LSB clear); on
+		# activation ntdll stores FreeList[1] = &LFHContext->BlockUnits + 1, a pointer with the LSB
+		# SET. So (blink & 1) == 1 => LFH already active for this size class.
 		if blink & 1:
 			return ("bucket", self.heap.lfhBucketAt(blink & ~1))
-		return ("count", blink & 0xFFFF)
+		return ("count", blink & 0xFFFF, blink)
 
 	def blinkAddrFor(self, n):
 		"""Address of the Blink slot in ListHints[n] (Vista/7 only). This is the slot activationFor(n)
@@ -41311,7 +41317,10 @@ def _lfhActivationCell(mHeap, bucket, by_index=None):
 	active, _total = mHeap.frontEndActiveClasses(lo, hi)
 	if active > 0 or subseg_active:
 		return ("ACTIVE", True)
-	cnt = mHeap.lfhActivationCounter(bucket)
+	v7 = _lfhVista7CounterCell(mHeap, hi_bu)   # Vista/7: Blink counter for the bucket's top class
+	if v7 is not None:
+		return (v7[0], v7[1])
+	cnt = mHeap.lfhActivationCounter(bucket)   # Win8+ usage counter
 	return (("%d" % cnt, False) if cnt is not None else ("-", False))
 
 
@@ -41326,26 +41335,50 @@ def _sizeClassServed(units):
 	return "0x%x - 0x%x (%d - %d)" % (lo_b, hi_b, lo_b, hi_b)
 
 
+def _lfhVista7CounterCell(mHeap, units):
+	"""(text, is_active, count) for a Vista/7 size class whose LFH-activation state lives in
+	ListHints[units].Blink, or None if this heap does not use the Blink activation (Win8+, or the
+	class has no Blink slot). Win7 encodes the Blink counter as +0x10002 per alloc / -0x2 per free
+	and activates when (uint16)counter > 0x20 OR counter > 0x10000000. Mona mirrors the low-16 check:
+	count = (counter & 0xFFFF) // 2 (so the display limit is 0x10), and prints the FULL raw counter
+	in parentheses in front, e.g. '(0x10002) 1'. A tagged bucket pointer (LSB set) => already active.
+	count is None when already active, else the decoded (counter & 0xFFFF)//2 (0 == fully freed)."""
+	try:
+		act = mHeap.list_hints.activationFor(units)
+	except Exception:
+		return None
+	if act is None:
+		return None
+	if act[0] == "bucket":
+		return ("ACTIVE", True, None)
+	if act[0] == "count":
+		full = act[2] if len(act) > 2 else act[1]
+		count = (full & 0xFFFF) // 2
+		return ("(0x%x) %d" % (full, count), False, count)
+	return None
+
+
 def _lfhClassActivationCell(mHeap, units):
-	"""Per-SIZE-CLASS activation cell (text, is_active) for block-unit size class *units* (no
-	bucket-level aggregation):
-	  'ACTIVE'  -- Win8+ FrontEndHeapStatusBitmap bit set, or Vista/7 ListHints[units].Blink is a
-	               tagged bucket pointer (activationFor -> 'bucket')
-	  <number>  -- counting toward activation (Win8+ usage[units]&0x1F, or Vista/7 Blink count)
-	  '-'       -- not decodable"""
+	"""Per-SIZE-CLASS activation cell (text, is_active, interesting) for block-unit size class *units*
+	(no bucket-level aggregation):
+	  'ACTIVE'       -- Win8+ FrontEndHeapStatusBitmap bit set, or Vista/7 Blink is a tagged bucket ptr
+	  '(0x..) <n>'   -- Vista/7 Blink counter: n = (counter & 0xFFFF)//2, full raw counter in parens
+	  <number>       -- Win8+ counting toward activation (usage[units] & 0x1F)
+	  '-'            -- not decodable
+	interesting is True when the class is active or has a nonzero count (drives the default skip)."""
 	try:
 		if mHeap._frontEndStatusBitmapBit(units):     # Win8+ authoritative per-class bit
-			return ("ACTIVE", True)
+			return ("ACTIVE", True, True)
 	except Exception:
 		pass
-	try:
-		act = mHeap.list_hints.activationFor(units)   # Vista/7: tagged bucket pointer == active
-	except Exception:
-		act = None
-	if act is not None and act[0] == "bucket":
-		return ("ACTIVE", True)
-	cnt = mHeap.lfhActivationCounterUnits(units)
-	return (("%d" % cnt, False) if cnt is not None else ("-", False))
+	v7 = _lfhVista7CounterCell(mHeap, units)           # Vista/7 Blink-based active/counter
+	if v7 is not None:
+		text, is_active, count = v7
+		return (text, is_active, is_active or bool(count))
+	cnt = mHeap.lfhActivationCounterUnits(units)        # Win8+ usage counter
+	if cnt is None:
+		return ("-", False, False)
+	return ("%d" % cnt, False, cnt > 0)
 
 
 def _lfhStrongActiveCounts(mHeap, buckets):
@@ -41756,9 +41789,9 @@ def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 		if hi <= 0:
 			continue
 		for n in range(lo, hi + 1):
-			activation, is_active = _lfhClassActivationCell(mHeap, n)
+			activation, is_active, interesting = _lfhClassActivationCell(mHeap, n)
 			# By default show only active/counting classes; -all includes every class.
-			if not show_all and not is_active and activation in ("-", "0"):
+			if not show_all and not interesting:
 				continue
 			row = [_sizeClassServed(n), "%d" % bucket.bucket_index, activation]
 			if show_blink:
