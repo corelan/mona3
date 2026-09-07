@@ -18069,10 +18069,17 @@ class MnNTHeap(MnHeap):
 		return self._list_hints
 
 	def lfhActivationCounter(self, bucket):
-		"""For an INACTIVE LFH size class, return the current consecutive-allocation count toward LFH
-		activation (an int), or None when the value is not a meaningful pre-activation counter
-		(caller prints '-'). Conservative: anything we cannot decode with confidence returns None."""
-		units = getattr(bucket, "BlockUnits", 0)
+		"""For an INACTIVE bucket, the consecutive-allocation count toward LFH activation of its TOP
+		size class (bucket.BlockUnits), or None. Thin wrapper over lfhActivationCounterUnits."""
+		return self.lfhActivationCounterUnits(getattr(bucket, "BlockUnits", 0))
+
+	def lfhActivationCounterUnits(self, units):
+		"""For an INACTIVE LFH size class *units* (block units), return the current consecutive-
+		allocation count toward LFH activation (an int), or None when the value is not a meaningful
+		pre-activation counter (caller prints '-'). Activation state is per size class: on Vista/7 it
+		lives in ListHints[units].Blink (activationFor); on Win8+ in FrontEndHeapUsageData[units]
+		(masked to the low 5 bits) gated by the FrontEndHeapStatusBitmap bit. Conservative: anything
+		we cannot decode with confidence returns None."""
 		if not units:
 			return None
 		try:
@@ -18104,6 +18111,34 @@ class MnNTHeap(MnHeap):
 		base = self.heapbase + self._offset("FrontEndHeapStatusBitmap")
 		byte = dbg.readMemory(base + (units >> 3), 1)
 		return bool(_ord(byte[0]) & (1 << (units & 7)))
+
+	def frontEndActiveClasses(self, lo, hi):
+		"""(active, total) over the INCLUSIVE block-unit size-class range [lo, hi]: how many classes
+		have their FrontEndHeapStatusBitmap bit set. Activation is per size class (block units), so a
+		granularity>1 bucket spans several classes -- this counts them all. The per-size-class bitmap
+		exists on Win8+ (MnNT8Heap defines the offset; MnNT10+ build-gate it); Vista/7 have no such
+		bitmap. Reads the covering bitmap bytes once, then tests each bit. Guarded: an unreadable
+		bitmap (or a Vista/7 heap with no FrontEndHeapStatusBitmap) yields (0, total) so callers fall
+		back to the counter."""
+		if not lo or not hi or lo > hi:
+			return (0, 0)
+		total = hi - lo + 1
+		try:
+			base = self.heapbase + self._offset("FrontEndHeapStatusBitmap")
+			first = base + (lo >> 3)
+			span = dbg.readMemory(first, ((hi >> 3) - (lo >> 3)) + 1)
+		except Exception:
+			return (0, total)
+		if not span:
+			return (0, total)
+		byte0 = lo >> 3
+		active = 0
+		for u in range(lo, hi + 1):
+			bi = (u >> 3) - byte0
+			if 0 <= bi < len(span) and (_ord(span[bi]) & (1 << (u & 7))):
+				active += 1
+		return (active, total)
+
 	def getSegments(self):
 		"""Walk _HEAP.SegmentList and return all segment objects. Cached."""
 		if getattr(self, '_segments', None) is None:
@@ -18915,7 +18950,10 @@ class MnNTVistaHeap(MnNTHeap):
 		return frontendheaptype == 0x2
 
 	def getFrontEndHeapUsageData(self):
-		"""Read the FrontEndHeapUsageData u16[] array (Win8+ NT heap)."""
+		"""Read the FrontEndHeapUsageData u16[] array (Win8+ NT heap). Cached per heap object, so a
+		per-size-class walk doesn't re-read the whole array for every class."""
+		if getattr(self, "_fe_usage_cache", None) is not None:
+			return self._fe_usage_cache
 		counters = []
 		try:
 			arr = readPtrSizeBytes(self.heapbase + self._offset("FrontEndHeapUsageData"))
@@ -18932,6 +18970,7 @@ class MnNTVistaHeap(MnNTHeap):
 				counters.append(struct.unpack('<H', data[i*2:(i+1)*2])[0])
 		except Exception:
 			pass
+		self._fe_usage_cache = counters
 		return counters
 
 
@@ -21871,6 +21910,21 @@ class MnNTListHints(object):
 		if blink & 1:
 			return ("bucket", self.heap.lfhBucketAt(blink & ~1))
 		return ("count", blink & 0xFFFF)
+
+	def blinkAddrFor(self, n):
+		"""Address of the Blink slot in ListHints[n] (Vista/7 only). This is the slot activationFor(n)
+		decodes: while counting toward LFH activation it holds the low-16 counter (LSB clear); once
+		active it holds a tagged _HEAP_BUCKET pointer (LSB set). Returned so the user can 'dps <addr>'
+		and read the raw value. None on Win8+ (single-pointer stride -- activation moved to
+		FrontEndHeapUsageData/StatusBitmap) or when n is outside the ListHints array."""
+		if self.elt == archValue(4, 8):   # single-pointer stride (Win8+): no Blink activation slot
+			return None
+		if not self.usesHints():
+			return None
+		idx = n - self.bi.BaseIndex
+		if idx < 0 or idx >= self.bi.ArraySize:
+			return None
+		return self.base + idx * self.elt + archValue(4, 8)
 
 	def getBins(self):
 		"""{size_units: [MnChunk]} -- one bin per populated size class, each the FreeLists run from
@@ -41082,7 +41136,7 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 					b_busy += ss.getBusyCount()
 					b_free += ss.getFreeCount()
 					b_total += ss.BlockCount
-				activation, is_active = _lfhActivationCell(mHeap, bucket)
+				activation, is_active = _lfhActivationCell(mHeap, bucket, by_index)
 				if not is_active and activation in ("-", "0"):  # skip buckets neither active nor counting
 					continue
 				rows.append([
@@ -41202,57 +41256,95 @@ def _heapLog(text, logfile=None, loghandle=None, highlight=False):
 			pass
 
 
+def _bucketUnitRange(bucket, by_index):
+	"""(lo, hi) INCLUSIVE block-unit size classes a bucket covers. hi = bucket.BlockUnits (the
+	bucket's own block size, in 8-byte granularity units); lo = the previous bucket's BlockUnits + 1.
+	A granularity>1 bucket aggregates (hi - lo + 1) size classes, and EACH class has its own
+	FrontEndHeapUsageData counter and FrontEndHeapStatusBitmap activation bit (both indexed by block
+	units). by_index maps bucket_index -> bucket (the full _HEAP_BUCKET[]) for the previous-bucket
+	lookup. Returns (0, 0) for a corrupt/zero bucket. Single source of truth for the span, shared by
+	_lfhBucketServed and the activation logic."""
+	hi = getattr(bucket, "BlockUnits", 0) or 0
+	if hi <= 0:
+		return (0, 0)
+	prev = by_index.get(bucket.bucket_index - 1) if by_index else None
+	prev_units = prev.BlockUnits if (prev is not None and not getattr(prev, "corrupted", False) and prev.BlockUnits > 0) else 0
+	lo = prev_units + 1
+	if lo > hi:
+		lo = hi
+	return (lo, hi)
+
+
 def _lfhBucketServed(bucket, by_index):
 	"""(serves_bytes_str, gran_units) -- the USERSIZE RANGE (in bytes) a bucket services.
 
 	A bucket of granularity G (units) covers a G-unit-wide block-size window ending at its own
 	block size; converted to UserSize (header stripped) the span is
-	(block_bytes - G*HEAPGRANULARITY + 1 .. block_bytes] - header. The low bound is derived from G
-	(the value shown in the Granularity column), so the full span is shown for bigger-granularity
-	buckets too. G is (this_block_units - prev_block_units). by_index maps bucket_index -> bucket
-	(the full _HEAP_BUCKET[]), used to find the previous bucket's block size for the low bound."""
-	hi_units = bucket.BlockUnits
-	prev = by_index.get(bucket.bucket_index - 1)
-	prev_units = prev.BlockUnits if (prev is not None and not prev.corrupted and prev.BlockUnits > 0) else 0
-	gran = hi_units - prev_units
-	if gran < 1:
-		gran = 1
+	(block_bytes - G*HEAPGRANULARITY + 1 .. block_bytes] - header. The block-unit span [lo, hi] and
+	G = hi - lo + 1 come from _bucketUnitRange (shared with the activation logic)."""
+	lo_u, hi_u = _bucketUnitRange(bucket, by_index)
+	gran = max(1, hi_u - lo_u + 1)
 	hdr = HEAPGRANULARITY  # LFH per-block header
-	hi_b = max(0, hi_units * HEAPGRANULARITY - hdr)             # top UserSize of this bucket
-	lo_b = max(0, (hi_units - gran) * HEAPGRANULARITY - hdr + 1)  # bottom UserSize served
+	hi_b = max(0, hi_u * HEAPGRANULARITY - hdr)              # top UserSize of this bucket
+	lo_b = max(0, (lo_u - 1) * HEAPGRANULARITY - hdr + 1)    # bottom UserSize served
 	serves = ("0x%x (%d)" % (hi_b, hi_b)) if lo_b >= hi_b else (
 		"0x%x - 0x%x (%d - %d)" % (lo_b, hi_b, lo_b, hi_b))
 	return serves, gran
 
 
-def _lfhActivationCell(mHeap, bucket):
-	"""Compute the 'Activation Counter' cell for one bucket by CROSS-CHECKING the two independent
-	LFH-active signals for that size class:
-	  * bucket.isActive()            -- a live/working _HEAP_SUBSEGMENT exists (working-set truth)
-	  * FrontEndHeapStatusBitmap bit -- ntdll's authoritative per-size-class 'LFH active' flag,
-	                                    set on grant in RtlpAllocateHeap (mHeap._frontEndStatusBitmapBit)
-	Returns (text, is_active). Either signal being active marks the bucket ACTIVE (consistently --
-	a working subsegment and a set status bit are treated the same):
-	  'ACTIVE'       -- active by either signal (working subsegment present OR status bit set)
-	  <number> / '-' -- genuinely inactive: pre-activation counter, or '-' when undecodable
-	is_active is True for the ACTIVE label (drives bold rendering)."""
+def _lfhActivationCell(mHeap, bucket, by_index=None):
+	"""Compute the flat 'Activation Counter' cell for a per-BUCKET view (summary LFH / -lfh -i).
+
+	LFH activation state is per block-unit size class (both the FrontEndHeapStatusBitmap bit and the
+	FrontEndHeapUsageData counter are indexed by block units), so a bucket is treated as active when
+	ANY size class in its [lo, hi] unit range is active (or it has a live subsegment). The per-class
+	breakdown lives in the dedicated -lfh -counters view. Returns (text, is_active):
+	  'ACTIVE'       -- >=1 size class active (status bit set), or a live/working subsegment exists
+	  <number> / '-' -- no class active: pre-activation counter (top class), or '-' if undecodable
+	by_index maps bucket_index -> bucket; when omitted, only the bucket's top unit is inspected."""
 	try:
 		subseg_active = bucket.isActive()
 	except Exception:
 		subseg_active = False
-	units = getattr(bucket, "BlockUnits", 0)
-	bitmap_active = None
-	if units:
-		try:
-			bitmap_active = mHeap._frontEndStatusBitmapBit(units)
-		except Exception:
-			bitmap_active = None
-	if subseg_active or bitmap_active:
-		# Active by either signal: a live/working subsegment OR ntdll's authoritative
-		# FrontEndHeapStatusBitmap bit. Shown consistently as ACTIVE.
+	hi_bu = getattr(bucket, "BlockUnits", 0) or 0
+	lo, hi = _bucketUnitRange(bucket, by_index) if by_index is not None else (hi_bu, hi_bu)
+	active, _total = mHeap.frontEndActiveClasses(lo, hi)
+	if active > 0 or subseg_active:
 		return ("ACTIVE", True)
-	# Neither signal is active (bit clear or unreadable): show the pre-activation counter.
 	cnt = mHeap.lfhActivationCounter(bucket)
+	return (("%d" % cnt, False) if cnt is not None else ("-", False))
+
+
+def _sizeClassServed(units):
+	"""UserSize window (bytes, '0x.. - 0x.. (dec)') a SINGLE block-unit size class serves -- the
+	8-byte (x86) window whose requests round to *units* block units: ((units-1)*G - hdr + 1 .. units*G - hdr]."""
+	hdr = HEAPGRANULARITY
+	hi_b = max(0, units * HEAPGRANULARITY - hdr)
+	lo_b = max(0, (units - 1) * HEAPGRANULARITY - hdr + 1)
+	if lo_b >= hi_b:
+		return "0x%x (%d)" % (hi_b, hi_b)
+	return "0x%x - 0x%x (%d - %d)" % (lo_b, hi_b, lo_b, hi_b)
+
+
+def _lfhClassActivationCell(mHeap, units):
+	"""Per-SIZE-CLASS activation cell (text, is_active) for block-unit size class *units* (no
+	bucket-level aggregation):
+	  'ACTIVE'  -- Win8+ FrontEndHeapStatusBitmap bit set, or Vista/7 ListHints[units].Blink is a
+	               tagged bucket pointer (activationFor -> 'bucket')
+	  <number>  -- counting toward activation (Win8+ usage[units]&0x1F, or Vista/7 Blink count)
+	  '-'       -- not decodable"""
+	try:
+		if mHeap._frontEndStatusBitmapBit(units):     # Win8+ authoritative per-class bit
+			return ("ACTIVE", True)
+	except Exception:
+		pass
+	try:
+		act = mHeap.list_hints.activationFor(units)   # Vista/7: tagged bucket pointer == active
+	except Exception:
+		act = None
+	if act is not None and act[0] == "bucket":
+		return ("ACTIVE", True)
+	cnt = mHeap.lfhActivationCounterUnits(units)
 	return (("%d" % cnt, False) if cnt is not None else ("-", False))
 
 
@@ -41263,8 +41355,11 @@ def _lfhStrongActiveCounts(mHeap, buckets):
 	  bitmap_only -- buckets with NO working subsegment but whose FrontEndHeapStatusBitmap bit is
 	                 set (ntdll's authoritative 'LFH active' flag -- a strong active indicator)
 	  union       -- buckets active by EITHER signal (the strong-indicator active total)
-	Mirrors _lfhActivationCell's ACTIVE / Active split so the header agrees with the per-bucket
-	column. Bitmap reads are guarded so older heaps (no FrontEndHeapStatusBitmap) just report 0."""
+	Activation is per block-unit size class, so a bucket counts as bitmap-active if ANY size class in
+	its [lo, hi] unit range has its status bit set (not just the top unit). Mirrors _lfhActivationCell
+	so the header agrees with the per-bucket column. Guarded so older heaps (no FrontEndHeapStatusBitmap)
+	just report 0 for bitmap_only."""
+	by_index = {b.bucket_index: b for b in buckets if not getattr(b, "corrupted", False)}
 	subseg = bitmap_only = 0
 	for b in buckets:
 		try:
@@ -41273,8 +41368,9 @@ def _lfhStrongActiveCounts(mHeap, buckets):
 			if b.isActive():
 				subseg += 1
 				continue
-			units = getattr(b, "BlockUnits", 0)
-			if units and mHeap._frontEndStatusBitmapBit(units):
+			lo, hi = _bucketUnitRange(b, by_index)
+			active, _total = mHeap.frontEndActiveClasses(lo, hi)
+			if active > 0:
 				bitmap_only += 1
 		except Exception:
 			pass
@@ -41480,7 +41576,7 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 			# Inactive size class: it has no subsegments/chunks yet, so the SubSegments and
 			# Busy/Free columns carry no information. Show the Activation Counter instead -- the
 			# consecutive-allocation progress toward LFH activation for this size class.
-			activation, _act_active = _lfhActivationCell(mHeap, bucket)
+			activation, _act_active = _lfhActivationCell(mHeap, bucket, by_index)
 			bucket_data = {bkey: [
 				serves,
 				"%d" % gran_units,
@@ -41613,14 +41709,16 @@ def _heapShowLFH(mHeap, usersize=None, bucket_index=None, addr=None, extend=Fals
 
 
 def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
-	"""Per-bucket LFH counters, one row per bucket. Columns:
-	  Index / Served Size / Granularity / Chunks / SubSegments / Activation Counter
-	Served Size and Granularity match the main -lfh view's serve-range logic; Chunks and
-	SubSegments are counted over the COMPLETE subsegment set (working + retired + deleted), same as
-	-lfh; Chunks is Busy/Free (Total). Activation Counter is ACTIVE for a live bucket, otherwise the
-	pre-activation consecutive-allocation counter (a number, or - when it can't be decoded).
-	By default skips inactive all-zero buckets; show_all=True includes them."""
-	_heapLog("[+] FrontEnd Allocator : LFH per-bucket counters", logfile, loghandle)
+	"""Per-SIZE-CLASS LFH activation table, ONE ROW PER BLOCK-UNIT SIZE CLASS. Columns:
+	  Size Class (block units) / UserSize / Bucket / Activation Counter / [ListHint.Blink]
+	Activation state is per size class (the FrontEndHeapStatusBitmap bit + FrontEndHeapUsageData
+	counter on Win8+, ListHints[n].Blink on Vista/7), so each class is its own row -- a granularity>1
+	bucket expands into several rows, and the Bucket column maps each class back to its _HEAP_BUCKET.
+	Chunks/SubSegments are per-bucket (shared by a bucket's classes) and live in the !mona heap -lfh
+	view, not here. On Vista/7 a ListHint.Blink column gives each class's Blink slot address so the
+	user can 'dps <addr>' and read the raw value the counter is decoded from. By default shows only
+	active/counting classes; show_all=True includes every class in every bucket's range."""
+	_heapLog("[+] FrontEnd Allocator : LFH per-size-class activation", logfile, loghandle)
 	if not mHeap.usesLFH():
 		_heapLog("    LFH is not active for this heap", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
@@ -41634,56 +41732,54 @@ def _heapShowLFHCounters(mHeap, show_all=False, logfile=None, loghandle=None):
 		_heapLog("", logfile, loghandle)
 		return
 
-	# All buckets indexed by bucket_index (for the serve-range low-bound lookup).
+	# All buckets indexed by bucket_index (for each bucket's size-class unit range low bound).
 	by_index = {b.bucket_index: b for b in buckets}
-	# Complete subsegment set grouped by block size (units), same as the main -lfh view, so the
-	# Chunks / SubSegments columns match what -lfh renders.
-	subsegs_by_block = {}
+	# Vista/7 store per-class activation in ListHints[n].Blink (2-pointer stride) -> add a
+	# "ListHint.Blink" column with the slot address so the user can 'dps <addr>' and read the raw
+	# value. On Win8+ (single-pointer stride) activation lives in FrontEndHeapUsageData/StatusBitmap,
+	# so there is no Blink slot and the column is omitted.
+	lh = None
+	show_blink = False
 	try:
-		for ss in fe.getAllSubSegmentsComplete():
-			if getattr(ss, "BlockSize", 0):
-				subsegs_by_block.setdefault(ss.BlockSize, []).append(ss)
-	except Exception as e:
-		mndbg.dbgp("_heapShowLFHCounters: complete subsegment walk failed: %s" % str(e), errormode=False)
+		lh = mHeap.list_hints
+		show_blink = bool(lh is not None and lh.usesHints() and lh.elt != archValue(4, 8))
+	except Exception:
+		lh, show_blink = None, False
 
 	table_data = {}
 	table_seq = []
 	shown = 0
 	for bucket in buckets:
-		bkey = "%d" % bucket.bucket_index
-		if bucket.corrupted:
-			table_data[bkey] = ["*** CORRUPTED ***", "", "", "", ""]
-			table_seq.append(bkey)
-			shown += 1
+		if getattr(bucket, "corrupted", False):
 			continue
-		serves, gran_units = _lfhBucketServed(bucket, by_index)
-		subsegments = subsegs_by_block.get(bucket.BlockUnits) or bucket.getSubSegments()
-		b_busy = b_free = b_total = 0
-		for ss in subsegments:
-			if getattr(ss, "corrupted", False):
+		lo, hi = _bucketUnitRange(bucket, by_index)
+		if hi <= 0:
+			continue
+		for n in range(lo, hi + 1):
+			activation, is_active = _lfhClassActivationCell(mHeap, n)
+			# By default show only active/counting classes; -all includes every class.
+			if not show_all and not is_active and activation in ("-", "0"):
 				continue
-			b_busy += ss.getBusyCount()
-			b_free += ss.getFreeCount()
-			b_total += ss.BlockCount
-		activation, act_is_active = _lfhActivationCell(mHeap, bucket)
-		# Skip only buckets that are inactive by BOTH signals and carry no chunks/subsegments/counter.
-		if not show_all and not act_is_active and b_total == 0 and len(subsegments) == 0 and (activation == "-" or activation == "0"):
-			continue
-		table_data[bkey] = [
-			serves,
-			"%d" % gran_units,
-			"%d/%d (%d)" % (b_busy, b_free, b_total),
-			"%d" % len(subsegments),
-			activation,
-		]
-		table_seq.append(bkey)
-		shown += 1
+			row = [_sizeClassServed(n), "%d" % bucket.bucket_index, activation]
+			if show_blink:
+				try:
+					baddr = lh.blinkAddrFor(n)
+				except Exception:
+					baddr = None
+				row.append(_ptrUpper(baddr) if baddr else "-")
+			key = "%d" % n
+			table_data[key] = row
+			table_seq.append(key)
+			shown += 1
 	if shown == 0:
-		_heapLog("    No active/populated buckets (use -all to include zero buckets)", logfile, loghandle)
+		_heapLog("    No active/counting size classes (use -all to include every class)", logfile, loghandle)
 		_heapLog("", logfile, loghandle)
 		return
-	headers = ["Index", "Served Size", "Granularity", "Chunks", "SubSegments", "Activation Counter"]
-	types = ["int", "string", "string", "string", "int", "string"]
+	headers = ["Size Class", "UserSize", "Bucket", "Activation Counter"]
+	types   = ["int", "string", "int", "string"]
+	if show_blink:
+		headers.append("ListHint.Blink")
+		types.append("string")
 	print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq,
 	                 logobj=logfile, logfile=loghandle, mdstyle=True)
 	_heapLog("", logfile, loghandle)
