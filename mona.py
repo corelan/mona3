@@ -48523,7 +48523,8 @@ def _heapShowChunkView(mHeap, chunk, addr=None, data_mode="none", find=None, nei
 	  "none"   -> omit [ Data ] entirely (base !mona heap -a view)
 	  "capped" -> show [ Data ], console capped at 0x200 bytes, log file uncapped (-a -extend)
 	  "full"   -> show [ Data ] uncapped on both console and log file (-a -all)
-	The [ Content ] section (strings/BSTRs/vtables) is always shown.
+	The [ Content ] section (strings/BSTRs/vtables) is shown only when [ Data ] is, i.e. for
+	"capped"/"full" (-extend / -all) -- never in the base -a view.
 	"""
 	query_str = ""
 	if addr is not None and addr != chunk.chunkptr:
@@ -48548,21 +48549,23 @@ def _heapShowChunkView(mHeap, chunk, addr=None, data_mode="none", find=None, nei
 
 	# [ Content ] -- string / BSTR / vtable-object extraction for this chunk (same analysis as
 	# -layout). Uses a lower min-string length (8) than -layout's default (32) since this is a
-	# targeted single-chunk view. Always shown, with a note when nothing of interest is found.
+	# targeted single-chunk view. Shown only alongside [ Data ] (-extend / -all), not in the base
+	# -a view; a note is emitted when nothing of interest is found.
 	content = []
-	try:
-		content_lines, _m = _heapChunkContentLines(chunk, minstringlen=8)
-	except Exception as e:
-		mndbg.dbgp("_heapShowChunkView: content analysis failed: %s" % str(e), errormode=False)
-		content_lines = []
-	content.append("")
-	content.append("    " + "-" * 60)
-	content.append("")
-	content.append("    [ Content ]")
-	if content_lines:
-		content.extend("    " + ln for ln in content_lines)
-	else:
-		content.append("      (no strings, BSTRs or vtable objects found; min string length 8)")
+	if show_data:
+		try:
+			content_lines, _m = _heapChunkContentLines(chunk, minstringlen=8)
+		except Exception as e:
+			mndbg.dbgp("_heapShowChunkView: content analysis failed: %s" % str(e), errormode=False)
+			content_lines = []
+		content.append("")
+		content.append("    " + "-" * 60)
+		content.append("")
+		content.append("    [ Content ]")
+		if content_lines:
+			content.extend("    " + ln for ln in content_lines)
+		else:
+			content.append("      (no strings, BSTRs or vtable objects found; min string length 8)")
 
 	for line in chunk_details + parent_details + data_console + content:
 		dbg.log(line)
@@ -53730,9 +53733,9 @@ Optional arguments:
              -a <addr> [-extend]   one segment (the one containing <addr>)
   !mona heap -chunks               per-heap chunk summary
              -p {freelist|vablock|lfh|segment}   one container type
-             -a <addr>             locate chunk + parent context + [ Content ] (no [ Data ] section)
-             -a <addr> -extend     + [ Data ] section (console capped at 0x200)
-             -a <addr> -all        + full [ Data ] section (remove the 0x200 cap)
+             -a <addr>             locate chunk + parent context (no [ Data ] / [ Content ])
+             -a <addr> -extend     + [ Data ] (console capped at 0x200) + [ Content ]
+             -a <addr> -all        + full [ Data ] (remove the 0x200 cap) + [ Content ]
              -a <addr> -find <pat> search pattern in this chunk's data
              -a <addr> -n <R>      chunk +/-R neighbours (default 2)
   !mona heap -search <pattern>     heap-wide: every chunk whose data contains <pattern>
