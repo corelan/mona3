@@ -41628,6 +41628,9 @@ class MnAI(object):
 		if not self.buildRequestPrompt():
 			return ""
 		self.base_prompt = self.prompt
+		# -offline is authoritative: no interaction, no confirmation, no submission.
+		# Build and save the request file and stop. This must run before any
+		# -submit fast-path or interactive submission prompt.
 		if self.offline or self.engine == "offline":
 			self.writeOfflineRequest()
 			return ""
