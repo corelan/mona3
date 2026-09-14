@@ -20067,6 +20067,22 @@ class MnNTHeap(MnHeap):
 		(0x80000000, "HEAP_LOCK_USER_ALLOCATED"),
 	]
 
+	# The heap class is a 4-bit FIELD (HEAP_CLASS_MASK 0x0000F000), not independent flag bits, so
+	# it must be decoded as a value rather than OR-matched bit by bit. HEAP_CLASS_1 (0x1000) is the
+	# usual class for the default process/private heap (e.g. Flags 0x1002 = HEAP_GROWABLE|CLASS_1).
+	_HEAP_CLASS_MASK = 0x0000F000
+	_HEAP_CLASS_NAMES = {
+		0x0000: "HEAP_CLASS_0",   # process heap
+		0x1000: "HEAP_CLASS_1",   # private heap
+		0x2000: "HEAP_CLASS_2",   # kernel heap
+		0x3000: "HEAP_CLASS_3",   # GDI heap
+		0x4000: "HEAP_CLASS_4",   # user heap
+		0x5000: "HEAP_CLASS_5",   # console heap
+		0x6000: "HEAP_CLASS_6",   # user desktop heap
+		0x7000: "HEAP_CLASS_7",   # CSR shared heap
+		0x8000: "HEAP_CLASS_8",   # CSR port heap
+	}
+
 	def getFlags(self):
 		"""Return the raw _HEAP.Flags value, or None if it cannot be read."""
 		try:
@@ -20076,13 +20092,20 @@ class MnNTHeap(MnHeap):
 			return None
 
 	def getFlagsText(self, flags=None):
-		"""Decode _HEAP.Flags into a comma-separated name list ("None" if no known bits)."""
+		"""Decode _HEAP.Flags into a comma-separated name list ("None" if no known bits).
+		The heap-class nibble (HEAP_CLASS_MASK 0xF000) is decoded as a field, not as bit flags."""
 		if flags is None:
 			flags = self.getFlags()
 		if flags is None:
 			return "?"
 		matched = [name for bit, name in self._FLAG_NAMES if flags & bit]
-		leftover = flags & ~sum(bit for bit, _ in self._FLAG_NAMES if flags & bit)
+		# Heap class field (0xF000): a non-zero class contributes one HEAP_CLASS_n name.
+		class_bits = flags & self._HEAP_CLASS_MASK
+		if class_bits:
+			matched.append(self._HEAP_CLASS_NAMES.get(class_bits, "HEAP_CLASS?:0x%x" % class_bits))
+		# Everything the single-bit list matched, plus the whole class nibble, is "known".
+		known = sum(bit for bit, _ in self._FLAG_NAMES if flags & bit) | self._HEAP_CLASS_MASK
+		leftover = flags & ~known
 		if leftover:
 			matched.append("unknown:0x%x" % leftover)
 		return ", ".join(matched) if matched else "None"
@@ -22395,6 +22418,11 @@ class MnNTLFHBase(object):
 						result.append(ss)
 		except Exception as e:
 			mndbg.dbgp("getAllSubSegmentsComplete: deleted walk failed: %s" % str(e), errormode=False)
+		# Stamp a direct LFH backref so chunks in retired/deleted subsegments (parent_bucket=None)
+		# can still resolve their heap base (see MnNTLFHSubSegmentBase._resolveHeapBase).
+		for ss in result:
+			if getattr(ss, "parent_lfh", None) is None:
+				ss.parent_lfh = self
 		return result
 
 	def _wrapZoneSubSegment(self, ss_addr, seen):
@@ -23105,6 +23133,7 @@ class MnNTLFHSubSegmentBase(object):
 	def __init__(self, ssbase, parent_bucket=None):
 		self.address = ssbase
 		self.parent_bucket = parent_bucket
+		self.parent_lfh = None
 		self.role = None
 		self.corrupted = False
 		self.corruption_reason = ""
@@ -23140,6 +23169,21 @@ class MnNTLFHSubSegmentBase(object):
 			self.SizeIndex = 0
 			self.AffinityIndex = 0
 			self.Lock = 0
+
+	def _resolveHeapBase(self):
+		"""Heap base for chunks in this subsegment. Working subsegments reach it via
+		parent_bucket.parent_lfh.heap; retired/deleted ones (parent_bucket=None) fall back to the
+		direct parent_lfh backref stamped at enumeration time (getAllSubSegmentsComplete). Returns
+		0 if neither path is reachable."""
+		for lfh in (getattr(getattr(self, "parent_bucket", None), "parent_lfh", None),
+		            getattr(self, "parent_lfh", None)):
+			try:
+				hb = lfh.heap.heapbase
+				if hb:
+					return hb
+			except Exception:
+				pass
+		return 0
 
 	def getFreeCount(self):
 		"""Free-block count for this subsegment.
@@ -23433,11 +23477,7 @@ class MnNTLFHSubSegmentBase(object):
 		if state == ChunkState.BUSY and idx in self.getDelayedIndices():
 			state = ChunkState.DELAYED
 
-		heap_base = 0
-		try:
-			heap_base = self.parent_bucket.parent_lfh.heap.heapbase
-		except Exception:
-			pass
+		heap_base = self._resolveHeapBase()
 		flag = 0x01 if state == ChunkState.BUSY else 0x00
 		chunk = MnChunk(block_start, "chunk", HEAPGRANULARITY, heap_base, 0,
 		                self.BlockSize, 0, 0, flag, 0, 0)
@@ -23686,13 +23726,8 @@ class MnNTUserBlockBase(object):
 			return self._chunks
 
 		chunks = []
-		heap_base = 0
 		ss = self.parent_subsegment
-		try:
-			if ss and ss.parent_bucket and ss.parent_bucket.parent_lfh:
-				heap_base = ss.parent_bucket.parent_lfh.heap.heapbase
-		except Exception:
-			pass
+		heap_base = ss._resolveHeapBase() if ss is not None else 0
 		busy_bits = self.getBusyBitmapBits()
 		free_indices = None
 		if busy_bits is None and not self._has_busy_bitmap and ss is not None:
@@ -48222,7 +48257,11 @@ def _buildHeapPtrInfo(word, mHeap, our_chunk, chunk_state, slot_index):
 	ptr_str = "Position: %s" % pos
 
 	if is_ours:
-		info = "%s | Parent: %s | %s | %s | %s | %s | (Our Chunk)" % (heap_str, parent_str, entry_str, size_str, state_str, ptr_str)
+		# A pointer back into the chunk we are dumping: show it relative to self (the chunk base),
+		# "self" for the base itself or "self+0xNN" otherwise. word is always >= chunkptr here (it
+		# resolved to this same chunk), so the offset is never negative.
+		self_off = word - our_chunk.chunkptr
+		info = "self" if self_off == 0 else "self+0x%x" % self_off
 		return (info, target, pos, False)
 
 	role = ""
@@ -48301,7 +48340,10 @@ def _renderNestedDump(target, landed_offset, mHeap, our_chunk, indent="         
 		if hp_class:
 			t2, pos2, par2, is_ours2 = hp_class
 			if is_ours2:
-				info_text = "(Our Chunk)" + nested_role
+				# Same self-relative form as the top-level dump: this points back into the chunk we
+				# are analysing (our_chunk), so express it as self / self+0xNN (offset from its base).
+				self_off = word - our_chunk.chunkptr
+				info_text = ("self" if self_off == 0 else "self+0x%x" % self_off) + nested_role
 			elif t2.chunkptr == target.chunkptr:
 				info_text = "ptr to self+0x%x" % (word - startaddy)
 			else:
@@ -48476,11 +48518,16 @@ def _chunkViewToMarkdown(lines, logfile, loghandle):
 	_flush_pre()
 
 
-def _heapShowChunkView(mHeap, chunk, addr=None, dump=False, find=None, neighbour_count=1,
+def _heapShowChunkView(mHeap, chunk, addr=None, data_mode="none", find=None, neighbour_count=1,
                        logfile=None, loghandle=None):
-	"""Main orchestrator: render the full chunk view (Chunk Details + Parent Details + Data).
+	"""Main orchestrator: render the chunk view (Chunk Details + Parent Details + [ Data ] + [ Content ]).
 
-	Outputs to both console (with 0x200 data cap) and log file (no cap).
+	data_mode controls the [ Data ] section (the -a verbosity tiers):
+	  "none"   -> omit [ Data ] entirely (base !mona heap -a view)
+	  "capped" -> show [ Data ], console capped at 0x200 bytes, log file uncapped (-a -extend)
+	  "full"   -> show [ Data ] uncapped on both console and log file (-a -all)
+	The [ Content ] section (strings/BSTRs/vtables) is shown only when [ Data ] is, i.e. for
+	"capped"/"full" (-extend / -all) -- never in the base -a view.
 	"""
 	query_str = ""
 	if addr is not None and addr != chunk.chunkptr:
@@ -48498,31 +48545,41 @@ def _heapShowChunkView(mHeap, chunk, addr=None, dump=False, find=None, neighbour
 
 	chunk_details = _renderChunkDetailsTable(chunk)
 	parent_details = _renderParentDetails(chunk, mHeap, neighbour_count)
-	data_console = _renderDataSection(chunk, mHeap, max_bytes=0x200 if not dump else None)
+	show_data = data_mode != "none"
+	data_console = []
+	if show_data:
+		data_console = _renderDataSection(chunk, mHeap, max_bytes=0x200 if data_mode == "capped" else None)
 
 	# [ Content ] -- string / BSTR / vtable-object extraction for this chunk (same analysis as
 	# -layout). Uses a lower min-string length (8) than -layout's default (32) since this is a
-	# targeted single-chunk view. Always shown, with a note when nothing of interest is found.
+	# targeted single-chunk view. Shown only alongside [ Data ] (-extend / -all), not in the base
+	# -a view; a note is emitted when nothing of interest is found.
 	content = []
-	try:
-		content_lines, _m = _heapChunkContentLines(chunk, minstringlen=8)
-	except Exception as e:
-		mndbg.dbgp("_heapShowChunkView: content analysis failed: %s" % str(e), errormode=False)
-		content_lines = []
-	content.append("")
-	content.append("    " + "-" * 60)
-	content.append("")
-	content.append("    [ Content ]")
-	if content_lines:
-		content.extend("    " + ln for ln in content_lines)
-	else:
-		content.append("      (no strings, BSTRs or vtable objects found; min string length 8)")
+	if show_data:
+		try:
+			content_lines, _m = _heapChunkContentLines(chunk, minstringlen=8)
+		except Exception as e:
+			mndbg.dbgp("_heapShowChunkView: content analysis failed: %s" % str(e), errormode=False)
+			content_lines = []
+		content.append("")
+		content.append("    " + "-" * 60)
+		content.append("")
+		content.append("    [ Content ]")
+		if content_lines:
+			content.extend("    " + ln for ln in content_lines)
+		else:
+			content.append("      (no strings, BSTRs or vtable objects found; min string length 8)")
 
 	for line in chunk_details + parent_details + data_console + content:
 		dbg.log(line)
 
 	if logfile and loghandle:
-		data_full = _renderDataSection(chunk, mHeap, max_bytes=None) if not dump else data_console
+		if not show_data:
+			data_full = []
+		elif data_mode == "full":
+			data_full = data_console
+		else:
+			data_full = _renderDataSection(chunk, mHeap, max_bytes=None)
 		_chunkViewToMarkdown(chunk_details + parent_details + data_full + content, logfile, loghandle)
 
 	if find is not None:
@@ -48542,14 +48599,15 @@ def _heapShowChunkView(mHeap, chunk, addr=None, dump=False, find=None, neighbour
 	dbg.log("")
 
 
-def _heapShowChunks(mHeap, parent=None, addr=None, dump=False, find=None, neighbour=False, radius=2,
+def _heapShowChunks(mHeap, parent=None, addr=None, data_mode="none", find=None, neighbour=False, radius=2,
                     logfile=None, loghandle=None):
 	"""Per-heap chunk view.
 
 	No addr -> summary of chunk counts by parent (or one parent via -p).
-	addr    -> locate the chunk in THIS heap and show it + parent context; -extend removes the
-	           console 0x200 data cap (dump=True), -find searches this chunk's data,
-	           -n <radius> shows +/-radius neighbours."""
+	addr    -> locate the chunk in THIS heap and show it + parent context. data_mode selects the
+	           [ Data ] section verbosity: "none" (base -a, no [ Data ]), "capped" (-a -extend,
+	           console capped at 0x200, log file uncapped), or "full" (-a -all, uncapped). -find
+	           searches this chunk's data, -n <radius> shows +/-radius neighbours."""
 	heapbase = mHeap.heapbase
 	if addr is None:
 		if parent is not None:
@@ -48608,7 +48666,7 @@ def _heapShowChunks(mHeap, parent=None, addr=None, dump=False, find=None, neighb
 		dbg.log("    [-] Address %s not found in heap %s" % (
 			_ptrUpper(addr), _ptrUpper(heapbase)), highlight=True)
 		return
-	_heapShowChunkView(mHeap, chunk, addr=addr, dump=dump, find=find,
+	_heapShowChunkView(mHeap, chunk, addr=addr, data_mode=data_mode, find=find,
 	                   neighbour_count=radius if neighbour else 1,
 	                   logfile=logfile, loghandle=loghandle)
 
@@ -49287,12 +49345,21 @@ def procHeap(args):
 			                  logfile=logfile_b, loghandle=thislog_b)
 
 		if subcmd == "chunks" or want_all_dump:
-			# Under -all (dump everything) ignore -a/-extend/-find/-n so it stays a
+			# Under the whole-heap dump (want_all_dump) ignore -a/-extend/-find/-n so it stays a
 			# full summary, matching the vablocks/segments branches above.
-			# -extend removes the console 0x200 data cap (shows the full chunk data).
+			# -a chunk-view verbosity tiers for the [ Data ] section:
+			#   base -a     -> "none"   (Chunk/Parent details + [ Content ], NO [ Data ])
+			#   -a -extend  -> "capped" (adds [ Data ], console capped at 0x200 bytes)
+			#   -a -all     -> "full"   (adds [ Data ] uncapped on the console too)
+			if "all" in args:
+				chunk_data_mode = "full"
+			elif "extend" in args:
+				chunk_data_mode = "capped"
+			else:
+				chunk_data_mode = "none"
 			_heapShowChunks(mHeap, parent=parent if subcmd == "chunks" else None,
 			                addr=addr if subcmd == "chunks" else None,
-			                dump=extend if subcmd == "chunks" else False,
+			                data_mode=(chunk_data_mode if subcmd == "chunks" else "none"),
 			                find=(args["find"] if (subcmd == "chunks" and "find" in args and type(args["find"]).__name__.lower() != "bool") else None),
 			                neighbour=(("n" in args) if subcmd == "chunks" else False),
 			                radius=radius, logfile=logfile_b, loghandle=thislog_b)
@@ -53669,8 +53736,9 @@ Optional arguments:
              -a <addr> [-extend]   one segment (the one containing <addr>)
   !mona heap -chunks               per-heap chunk summary
              -p {freelist|vablock|lfh|segment}   one container type
-             -a <addr>             locate chunk + parent context (data capped at 0x200)
-             -a <addr> -extend     show the full chunk data (remove the 0x200 cap)
+             -a <addr>             locate chunk + parent context (no [ Data ] / [ Content ])
+             -a <addr> -extend     + [ Data ] (console capped at 0x200) + [ Content ]
+             -a <addr> -all        + full [ Data ] (remove the 0x200 cap) + [ Content ]
              -a <addr> -find <pat> search pattern in this chunk's data
              -a <addr> -n <R>      chunk +/-R neighbours (default 2)
   !mona heap -search <pattern>     heap-wide: every chunk whose data contains <pattern>
