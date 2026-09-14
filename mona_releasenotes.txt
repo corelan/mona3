@@ -1,3 +1,19 @@
+[mona 3.0.3027]
+- Update revision (mona: 3027)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/3cfcae4">3cfcae4</link> Update visualization and arg validation (#71)
+  - <link cmd="https://github.com/corelan/mona3/commit/1861bc1">1861bc1</link> Heap output (#70)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/6e543ad">6e543ad</link> allow -s with mona pc
+  - <link cmd="https://github.com/corelan/mona3/commit/ad26fe3">ad26fe3</link> update offline ai requests
+  - <link cmd="https://github.com/corelan/mona3/commit/0e3fbd8">0e3fbd8</link> update usage for mona ai
+  - <link cmd="https://github.com/corelan/mona3/commit/e38fb1f">e38fb1f</link> add ai -q 0 (autonomous agent loop)
+  - <link cmd="https://github.com/corelan/mona3/commit/2a5b7cb">2a5b7cb</link> mona ai improvements
+  - <link cmd="https://github.com/corelan/mona3/commit/fe5e035">fe5e035</link> a bit of work on the AI logic. Adding openai-generic and support for slow self-hosted models with limited context window
+  - <link cmd="https://github.com/corelan/mona3/commit/43313dc">43313dc</link> update help for mona compare
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/bdc00ce">bdc00ce</link> Update revision (mona: 3026, windbglib: 3015)
+
 [mona 3.0.3026]
 - Update revision (mona: 3026, windbglib: 3015)
 apl3b:
@@ -193,21 +209,6 @@ github-actions[bot]:
 corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/83a9d30">83a9d30</link> add caching and statistics
   - <link cmd="https://github.com/corelan/mona3/commit/eaedd4b">eaedd4b</link> q3 improvements
-
-[mona 3.0.3016]
-- Update revision (mona: 3016)
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/545a2fb">545a2fb</link> switch to offline instead of dryrun
-  - <link cmd="https://github.com/corelan/mona3/commit/ac40910">ac40910</link> Update mona.py
-  - <link cmd="https://github.com/corelan/mona3/commit/1c4d568">1c4d568</link> overwrite ai.q1 and ai.q2 on every run
-  - <link cmd="https://github.com/corelan/mona3/commit/6f7154b">6f7154b</link> add heap details variables to ai
-  - <link cmd="https://github.com/corelan/mona3/commit/cb8d70a">cb8d70a</link> remove python_version from variables
-  - <link cmd="https://github.com/corelan/mona3/commit/fe38512">fe38512</link> lazy load ai libraries
-  - <link cmd="https://github.com/corelan/mona3/commit/fa15289">fa15289</link> providing fallback mechanisms for mona up
-  - <link cmd="https://github.com/corelan/mona3/commit/c07c4a2">c07c4a2</link> improve ai request type 2 (analyse function)
-  - <link cmd="https://github.com/corelan/mona3/commit/f7b81e4">f7b81e4</link> default to dryrun. update documentation
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/e1adeb0">e1adeb0</link> Update revision (mona: 3015, windbglib: 3006) AI refinements
 
 [windbglib 3.0.3006]
 - Update revision (mona: 3015, windbglib: 3006) AI refinements
