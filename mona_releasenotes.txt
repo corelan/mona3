@@ -1,3 +1,19 @@
+[mona 3.0.3028]
+- Update revision - heap improvements (mona: 3028)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/f9aff07">f9aff07</link> Chunk view improvement (#72)
+  - <link cmd="https://github.com/corelan/mona3/commit/3cfcae4">3cfcae4</link> Update visualization and arg validation (#71)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/ca48709">ca48709</link> documentation
+  - <link cmd="https://github.com/corelan/mona3/commit/6e543ad">6e543ad</link> allow -s with mona pc
+  - <link cmd="https://github.com/corelan/mona3/commit/ad26fe3">ad26fe3</link> update offline ai requests
+  - <link cmd="https://github.com/corelan/mona3/commit/0e3fbd8">0e3fbd8</link> update usage for mona ai
+  - <link cmd="https://github.com/corelan/mona3/commit/e38fb1f">e38fb1f</link> add ai -q 0 (autonomous agent loop)
+  - <link cmd="https://github.com/corelan/mona3/commit/2a5b7cb">2a5b7cb</link> mona ai improvements
+  - <link cmd="https://github.com/corelan/mona3/commit/fe5e035">fe5e035</link> a bit of work on the AI logic. Adding openai-generic and support for slow self-hosted models with limited context window
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/b8a716c">b8a716c</link> Update revision (mona: 3027)
+
 [mona 3.0.3027]
 - Update revision (mona: 3027)
 apl3b:
@@ -189,20 +205,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/b90b59f">b90b59f</link> add caching for performance, improve ai requests
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/5895209">5895209</link> Update revision (mona: 3017, windbglib: 3007)
-
-[mona 3.0.3017]
-- Update revision (mona: 3017, windbglib: 3007)
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/c762077">c762077</link> reduce request tokens, add submit flag, request confirmation before submitting
-  - <link cmd="https://github.com/corelan/mona3/commit/5e5b6c4">5e5b6c4</link> update tellmeUsage
-  - <link cmd="https://github.com/corelan/mona3/commit/e06e18a">e06e18a</link> refactor AI code
-  - <link cmd="https://github.com/corelan/mona3/commit/b558616">b558616</link> print filename at the end of dumplog
-  - <link cmd="https://github.com/corelan/mona3/commit/eaedd4b">eaedd4b</link> q3 improvements
-  - <link cmd="https://github.com/corelan/mona3/commit/7f85a9b">7f85a9b</link> updates to tellme
-  - <link cmd="https://github.com/corelan/mona3/commit/545a2fb">545a2fb</link> switch to offline instead of dryrun
-  - <link cmd="https://github.com/corelan/mona3/commit/ac40910">ac40910</link> Update mona.py
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/db18bb3">db18bb3</link> Update revision (mona: 3016)
 
 [windbglib 3.0.3007]
 - Update revision (mona: 3017, windbglib: 3007)
