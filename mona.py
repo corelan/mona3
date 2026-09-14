@@ -48254,7 +48254,11 @@ def _buildHeapPtrInfo(word, mHeap, our_chunk, chunk_state, slot_index):
 	ptr_str = "Position: %s" % pos
 
 	if is_ours:
-		info = "%s | Parent: %s | %s | %s | %s | %s | (Our Chunk)" % (heap_str, parent_str, entry_str, size_str, state_str, ptr_str)
+		# A pointer back into the chunk we are dumping: show it relative to self (the chunk base),
+		# "self" for the base itself or "self+0xNN" otherwise. word is always >= chunkptr here (it
+		# resolved to this same chunk), so the offset is never negative.
+		self_off = word - our_chunk.chunkptr
+		info = "self" if self_off == 0 else "self+0x%x" % self_off
 		return (info, target, pos, False)
 
 	role = ""
@@ -48333,7 +48337,10 @@ def _renderNestedDump(target, landed_offset, mHeap, our_chunk, indent="         
 		if hp_class:
 			t2, pos2, par2, is_ours2 = hp_class
 			if is_ours2:
-				info_text = "(Our Chunk)" + nested_role
+				# Same self-relative form as the top-level dump: this points back into the chunk we
+				# are analysing (our_chunk), so express it as self / self+0xNN (offset from its base).
+				self_off = word - our_chunk.chunkptr
+				info_text = ("self" if self_off == 0 else "self+0x%x" % self_off) + nested_role
 			elif t2.chunkptr == target.chunkptr:
 				info_text = "ptr to self+0x%x" % (word - startaddy)
 			else:
