@@ -16495,6 +16495,32 @@ class MnPEB:
 			self._walk_heaps()
 		return list(self._heaps.values())
 
+	def getHeapAddresses(self):
+		"""Raw heap base addresses from PEB.ProcessHeaps[0..NumberOfHeaps], in PEB order.
+
+		Addresses only -- no MnHeap instantiation -- so corrupted / segment heaps are still listed
+		(callers can flag corruption themselves). Uses THIS PEB's pointer size, so it is correct for
+		the target process (incl. a 32-bit WoW64 target), and it is NOT capped at 2GB, so heaps that
+		a large-address-aware / WoW64 process places above 0x80000000 are included. This is the
+		heap-list source the debugger-layer getHeapsAddress() cannot be for a modern target, since
+		that helper keys its address ceiling off the host system bitness."""
+		result = []
+		base = int(getattr(self, "ProcessHeaps", 0) or 0)
+		if not base:
+			return result
+		ptrsize = archValue(4, 8)
+		n = int(getattr(self, "NumberOfHeaps", 0) or 0)
+		if n < 0 or n > 1000:   # guard against a corrupt NumberOfHeaps
+			n = 1000
+		for idx in range(n):
+			try:
+				ha = readPtrSizeBytes(base + idx * ptrsize)
+			except Exception:
+				break
+			if ha and ha not in result:
+				result.append(ha)
+		return result
+
 	def getSegmentHeaps(self):
 		"""Return MnHeap objects whose type is Segment."""
 		return [h for h in self.getHeaps() if h.getHeapType() == HeapType.SEGMENT]
@@ -48954,12 +48980,21 @@ def procHeap(args):
 	heapkey = 0
 
 	#first, print list of heaps
+	MnProc.ensure()
+	# Enumerate via mona's own PEB walk (arch-correct for the target, no 2GB address cap) rather
+	# than dbg.getHeapsAddress(), whose ceiling is derived from the host system bitness and so
+	# drops heaps above 0x80000000 in large-address-aware / WoW64 32-bit targets (Win11).
 	allheaps = []
 	try:
-		allheaps = dbg.getHeapsAddress()
-	except:
+		allheaps = mnproc.getPEB().getHeapAddresses()
+	except Exception:
 		allheaps = []
-	MnProc.ensure()
+	if not allheaps:
+		# Last-resort fallback to the debugger-layer enumerator.
+		try:
+			allheaps = dbg.getHeapsAddress()
+		except Exception:
+			allheaps = []
 	dbg.log("Peb : %s" % _ptrUpper(mnproc.getPEB().address))
 	dbg.log("Heaps:")
 	dbg.log("------")
