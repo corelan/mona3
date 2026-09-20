@@ -14729,6 +14729,8 @@ def normalizeHexBytesArg(pattern):
 	return txt
 
 def cleanHex(input_string):
+	if isinstance(input_string, bool):
+		return ""
 	input_string = input_string.replace("'","")
 	input_string = input_string.replace('"',"")
 	input_string = input_string.replace("\\x","")
