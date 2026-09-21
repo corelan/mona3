@@ -44555,6 +44555,8 @@ def procStacks(args):
 	if len(stacks) > 0:
 		dbg.log("Stacks :")
 		dbg.log("--------")
+		logfile = MnLog("stacks.md")
+		thislog = logfile.reset()
 
 		stackDict = {}
 		headers = ["Thread ID", "Start", "End", "Size", "Info"]
@@ -44577,7 +44579,7 @@ def procStacks(args):
 				stackDict[str(threadid)] = [startaddress, endaddress, size, info]
 
 		if not alreadyPrinted:
-			print_dict_table(stackDict, headers, types, padding = "    ", itemsequence = [])	
+			print_dict_table(stackDict, headers, types, padding = "    ", itemsequence = [], logobj = logfile, logfile = thislog)	
 
 
 	else:
