@@ -21669,24 +21669,34 @@ class MnNTSegmentBase:
 			PTR_PRINT % self.BaseAddress, itercnt, decode_failures, zero_size_steps, last_flag_hits,
 			max_step, time.time() - walk_start))
 
-	def getChunks(self):
-		"""Lazily enumerate all non-VirtualAlloc MnChunk objects. Cached after first call.
+	def getChunks(self, include_internal=False):
+		"""Lazily enumerate this segment's MnChunk objects (cached). By default the internal /
+		LFH-backing (virtallocd-flagged) chunks are excluded -- the historical "non-VirtualAlloc"
+		set. include_internal=True keeps them, so detailed chunk listings that show free chunks show
+		the internal chunks too (flagged Internal).
 
 		Returns: dict {chunkptr: MnChunk}
 		"""
 		mndbg.dbgp(get_current_function_name())
-		if self._chunks is None:
+		if getattr(self, "_chunks_all", None) is None:
 			mndbg.dbgp("NT Heap Segment - chunks cache is empty, walking list")
 			try:
-				self._chunks = {
+				self._chunks_all = {
 					chunk.chunkptr: chunk
 					for chunk in self._walk()
-					if "virtall" not in getHeapFlag(chunk.flag).lower() and chunk.size > 0
+					if chunk.size > 0
 				}
-				mndbg.dbgp("    %d chunks found" % len(self._chunks))
+				mndbg.dbgp("    %d chunks found (incl. internal)" % len(self._chunks_all))
 			except Exception as e:
 				mndbg.dbgp("Error getting chunks: %s" % str(e))
-				self._chunks = {}
+				self._chunks_all = {}
+		if include_internal:
+			return self._chunks_all
+		if self._chunks is None:
+			self._chunks = {
+				p: c for p, c in self._chunks_all.items()
+				if "virtall" not in getHeapFlag(c.flag).lower()
+			}
 		return self._chunks
 
 
@@ -47322,7 +47332,9 @@ def _heapSegmentTables(mHeap, segments, extend, logfile=None, loghandle=None):
 			first_entry = seg_obj.FirstEntry
 			last_entry = seg_obj.LastValidEntry
 			size = top - base
-			chunks = seg_obj.getChunks()
+			# -extend lists free chunks, so it also lists internal (virtallocd-flagged) chunks; the
+			# plain (non-extend) count stays the historical non-internal set.
+			chunks = seg_obj.getChunks(include_internal=extend)
 		except Exception:
 			return None
 		busy = sum(1 for c in chunks.values() if c.getState() == ChunkState.BUSY)
@@ -48603,20 +48615,195 @@ def _heapShowChunkView(mHeap, chunk, addr=None, data_mode="none", find=None, nei
 	dbg.log("")
 
 
-def _heapShowChunks(mHeap, parent=None, addr=None, data_mode="none", find=None, neighbour=False, radius=2,
+def _heapShowChunksByAddress(mHeap, parent_filter=None, logfile=None, loghandle=None):
+	"""Address-ordered, parent-grouped chunk view (the -chunks -extend body).
+
+	Collects every chunk in the heap -- segment (back-end), LFH, and VABlock -- groups them by their
+	owning parent container, orders the groups by their lowest chunk base address, and under each
+	parent prints a header line:
+
+	    <Type> | <Name> | <BaseAddress> | (Busy/Free)      Type in {Segment, LFH SubSegment, VABlock}
+
+	followed by that parent's chunks (address-ordered):
+
+	    Index | _HEAP_ENTRY | UserPtr | UserSize | Size | Flags | Unused | PrevSize
+
+	Index is a single running counter across the whole list. parent_filter (segment|lfh|vablock)
+	limits the walk to one container type."""
+	want_seg = parent_filter in (None, "segment")
+	want_lfh = parent_filter in (None, "lfh")
+	want_va  = parent_filter in (None, "vablock")
+
+	def _ssRoleName(ss):
+		# Subsegment role for display: the working-set slot (Active/Hint/CachedItems) if tagged, else
+		# the complete-set provenance (retired -> Full, deleted -> Deleted, else capitalized).
+		if getattr(ss, "role", None):
+			return ss.role
+		src = getattr(ss, "complete_source", None) or "?"
+		return {"retired": "Full"}.get(src, src.capitalize())
+
+	def _mkgroup(ptype, name, base, chunks):
+		chunks = sorted(chunks, key=lambda c: c.chunkptr)
+		# Internal (virtallocd-flagged) is its own bucket, mutually exclusive from busy/free, so the
+		# three add up to the total. LFH/VABlock groups never have internal chunks (internal == 0).
+		internal = busy = free = 0
+		for c in chunks:
+			if "virtall" in getHeapFlag(c.flag).lower():
+				internal += 1
+			elif c.getState() == ChunkState.BUSY:
+				busy += 1
+			else:
+				free += 1
+		return {"type": ptype, "name": name, "base": base, "busy": busy, "free": free,
+		        "internal": internal, "total": len(chunks), "chunks": chunks, "min": chunks[0].chunkptr}
+
+	groups = []
+
+	# Segments (back-end): one group per segment, in walk order for the Name index. include_internal
+	# keeps the internal / LFH-backing (virtallocd-flagged) chunks that seg.getChunks() drops by
+	# default -- this is a detailed listing that shows free chunks, so it shows internal ones too.
+	if want_seg:
+		try:
+			for i, seg in enumerate(mHeap.getSegments()):
+				try:
+					ch = list(seg.getChunks(include_internal=True).values())
+				except Exception:
+					ch = []
+				if ch:
+					groups.append(_mkgroup("Segment", "Segment[%d]" % i, seg.BaseAddress, ch))
+		except Exception as e:
+			mndbg.dbgp("_heapShowChunksByAddress: segment walk failed: %s" % str(e), errormode=False)
+
+	# LFH: group blocks by the subsegment that owns them (chunk.parent_ref). Skip any subsegment with
+	# no busy chunk. Name = role + block size (which identifies the bucket). Roles are per-bucket:
+	# exactly ONE Active and ONE Hint per bucket (so those carry NO index -- no misleading global
+	# "Active[2]"), while CachedItems (up to 16) and retired/deleted "Full"/"Deleted" are inherently
+	# slotted, so they ALWAYS get a [k] index scoped per (block size, role) -- even when the busy-chunk
+	# filter leaves only one of them showing.
+	if want_lfh:
+		try:
+			by_ss = {}
+			for c in mHeap.getLFHChunks().values():
+				ss = getattr(c, "parent_ref", None)
+				by_ss.setdefault(id(ss), [ss, []])[1].append(c)
+			kept = [(ss, ch) for ss, ch in by_ss.values()
+			        if ch and any(c.getState() == ChunkState.BUSY for c in ch)]
+			kept.sort(key=lambda t: (getattr(t[0], "address", 0) or 0))
+			meta = [(ss, ch, (getattr(ss, "BlockSize", 0) or 0) * HEAPGRANULARITY, _ssRoleName(ss))
+			        for ss, ch in kept]
+			# Name convention: "Size | Role[Index]". Active/Hint are unique per bucket -> no index;
+			# CachedItems/Full/Deleted are slotted -> always indexed (running per (block size, role)).
+			seen = {}
+			for ss, ch, blk, role in meta:
+				k = seen.get((blk, role), 0)
+				seen[(blk, role)] = k + 1
+				idxpart = "" if role in ("Active", "Hint") else "[%d]" % k
+				name = ("0x%x | %s%s" % (blk, role, idxpart)) if blk else ("%s%s" % (role, idxpart))
+				groups.append(_mkgroup("LFH SubSegment", name, getattr(ss, "address", 0) if ss is not None else 0, ch))
+		except Exception as e:
+			mndbg.dbgp("_heapShowChunksByAddress: LFH walk failed: %s" % str(e), errormode=False)
+
+	# VABlocks: group by the owning VA block (chunk.parent_ref), Name indexed by base order.
+	if want_va:
+		try:
+			by_va = {}
+			for c in mHeap.getVABlockChunks().values():
+				va = getattr(c, "parent_ref", None)
+				by_va.setdefault(id(va), [va, []])[1].append(c)
+			ordered_va = sorted(by_va.values(), key=lambda t: (getattr(t[0], "address", 0) or 0))
+			for i, (va, ch) in enumerate(ordered_va):
+				if not ch:
+					continue
+				base = getattr(va, "address", 0) if va is not None else 0
+				groups.append(_mkgroup("VABlock", "VABlock[%d]" % i, base, ch))
+		except Exception as e:
+			mndbg.dbgp("_heapShowChunksByAddress: VABlock walk failed: %s" % str(e), errormode=False)
+
+	if not groups:
+		_heapLog("    (no chunks)", logfile, loghandle)
+		_heapLog("", logfile, loghandle)
+		return
+
+	# Parents ordered by their lowest chunk address; Index runs continuously across the whole list.
+	# Each parent is a 1-row table (Type|Name|BaseAddress|Busy/Free) with its chunk table indented
+	# underneath as a child (parent/child composition, like -segments -extend).
+	groups.sort(key=lambda g: g["min"])
+	parent_headers = ["Type", "Name", "BaseAddress", "Busy/Free/Internal [Total]"]
+	parent_types = ["string", "string", "string", "string"]
+	chunk_headers = ["Index", "_HEAP_ENTRY", "UserPtr", "UserSize", "Size", "Flags", "Unused", "PrevSize"]
+	chunk_types = ["int", "string", "string", "string", "string", "string", "string", "string"]
+	idx = 0
+	for gi, g in enumerate(groups):
+		_heapLog("", logfile, loghandle)
+		# Parent header row (Type is col 0 via key_col; BaseAddress bold).
+		pkey = "%d" % gi
+		print_dict_table({pkey: [g["name"], _ptrUpper(g["base"]),
+		                         "%d/%d/%d [%d]" % (g["busy"], g["free"], g["internal"], g["total"])]},
+		                 parent_headers, parent_types, padding="    ", itemsequence=[pkey],
+		                 key_col=[g["type"]], logobj=logfile, logfile=loghandle, mdstyle=True, bold_col=2)
+		_heapLog("", logfile, loghandle)
+		# Child chunk table, indented under the parent.
+		rows = {}
+		seq = []
+		key_col = []
+		for c in g["chunks"]:
+			flagtxt = getHeapFlag(c.flag)
+			if "virtallocd" in flagtxt.lower():
+				flagtxt += " (LFH)"
+				flagtxt = flagtxt.replace("Virtallocd", "Internal")
+			us = c.displayUserSize
+			size_b = c.size * HEAPGRANULARITY
+			prevsize_b = c.prevsize * HEAPGRANULARITY
+			k = _ptrUpper(c.chunkptr)
+			rows[k] = [
+				_ptrUpper(c.chunkptr),
+				_ptrUpper(c.userptr),
+				"0x%x (%d)" % (us, us),
+				"0x%x (%d)" % (size_b, size_b),
+				flagtxt,
+				"0x%x (%d)" % (c.unused, c.unused),
+				"0x%x (%d)" % (prevsize_b, prevsize_b),
+			]
+			seq.append(k)
+			key_col.append("%d" % idx)
+			idx += 1
+		print_dict_table(rows, chunk_headers, chunk_types,
+		                 padding="        ", itemsequence=seq, key_col=key_col,
+		                 logobj=logfile, logfile=loghandle, mdstyle=True, bold_col=1)
+	_heapLog("", logfile, loghandle)
+
+
+def _heapShowChunks(mHeap, parent=None, addr=None, data_mode="none", extend=False, find=None, neighbour=False, radius=2,
                     logfile=None, loghandle=None):
 	"""Per-heap chunk view.
 
-	No addr -> summary of chunk counts by parent (or one parent via -p).
+	No addr            -> summary of chunk counts by parent (or a flat per-parent table via -p).
+	No addr + extend   -> address-ordered walk of every chunk, grouped by owning parent container
+	           (Segment / LFH SubSegment / VABlock): a parent header (Type|Name|BaseAddress|Busy/Free)
+	           then its chunks (Index|_HEAP_ENTRY|UserPtr|UserSize|Size|Flags|Unused|PrevSize). -p
+	           narrows to one container; freelist has no physical parent so it stays a flat table.
 	addr    -> locate the chunk in THIS heap and show it + parent context. data_mode selects the
 	           [ Data ] section verbosity: "none" (base -a, no [ Data ]), "capped" (-a -extend,
 	           console capped at 0x200, log file uncapped), or "full" (-a -all, uncapped). -find
 	           searches this chunk's data, -n <radius> shows +/-radius neighbours."""
 	heapbase = mHeap.heapbase
 	if addr is None:
+		pl = None
 		if parent is not None:
 			pl = {"freelists": "freelist", "vablocks": "vablock", "vadblock": "vablock",
 			      "vadblocks": "vablock", "segments": "segment", "lfhs": "lfh"}.get(parent, parent)
+
+		# -chunks -extend (no address): address-ordered walk of every chunk, grouped by owning parent
+		# container (Segment / LFH SubSegment / VABlock). See _heapShowChunksByAddress. -p narrows to
+		# one container (segment/lfh/vablock); freelist has no such physical parent, so it falls
+		# through to the flat per-parent table below.
+		if extend and pl in (None, "segment", "lfh", "vablock"):
+			_heapLog("[+] Chunks for heap %s (address-ordered, grouped by parent%s):" % (
+				_ptrUpper(heapbase), (", parent: %s" % pl) if pl else ""), logfile, loghandle)
+			_heapShowChunksByAddress(mHeap, parent_filter=pl, logfile=logfile, loghandle=loghandle)
+			return
+
+		if parent is not None:
 			if pl == "freelist":
 				chunks = mHeap.free_lists.getChunks()
 			elif pl == "lfh":
@@ -49364,6 +49551,7 @@ def procHeap(args):
 			_heapShowChunks(mHeap, parent=parent if subcmd == "chunks" else None,
 			                addr=addr if subcmd == "chunks" else None,
 			                data_mode=(chunk_data_mode if subcmd == "chunks" else "none"),
+			                extend=(extend if subcmd == "chunks" else False),
 			                find=(args["find"] if (subcmd == "chunks" and "find" in args and type(args["find"]).__name__.lower() != "bool") else None),
 			                neighbour=(("n" in args) if subcmd == "chunks" else False),
 			                radius=radius, logfile=logfile_b, loghandle=thislog_b)
@@ -53740,6 +53928,8 @@ Optional arguments:
              -a <addr> [-extend]   one segment (the one containing <addr>)
   !mona heap -chunks               per-heap chunk summary
              -p {freelist|vablock|lfh|segment}   one container type
+             -extend               all chunks, address-ordered, grouped by parent container
+                                   (Segment / LFH SubSegment / VABlock); -p narrows to one
              -a <addr>             locate chunk + parent context (no [ Data ] / [ Content ])
              -a <addr> -extend     + [ Data ] (console capped at 0x200) + [ Content ]
              -a <addr> -all        + full [ Data ] (remove the 0x200 cap) + [ Content ]
