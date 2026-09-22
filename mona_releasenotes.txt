@@ -1,3 +1,19 @@
+[mona 3.0.3029]
+- Update revision (mona: 3029)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/23de543">23de543</link> Add new command heap -chunks -extend (#74)
+  - <link cmd="https://github.com/corelan/mona3/commit/f9aff07">f9aff07</link> Chunk view improvement (#72)
+  - <link cmd="https://github.com/corelan/mona3/commit/3cfcae4">3cfcae4</link> Update visualization and arg validation (#71)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/8f8a26c">8f8a26c</link> give mona stacks an output file as well
+  - <link cmd="https://github.com/corelan/mona3/commit/9ab8c54">9ab8c54</link> bugfix in cleanHex
+  - <link cmd="https://github.com/corelan/mona3/commit/ca48709">ca48709</link> documentation
+  - <link cmd="https://github.com/corelan/mona3/commit/6e543ad">6e543ad</link> allow -s with mona pc
+  - <link cmd="https://github.com/corelan/mona3/commit/ad26fe3">ad26fe3</link> update offline ai requests
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/8f13946">8f13946</link> Update revision - heap improvements (mona: 3028)
+  - <link cmd="https://github.com/corelan/mona3/commit/b8a716c">b8a716c</link> Update revision (mona: 3027)
+
 [mona 3.0.3028]
 - Update revision - heap improvements (mona: 3028)
 apl3b:
@@ -183,20 +199,6 @@ corelanc0d3r:
 [windbglib 3.0.3009]
 - Update revision (mona: 3019, windbglib: 3009) implement openaiagents engine
 - No file-specific commits found.
-
-[mona 3.0.3018]
-- Update revision (mona: 3018, windbglib: 3008) bugfixes
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/bf98b5a">bf98b5a</link> remove line from end
-  - <link cmd="https://github.com/corelan/mona3/commit/154cacc">154cacc</link> fix indentation issue
-  - <link cmd="https://github.com/corelan/mona3/commit/a5c7f5f">a5c7f5f</link> bugfix in windbglib, add extra cache for mona rop
-  - <link cmd="https://github.com/corelan/mona3/commit/eed0081">eed0081</link> add option to specify depth to ai profile q 2
-  - <link cmd="https://github.com/corelan/mona3/commit/488273a">488273a</link> update prompts for profile 2
-  - <link cmd="https://github.com/corelan/mona3/commit/b90b59f">b90b59f</link> add caching for performance, improve ai requests
-  - <link cmd="https://github.com/corelan/mona3/commit/1fda001">1fda001</link> add output of analyze to context
-  - <link cmd="https://github.com/corelan/mona3/commit/c762077">c762077</link> reduce request tokens, add submit flag, request confirmation before submitting
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/5895209">5895209</link> Update revision (mona: 3017, windbglib: 3007)
 
 [windbglib 3.0.3008]
 - Update revision (mona: 3018, windbglib: 3008) bugfixes
