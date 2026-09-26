@@ -13702,6 +13702,38 @@ def dbgGetModuleSafe(modulename):
 	PyKD may raise DbgException for missing modules instead of returning None.
 	Normalize that behavior so callers can treat lookup misses as non-fatal.
 	"""
+	def _module_aliases(name):
+		name = ensure_text(name).strip()
+		if name == "":
+			return []
+		aliases = []
+		def _add(alias):
+			alias = ensure_text(alias).strip().lower()
+			if alias != "" and alias not in aliases:
+				aliases.append(alias)
+		base = name.lower()
+		_add(base)
+		_add(base.replace("-", "_"))
+		_add(base.replace(".", "_"))
+		_add(base.replace("-", "_").replace(".", "_"))
+		if base.endswith(".dll"):
+			stem = base[:-4]
+			_add(stem)
+			_add(stem.replace("-", "_"))
+			_add(stem.replace(".", "_"))
+			_add(stem.replace("-", "_").replace(".", "_"))
+		return aliases
+	
+	module_name = ensure_text(modulename).strip()
+	for candidate in _module_aliases(module_name):
+		try:
+			mod = dbg.getModule(candidate)
+			if mod:
+				if candidate != module_name.lower():
+					mndbg.dbgp("dbgGetModuleSafe resolved '%s' via alias '%s'" % (module_name, candidate), errormode=False)
+				return mod
+		except Exception as e:
+			mndbg.dbgp("dbg.getModule failed for '%s' (alias '%s'): %s" % (module_name, candidate, str(e)), errormode=False)
 	try:
 		return dbg.getModule(modulename)
 	except Exception as e:
