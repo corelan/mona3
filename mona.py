@@ -1751,6 +1751,27 @@ def _getCallStack(command="kb", max_lines=50):
 	return result
 
 
+def _limitAnalyzeStackSection(output, max_stack_lines=30):
+	"""Trim the STACK_TEXT section of !analyze output to a bounded number of lines.
+	Args: output, max_stack_lines.
+	Returns: trimmed or original text.
+	"""
+	output = ensure_text(output)
+	if not isinstance(max_stack_lines, int) or max_stack_lines <= 0:
+		return output
+	marker = "STACK_TEXT:"
+	marker_index = output.find(marker)
+	if marker_index < 0:
+		return output
+	prefix = output[:marker_index + len(marker)]
+	stack_text = output[marker_index + len(marker):]
+	stack_lines = stack_text.splitlines()
+	if len(stack_lines) <= max_stack_lines:
+		return output
+	trimmed_stack = "\n".join(stack_lines[:max_stack_lines])
+	return prefix + trimmed_stack
+
+
 def _getWindbgAnalyze(command="!analyze -v", max_lines=0):
 	"""Resolve debugger evidence for get windbg analyze.
 	Args: command, max_lines.
@@ -1761,6 +1782,7 @@ def _getWindbgAnalyze(command="!analyze -v", max_lines=0):
 	result["command"] = command
 	try:
 		output = ensure_text(dbg.nativeCommand(command)).strip()
+		output = _limitAnalyzeStackSection(output, max_stack_lines=30)
 		if isinstance(max_lines, int) and max_lines > 0:
 			lines = output.splitlines()
 			if len(lines) > max_lines:
@@ -4773,7 +4795,9 @@ def collectAIContext(question_type="", heapdynamics_files=None, additional_conte
 		context["ntglobal_flag"] = _getNtGlobalFlagSummary()
 	if collection_plan.get("include_seh_chain", False) and arch == 32:
 			context["seh_chain"] = _getSehChainSummary()
-	if collection_plan.get("include_call_stack", False):
+	# !analyze -v already includes the stack trace section, so avoid duplicating
+	# a separate k/kb call when the analyzer output is being collected.
+	if collection_plan.get("include_call_stack", False) and not collection_plan.get("include_windbg_analyze", False):
 		context["call_stack"] = _getCallStack("kb", max_lines=20)
 	if collection_plan.get("include_windbg_analyze", False):
 		context["windbg_analyze"] = _getWindbgAnalyze("!analyze -v")
@@ -7632,13 +7656,27 @@ def _getFindMspSummary(args=None):
 	mndbg.dbgp(get_current_function_name())
 	info = OrderedDict()
 	osilent = None
+	debug_args = args if isinstance(args, dict) else {}
 	dbg.log("[+] Running findmsp")
+	mndbg.dbgp("findmsp AI collector path entering with args=%s" % (
+		json.dumps(debug_args, sort_keys=True, default=str) if isinstance(debug_args, dict) else str(debug_args)
+	), errormode=False)
+	mndbg.dbgp("findmsp AI collector starting: arch=%s debugger=%s args=%s" % (
+		str(arch),
+		__DEBUGGERAPP__,
+		json.dumps(debug_args, sort_keys=True, default=str) if isinstance(debug_args, dict) else str(debug_args)
+	), errormode=False)
 	try:
 		global g_silent
 		osilent = g_silent
 		g_silent = True
-		mspresults = goFindMSP(100, args or {})
-		info["distance"] = 100
+		# Keep the AI path aligned with the interactive command: findmsp itself
+		# is not meant to be driven with extra arguments from the q0/q1 collectors.
+		# The shared AI wrappers may still receive ai_args for other evidence
+		# collectors, but findmsp should run with its default behavior here.
+		mspresults = goFindMSP(0,args={})
+		info["distance"] = 0
+		mndbg.dbgp("findmsp AI collector completed: sections=%s" % ",".join(sorted(mspresults.keys())), errormode=False)
 		register_trampolines = {}
 		raw_registers_to = mspresults.get("registers_to", {})
 		if raw_registers_to:
@@ -7744,6 +7782,11 @@ def _getFindMspSummary(args=None):
 					section.append(entry)
 				info[key] = section
 	except Exception as e:
+		mndbg.dbgp("findmsp AI collector failed: type=%s args=%s error=%s" % (
+			e.__class__.__name__,
+			json.dumps(debug_args, sort_keys=True, default=str) if isinstance(debug_args, dict) else str(debug_args),
+			str(e)
+		), errormode=False)
 		info["error"] = str(e)
 		info["error_type"] = e.__class__.__name__
 		info["error_traceback"] = safeTracebackText()
@@ -8428,6 +8471,14 @@ def _optimizeQ1RequestVariables(context, maxsize_kb=0):
 		variables["windbg_analyze"] = _simplifyWindbgAnalyze(original_analyze)
 		if "windbg_analyze_mini" in variables:
 			del variables["windbg_analyze_mini"]
+		if "call_stack" in variables and isinstance(variables.get("call_stack"), dict):
+			call_stack_info = variables.get("call_stack", {})
+			call_stack_output = ensure_text(call_stack_info.get("output", ""))
+			call_stack_lines = call_stack_output.splitlines()
+			if len(call_stack_lines) > 30:
+				call_stack_info = dict(call_stack_info)
+				call_stack_info["output"] = "\n".join(call_stack_lines[:30])
+				variables["call_stack"] = call_stack_info
 
 	if "modules" in variables:
 		original_modules = variables.get("modules", "")
@@ -25297,8 +25348,15 @@ class MnPointer:
 
 	def __init__(self,address):
 
+		mndbg.dbgp("MnPointer.__init__ start address=%r type=%s arch=%s" % (
+			address,
+			type(address).__name__,
+			str(arch)
+		), errormode=False)
+		
 		# check that the address is an integer
 		if not isinstance(address, (int, long)):
+			mndbg.dbgp("MnPointer.__init__ invalid address type=%s value=%r" % (type(address).__name__, address), errormode=False)
 			raise Exception("address should be an integer or long")
 	
 		self.address = address
@@ -25312,7 +25370,17 @@ class MnPointer:
 		AsciiNumericRange   = MnPointer._AsciiNumericRange
 		AsciiSpaceRange     = MnPointer._AsciiSpaceRange
 		
-		self.HexAddress = toHex(address)
+		try:
+			self.HexAddress = toHex(address)
+			mndbg.dbgp("MnPointer.__init__ hex address=%s" % self.HexAddress, errormode=False)
+		except Exception as e:
+			mndbg.dbgp("MnPointer.__init__ toHex failed for address=%r type=%s: %s" % (
+				address,
+				type(address).__name__,
+				str(e)
+			), errormode=False)
+			mndbg.dbgp(safeTracebackText(), errormode=False)
+			raise
 
 		self.ownerName  = ""
 
@@ -25322,10 +25390,23 @@ class MnPointer:
 		# define the characteristics of the pointer
 		byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = (0,)*8
 
-		if arch == 32:
-			byte1,byte2,byte3,byte4 = splitAddress(address)
-		elif arch == 64:
-			byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = splitAddress(address)
+		try:
+			if arch == 32:
+				byte1,byte2,byte3,byte4 = splitAddress(address)
+			elif arch == 64:
+				byte1,byte2,byte3,byte4,byte5,byte6,byte7,byte8 = splitAddress(address)
+			mndbg.dbgp("MnPointer.__init__ splitAddress ok address=%s bytes=%s" % (
+				self.HexAddress,
+				("%02x %02x %02x %02x" % (byte1, byte2, byte3, byte4)) if arch == 32 else ("%02x %02x %02x %02x %02x %02x %02x %02x" % (byte1, byte2, byte3, byte4, byte5, byte6, byte7, byte8))
+			), errormode=False)
+		except Exception as e:
+			mndbg.dbgp("MnPointer.__init__ splitAddress failed address=%r type=%s: %s" % (
+				address,
+				type(address).__name__,
+				str(e)
+			), errormode=False)
+			mndbg.dbgp(safeTracebackText(), errormode=False)
+			raise
 		
 		# Nulls
 		self.hasNulls = (byte1 == 0) or (byte2 == 0) or (byte3 == 0) or (byte4 == 0)
@@ -25345,7 +25426,17 @@ class MnPointer:
 			self.isUnicodeRev = self.isUnicodeRev and ((byte6 == 0) and (byte8 == 0))
 		
 		# Unicode transform
-		self.unicodeTransform = UnicodeTransformInfo(self.HexAddress) 
+		try:
+			self.unicodeTransform = UnicodeTransformInfo(self.HexAddress)
+			mndbg.dbgp("MnPointer.__init__ unicodeTransform=%s" % self.unicodeTransform, errormode=False)
+		except Exception as e:
+			mndbg.dbgp("MnPointer.__init__ UnicodeTransformInfo failed address=%s hex=%s: %s" % (
+				self.address,
+				self.HexAddress,
+				str(e)
+			), errormode=False)
+			mndbg.dbgp(safeTracebackText(), errormode=False)
+			raise
 
 		# Ascii
 		if not self.isUnicode and not self.isUnicodeRev:			
@@ -26996,7 +27087,17 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 								if hit < start or hit > end:
 									continue
 
-								ptr = MnPointer(hit)
+								try:
+									ptr = MnPointer(hit)
+								except Exception as e:
+									mndbg.dbgp("searchInRange fallback MnPointer failure at hit=%r type=%s human_format=%s: %s" % (
+										hit,
+										type(hit).__name__,
+										human_format,
+										str(e)
+									), errormode=False)
+									mndbg.dbgp(safeTracebackText(), errormode=False)
+									continue
 								if not meetsCriteria(ptr, criteria):
 									continue
 
@@ -27064,22 +27165,46 @@ def searchInRange(sequences, start=0, end=TOP_USERLAND, criteria=[], refresh_pag
 
 					page_find = []
 					for i in recur_find:
-						if (i >= start and i <= end):
-							ptr = MnPointer(i)
-							# check if pointer meets criteria
-							if not meetsCriteria(ptr, criteria):
-								continue
-							
-							page_find.append(i)
-							
-							g_ptr_counter += 1
-							if g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get:
-								# stop search
-								if human_format in found_opcodes:
-									found_opcodes[human_format] += page_find
-								else:
-									found_opcodes[human_format] = page_find
-								return found_opcodes
+						try:
+							if (i >= start and i <= end):
+								try:
+									ptr = MnPointer(i)
+								except Exception as e:
+									mndbg.dbgp("searchInRange MnPointer failure at i=%r type=%s human_format=%s start=%s end=%s: %s" % (
+										i,
+										type(i).__name__,
+										human_format,
+										PTR_PRINT % start,
+										PTR_PRINT % end,
+										str(e)
+									), errormode=False)
+									mndbg.dbgp(safeTracebackText(), errormode=False)
+									continue
+								# check if pointer meets criteria
+								if not meetsCriteria(ptr, criteria):
+									continue
+								
+								page_find.append(i)
+								
+								g_ptr_counter += 1
+								if g_ptr_to_get > 0 and g_ptr_counter >= g_ptr_to_get:
+									# stop search
+									if human_format in found_opcodes:
+										found_opcodes[human_format] += page_find
+									else:
+										found_opcodes[human_format] = page_find
+									return found_opcodes
+						except Exception as e:
+							mndbg.dbgp("searchInRange error in recur_find loop at i=%r type=%s human_format=%s start=%s end=%s: %s" % (
+								i,
+								type(i).__name__,
+								human_format,
+								PTR_PRINT % start,
+								PTR_PRINT % end,
+								str(e)
+							), errormode=False)
+							mndbg.dbgp(safeTracebackText(), errormode=False)
+							continue
 
 					# add current pointers to the list and continue
 					if len(page_find) > 0:
@@ -34267,7 +34392,7 @@ def goFindMSP(distance=0, args=None):
 	g_silent = True
 
 	# keep text version for searchInRange() / older helper functions
-	fullpattern = createPattern(50000, args)
+	fullpattern = createPattern(30000, args)
 	# use bytes version when comparing with dbg.readMemory()
 	fullpattern_bytes = ensure_bytes(fullpattern)
 
@@ -34627,7 +34752,17 @@ def goFindMSP(distance=0, args=None):
 					thissize = 0
 
 					if offset > -1:
-						thepointer = MnPointer(chainentry[0])
+						try:
+							thepointer = MnPointer(chainentry[0])
+						except Exception as e:
+							mndbg.dbgp("goFindMSP SEH MnPointer failure at chainentry=%r type=%s pattype=%s: %s" % (
+								chainentry,
+								type(chainentry).__name__,
+								pattype,
+								str(e)
+							), errormode=False)
+							mndbg.dbgp(safeTracebackText(), errormode=False)
+							continue
 						if thepointer.isOnStack():
 							thissize = getPatternLength(address + 4, pattype, args)
 							if thissize > 0:
@@ -38677,6 +38812,13 @@ class MnAI(object):
 	def parseRequestSettings(self):
 		"""Resolve API key, model, timeout, token budget, upload mode, and test overrides for the request."""
 		mndbg.dbgp(get_current_function_name())
+		mndbg.dbgp("tellme: parseRequestSettings start engine=%s offline=%s qtype=%s submit=%s args=%s" % (
+			ensure_text(self.engine),
+			str(self.offline),
+			ensure_text(self.question_type),
+			str(self.submit_requested),
+			json.dumps(sorted(list(self.args.keys())), default=str)
+		), errormode=False)
 		self.upload_requested = ("upload" in self.args)
 		self.openai_upload_requested = self.upload_requested
 		self.openai_generic_staged_requested = False
@@ -38753,6 +38895,13 @@ class MnAI(object):
 			self.logInfoDetail("instead of embedding them in the submitted text prompt.")
 			self.logInfoDetail("This is useful for large contexts that would exceed")
 			self.logInfoDetail("model input limits if included in the prompt.")
+		mndbg.dbgp("tellme: parseRequestSettings done engine=%s offline=%s model=%s url=%s qtype=%s" % (
+			ensure_text(self.engine),
+			str(self.offline),
+			ensure_text(self.model),
+			ensure_text(self.api_url),
+			ensure_text(self.question_type)
+		), errormode=False)
 		return True
 
 	def validateProviderConfiguration(self):
@@ -39210,6 +39359,12 @@ class MnAI(object):
 
 		self.logInfo("Collecting context and preparing request...")
 		collection_plan = self.buildContextCollectionPlan()
+		mndbg.dbgp("tellme: getRequestContext mode offline=%s engine=%s question_type=%s" % (
+			str(self.offline),
+			ensure_text(self.engine),
+			ensure_text(self.effective_question_type)
+		), errormode=False)
+		mndbg.dbgp("tellme: context collection plan: %s" % json.dumps(collection_plan, sort_keys=True), errormode=False)
 		if self.needsControlledDataContext():
 			_q3_control_flow_disasm_cache = {}
 			_q3_control_flow_uf_cache = {}
@@ -39224,6 +39379,7 @@ class MnAI(object):
 			ai_args=self.args,
 			collection_plan=collection_plan
 		)
+		mndbg.dbgp("tellme: getRequestContext collected keys: %s" % ",".join(sorted(context.keys())), errormode=False)
 		if self.needsRopModuleContext() and self.rop_target_modules is not None:
 			context["rop_target_modules"] = self.rop_target_modules
 		self.logInfoDetail("Done")
@@ -41334,6 +41490,12 @@ class MnAI(object):
 	def request(self, question_type=None, prompt=None):
 		"""Send the prepared request or save it offline, and keep the response text on the instance."""
 		mndbg.dbgp(get_current_function_name())
+		mndbg.dbgp("tellme: request entry engine=%s offline=%s qtype=%s prompt_present=%s" % (
+			ensure_text(self.engine),
+			str(self.offline),
+			ensure_text(self.question_type),
+			str(self.prompt != "")
+		), errormode=False)
 		if question_type is not None:
 			self.question_type = question_type
 		if prompt is not None:
@@ -41344,10 +41506,12 @@ class MnAI(object):
 
 		mndbg.dbgp("tellme: prompt length is %d bytes" % len(self.prompt))
 		if self.offline or self.engine == "offline":
+			mndbg.dbgp("tellme: request path is offline/save-only; writing offline request", errormode=False)
 			self.response = ""
 			self.writeOfflineRequest()
 			return self.response
 
+		mndbg.dbgp("tellme: request path is live; writing request log and reloading prompt before submission", errormode=False)
 		self.writeRequestLog()
 		self.logInfo("Submitting the prepared tellme request using %s model '%s'." % (self.engine, self.model))
 		if not self.reloadPromptFromRequestLog():
@@ -41684,6 +41848,10 @@ class MnAI(object):
 				self.logSavedRequestCanBeSubmittedManually()
 				return ""
 		self.prompt = self.base_prompt
+		mndbg.dbgp("tellme: request about to submit to provider engine=%s model=%s" % (
+			ensure_text(self.engine),
+			ensure_text(self.model)
+		), errormode=False)
 		initial_response = self.request()
 		if self.response.strip() == "":
 			return initial_response
