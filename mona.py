@@ -41740,10 +41740,11 @@ class MnAI(object):
 					)
 				break
 			except Exception as e:
-				mndbg.dbgp("tellme: provider call failed on attempt %d/%d:\n%s" % (
+				mndbg.dbgp("tellme: provider call failed on attempt %d/%d (%s):\n%s" % (
 					attempt,
 					max_attempts,
-					traceback.format_exc()
+					e.__class__.__name__,
+				safeTracebackText()
 				), errormode=False)
 				if self.engine == "openai-generic" and (not self.upload_requested) and (not self.openai_generic_staged_requested) and _isContextLimitError(e):
 					self.logInfo("The OpenAI-compatible endpoint rejected the inline prompt because it exceeds the context window.")
