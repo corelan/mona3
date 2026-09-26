@@ -1,3 +1,21 @@
+[mona 3.0.3030]
+- Update revision (mona: 3030)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/23de543">23de543</link> Add new command heap -chunks -extend (#74)
+  - <link cmd="https://github.com/corelan/mona3/commit/f9aff07">f9aff07</link> Chunk view improvement (#72)
+  - <link cmd="https://github.com/corelan/mona3/commit/3cfcae4">3cfcae4</link> Update visualization and arg validation (#71)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/bc809fc">bc809fc</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5430832">5430832</link> fix findmsp issue inside the ai routine
+  - <link cmd="https://github.com/corelan/mona3/commit/8f8a26c">8f8a26c</link> give mona stacks an output file as well
+  - <link cmd="https://github.com/corelan/mona3/commit/9ab8c54">9ab8c54</link> bugfix in cleanHex
+  - <link cmd="https://github.com/corelan/mona3/commit/ca48709">ca48709</link> documentation
+  - <link cmd="https://github.com/corelan/mona3/commit/6e543ad">6e543ad</link> allow -s with mona pc
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/50ba876">50ba876</link> Update revision (mona: 3029)
+  - <link cmd="https://github.com/corelan/mona3/commit/8f13946">8f13946</link> Update revision - heap improvements (mona: 3028)
+  - <link cmd="https://github.com/corelan/mona3/commit/b8a716c">b8a716c</link> Update revision (mona: 3027)
+
 [mona 3.0.3029]
 - Update revision (mona: 3029)
 apl3b:
@@ -182,19 +200,6 @@ corelanc0d3r:
 - Update revision (mona: 3020, windbglib: 3010) implement mona ai -q 3
 corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/339d58e">339d58e</link> remove duplicate logic
-
-[mona 3.0.3019]
-- Update revision (mona: 3019, windbglib: 3009) implement openaiagents engine
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/c7da3b8">c7da3b8</link> update use of PROMPT in request templates
-  - <link cmd="https://github.com/corelan/mona3/commit/0e79b3b">0e79b3b</link> implement openaiagents engine with bridge
-  - <link cmd="https://github.com/corelan/mona3/commit/17be2c5">17be2c5</link> output formatting
-  - <link cmd="https://github.com/corelan/mona3/commit/952205e">952205e</link> rewrite intent
-  - <link cmd="https://github.com/corelan/mona3/commit/42dbf9c">42dbf9c</link> improved error logging for ollama requests
-  - <link cmd="https://github.com/corelan/mona3/commit/fac8f50">fac8f50</link> remove openai-agents again and update routine to support ollama
-  - <link cmd="https://github.com/corelan/mona3/commit/a5d787a">a5d787a</link> better error handling
-  - <link cmd="https://github.com/corelan/mona3/commit/fc030b7">fc030b7</link> Update mona.py
-  - <link cmd="https://github.com/corelan/mona3/commit/4314e2e">4314e2e</link> start adding openai-agents support
 
 [windbglib 3.0.3009]
 - Update revision (mona: 3019, windbglib: 3009) implement openaiagents engine
