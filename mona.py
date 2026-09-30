@@ -20663,6 +20663,57 @@ class MnNTHeap(MnHeap):
 
 		return None
 
+	def getChunkIndex(self):
+		"""Sorted [(start, end, chunk)] over every chunk in this heap (segment incl. internal, LFH,
+		VA), plus a parallel starts list, cached. Enables O(log n) address->chunk lookup
+		(chunkForAddress) instead of findChunk()'s linear per-call scan -- used by the per-slot heap
+		resolution in object dumps (dumpobj/dumplog)."""
+		if getattr(self, "_chunk_index", None) is None:
+			idx = []
+			try:
+				for seg in self.getSegments():
+					for c in seg.getChunks(include_internal=True).values():
+						idx.append((c.chunkptr, c.chunkptr + c.size * HEAPGRANULARITY, c))
+			except Exception as e:
+				mndbg.dbgp("getChunkIndex: segment walk failed: %s" % str(e), errormode=False)
+			try:
+				if self.usesLFH():
+					for c in self.getLFHChunks().values():
+						idx.append((c.chunkptr, c.chunkptr + c.size * HEAPGRANULARITY, c))
+			except Exception as e:
+				mndbg.dbgp("getChunkIndex: LFH walk failed: %s" % str(e), errormode=False)
+			try:
+				for c in self.getVABlockChunks().values():
+					va = getattr(c, "parent_ref", None)
+					base = getattr(va, "address", 0) if va is not None else 0
+					reserve = getattr(va, "ReserveSize", 0) if va is not None else 0
+					if base and reserve:
+						idx.append((base, base + reserve, c))
+					else:
+						idx.append((c.chunkptr, c.chunkptr + c.size * HEAPGRANULARITY, c))
+			except Exception as e:
+				mndbg.dbgp("getChunkIndex: VA walk failed: %s" % str(e), errormode=False)
+			idx.sort(key=lambda t: t[0])
+			self._chunk_index = idx
+			self._chunk_starts = [t[0] for t in idx]
+		return self._chunk_index
+
+	def chunkForAddress(self, addr):
+		"""O(log n) owning-chunk lookup via the sorted chunk index (getChunkIndex), or None. On
+		nesting the innermost chunk wins: an LFH block sits at a higher start than its backing
+		segment chunk, so the rightmost start <= addr that still contains addr is the block."""
+		self.getChunkIndex()
+		starts = self._chunk_starts
+		if not starts:
+			return None
+		import bisect
+		pos = bisect.bisect_right(starts, addr) - 1
+		if 0 <= pos < len(self._chunk_index):
+			start, end, chunk = self._chunk_index[pos]
+			if start <= addr < end:
+				return chunk
+		return None
+
 	def classifyAddress(self, addr):
 		"""Identify which allocator component owns an address.
 
@@ -21764,11 +21815,12 @@ class MnNTSegmentBase:
 		if getattr(self, "_chunks_all", None) is None:
 			mndbg.dbgp("NT Heap Segment - chunks cache is empty, walking list")
 			try:
-				self._chunks_all = {
-					chunk.chunkptr: chunk
-					for chunk in self._walk()
-					if chunk.size > 0
-				}
+				_all = {}
+				for chunk in self._walk():
+					if chunk.size > 0:
+						chunk.parent_ref = self   # back-reference to the owning segment (parent stays SEGMENT)
+						_all[chunk.chunkptr] = chunk
+				self._chunks_all = _all
 				mndbg.dbgp("    %d chunks found (incl. internal)" % len(self._chunks_all))
 			except Exception as e:
 				mndbg.dbgp("Error getting chunks: %s" % str(e))
@@ -26205,7 +26257,7 @@ class MnPointer:
 			if not g_silent:
 				dbg.log("")
 				dbg.log("-" * 70)
-				dbg.log("[+] Dumping allocation at %s %s" % (PTR_PRINT % addy, custommsg))
+				dbg.log("[+] Dumping allocation at %s %s" % (_ptrUpper(addy), custommsg))
 				dbg.log("    Size: 0x%02x bytes" % size)
 				if (size > 0x200):
 					dps_cmd = "dps %s L 0x%x/%x" % ((PTR_PRINT % addy), size, archValue(4,8))
@@ -26228,11 +26280,6 @@ class MnPointer:
 			addys = [addy]
 			parent = ""
 			parentdata = {}
-			# Batch all per-line logfile writes produced while walking this object (and any
-			# nested objects). printObjDump() emits one write() per dumped pointer, which
-			# would otherwise mean one open()/write()/close() syscall pair per line.
-			# Batching is nesting-safe, so a caller-supplied logfile that is already
-			# batching keeps buffering until its own outermost batch ends.
 			batching = isinstance(logfile, MnLog)
 			if batching:
 				logfile.begin_batch()
@@ -26265,7 +26312,7 @@ class MnPointer:
 									dumpdata[loc_int] = info
 								elif not "??" in content and symbol.replace(" ","") == "":
 									contentaddy = hexStrToInt(content)
-									info = self.getLocInfo(loc_int, contentaddy, startaddy, endaddy)
+									info = self.getLocInfo(loc_int, contentaddy, startaddy, endaddy, gate_dps=True)
 									info.append(content)
 									dumpdata[loc_int] = info
 								else:
@@ -26276,22 +26323,32 @@ class MnPointer:
 							parent = "Referenced at %s (object %s, offset +0x%02x)" % ((PTR_PRINT % pdata[0]),(PTR_PRINT % pdata[1]),pdata[0]-pdata[1])
 						else:
 							parent = ""
-						
-						global g_heap_cmd_prefix
-						if g_heap_cmd_prefix is None:
-							try:
-								_probe = dbg.nativeCommand("!ext.heap")
-								if _probe and "Unable to find" not in _probe and "No export" not in _probe:
-									g_heap_cmd_prefix = "!ext."
-								else:
-									g_heap_cmd_prefix = "!"
-							except:
-								g_heap_cmd_prefix = "!"
-						cmd2torun = "%sheap -p -a %s" % (g_heap_cmd_prefix, PTR_PRINT % addy)
-						output2 = dbg.nativeCommand(cmd2torun)
-						heapdata = output2.split("\n")
-						
-						self.printObjDump(dumpdata,logfile,thislog,size,parent,heapdata)
+						if _isMarkdownLogPath(thislog):
+							logfile.write("", thislog)
+							logfile.write("---", thislog)
+							logfile.write("", thislog)
+							logfile.write("## Object @ %s%s" % (_ptrUpper(addy), (" (0x%02x bytes)" % size) if size > 0 else ""), thislog)
+							logfile.write("", thislog)
+						try:
+							_mheap, _chunkobj = None, None
+							for _h in mnproc.getPEB().getHeaps():
+								_c = _h.chunkForAddress(addy)
+								if _c is not None:
+									_mheap, _chunkobj = _h, _c
+									break
+							if _chunkobj is None:
+								_hi = MnPointer(addy).getHeapInfo()
+								_heapaddy = _hi[0]
+								if _heapaddy:
+									_mheap = mnproc.getPEB().getHeapObject(_heapaddy)
+									_chunkobj = _hi[3]
+									if _chunkobj is None or not hasattr(_chunkobj, "chunkptr"):
+										_chunkobj = _mheap.findChunk(addy)
+							if _mheap is not None and _chunkobj is not None and hasattr(_chunkobj, "chunkptr"):
+								_heapShowChunkView(_mheap, _chunkobj, addr=addy, data_mode="none", logfile=logfile, loghandle=thislog, heading_offset=1)
+						except Exception as _e:
+							mndbg.dbgp("dumpObjectAtLocation: mona chunk view failed: %s" % str(_e), errormode=False)
+						self.printObjDump(dumpdata,logfile,thislog,size,parent,[])
 	
 						for loc in dumpdata:
 							thisdata = dumpdata[loc]
@@ -26319,73 +26376,166 @@ class MnPointer:
 		# 2 = string type
 		# 3 = content
 		sortedkeys = sorted(dumpdata)
-		if len(sortedkeys) > 0:
-			startaddy = sortedkeys[0]
-			sizem = ""
-			parentinfo = ""
-			if size > 0:
-				sizem = " (0x%02x bytes)" % size
-			logfile.write("",thislog)
+		if len(sortedkeys) == 0:
+			return
+		startaddy = sortedkeys[0]
+		sizem = " (0x%02x bytes)" % size if size > 0 else ""
+		is_md = _isMarkdownLogPath(thislog)
 
-			if parent == "":
-				logfile.write("=" * 60,thislog)
+		# Build the fixed-width table (Offset / Address / Contents / Info) once. The console and
+		# a plain-text log show it verbatim; a .md log shows the SAME block inside a ```text fence
+		# under a "## Object at" heading -- the Info column carries ' | ' separators and column
+		# alignment that don't survive a markdown table, exactly like the heap chunk-view hexdump
+		# (see _chunkViewToMarkdown), so we render it verbatim rather than as a pipe table.
+		hdr1 = "Offset  Address      Contents    Info"
+		hdr2 = "------  -------      --------    -----"
+		if arch == 64:
+			hdr1 = "Offset  Address              Contents            Info"
+			hdr2 = "------  -------              --------            -----"
+		tablelines = [hdr1, hdr2]
+		offset = 0
+		for loc in sortedkeys:
+			info = dumpdata[loc]
+			if len(info) > 1:
+				content = info[3] if len(info) > 3 else ""
+				contentinfo = toAsciiOnly(info[1])
+				offsetstr = toSize("%02x" % offset,4)
+				tablelines.append("+%s   %s | %s  %s" % (offsetstr,_ptrUpper(loc),content.upper(),contentinfo))
+				offset += archValue(4,8)
 
-			line = ">> Object at %s%s:" % ((PTR_PRINT % startaddy),sizem)
-			if not g_silent:
-				dbg.log("")
-				dbg.log(line)
-			
-			logfile.write(line,thislog)
-
+		# ----- console: unchanged plain fixed-width -----
+		if not g_silent:
+			dbg.log("")
+			dbg.log(">> Object at %s%s:" % (_ptrUpper(startaddy),sizem))
 			if parent != "":
-				line = "   %s" % parent
-				if not g_silent:
-					dbg.log(line)
-				logfile.write(line,thislog)
+				dbg.log("   %s" % parent)
+			for tl in tablelines:
+				dbg.log(tl)
+			dbg.log("")
 
-			line = "Offset  Address      Contents    Info"
-			if arch == 64:
-				line = "Offset  Address              Contents            Info"
-			logfile.write(line,thislog)
-			if not g_silent:
-				dbg.log(line)
-			line = "------  -------      --------    -----"
-			if arch == 64:
-				line = "------  -------              --------            -----"
-			logfile.write(line,thislog)
-			if not g_silent:
-				dbg.log(line)
+		# ----- log file -----
+		if is_md:
+			logfile.write("", thislog)
+			logfile.write("### Content", thislog)
+			logfile.write("", thislog)
+			if parent != "":
+				logfile.write("_%s_" % parent, thislog)
+			_writeMarkdownTextFenceStart(logfile, thislog)
+			for tl in tablelines:
+				logfile.write(tl, thislog)
+			_writeMarkdownTextFenceEnd(logfile, thislog)
+		else:
+			logfile.write("", thislog)
+			if parent == "":
+				logfile.write("=" * 60, thislog)
+			logfile.write(">> Object at %s%s:" % (_ptrUpper(startaddy), sizem), thislog)
+			if parent != "":
+				logfile.write("   %s" % parent, thislog)
+			for tl in tablelines:
+				logfile.write(tl, thislog)
 
-			offset = 0
-			
-			for loc in sortedkeys:
-				info = dumpdata[loc]
-				if len(info) > 1:
-					content = ""
-					if len(info) > 3:
-						content = info[3]
-					contentinfo = toAsciiOnly(info[1])
-					offsetstr = toSize("%02x" % offset,4)
-					line = "+%s   %s | %s  %s" % (offsetstr,(PTR_PRINT % loc),content,contentinfo)
-					if not g_silent:
-						dbg.log(line)
-					logfile.write(line,thislog)
-					offset += archValue(4,8)
-			if len(sortedkeys) > 0:
-				dbg.log("")
-			
-			for heapdataline in heapdata:
-				logfile.write(heapdataline, thislog)
+		for heapdataline in heapdata:
+			logfile.write(heapdataline, thislog)
+			if not g_silent:
 				dbg.log(heapdataline)
 		return
 
 
 	def getLocInfo(self,loc,addy,startaddy,endaddy,gate_dps=False):
 		locinfo = []
+		def _hlabel(_heapaddy, _chunkobj):
+			if _chunkobj is not None and hasattr(_chunkobj, "usersize"):
+				_cont = {ChunkParent.SEGMENT: "BEA", ChunkParent.LFH: "LFH", ChunkParent.VADBLOCK: "VABlock"}.get(getattr(_chunkobj, "parent", ChunkParent.SEGMENT), "BEA")
+				if "virtall" in getHeapFlag(getattr(_chunkobj, "flag", 0)).lower():
+					_st = "Busy-Internal"
+				else:
+					try:
+						_st = "Free" if _chunkobj.getState() == ChunkState.FREE else "Busy"
+					except Exception:
+						_st = "Busy"
+				return "Size 0x%x | %s | %s" % (_chunkobj.usersize, _cont, _st)
+			if _heapaddy:
+				return "Heap 0x%x (chunk metadata unavailable)" % _heapaddy
+			return "Heap"
+		def _xp(_e):
+			return (_e + " | ") if _e else ""
+		def _resolveHeap():
+			try:
+				for _h in mnproc.getPEB().getHeaps():
+					_c = _h.chunkForAddress(addy)
+					if _c is not None:
+						return _h.heapbase, _c
+			except Exception:
+				pass
+			try:
+				for _h in mnproc.getPEB().getHeaps():
+					if _h.ownsAddress(addy):
+						return _h.heapbase, None
+			except Exception:
+				pass
+			return 0, None
+
+		def _adjLabel():
+			# When addy lands in the chunk immediately before/after the current object's chunk
+			# *within the same parent container*, return "ptr to next/prev+0xNN" (offset from the
+			# neighbour's userptr), else None. Uses the parent's own chunk ordering (segment chunk
+			# list / LFH subsegment blocks) -- the same next/prev the chunk-view Neighbours table
+			# shows -- rather than raw address arithmetic.
+			try:
+				_cur = None
+				for _h in mnproc.getPEB().getHeaps():
+					_c = _h.chunkForAddress(startaddy)
+					if _c is not None:
+						_cur = _c
+						break
+				if _cur is None:
+					return None
+				_par = getattr(_cur, "parent_ref", None)
+				if _par is None:
+					return None
+				_pkind = getattr(_cur, "parent", ChunkParent.SEGMENT)
+				_ordered = None
+				if _pkind == ChunkParent.SEGMENT and hasattr(_par, "getChunks"):
+					_d = _par.getChunks()
+					if isinstance(_d, dict):
+						_ordered = [_d[k] for k in sorted(_d.keys())]
+				elif _pkind == ChunkParent.LFH and hasattr(_par, "getUserBlock"):
+					_ub = _par.getUserBlock()
+					if _ub is not None and hasattr(_ub, "getBlocks"):
+						_ordered = sorted(_ub.getBlocks(), key=lambda c: c.chunkptr)
+				if not _ordered:
+					return None
+				_idx = None
+				for _i, _oc in enumerate(_ordered):
+					if _oc.chunkptr == _cur.chunkptr:
+						_idx = _i
+						break
+				if _idx is None:
+					return None
+				_neighbours = []
+				if _idx > 0:
+					_neighbours.append(("prev", _ordered[_idx - 1]))
+				if _idx < len(_ordered) - 1:
+					_neighbours.append(("next", _ordered[_idx + 1]))
+				for _rel, _nb in _neighbours:
+					if _nb is None or not hasattr(_nb, "userptr"):
+						continue
+					_nb_end = _nb.chunkptr + _nb.size * HEAPGRANULARITY
+					if _nb.chunkptr <= addy < _nb_end:
+						_off = addy - _nb.userptr
+						if _off == 0:
+							return "ptr to %s" % _rel
+						if _off > 0:
+							return "ptr to %s+%s" % (_rel, PTR_PRINT % _off)
+						return "ptr to %s-%s" % (_rel, PTR_PRINT % (-_off))
+				return None
+			except Exception:
+				return None
 
 		if addy >= startaddy and addy <= endaddy:
 			offset = addy - startaddy
-			locinfo = ["self","ptr to self+%s" % (PTR_PRINT % offset),""]
+			selflabel = "ptr to self" if offset == 0 else "ptr to self+%s" % (PTR_PRINT % offset)
+			locinfo = ["self",selflabel,""]
 			return locinfo
 
 		fill = MnChunk.getFillPattern(addy)
@@ -26396,55 +26546,38 @@ class MnPointer:
 		ismapped = False
 
 		extra = ""
+		_heap_target = False
 		ptrx = MnPointer(addy)
 
-		memloc = ptrx.memLocation()
+		# Fast reject for object dumps: getLocInfo runs once per pointer-sized slot and a
+		# typical object is mostly nulls / non-pointers. When the memory map proves the value
+		# is not a readable address, `dps` can only return the "??" sentinel AND memLocation()
+		# can only return "??" (modules, thread stacks and committed heap chunks are all
+		# readable), so skip BOTH the debugger round-trip AND memLocation()'s module + stack +
+		# heap/segment triple-scan. A non-readable value can still be a string literal in its
+		# own bytes -- the ptr-is-a-string checks further down handle that without memLocation.
+		# Computed once here (only when the caller opts in via gate_dps) and reused by the dps
+		# gate below, so legacy callers (gate_dps off) keep the exact old behaviour.
+		_readable = _dpsReadableCached(addy) if gate_dps else True
+
+		memloc = ptrx.memLocation() if _readable else "??"
 		if not "??" in memloc:
 			if "Stack" in memloc:
-				extra = "(%s) " % memloc
+				extra = "(%s)" % memloc
 			elif "Heap" in memloc:
 				# get the chunk size and state. Populate the info if needed
-				chunkinfo = ""
-				heapinfo = ptrx.getHeapInfo()
-				heapaddy = heapinfo[0]
-				chunkobj = heapinfo[3]
-				flag_txt = ""
-				if chunkobj is not None and hasattr(chunkobj, "flag"):
-					flag = chunkobj.flag
-					flag_txt = getHeapFlag(flag)
-					mndbg.dbgp("flags: %s" % flag_txt)
-
-				if not heapaddy == None:
-					if heapaddy > 0 and chunkobj is not None and hasattr(chunkobj, "chunkptr") and hasattr(chunkobj, "usersize"):
-						chunkaddy = chunkobj.chunkptr
-						size = chunkobj.usersize
-						state = flag_txt
-						chunkinfo = " UserSize 0x%x (%s) " % (size, state)
-					elif heapaddy > 0:
-						mndbg.dbgp("getLocInfo: heap pointer %s at location %s reported heapbase=%s but chunk metadata is unavailable (heapinfo=%s, object range=%s-%s)" % (
-							PTR_PRINT % addy,
-							PTR_PRINT % loc,
-							PTR_PRINT % heapaddy,
-							str(heapinfo),
-							PTR_PRINT % startaddy,
-							PTR_PRINT % endaddy
-						), errormode=False)
-						chunkinfo = " Heap address 0x%x (chunk metadata unavailable) " % heapaddy
-
-				memloctxt = clickChunkPtr(addy, displaytext = "Heap")
-				extra = "(%s)%s " % (memloctxt, chunkinfo)
+				heapaddy, chunkobj = _resolveHeap()
+				extra = _hlabel(heapaddy, chunkobj)
 			else:
 				detailmemloc = ptrx.getPtrFunction()
-				extra = " (%s.%s)" % (memloc,detailmemloc)
+				extra = "(%s.%s)" % (memloc,detailmemloc)
 
 		# maybe it's a pointer to an object ?
-		# gate_dps: heap dumps call getLocInfo once per pointer-sized slot (up to ~131k
-		# times for a 1MB chunk). The `dps` below is a heavy debugger round-trip, but for
-		# any word that does not point into committed/readable memory it returns "??" --
-		# which every branch here already treats as "not a pointer". Skip that round-trip
-		# when the memory map proves the target is unmapped, substituting the identical
-		# "??" sentinel so downstream output is byte-for-byte unchanged.
-		if gate_dps and not _dpsReadableCached(addy):
+		# Reuse the _readable verdict from above: an unreadable target yields the "??" sentinel
+		# every branch below already treats as "not a pointer", so we skip the heavy `dps`
+		# round-trip while keeping output byte-for-byte identical. (gate_dps off forces
+		# _readable True, so the dps always runs for legacy callers.)
+		if not _readable:
 			output = "??"
 		else:
 			cmd2run = "dps %s L 1" % (PTR_PRINT % addy)
@@ -26453,13 +26586,19 @@ class MnPointer:
 		if len(outputlines) > 0:
 			if not "??" in outputlines[0]:
 				ismapped = True
+				if extra == "":
+					_hb, _co2 = _resolveHeap()
+					extra = _hlabel(_hb, _co2) if _hb else "(mapped)"
+					_heap_target = bool(_hb)
 				ptraddy = outputlines[0][archValue(10,19):archValue(18,36)].replace("`","")
 				ptrinfo = outputlines[0][archValue(19,37):]
 				if ptrinfo.replace(" ","") != "":
+					_adj = _adjLabel()
+					_pp = ("%s (%s)" % (_adj, _ptrUpper(hexStrToInt(ptraddy)))) if _adj else ("ptr to %s" % _ptrUpper(hexStrToInt(ptraddy)))
 					if "vftable" in ptrinfo or "Heap" in memloc:
-						locinfo = ["ptr_obj","%s | ptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
+						locinfo = ["ptr_obj","%s%s : %s" % (_xp(extra),_pp,ptrinfo),str(addy)]
 					else:
-						locinfo = ["ptr","%s | ptr to 0x%08x : %s" % (extra,hexStrToInt(ptraddy),ptrinfo),str(addy)]
+						locinfo = ["ptr","%s%s : %s" % (_xp(extra),_pp,ptrinfo),str(addy)]
 					return locinfo
 
 		if ismapped:
@@ -26471,7 +26610,7 @@ class MnPointer:
 					datastr = strdata
 					if len(strdata) > 80:
 						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to ASCII (0x%02x) '%s'" % (extra,len(strdata),datastr),"ascii"]
+					locinfo = ["ptr_str","%sptr to ASCII (0x%02x) '%s'" % (_xp(extra),len(strdata),datastr),"ascii"]
 					return locinfo
 			except:
 				pass
@@ -26483,16 +26622,18 @@ class MnPointer:
 					datastr = strdata
 					if len(strdata) > 80:
 						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to UNICODE (0x%02x) '%s'" % (extra,len(strdata),datastr),"unicode"]
+					locinfo = ["ptr_str","%sptr to UNICODE (0x%02x) '%s'" % (_xp(extra),len(strdata),datastr),"unicode"]
 					return locinfo
 			except:
 				pass
 
 			# maybe the pointer points into a function ?
-			ptrf = ptrx.getPtrFunction()
-			if not ptrf == "":
-				locinfo = ["ptr_func","%sptr to %s" % (extra,ptrf),str(addy)]
-				return locinfo
+			# Skip for heap/stack targets
+			if not (_heap_target or "Heap" in memloc or "Stack" in memloc):
+				ptrf = ptrx.getPtrFunction()
+				if not ptrf == "":
+					locinfo = ["ptr_func","%sptr to %s" % (_xp(extra),ptrf),str(addy)]
+					return locinfo
 
 
 			# BSTR Unicode ?
@@ -26503,7 +26644,7 @@ class MnPointer:
 					datastr = strdata
 					if len(strdata) > 80:
 						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to BSTR UNICODE (0x%02x) '%s'" % (extra,bstr,datastr),"unicode"]
+					locinfo = ["ptr_str","%sptr to BSTR UNICODE (0x%02x) '%s'" % (_xp(extra),bstr,datastr),"unicode"]
 					return locinfo
 			except:
 				pass
@@ -26516,7 +26657,7 @@ class MnPointer:
 					datastr = strdata
 					if len(strdata) > 80:
 						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to BSTR ASCII (0x%02x) '%s'" % (extra,bstr,datastr),"ascii"]
+					locinfo = ["ptr_str","%sptr to BSTR ASCII (0x%02x) '%s'" % (_xp(extra),bstr,datastr),"ascii"]
 					return locinfo
 			except:
 				pass
@@ -26557,8 +26698,9 @@ class MnPointer:
 		if "Heap" in memloc:
 			if not "??" in outputlines[0]:
 				ismapped = True
-				ptraddy = outputlines[0][archValue(10,19):archValue(18,36)]
-				locinfo = ["ptr_obj","%sptr to 0%s" % (extra,(PTR_PRINT % hexStrToInt(ptraddy))),str(addy)]
+				_adj = _adjLabel()
+				_ann = extra if _adj is None else "%s%s (%s)" % (_xp(extra), _adj, _ptrUpper(addy))
+				locinfo = ["ptr_obj", _ann, str(addy)]
 				return locinfo
 
 		# nothing special to report
@@ -30403,7 +30545,6 @@ def doesForwardDisasmMatch(parsed, first_pattern_flat, thisdisam):
 			return False, []
 
 	pos = len(first_pattern)
-
 	def instructionMatches(pattern_instr, disasm_instr):
 		p = normalizeInstructionText(pattern_instr)
 		d = normalizeInstructionText(disasm_instr)
@@ -48672,7 +48813,7 @@ def _renderDataSection(chunk, mHeap, max_bytes=0x200):
 	return lines
 
 
-def _chunkViewToMarkdown(lines, logfile, loghandle):
+def _chunkViewToMarkdown(lines, logfile, loghandle, heading_offset=0):
 	"""Write the chunk-view render lines to a .md log as styled markdown.
 
 	The render functions emit fixed-width console lines; here we classify each and produce:
@@ -48712,13 +48853,13 @@ def _chunkViewToMarkdown(lines, logfile, loghandle):
 		m = sec_re.match(line)
 		if m:
 			_flush_pre()
-			logfile.write("### %s" % m.group(1).strip(), loghandle)
+			logfile.write("%s %s" % ("#" * (3 + heading_offset), m.group(1).strip()), loghandle)
 			logfile.write("", loghandle)
 			continue
 		m = sub_re.match(line)
 		if m:
 			_flush_pre()
-			logfile.write("#### %s" % m.group(1).strip(), loghandle)
+			logfile.write("%s %s" % ("#" * (4 + heading_offset), m.group(1).strip()), loghandle)
 			logfile.write("", loghandle)
 			continue
 		m = kv_re.match(line)
@@ -48736,7 +48877,7 @@ def _chunkViewToMarkdown(lines, logfile, loghandle):
 
 
 def _heapShowChunkView(mHeap, chunk, addr=None, data_mode="none", find=None, neighbour_count=1,
-                       logfile=None, loghandle=None):
+                       logfile=None, loghandle=None, heading_offset=0):
 	"""Main orchestrator: render the chunk view (Chunk Details + Parent Details + [ Data ] + [ Content ]).
 
 	data_mode controls the [ Data ] section (the -a verbosity tiers):
@@ -48756,8 +48897,8 @@ def _heapShowChunkView(mHeap, chunk, addr=None, data_mode="none", find=None, nei
 	# File: a ## heading for the chunk, then styled markdown for the detail/parent sections
 	# (headings + bullet key/values) with only the columnar tables/hexdump fenced verbatim.
 	if logfile and loghandle:
-		logfile.write("## Chunk @ %s (heap %s)%s" % (
-			_ptrUpper(chunk.chunkptr), _ptrUpper(chunk.heapbase), query_str), loghandle)
+		logfile.write("%s Chunk @ %s (heap %s)%s" % (
+			"#" * (2 + heading_offset), _ptrUpper(chunk.chunkptr), _ptrUpper(chunk.heapbase), query_str), loghandle)
 		logfile.write("", loghandle)
 
 	chunk_details = _renderChunkDetailsTable(chunk)
@@ -48797,7 +48938,7 @@ def _heapShowChunkView(mHeap, chunk, addr=None, data_mode="none", find=None, nei
 			data_full = data_console
 		else:
 			data_full = _renderDataSection(chunk, mHeap, max_bytes=None)
-		_chunkViewToMarkdown(chunk_details + parent_details + data_full + content, logfile, loghandle)
+		_chunkViewToMarkdown(chunk_details + parent_details + data_full + content, logfile, loghandle, heading_offset=heading_offset)
 
 	if find is not None:
 		needle, _is_int, _ival = _heapBuildNeedle(find)
@@ -49576,6 +49717,11 @@ def procHeap(args):
 		if subcmd is None and not want_all_dump:
 			subcmd = "chunks"
 
+	# ---- bare -find <pattern> (no subcommand) is a heap-wide search (alias for -search); when a
+	#      subcommand IS present (e.g. -chunks -a .. -find ..) -find stays the per-chunk modifier ----
+	if subcmd is None and not want_all_dump and "find" in args:
+		subcmd = "search"
+
 	# ---- -p parent (for -chunks): singular names (freelist|vablock|lfh|segment); plural also accepted ----
 	parent = None
 	if "p" in args and type(args["p"]).__name__.lower() != "bool":
@@ -49798,10 +49944,16 @@ def procHeap(args):
 								logfile=logfile_l, loghandle=thislog_l)
 
 		if subcmd == "search":
-			if "s" not in args or type(args["s"]).__name__.lower() == "bool":
-				dbg.log("Please specify a search pattern with -s <hex value | string>", highlight=1)
+			# Pattern may come from -find <pat>, -s <pat>, or -search <pat> -- all equivalent.
+			_pat = None
+			for _k in ("find", "s", "search"):
+				if _k in args and type(args[_k]).__name__.lower() != "bool":
+					_pat = args[_k]
+					break
+			if _pat is None:
+				dbg.log("Please specify a search pattern with -find <hex value | string> (or -s / -search)", highlight=1)
 			else:
-				_heapShowSearch(mHeap, args["s"], parent_filter=search_parent,
+				_heapShowSearch(mHeap, _pat, parent_filter=search_parent,
 				                offset_filter=search_offset, busy_only=search_busy,
 				                logfile=logfile_b, loghandle=thislog_b)
 
@@ -51798,25 +51950,57 @@ def procDumpLog(args):
 		dbg.log("[+] Dumping objects")
 		logfile = MnLog("dump_alloc_free.md")
 		thislog = logfile.reset()
-		logfile.write("Addresses to dump:", thislog)
+		is_md = _isMarkdownLogPath(thislog)
 		allocsizegroups = {}
 		allocsizes = []
 		for addy in logdata:
-			logfile.write("%s (%s)" % (addy, logdata[addy]), thislog)
 			allocsize = getHeapAllocSize(logdata[addy], HEAPGRANULARITY)
-			if not allocsize in allocsizegroups:
-				allocsizegroups[allocsize] = [addy]
-			else:
-				allocsizegroups[allocsize].append(addy)
-			if not allocsize in allocsizes:
+			allocsizegroups.setdefault(allocsize, []).append(addy)
+			if allocsize not in allocsizes:
 				allocsizes.append(allocsize)
-		logfile.write("", thislog);
-		logfile.write("(Allocated) Size groups, heap granularity %d bytes" % HEAPGRANULARITY, thislog)
 		allocsizes.sort()
-		for allocsize in allocsizes:
-			logfile.write("Size 0x%02x" % allocsize, thislog)
-			for allocsizeaddy in allocsizegroups[allocsize]:
-				logfile.write("  %s (%s)" % (allocsizeaddy, logdata[allocsizeaddy]), thislog)
+
+		def _md_table(headers, rows):
+			widths = [len(h) for h in headers]
+			for r in rows:
+				for i in range(len(headers)):
+					if len(r[i]) > widths[i]:
+						widths[i] = len(r[i])
+			def _row(cells):
+				return "| " + " | ".join(cells[i].ljust(widths[i]) for i in range(len(headers))) + " |"
+			out = [_row(headers), "| " + " | ".join("-" * widths[i] for i in range(len(headers))) + " |"]
+			for r in rows:
+				out.append(_row(r))
+			return out
+
+		if is_md:
+			logfile.write("## Addresses to dump", thislog)
+			logfile.write("", thislog)
+			for _l in _md_table(["Address", "Size"],
+			                    [(_ptrUpper(int(a, 16)), str(logdata[a])) for a in logdata]):
+				logfile.write(_l, thislog)
+			logfile.write("", thislog)
+			logfile.write("## Size groups", thislog)
+			logfile.write("", thislog)
+			logfile.write("Allocated size groups, heap granularity %d bytes." % HEAPGRANULARITY, thislog)
+			logfile.write("", thislog)
+			_grp_rows = []
+			for allocsize in allocsizes:
+				for a in allocsizegroups[allocsize]:
+					_grp_rows.append(("0x%02x" % allocsize, _ptrUpper(int(a, 16)), str(logdata[a])))
+			for _l in _md_table(["Alloc Size", "Address", "Size"], _grp_rows):
+				logfile.write(_l, thislog)
+			logfile.write("", thislog)
+		else:
+			logfile.write("Addresses to dump:", thislog)
+			for a in logdata:
+				logfile.write("%s (%s)" % (_ptrUpper(int(a, 16)), logdata[a]), thislog)
+			logfile.write("", thislog)
+			logfile.write("(Allocated) Size groups, heap granularity %d bytes" % HEAPGRANULARITY, thislog)
+			for allocsize in allocsizes:
+				logfile.write("Size 0x%02x" % allocsize, thislog)
+				for a in allocsizegroups[allocsize]:
+					logfile.write("  %s (%s)" % (_ptrUpper(int(a, 16)), logdata[a]), thislog)
 			
 		maxnr = len(logdata)
 		curnr = 1
@@ -54136,7 +54320,8 @@ Optional arguments:
              -a <addr> -all        + full [ Data ] (remove the 0x200 cap) + [ Content ]
              -a <addr> -find <pat> search pattern in this chunk's data
              -a <addr> -n <R>      chunk +/-R neighbours (default 2)
-  !mona heap -search <pattern>     heap-wide: every chunk whose data contains <pattern>
+  !mona heap -find <pattern>       heap-wide: every chunk whose data contains <pattern>
+             (-search is an alias; pattern may be given as -find <pat>, -s <pat> or -search <pat>)
              -p {lfh|segment|vablock}   restrict to one parent type
              -offset <n>           only match at this byte offset
              -free                 include free chunks (default: busy only)
