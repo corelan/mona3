@@ -691,18 +691,18 @@ class MnDebugger:
 		except Exception:
 			return result
 		result["disasm"] = output
-		if not self.isAddressInOutput(output, address):
+		entries = _parseDisassemblyTextEntries(output, max_entries=1)
+		if not entries:
 			return result
-
-		entries = _parseDisassemblyTextEntries(output)
 		function_start = entries[0].get("address", 0)
 		if not isinstance(function_start, self._integerTypes()) or function_start <= 0:
+			return result
+		if function_start > address or (address - function_start) > 0x20000:
 			return result
 
 		result["found"] = True
 		result["start"] = function_start
-		if address >= function_start:
-			result["offset"] = "0x%x" % (address - function_start)
+		result["offset"] = "0x%x" % (address - function_start)
 
 		try:
 			fname, foffset = getFunctionName(function_start)
@@ -3016,9 +3016,9 @@ def collectAICurrentFunctionContext(address, follow_depth=1, forward_only_from_a
 		active_keys.discard(cache_key)
 
 
-def _parseDisassemblyTextEntries(disasm_text):
+def _parseDisassemblyTextEntries(disasm_text, max_entries=None):
 	"""Parse AI-related data for parse disassembly text entries.
-	Args: disasm_text.
+	Args: disasm_text, max_entries (stop after this many instruction entries; None = all).
 	Returns: the requested value or structured result.
 	"""
 	mndbg.dbgp(get_current_function_name())
@@ -3052,6 +3052,8 @@ def _parseDisassemblyTextEntries(disasm_text):
 			("instruction", instruction),
 			("raw_line", raw_line.rstrip())
 		]))
+		if max_entries is not None and len(entries) >= max_entries:
+			break
 	return entries
 
 
@@ -26295,6 +26297,7 @@ class MnPointer:
 						outputlines = output.split("\n")
 						offset = 0
 						hdr_off = archValue(0, 8)
+						prev_was_string = False
 						for outputline in outputlines:
 							if not outputline.replace(" ","") == "":
 								loc = outputline[0:archValue(8,17)].replace("`","")
@@ -26312,12 +26315,13 @@ class MnPointer:
 									dumpdata[loc_int] = info
 								elif not "??" in content and symbol.replace(" ","") == "":
 									contentaddy = hexStrToInt(content)
-									info = self.getLocInfo(loc_int, contentaddy, startaddy, endaddy, gate_dps=True)
+									info = self.getLocInfo(loc_int, contentaddy, startaddy, endaddy, gate_dps=True, prev_was_string=prev_was_string)
 									info.append(content)
 									dumpdata[loc_int] = info
 								else:
 									info = ["", symbol, "", content]
 									dumpdata[loc_int] = info
+								prev_was_string = len(info) > 1 and (info[1].startswith("= UNICODE") or info[1].startswith("= ASCII"))
 						if addy in parentdata:
 							pdata = parentdata[addy]
 							parent = "Referenced at %s (object %s, offset +0x%02x)" % ((PTR_PRINT % pdata[0]),(PTR_PRINT % pdata[1]),pdata[0]-pdata[1])
@@ -26441,7 +26445,7 @@ class MnPointer:
 		return
 
 
-	def getLocInfo(self,loc,addy,startaddy,endaddy,gate_dps=False):
+	def getLocInfo(self,loc,addy,startaddy,endaddy,gate_dps=False,prev_was_string=None):
 		locinfo = []
 		def _hlabel(_heapaddy, _chunkobj):
 			if _chunkobj is not None and hasattr(_chunkobj, "usersize"):
@@ -26544,167 +26548,148 @@ class MnPointer:
 			return locinfo
 			
 		ismapped = False
-
 		extra = ""
 		_heap_target = False
 		ptrx = MnPointer(addy)
 
-		# Fast reject for object dumps: getLocInfo runs once per pointer-sized slot and a
-		# typical object is mostly nulls / non-pointers. When the memory map proves the value
-		# is not a readable address, `dps` can only return the "??" sentinel AND memLocation()
-		# can only return "??" (modules, thread stacks and committed heap chunks are all
-		# readable), so skip BOTH the debugger round-trip AND memLocation()'s module + stack +
-		# heap/segment triple-scan. A non-readable value can still be a string literal in its
-		# own bytes -- the ptr-is-a-string checks further down handle that without memLocation.
-		# Computed once here (only when the caller opts in via gate_dps) and reused by the dps
-		# gate below, so legacy callers (gate_dps off) keep the exact old behaviour.
-		_readable = _dpsReadableCached(addy) if gate_dps else True
+		# A slot value can carry SEVERAL valid readings at once (its own bytes may spell a string
+		# AND the same value may be a live heap/stack/module address). Collect every applicable
+		# reading -- strings first, then pointer target, then location -- and join them with
+		# " |OR| " instead of returning at the first match, so no interpretation hides another.
+		parts = []
+		loctype = ""   # locinfo[0]: "ptr_obj" when addy is a followable object/heap pointer
+		strtype = ""   # locinfo[2]
 
+		# ---- 1) the value's OWN bytes read as a string. Only surfaced when this is the object's
+		# first slot, or the previous slot was itself a string (a string "run") -- so a value that
+		# merely *looks* like text amid pointer/data fields isn't mislabelled. prev_was_string is
+		# None when a caller opts out of the run gate (then the reading is always shown). ----
+		is_first = (loc == startaddy)
+		show_value_string = (prev_was_string is None) or is_first or bool(prev_was_string)
+		b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
+		if arch == 32:
+			b1,b2,b3,b4 = splitAddress(addy)
+		else:
+			b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
+		if show_value_string and ptrx.isUnicode:
+			ustr = toAscii(toHexByte(b2)) + toAscii(toHexByte(b4))
+			if arch == 64:
+				ustr += toAscii(toHexByte(b6)) + toAscii(toHexByte(b8))
+			if ustr.replace(" ","") != "" and not toHexByte(b2) == "00":
+				parts.append("= UNICODE '%s'" % ustr)
+				strtype = "unicode"
+		if show_value_string and not parts and ptrx.isAsciiPrintable:
+			astr = toAscii(toHexByte(b1)) + toAscii(toHexByte(b2)) + toAscii(toHexByte(b3)) + toAscii(toHexByte(b4))
+			if arch == 64:
+				astr += toAscii(toHexByte(b5)) + toAscii(toHexByte(b6)) + toAscii(toHexByte(b7)) + toAscii(toHexByte(b8))
+			if astr.replace(" ","") != "" and not toHexByte(b1) == "00" and not toHexByte(b2) == "00" and not toHexByte(b3) == "00" and not toHexByte(b4) == "00":
+				if arch != 64 or (not toHexByte(b5) == "00" and not toHexByte(b6) == "00" and not toHexByte(b7) == "00" and not toHexByte(b8) == "00"):
+					parts.append("= ASCII '%s'" % astr)
+					strtype = "ascii"
+
+		# ---- 2) where the value lives: (Stack) / (Heap) chunk-info / (module.func) ----
+		_readable = _dpsReadableCached(addy) if gate_dps else True
 		memloc = ptrx.memLocation() if _readable else "??"
 		if not "??" in memloc:
 			if "Stack" in memloc:
-				extra = "(%s)" % memloc
+				extra = "(Stack)"
 			elif "Heap" in memloc:
-				# get the chunk size and state. Populate the info if needed
 				heapaddy, chunkobj = _resolveHeap()
-				extra = _hlabel(heapaddy, chunkobj)
+				extra = "(Heap) %s" % _hlabel(heapaddy, chunkobj)
+				_heap_target = True
 			else:
 				detailmemloc = ptrx.getPtrFunction()
-				extra = "(%s.%s)" % (memloc,detailmemloc)
+				extra = "(%s.%s)" % (memloc, detailmemloc)
 
-		# maybe it's a pointer to an object ?
-		# Reuse the _readable verdict from above: an unreadable target yields the "??" sentinel
-		# every branch below already treats as "not a pointer", so we skip the heavy `dps`
-		# round-trip while keeping output byte-for-byte identical. (gate_dps off forces
-		# _readable True, so the dps always runs for legacy callers.)
+		# ---- 3) what the value points to (dps symbol, then string / func / BSTR reads) ----
 		if not _readable:
 			output = "??"
 		else:
-			cmd2run = "dps %s L 1" % (PTR_PRINT % addy)
-			output = dbg.nativeCommand(cmd2run)
+			output = dbg.nativeCommand("dps %s L 1" % (PTR_PRINT % addy))
 		outputlines = output.split("\n")
-		if len(outputlines) > 0:
-			if not "??" in outputlines[0]:
-				ismapped = True
-				if extra == "":
-					_hb, _co2 = _resolveHeap()
-					extra = _hlabel(_hb, _co2) if _hb else "(mapped)"
-					_heap_target = bool(_hb)
-				ptraddy = outputlines[0][archValue(10,19):archValue(18,36)].replace("`","")
-				ptrinfo = outputlines[0][archValue(19,37):]
-				if ptrinfo.replace(" ","") != "":
-					_adj = _adjLabel()
-					_pp = ("%s (%s)" % (_adj, _ptrUpper(hexStrToInt(ptraddy)))) if _adj else ("ptr to %s" % _ptrUpper(hexStrToInt(ptraddy)))
-					if "vftable" in ptrinfo or "Heap" in memloc:
-						locinfo = ["ptr_obj","%s%s : %s" % (_xp(extra),_pp,ptrinfo),str(addy)]
-					else:
-						locinfo = ["ptr","%s%s : %s" % (_xp(extra),_pp,ptrinfo),str(addy)]
-					return locinfo
-
-		if ismapped:
-
-			# pointer to a string ?
+		target = ""
+		if len(outputlines) > 0 and not "??" in outputlines[0]:
+			ismapped = True
+			if extra == "":
+				_hb, _co2 = _resolveHeap()
+				if _hb:
+					extra = "(Heap) %s" % _hlabel(_hb, _co2)
+					_heap_target = True
+				else:
+					extra = "(mapped)"
+			ptraddy = outputlines[0][archValue(10,19):archValue(18,36)].replace("`","")
+			ptrinfo = outputlines[0][archValue(19,37):]
+			if ptrinfo.replace(" ","") != "":
+				_adj = _adjLabel()
+				_pp = ("%s (%s)" % (_adj, _ptrUpper(hexStrToInt(ptraddy)))) if _adj else ("ptr to %s" % _ptrUpper(hexStrToInt(ptraddy)))
+				target = "%s : %s" % (_pp, ptrinfo)
+				loctype = "ptr_obj" if ("vftable" in ptrinfo or "Heap" in memloc) else "ptr"
+		if ismapped and target == "":
 			try:
 				strdata = dbg.readString(addy)
 				if len(strdata) > 2:
-					datastr = strdata
-					if len(strdata) > 80:
-						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to ASCII (0x%02x) '%s'" % (_xp(extra),len(strdata),datastr),"ascii"]
-					return locinfo
+					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+					target = "ptr to ASCII (0x%02x) '%s'" % (len(strdata), datastr)
+					loctype = loctype or "ptr_str"
+					strtype = strtype or "ascii"
 			except:
 				pass
-
-			# maybe it's unicode ?
+		if ismapped and target == "":
 			try:
 				strdata = dbg.readWString(addy)
 				if len(strdata) > 2:
-					datastr = strdata
-					if len(strdata) > 80:
-						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to UNICODE (0x%02x) '%s'" % (_xp(extra),len(strdata),datastr),"unicode"]
-					return locinfo
+					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+					target = "ptr to UNICODE (0x%02x) '%s'" % (len(strdata), datastr)
+					loctype = loctype or "ptr_str"
+					strtype = strtype or "unicode"
 			except:
 				pass
-
-			# maybe the pointer points into a function ?
-			# Skip for heap/stack targets
-			if not (_heap_target or "Heap" in memloc or "Stack" in memloc):
-				ptrf = ptrx.getPtrFunction()
-				if not ptrf == "":
-					locinfo = ["ptr_func","%sptr to %s" % (_xp(extra),ptrf),str(addy)]
-					return locinfo
-
-
-			# BSTR Unicode ?
+		if ismapped and target == "" and not (_heap_target or "Heap" in memloc or "Stack" in memloc):
+			ptrf = ptrx.getPtrFunction()
+			if ptrf != "":
+				target = "ptr to %s" % ptrf
+				loctype = loctype or "ptr_func"
+		if ismapped and target == "":
 			try:
 				bstr = struct.unpack('<L',dbg.readMemory(addy,4))[0]
 				strdata = dbg.readWString(addy+4)
 				if len(strdata) > 2 and (bstr == len(strdata)+1):
-					datastr = strdata
-					if len(strdata) > 80:
-						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to BSTR UNICODE (0x%02x) '%s'" % (_xp(extra),bstr,datastr),"unicode"]
-					return locinfo
+					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+					target = "ptr to BSTR UNICODE (0x%02x) '%s'" % (bstr, datastr)
+					loctype = loctype or "ptr_str"
+					strtype = strtype or "unicode"
 			except:
 				pass
-
-
-			# pointer to a BSTR ASCII?
+		if ismapped and target == "":
 			try:
+				bstr = struct.unpack('<L',dbg.readMemory(addy,4))[0]
 				strdata = dbg.readString(addy+4)
 				if len(strdata) > 2 and (bstr == len(strdata)/2):
-					datastr = strdata
-					if len(strdata) > 80:
-						datastr = strdata[0:80] + "..."
-					locinfo = ["ptr_str","%sptr to BSTR ASCII (0x%02x) '%s'" % (_xp(extra),bstr,datastr),"ascii"]
-					return locinfo
+					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+					target = "ptr to BSTR ASCII (0x%02x) '%s'" % (bstr, datastr)
+					loctype = loctype or "ptr_str"
+					strtype = strtype or "ascii"
 			except:
 				pass
 
+		# ---- 4) a live heap pointer with no other detail: show its adjacent-chunk relation ----
+		if _heap_target and target == "":
+			_adj = _adjLabel()
+			if _adj:
+				target = "%s (%s)" % (_adj, _ptrUpper(addy))
 
-
-		# pointer itself is a string ?
-		
-		if ptrx.isUnicode:
-			b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
-			if arch == 32:
-				b1,b2,b3,b4 = splitAddress(addy)
-			if arch == 64:
-				b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
-			ptrstr = toAscii(toHexByte(b2)) + toAscii(toHexByte(b4))
-			if arch == 64:
-				ptrstr += toAscii(toHexByte(b6)) + toAscii(toHexByte(b8))
-			if ptrstr.replace(" ","") != "" and not toHexByte(b2) == "00":
-				locinfo = ["str","= UNICODE '%s' %s" % (ptrstr,extra),"unicode"]
-				return locinfo
-
-		
-		if ptrx.isAsciiPrintable:
-			b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
-			if arch == 32:
-				b1,b2,b3,b4 = splitAddress(addy)
-			if arch == 64:
-				b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
-			ptrstr = toAscii(toHexByte(b1)) + toAscii(toHexByte(b2)) + toAscii(toHexByte(b3)) + toAscii(toHexByte(b4))
-			if arch == 64:
-				ptrstr += toAscii(toHexByte(b5)) + toAscii(toHexByte(b6)) + toAscii(toHexByte(b7)) + toAscii(toHexByte(b8))
-			if ptrstr.replace(" ","") != "" and not toHexByte(b1) == "00" and not toHexByte(b2) == "00" and not toHexByte(b3) == "00" and not toHexByte(b4) == "00":
-				if arch != 64 or (not toHexByte(b5) == "00" and not toHexByte(b6) == "00" and not toHexByte(b7) == "00" and not toHexByte(b8) == "00"):
-					locinfo = ["str","= ASCII '%s' %s" % (ptrstr,extra),"ascii"]
-					return locinfo
-
-		# pointer to heap ?
-		if "Heap" in memloc:
-			if not "??" in outputlines[0]:
-				ismapped = True
-				_adj = _adjLabel()
-				_ann = extra if _adj is None else "%s%s (%s)" % (_xp(extra), _adj, _ptrUpper(addy))
-				locinfo = ["ptr_obj", _ann, str(addy)]
-				return locinfo
-
-		# nothing special to report
-		return ["","",""]
+		# ---- assemble the location/pointer reading, then combine all interpretations ----
+		if extra and target:
+			parts.append("%s | %s" % (extra, target))
+		elif extra:
+			parts.append(extra)
+		elif target:
+			parts.append(target)
+		if _heap_target and loctype == "":
+			loctype = "ptr_obj"   # a live heap pointer is followable for nested dumps
+		if not parts:
+			return ["", "", ""]
+		return [loctype, " |OR| ".join(parts), strtype]
 
 
 #---------------------------------------#
