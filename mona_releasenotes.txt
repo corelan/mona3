@@ -1,3 +1,22 @@
+[mona 3.0.3032]
+- Update revision (mona: 3032)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/d14e27f">d14e27f</link> Fix VABlock size calculation (#76)
+  - <link cmd="https://github.com/corelan/mona3/commit/4fec9cc">4fec9cc</link> Work on dumpobj and dumplog (#75)
+  - <link cmd="https://github.com/corelan/mona3/commit/23de543">23de543</link> Add new command heap -chunks -extend (#74)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/6b3d5f3">6b3d5f3</link> error handling fix
+  - <link cmd="https://github.com/corelan/mona3/commit/c985a80">c985a80</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5727681">5727681</link> fix error finding modules
+  - <link cmd="https://github.com/corelan/mona3/commit/bc809fc">bc809fc</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5430832">5430832</link> fix findmsp issue inside the ai routine
+  - <link cmd="https://github.com/corelan/mona3/commit/8f8a26c">8f8a26c</link> give mona stacks an output file as well
+  - <link cmd="https://github.com/corelan/mona3/commit/9ab8c54">9ab8c54</link> bugfix in cleanHex
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/69a1b99">69a1b99</link> Update revision (mona: 3031)
+  - <link cmd="https://github.com/corelan/mona3/commit/aa02835">aa02835</link> Update revision (mona: 3030)
+  - <link cmd="https://github.com/corelan/mona3/commit/50ba876">50ba876</link> Update revision (mona: 3029)
+
 [mona 3.0.3031]
 - Update revision (mona: 3031)
 apl3b:
@@ -179,22 +198,6 @@ corelanc0d3r:
 [windbglib 3.0.3012]
 - Update revision (mona: 3022, windbglib: 3012) Refactor use of context variables in mona ai
 - No file-specific commits found.
-
-[mona 3.0.3021]
-- Update revision (mona: 3021, windbglib: 3011) ai q3 prompt and context collection improvements
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/8f668b3">8f668b3</link> use a target map instead of duplicating disasm listings
-  - <link cmd="https://github.com/corelan/mona3/commit/a5f9e81">a5f9e81</link> cache uf in q 3
-  - <link cmd="https://github.com/corelan/mona3/commit/173eeb3">173eeb3</link> Prompt optimization
-  - <link cmd="https://github.com/corelan/mona3/commit/0d3d414">0d3d414</link> update q3 instructions
-  - <link cmd="https://github.com/corelan/mona3/commit/f182736">f182736</link> reduce noise
-  - <link cmd="https://github.com/corelan/mona3/commit/f44396f">f44396f</link> improve performance of q 3 context gathering, and improve prompt
-  - <link cmd="https://github.com/corelan/mona3/commit/904fab1">904fab1</link> update q3 context collection
-  - <link cmd="https://github.com/corelan/mona3/commit/2b05c51">2b05c51</link> update prompt and context gathering
-  - <link cmd="https://github.com/corelan/mona3/commit/0a75bb0">0a75bb0</link> update prompt for q 3
-  - <link cmd="https://github.com/corelan/mona3/commit/199d209">199d209</link> Merge branch 'main' of https://github.com/corelan/mona3
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/e46b736">e46b736</link> Update revision (mona: 3020, windbglib: 3010) implement mona ai -q 3
 
 [windbglib 3.0.3011]
 - Update revision (mona: 3021, windbglib: 3011) ai q3 prompt and context collection improvements
