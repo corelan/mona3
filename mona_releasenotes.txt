@@ -1,3 +1,22 @@
+[mona 3.0.3031]
+- Update revision (mona: 3031)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/4fec9cc">4fec9cc</link> Work on dumpobj and dumplog (#75)
+  - <link cmd="https://github.com/corelan/mona3/commit/23de543">23de543</link> Add new command heap -chunks -extend (#74)
+  - <link cmd="https://github.com/corelan/mona3/commit/f9aff07">f9aff07</link> Chunk view improvement (#72)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/6b3d5f3">6b3d5f3</link> error handling fix
+  - <link cmd="https://github.com/corelan/mona3/commit/c985a80">c985a80</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5727681">5727681</link> fix error finding modules
+  - <link cmd="https://github.com/corelan/mona3/commit/bc809fc">bc809fc</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5430832">5430832</link> fix findmsp issue inside the ai routine
+  - <link cmd="https://github.com/corelan/mona3/commit/8f8a26c">8f8a26c</link> give mona stacks an output file as well
+  - <link cmd="https://github.com/corelan/mona3/commit/9ab8c54">9ab8c54</link> bugfix in cleanHex
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/aa02835">aa02835</link> Update revision (mona: 3030)
+  - <link cmd="https://github.com/corelan/mona3/commit/50ba876">50ba876</link> Update revision (mona: 3029)
+  - <link cmd="https://github.com/corelan/mona3/commit/8f13946">8f13946</link> Update revision - heap improvements (mona: 3028)
+
 [mona 3.0.3030]
 - Update revision (mona: 3030)
 apl3b:
@@ -181,20 +200,6 @@ github-actions[bot]:
 - Update revision (mona: 3021, windbglib: 3011) ai q3 prompt and context collection improvements
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/e46b736">e46b736</link> Update revision (mona: 3020, windbglib: 3010) implement mona ai -q 3
-
-[mona 3.0.3020]
-- Update revision (mona: 3020, windbglib: 3010) implement mona ai -q 3
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/a5ec9f8">a5ec9f8</link> add question profile 3
-  - <link cmd="https://github.com/corelan/mona3/commit/339d58e">339d58e</link> remove duplicate logic
-  - <link cmd="https://github.com/corelan/mona3/commit/2a70dfe">2a70dfe</link> improve address to containing function logic
-  - <link cmd="https://github.com/corelan/mona3/commit/156c9b4">156c9b4</link> improve routine to see if an address is part of a function
-  - <link cmd="https://github.com/corelan/mona3/commit/c41a7ea">c41a7ea</link> remove :
-  - <link cmd="https://github.com/corelan/mona3/commit/ee4a432">ee4a432</link> bugfix
-  - <link cmd="https://github.com/corelan/mona3/commit/b93870d">b93870d</link> oops
-  - <link cmd="https://github.com/corelan/mona3/commit/61ca69f">61ca69f</link> print reminder about mona up
-  - <link cmd="https://github.com/corelan/mona3/commit/6cda492">6cda492</link> improve function analysis in q 2
-  - <link cmd="https://github.com/corelan/mona3/commit/1b5c7d6">1b5c7d6</link> update prompt and context collection for q 2
 
 [windbglib 3.0.3010]
 - Update revision (mona: 3020, windbglib: 3010) implement mona ai -q 3
