@@ -1,3 +1,22 @@
+[mona 3.0.3033]
+- Update revision (mona: 3033)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/2bdb919">2bdb919</link> Attempt multi-interpretation and uf fix (#77)
+  - <link cmd="https://github.com/corelan/mona3/commit/d14e27f">d14e27f</link> Fix VABlock size calculation (#76)
+  - <link cmd="https://github.com/corelan/mona3/commit/4fec9cc">4fec9cc</link> Work on dumpobj and dumplog (#75)
+  - <link cmd="https://github.com/corelan/mona3/commit/23de543">23de543</link> Add new command heap -chunks -extend (#74)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/6b3d5f3">6b3d5f3</link> error handling fix
+  - <link cmd="https://github.com/corelan/mona3/commit/c985a80">c985a80</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5727681">5727681</link> fix error finding modules
+  - <link cmd="https://github.com/corelan/mona3/commit/bc809fc">bc809fc</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5430832">5430832</link> fix findmsp issue inside the ai routine
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/0221ec5">0221ec5</link> Update revision (mona: 3032)
+  - <link cmd="https://github.com/corelan/mona3/commit/69a1b99">69a1b99</link> Update revision (mona: 3031)
+  - <link cmd="https://github.com/corelan/mona3/commit/aa02835">aa02835</link> Update revision (mona: 3030)
+  - <link cmd="https://github.com/corelan/mona3/commit/50ba876">50ba876</link> Update revision (mona: 3029)
+
 [mona 3.0.3032]
 - Update revision (mona: 3032)
 apl3b:
@@ -180,20 +199,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/d59839b">d59839b</link> identify windows 11
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/43c9766">43c9766</link> Update revision (mona: 3022, windbglib: 3012) Refactor use of context variables in mona ai
-
-[mona 3.0.3022]
-- Update revision (mona: 3022, windbglib: 3012) Refactor use of context variables in mona ai
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/b62e9d8">b62e9d8</link> add more info on heap chunk in q 3
-  - <link cmd="https://github.com/corelan/mona3/commit/c16d589">c16d589</link> improve collection of evidence and supporting wider range of variables in q 9
-  - <link cmd="https://github.com/corelan/mona3/commit/1ebf611">1ebf611</link> documentation update
-  - <link cmd="https://github.com/corelan/mona3/commit/ad45bc4">ad45bc4</link> ask for markdown output
-  - <link cmd="https://github.com/corelan/mona3/commit/fb31360">fb31360</link> prompt and caching update
-  - <link cmd="https://github.com/corelan/mona3/commit/4ea363f">4ea363f</link> make dict tables look pretty in output files
-  - <link cmd="https://github.com/corelan/mona3/commit/de93877">de93877</link> fix md formatting issues
-  - <link cmd="https://github.com/corelan/mona3/commit/21d5dd7">21d5dd7</link> fence issue
-  - <link cmd="https://github.com/corelan/mona3/commit/bae43a2">bae43a2</link> format ROP output to md
-  - <link cmd="https://github.com/corelan/mona3/commit/829e6d6">829e6d6</link> improve formatting
 
 [windbglib 3.0.3012]
 - Update revision (mona: 3022, windbglib: 3012) Refactor use of context variables in mona ai
