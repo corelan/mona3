@@ -2306,7 +2306,7 @@ def _collectAdjacentChunkContext(refvalue):
 		hdr_size = archValue(0x8, 0x10)
 		chunk_ptr = vaaddr + busy_off
 		user_ptr = chunk_ptr + hdr_size
-		user_size = vainfo["commit_size"] - busy_off - hdr_size
+		user_size = _vaBlockUserSize(vainfo, busy_off, hdr_size)
 		chunk_size = vainfo["commit_size"] - busy_off
 		info["note"] = "VA blocks are standalone; no adjacent previous/next chunk in segment context"
 		current = OrderedDict()
@@ -45430,7 +45430,7 @@ def _procHeapByAddr(refvalue):
 		hdr_size   = archValue(0x8, 0x10)
 		chunk_ptr  = vaaddr + busy_off
 		user_ptr   = chunk_ptr + hdr_size
-		user_size  = vainfo["commit_size"] - busy_off - hdr_size
+		user_size  = _vaBlockUserSize(vainfo, busy_off, hdr_size)
 		first8     = _read_first8(user_ptr)
 		dbg.log("[+] Address %s is within a VirtualAllocdBlock @ %s  (heap %s)" % (
 			PTR_PRINT % refvalue, PTR_PRINT % vaaddr, PTR_PRINT % mH.heapbase))
@@ -45943,23 +45943,24 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 			for va_addr in sorted(va_blocks.keys()):
 				vi = va_blocks[va_addr]
 				user_ptr = va_addr + busy_off + hdr_size
-				user_size = vi["commit_size"] - busy_off - hdr_size
+				user_size = _vaBlockUserSize(vi, busy_off, hdr_size)
 				rows.append([
 					"%d" % list_order.get(va_addr, 0),
 					_ptrUpper(va_addr),
+					_ptrUpper(va_addr + busy_off),
 					_ptrUpper(user_ptr),
 					"0x%x (%d)" % (user_size, user_size),
 					"0x%x" % vi["commit_size"],
 					"0x%x" % vi["reserve_size"],
 				])
-			headers = ["Index", "VABlock", "UserPtr", "UserSize", "CommitSize", "ReserveSize"]
+			headers = ["Index", "VABlock", "_HEAP_ENTRY", "UserPtr", "UserSize", "CommitSize", "ReserveSize"]
 			widths = [max(len(headers[c]), max(len(r[c]) for r in rows)) for c in range(len(headers))]
 			dbg.log("    " + "   ".join(h.ljust(widths[c]) for c, h in enumerate(headers)))
 			dbg.log("    " + "   ".join(("-" * widths[c]) for c in range(len(headers))))
 			for r in rows:
 				# Pad first (keeps columns aligned), then wrap the UserPtr cell in DML bold.
 				cells = [r[c].ljust(widths[c]) for c in range(len(headers))]
-				cells[2] = "<b>%s</b>" % cells[2]  # UserPtr
+				cells[3] = "<b>%s</b>" % cells[3]  # UserPtr
 				dbg.log("    " + "   ".join(cells))
 	except Exception as e:
 		dbg.log("VABlocks:")
@@ -47071,6 +47072,16 @@ def _heapShowFreeListNeighbours(mHeap, usersize=None, addr=None, radius=2, logfi
 	_heapLog("", logfile, loghandle)
 
 
+def _vaBlockUserSize(vainfo, busy_off, hdr_size):
+	"""VA-block payload size = CommitSize - Slack (matches RtlSizeHeap / native !heap -stat),
+	where Slack is the decoded BusyBlock _HEAP_ENTRY.Size. Falls back to CommitSize minus the
+	fixed header overhead (BusyBlock offset + _HEAP_ENTRY) only when the slack is undecodable."""
+	slack = vainfo.get("slack")
+	if slack is not None:
+		return vainfo["commit_size"] - slack
+	return vainfo["commit_size"] - busy_off - hdr_size
+
+
 def _vaBlockRawHeaderFields(mHeap, chunk_ptr):
 	"""Decode the raw compact _HEAP_ENTRY at *chunk_ptr* into its literal on-disk fields.
 
@@ -47143,7 +47154,7 @@ def _heapShowVABlocks(mHeap, extend=False, addr=None, index=None, usersize=None,
 		# -s : all VA blocks whose UserSize matches the requested size (rounded up to granularity).
 		want = ((usersize + HEAPGRANULARITY - 1) // HEAPGRANULARITY) * HEAPGRANULARITY
 		matched = [va for va in keys
-		           if (va_blocks[va]["commit_size"] - busy_off - hdr_size) == want]
+		           if (_vaBlockUserSize(va_blocks[va], busy_off, hdr_size)) == want]
 		_heapLog("    Filter: UserSize 0x%x (%d) -> %d VABlock%s" % (
 			want, want, len(matched), "" if len(matched) == 1 else "s"),
 			logfile, loghandle, highlight=(len(matched) == 0))
@@ -47153,6 +47164,14 @@ def _heapShowVABlocks(mHeap, extend=False, addr=None, index=None, usersize=None,
 		keys = matched
 	else:
 		_heapLog("    %d VirtualAllocdBlock%s:" % (len(va_blocks), "" if len(va_blocks) == 1 else "s"), logfile, loghandle)
+	for _va in keys:
+		_vi = va_blocks.get(_va, {})
+		_sl = _vi.get("slack")
+		mndbg.dbgp("vablocks: Index=%d VABlock=%s HeapEntry=%s UserPtr=%s Slack=%s CommitSize=0x%x ReserveSize=0x%x" % (
+			list_order.get(_va, 0), PTR_PRINT % _va, PTR_PRINT % (_va + busy_off),
+			PTR_PRINT % (_va + busy_off + hdr_size),
+			("0x%x" % _sl) if _sl is not None else "None",
+			_vi.get("commit_size", 0), _vi.get("reserve_size", 0)), errormode=False)
 	# Flat summary table -- only in the non-extend view. Under -extend we print just the
 	# composed parent(VABlock)/child(Chunk) tree below.
 	if not extend:
@@ -47163,9 +47182,10 @@ def _heapShowVABlocks(mHeap, extend=False, addr=None, index=None, usersize=None,
 			va_info = va_blocks[va_addr]
 			key = _ptrUpper(va_addr)
 			user_ptr = va_addr + busy_off + hdr_size
-			user_size = va_info["commit_size"] - busy_off - hdr_size
+			user_size = _vaBlockUserSize(va_info, busy_off, hdr_size)
 			table_data[key] = [
 				_ptrUpper(va_addr),
+				_ptrUpper(va_addr + busy_off),
 				_ptrUpper(user_ptr),
 				"0x%x (%d)" % (user_size, user_size),
 				"0x%x" % va_info["commit_size"],
@@ -47173,10 +47193,10 @@ def _heapShowVABlocks(mHeap, extend=False, addr=None, index=None, usersize=None,
 			]
 			table_seq.append(key)
 			key_col.append("%d" % list_order.get(va_addr, 0))
-		headers = ["Index", "VABlock", "UserPtr", "UserSize", "CommitSize", "ReserveSize"]
-		types = ["int", "string", "string", "string", "string", "string"]
+		headers = ["Index", "VABlock", "_HEAP_ENTRY", "UserPtr", "UserSize", "CommitSize", "ReserveSize"]
+		types = ["int", "string", "string", "string", "string", "string", "string"]
 		print_dict_table(table_data, headers, types, padding="    ", itemsequence=table_seq,
-		                 key_col=key_col, logobj=logfile, logfile=loghandle, mdstyle=True, bold_col=2)
+		                 key_col=key_col, logobj=logfile, logfile=loghandle, mdstyle=True, bold_col=3)
 
 	if extend:
 		# Per VABlock: its own header+detail table, then an indented child header+detail table
@@ -47187,7 +47207,7 @@ def _heapShowVABlocks(mHeap, extend=False, addr=None, index=None, usersize=None,
 			va_info = va_blocks[va_addr]
 			chunk_ptr = va_addr + busy_off
 			user_ptr = chunk_ptr + hdr_size
-			user_size = va_info["commit_size"] - busy_off - hdr_size
+			user_size = _vaBlockUserSize(va_info, busy_off, hdr_size)
 
 			_heapLog("", logfile, loghandle)
 			# --- VABlock table ---
@@ -47197,6 +47217,7 @@ def _heapShowVABlocks(mHeap, extend=False, addr=None, index=None, usersize=None,
 			slack = va_info.get("slack")
 			va_data = {va_key: [
 				_ptrUpper(va_addr),
+				_ptrUpper(chunk_ptr),
 				_ptrUpper(user_ptr),
 				"0x%x (%d)" % (user_size, user_size),
 				"0x%x" % va_info["commit_size"],
@@ -47204,11 +47225,11 @@ def _heapShowVABlocks(mHeap, extend=False, addr=None, index=None, usersize=None,
 				("0x%x" % slack) if slack is not None else "?",
 			]}
 			print_dict_table(va_data,
-			                 ["Index", "VABlock", "UserPtr", "UserSize", "CommitSize", "ReserveSize", "Slack"],
-			                 ["int", "string", "string", "string", "string", "string", "string"],
+			                 ["Index", "VABlock", "_HEAP_ENTRY", "UserPtr", "UserSize", "CommitSize", "ReserveSize", "Slack"],
+			                 ["int", "string", "string", "string", "string", "string", "string", "string"],
 			                 padding="    ", itemsequence=[va_key],
 			                 key_col=["%d" % list_order.get(va_addr, 0)],
-			                 logobj=logfile, logfile=loghandle, mdstyle=True, bold_col=2)
+			                 logobj=logfile, logfile=loghandle, mdstyle=True, bold_col=3)
 
 			# Blank line between the VABlock detail and the child Chunk table for readability.
 			_heapLog("", logfile, loghandle)
