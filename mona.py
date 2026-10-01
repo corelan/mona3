@@ -26553,6 +26553,13 @@ class MnPointer:
 			except Exception:
 				return None
 
+		def _bstrPrefixLen():
+			# A BSTR stores its byte-length prefix at (pointer - 4); -1 when that dword is unreadable.
+			try:
+				return struct.unpack("<I", _glcCachedRead("bstrlen", addy, lambda: dbg.readMemory(addy - 4, 4)))[0]
+			except Exception:
+				return -1
+
 		if addy >= startaddy and addy <= endaddy:
 			offset = addy - startaddy
 			selflabel = "ptr to self" if offset == 0 else "ptr to self+0x%x" % offset
@@ -26664,7 +26671,11 @@ class MnPointer:
 					strdata = _glcCachedRead("rs", addy, lambda: dbg.readString(addy))
 					if len(strdata) > 2:
 						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-						target = "ptr to ASCII (0x%02x) '%s'" % (len(strdata), datastr)
+						_cb = _bstrPrefixLen()
+						if _cb == len(strdata):
+							target = "ptr to BSTR ASCII (0x%x) '%s'" % (_cb, datastr)
+						else:
+							target = "ptr to ASCII (0x%02x) '%s'" % (len(strdata), datastr)
 						loctype = loctype or "ptr_str"
 						strtype = strtype or "ascii"
 				except:
@@ -26674,7 +26685,11 @@ class MnPointer:
 					strdata = _glcCachedRead("rws", addy, lambda: dbg.readWString(addy))
 					if len(strdata) > 2:
 						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-						target = "ptr to UNICODE (0x%02x) '%s'" % (len(strdata), datastr)
+						_cb = _bstrPrefixLen()
+						if _cb == 2 * len(strdata):
+							target = "ptr to BSTR UNICODE (0x%x) '%s'" % (_cb, datastr)
+						else:
+							target = "ptr to UNICODE (0x%02x) '%s'" % (len(strdata), datastr)
 						loctype = loctype or "ptr_str"
 						strtype = strtype or "unicode"
 				except:
@@ -26684,31 +26699,6 @@ class MnPointer:
 			if ptrf != "":
 				target = "ptr to %s" % ptrf
 				loctype = loctype or "ptr_func"
-		if ismapped and target == "":
-			try:
-				bstr = hexStrToInt(ptraddy) & 0xffffffff
-			except Exception:
-				bstr = 0
-			if 0 < bstr < 0x1000:
-				try:
-					strdata = _glcCachedRead("rws4", addy, lambda: dbg.readWString(addy+4))
-					if len(strdata) > 2 and (bstr == len(strdata)+1):
-						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-						target = "ptr to BSTR UNICODE (0x%02x) '%s'" % (bstr, datastr)
-						loctype = loctype or "ptr_str"
-						strtype = strtype or "unicode"
-				except:
-					pass
-				if target == "":
-					try:
-						strdata = _glcCachedRead("rs4", addy, lambda: dbg.readString(addy+4))
-						if len(strdata) > 2 and (bstr == len(strdata)/2):
-							datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-							target = "ptr to BSTR ASCII (0x%02x) '%s'" % (bstr, datastr)
-							loctype = loctype or "ptr_str"
-							strtype = strtype or "ascii"
-					except:
-						pass
 
 		# ---- 4) a live heap pointer with no other detail: show its adjacent-chunk relation ----
 		if _heap_target and target == "":
