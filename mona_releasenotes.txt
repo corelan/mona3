@@ -1,3 +1,20 @@
+[mona 3.0.3034]
+- Update revision (mona: 3034)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/14034cd">14034cd</link> Improve string awareness, perf improvements (indexing and caching) & mapping (#78)
+  - <link cmd="https://github.com/corelan/mona3/commit/2bdb919">2bdb919</link> Attempt multi-interpretation and uf fix (#77)
+  - <link cmd="https://github.com/corelan/mona3/commit/d14e27f">d14e27f</link> Fix VABlock size calculation (#76)
+  - <link cmd="https://github.com/corelan/mona3/commit/4fec9cc">4fec9cc</link> Work on dumpobj and dumplog (#75)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/6b3d5f3">6b3d5f3</link> error handling fix
+  - <link cmd="https://github.com/corelan/mona3/commit/c985a80">c985a80</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/5727681">5727681</link> fix error finding modules
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/135505e">135505e</link> Update revision (mona: 3033)
+  - <link cmd="https://github.com/corelan/mona3/commit/0221ec5">0221ec5</link> Update revision (mona: 3032)
+  - <link cmd="https://github.com/corelan/mona3/commit/69a1b99">69a1b99</link> Update revision (mona: 3031)
+  - <link cmd="https://github.com/corelan/mona3/commit/aa02835">aa02835</link> Update revision (mona: 3030)
+
 [mona 3.0.3033]
 - Update revision (mona: 3033)
 apl3b:
@@ -177,21 +194,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/b50faa7">b50faa7</link> improve prompt
   - <link cmd="https://github.com/corelan/mona3/commit/7ed1ff0">7ed1ff0</link> verbose logging, stability improvements, better references to already uploaded files
   - <link cmd="https://github.com/corelan/mona3/commit/c739928">c739928</link> reinstate the use of anthropic library, fallback to https. improve support for -upload and susequent use of file ids via -id in mona ai
-
-[mona 3.0.3023]
-- Update revision (mona: 3023, windbglib: 3013) identify windows 11, add logo to output markdown files
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/d59839b">d59839b</link> identify windows 11
-  - <link cmd="https://github.com/corelan/mona3/commit/2434943">2434943</link> avoid leaking g_no_header
-  - <link cmd="https://github.com/corelan/mona3/commit/688a169">688a169</link> improve mona log files, add mona logo
-  - <link cmd="https://github.com/corelan/mona3/commit/b62e9d8">b62e9d8</link> add more info on heap chunk in q 3
-  - <link cmd="https://github.com/corelan/mona3/commit/c16d589">c16d589</link> improve collection of evidence and supporting wider range of variables in q 9
-  - <link cmd="https://github.com/corelan/mona3/commit/1ebf611">1ebf611</link> documentation update
-  - <link cmd="https://github.com/corelan/mona3/commit/ad45bc4">ad45bc4</link> ask for markdown output
-  - <link cmd="https://github.com/corelan/mona3/commit/fb31360">fb31360</link> prompt and caching update
-  - <link cmd="https://github.com/corelan/mona3/commit/4ea363f">4ea363f</link> make dict tables look pretty in output files
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/43c9766">43c9766</link> Update revision (mona: 3022, windbglib: 3012) Refactor use of context variables in mona ai
 
 [windbglib 3.0.3013]
 - Update revision (mona: 3023, windbglib: 3013) identify windows 11, add logo to output markdown files
