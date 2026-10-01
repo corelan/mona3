@@ -45659,13 +45659,18 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 			dbg.log("")
 			_heapSegmentTables(mHeap, segments, True, logfile=None, loghandle=None)
 		else:
-			# summary view: segment count + total chunks across all segments only (the per-segment
-			# table is available via `!mona heap -segments` / `!mona heap -extend`).
 			try:
-				seg_chunk_count = sum(len(seg.getChunks()) for seg in segments)
+				_sc_total = _sc_busy = 0
+				for seg in segments:
+					for c in seg.getChunks().values():
+						_sc_total += 1
+						if c.getState() == ChunkState.BUSY:
+							_sc_busy += 1
 			except Exception:
-				seg_chunk_count = len(mHeap.getSegmentChunks())
-			dbg.log("    Number of Chunks in Segments: %d" % seg_chunk_count)
+				_segc = mHeap.getSegmentChunks()
+				_sc_total = len(_segc)
+				_sc_busy = sum(1 for c in _segc.values() if c.getState() == ChunkState.BUSY)
+			dbg.log("    Number of Chunks in Segments: %d (Busy: %d, Free: %d)" % (_sc_total, _sc_busy, _sc_total - _sc_busy))
 	except Exception as e:
 		dbg.log("[+] Segments")
 		dbg.log("    [-] Failed to enumerate segments: %s" % str(e))
