@@ -26560,6 +26560,80 @@ class MnPointer:
 			except Exception:
 				return -1
 
+		def _classifyStringAt():
+			# One bounded read at addy, classified in-process (replaces the separate readString/
+			# readWString + BSTR probes): returns (label, strtype) or None.  Handles ASCII and UTF-16
+			# (incl. common non-Latin scripts), rejects binary-with-printable-prefix via a printable-
+			# ratio gate, caps the read so an unterminated region can't pull megabytes, and tags BSTR
+			# when the length prefix at addy-4 matches the measured byte length.
+			CAP = 0x200
+			RATIO_MIN = 0.90
+			try:
+				raw = _glcCachedRead("sbuf", addy, lambda: dbg.readMemory(addy, CAP))
+				if not raw:
+					# a full-size read fails atomically (pykd.loadBytes) if fewer than CAP bytes are
+					# mapped before an unmapped page; retry bounded to the current page so a string
+					# sitting near a page edge is still classified.
+					_toend = 0x1000 - (addy & 0xfff)
+					raw = _glcCachedRead("sbuf2", addy, lambda: dbg.readMemory(addy, _toend))
+			except Exception:
+				raw = None
+			if not raw:
+				return None
+			bb = bytearray(raw)
+			n = len(bb)
+			# -- ASCII: bytes up to NUL (or cap), measured for printable ratio --
+			a_nul = bb.find(b"\x00")
+			a_trunc = a_nul < 0
+			a_len = n if a_trunc else a_nul
+			a_print = 0
+			for _i in range(a_len):
+				if 0x20 <= bb[_i] <= 0x7e:
+					a_print += 1
+			a_ok = a_len >= 3 and (float(a_print) / a_len) >= RATIO_MIN
+			# -- UTF-16LE: wchars up to a wide-NUL (or cap), measured for printable-BMP ratio and for
+			#    high-byte spread (genuine single-script BMP text keeps its high byte near-constant;
+			#    binary data paired into wchars scatters it -- that discriminator is what rejects
+			#    binary-with-printable-prefix that the printable ratio alone would accept) --
+			u_cnt = n // 2
+			u_trunc = True
+			u_print = 0
+			hi_min = 256
+			hi_max = -1
+			_i = 0
+			while _i + 1 < n:
+				w = bb[_i] | (bb[_i + 1] << 8)
+				if w == 0:
+					u_cnt = _i // 2
+					u_trunc = False
+					break
+				_hi = (w >> 8) & 0xff
+				if _hi < hi_min:
+					hi_min = _hi
+				if _hi > hi_max:
+					hi_max = _hi
+				if (0x20 <= w <= 0x7e) or (0xa0 <= w <= 0xd7ff) or (0xe000 <= w <= 0xfffd):
+					u_print += 1
+				_i += 2
+			u_ok = u_cnt >= 3 and (float(u_print) / u_cnt) >= RATIO_MIN and (hi_max - hi_min) <= 1
+			# -- a clean >=3-char ASCII run (no interior NUL) can't be genuine wide-char text, which
+			#    would carry interior high-byte NULs, so when ASCII qualifies it wins outright --
+			if a_ok:
+				disp = _sanitizeStr(bytes(bb[:a_len]).decode("latin-1", "replace"))
+				disp = (disp[:80] + "...") if (len(disp) > 80 or a_trunc) else disp
+				_cb = _bstrPrefixLen()
+				if _cb == a_len:
+					return ("ptr to BSTR ASCII (0x%x) '%s'" % (_cb, disp), "ascii")
+				return ("ptr to ASCII (0x%02x) '%s'" % (a_len, disp), "ascii")
+			if u_ok:
+				disp = _sanitizeStr(bytes(bb[:u_cnt * 2]).decode("utf-16-le", "replace"))
+				disp = (disp[:80] + "...") if (len(disp) > 80 or u_trunc) else disp
+				_cb = _bstrPrefixLen()
+				if _cb == 2 * u_cnt:
+					return ("ptr to BSTR UNICODE (0x%x) '%s'" % (_cb, disp), "unicode")
+				return ("ptr to UNICODE (0x%02x) '%s'" % (u_cnt, disp), "unicode")
+			return None
+
 		if addy >= startaddy and addy <= endaddy:
 			offset = addy - startaddy
 			selflabel = "ptr to self" if offset == 0 else "ptr to self+0x%x" % offset
@@ -26655,9 +26729,9 @@ class MnPointer:
 				_pp = ("%s (%s)" % (_adj, _ptrUpper(hexStrToInt(ptraddy)))) if _adj else ("ptr to %s" % _ptrUpper(hexStrToInt(ptraddy)))
 				target = "%s : %s" % (_pp, ptrinfo)
 				loctype = "ptr_obj" if ("vftable" in ptrinfo or "Heap" in memloc) else "ptr"
-		# ---- 3b) string / BSTR at *addr, GATED by the first dword (*addr) that `dps` already
-		# returned -- a non-string pointer thus skips the blind readString/readWString/BSTR debugger
-		# reads (the per-slot hot path); real strings still use the exact reads for content/length. ----
+		# ---- 3b) string at *addr, GATED by the first dword (*addr) that `dps` already returned, so a
+		# non-string pointer skips the (single, bounded) classification read. _classifyStringAt does the
+		# ASCII / UTF-16 (incl. common non-Latin scripts) / BSTR work in-process; see its comment. ----
 		if ismapped and target == "":
 			try:
 				_fb = struct.pack("<Q" if arch == 64 else "<I", hexStrToInt(ptraddy))
@@ -26665,35 +26739,17 @@ class MnPointer:
 				_fb = b""
 			_fbb = [c if isinstance(c, int) else ord(c) for c in _fb]
 			_pb = lambda i: i < len(_fbb) and 0x20 <= _fbb[i] <= 0x7e
-			_zb = lambda i: i < len(_fbb) and _fbb[i] == 0
-			if _pb(0) and _pb(1) and _pb(2):
-				try:
-					strdata = _glcCachedRead("rs", addy, lambda: dbg.readString(addy))
-					if len(strdata) > 2:
-						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-						_cb = _bstrPrefixLen()
-						if _cb == len(strdata):
-							target = "ptr to BSTR ASCII (0x%x) '%s'" % (_cb, datastr)
-						else:
-							target = "ptr to ASCII (0x%02x) '%s'" % (len(strdata), datastr)
-						loctype = loctype or "ptr_str"
-						strtype = strtype or "ascii"
-				except:
-					pass
-			if target == "" and _pb(0) and _zb(1) and _pb(2) and _zb(3):
-				try:
-					strdata = _glcCachedRead("rws", addy, lambda: dbg.readWString(addy))
-					if len(strdata) > 2:
-						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-						_cb = _bstrPrefixLen()
-						if _cb == 2 * len(strdata):
-							target = "ptr to BSTR UNICODE (0x%x) '%s'" % (_cb, datastr)
-						else:
-							target = "ptr to UNICODE (0x%02x) '%s'" % (len(strdata), datastr)
-						loctype = loctype or "ptr_str"
-						strtype = strtype or "unicode"
-				except:
-					pass
+			_w0 = (_fbb[0] | (_fbb[1] << 8)) if len(_fbb) >= 2 else 0
+			_w1 = (_fbb[2] | (_fbb[3] << 8)) if len(_fbb) >= 4 else 0
+			# plausible first wchar of a BMP string in the common scripts (Latin..Arabic, <= U+08FF),
+			# kept narrow so random pointers rarely trigger the classification read.
+			_wok = lambda w: (0x20 <= w <= 0x7e) or (0xa0 <= w <= 0x08ff)
+			if (_pb(0) and _pb(1) and _pb(2)) or (_wok(_w0) and _wok(_w1)):
+				_sres = _classifyStringAt()
+				if _sres:
+					target = _sres[0]
+					loctype = loctype or "ptr_str"
+					strtype = strtype or _sres[1]
 		if ismapped and target == "" and not (_heap_target or "Heap" in memloc or "Stack" in memloc):
 			ptrf = ptrx.getPtrFunction()
 			if ptrf != "":
@@ -26737,11 +26793,46 @@ def _glcCachedRead(op, addy, fn):
 	return _v
 
 
-def _backingName(addy):
-	"""Basename of the file/image backing *addy* (via GetMappedFileNameW), cached per dump command;
-	"" when unavailable (private memory / failure)."""
+def _sanitizeStr(s):
+	"""Render target-controlled string content safely: keep printable characters (including
+	non-ASCII text) but replace C0/C1 control bytes and DEL with '.', so a crafted string in the
+	debuggee can't inject ANSI/control sequences into the console or markdown log, and binary noise
+	reads cleanly. Deliberately uses an ord()-based test (no str.isprintable()) so it behaves the
+	same under Immunity's Python 2 as under WinDBG's Python 3."""
 	try:
-		path = _glcCachedRead("mfn", addy, lambda: dbg.getMappedFilename(addy))
+		out = []
+		for c in s:
+			o = ord(c)
+			out.append("." if (o < 0x20 or o == 0x7f or 0x80 <= o <= 0x9f) else c)
+		return "".join(out)
+	except Exception:
+		return s
+
+
+def _backingName(addy):
+	"""Basename of the file/image backing *addy*, cached per dump command; "" when unavailable
+	(private memory / failure). WinDBG uses psapi!GetMappedFileNameW; Immunity has no such API, so
+	it falls back to the debugger memory map's Section/Owner field for the page.
+	NOTE: immlib's exact accessor/return value hasn't been exercised here -- verify on a live
+	Immunity target before relying on the Immunity branch."""
+	path = ""
+	try:
+		if mndbg.isImmunity():
+			page = dbg.getMemoryPageByAddress(addy)
+			if page is not None:
+				for _accessor in ("getSection", "getOwner"):
+					if not hasattr(page, _accessor):
+						continue
+					try:
+						_v = getattr(page, _accessor)()
+					except Exception:
+						_v = ""
+					# accept a path or a dotted filename, but not a PE section name like ".text"
+					if _v and _v[0:1] != "." and ("\\" in _v or "." in _v):
+						path = _v
+						break
+		else:
+			path = _glcCachedRead("mfn", addy, lambda: dbg.getMappedFilename(addy))
 	except Exception:
 		path = ""
 	if not path:
@@ -26777,12 +26868,15 @@ def _regionTypeLabel(addy):
 	private commit). Falls back to "(mapped)" when the region type is unknown/unavailable."""
 	try:
 		page = dbg.getMemoryPageByAddress(addy)
-		usage = page.getUsage() if page is not None else ""
+		usage = (page.getUsage() if page is not None else "").strip()
 	except Exception:
 		usage = ""
 	_base = {"Image": "image", "Mapped": "mapped file", "Private": "private"}.get(usage)
 	if _base is None:
-		return "(mapped)"
+		# usage token unrecognised (e.g. Immunity's differing vocabulary): if the memory map can
+		# still name a backing file, treat it as a mapped file; otherwise the generic fallback.
+		_name = _backingName(addy)
+		return ("(mapped file: %s)" % _name) if _name else "(mapped)"
 	if _base == "private":
 		return "(private)"
 	_name = _backingName(addy)

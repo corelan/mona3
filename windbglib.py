@@ -4070,6 +4070,48 @@ class Debugger:
 			page = wpage(startaddress,0,"")
 			return page
 
+	def getMappedFilename(self, address):
+		# Name of the file/section backing a mapped (MEM_MAPPED / MEM_IMAGE) address, via
+		# psapi!GetMappedFileNameW against the live debuggee.  Returns an NT device path
+		# ("\Device\HarddiskVolumeN\...") or "" when unavailable (private memory, a dump
+		# target with no live process, or no access).  Callers take the basename.
+		PROCESS_QUERY_INFORMATION = 0x0400
+		PROCESS_VM_READ = 0x0010
+		hprocess = None
+		try:
+			kernel32 = ctypes.windll.kernel32
+			psapi = ctypes.windll.psapi
+			pid = self.getDebuggedPid()
+			if not pid:
+				return ""
+			hprocess = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, int(pid))
+			if not hprocess:
+				return ""
+			psapi.GetMappedFileNameW.argtypes = [
+				ctypes.c_void_p,
+				ctypes.c_void_p,
+				ctypes.c_wchar_p,
+				ctypes.c_ulong
+			]
+			psapi.GetMappedFileNameW.restype = ctypes.c_ulong
+			buf = ctypes.create_unicode_buffer(1024)
+			n = psapi.GetMappedFileNameW(
+				ctypes.c_void_p(hprocess),
+				ctypes.c_void_p(address),
+				buf,
+				ctypes.c_ulong(1024)
+			)
+			return buf.value if n else ""
+		except Exception as e:
+			dbgp("getMappedFilename(%s) failed: %s" % (PTR_PRINT % address, str(e)))
+			return ""
+		finally:
+			if hprocess:
+				try:
+					ctypes.windll.kernel32.CloseHandle(hprocess)
+				except Exception:
+					pass
+
 	def getPageContains(self,address):
 		if len(self.MemoryPages) == 0:
 			self.MemoryPages = self.getMemoryPages()
