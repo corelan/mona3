@@ -45650,106 +45650,82 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 		dbg.log("[+] Segments")
 		dbg.log("")
 		dbg.log("    Number of Segments: %d" % len(segments))
-		dbg.log("")
-		dbg.log("    Segment List:")
-		dbg.log("")
 		if not segments:
+			dbg.log("")
 			dbg.log("    (none)")
 		elif extended:
+			dbg.log("")
+			dbg.log("    Segment List:")
+			dbg.log("")
 			_heapSegmentTables(mHeap, segments, True, logfile=None, loghandle=None)
 		else:
-			rows = []
-			for i, seg in enumerate(segments):
-				try:
-					base = seg.BaseAddress
-					top = base + (seg.NumberOfPages * 0x1000)
-					first_entry = seg.FirstEntry
-					last_entry = seg.LastValidEntry
-					size = top - base
-					chunks = seg.getChunks()
-					busy = sum(1 for c in chunks.values() if c.getState() == ChunkState.BUSY)
-					free = len(chunks) - busy
-					rows.append([
-						"%d" % i,
-						_ptrUpper(base),
-						_ptrUpper(top),
-						"%d/%d (%d)" % (busy, free, len(chunks)),
-						_ptrUpper(first_entry),
-						_ptrUpper(last_entry),
-						"0x%x (%d)" % (size, size),
-					])
-				except Exception as e:
-					rows.append(["%d" % i, _ptrUpper(getattr(seg, "BaseAddress", 0)),
-					             "[-] %s" % str(e), "", "", "", ""])
-			headers = ["Index", "Base", "Top", "Busy/Free (Total)", "First Entry", "Last Entry", "Size"]
+			# summary view: segment count + total chunks across all segments only (the per-segment
+			# table is available via `!mona heap -segments` / `!mona heap -extend`).
+			try:
+				seg_chunk_count = sum(len(seg.getChunks()) for seg in segments)
+			except Exception:
+				seg_chunk_count = len(mHeap.getSegmentChunks())
+			dbg.log("    Number of Chunks in Segments: %d" % seg_chunk_count)
+	except Exception as e:
+		dbg.log("[+] Segments")
+		dbg.log("    [-] Failed to enumerate segments: %s" % str(e))
+
+	if extended:
+		def _ucrTable(headers, rows):
+			if not rows:
+				dbg.log("    (none)")
+				return
 			widths = [max(len(headers[c]), max(len(r[c]) for r in rows)) for c in range(len(headers))]
 			dbg.log("    " + "   ".join(h.ljust(widths[c]) for c, h in enumerate(headers)))
 			dbg.log("    " + "   ".join(("-" * widths[c]) for c in range(len(headers))))
 			for r in rows:
 				dbg.log("    " + "   ".join(r[c].ljust(widths[c]) for c in range(len(headers))))
-	except Exception as e:
-		dbg.log("[+] Segments")
-		dbg.log("    [-] Failed to enumerate segments: %s" % str(e))
-
-	# -- UCR (uncommitted ranges) --
-	# Two tables: the heap-wide UCRList and the per-segment UCRs.
-	#   Heap-wide : Index / Base / Top / Size / Pages
-	#   Segments  : Segment Index / Segment Base / Segment Top / UCR Base / UCR Top / Size / Pages
-	def _ucrTable(headers, rows):
-		if not rows:
-			dbg.log("    (none)")
-			return
-		widths = [max(len(headers[c]), max(len(r[c]) for r in rows)) for c in range(len(headers))]
-		dbg.log("    " + "   ".join(h.ljust(widths[c]) for c, h in enumerate(headers)))
-		dbg.log("    " + "   ".join(("-" * widths[c]) for c in range(len(headers))))
-		for r in rows:
-			dbg.log("    " + "   ".join(r[c].ljust(widths[c]) for c in range(len(headers))))
-	try:
-		dbg.log("")
-		dbg.log("-" * 60)
-		dbg.log("[+] UCR")
-		dbg.log("")
-		# Heap-wide UCRList.
-		dbg.log("    Heap-wide UCR List")
-		dbg.log("")
-		heap_ucrs = mHeap.getUCRDescriptors()
-		rows = []
-		for i, ucr in enumerate(heap_ucrs):
-			pages = ucr.size >> 12
-			rows.append([
-				"%d" % i,
-				_ptrUpper(ucr.address),
-				_ptrUpper(ucr.end),
-				"0x%x (%d)" % (ucr.size, ucr.size),
-				"%d" % pages,
-			])
-		_ucrTable(["Index", "Base", "Top", "Size", "Pages"], rows)
-
-		# Per-segment UCRs.
-		dbg.log("")
-		dbg.log("    Segments UCR List")
-		dbg.log("")
-		seg_order = {id(s): i for i, s in enumerate(mHeap.getSegments())}
-		rows = []
-		for seg_obj in mHeap.getSegments():
-			seg_base = seg_obj.BaseAddress
-			seg_top = seg_base + seg_obj.NumberOfPages * 0x1000
-			sidx = seg_order.get(id(seg_obj), 0)
-			for ucr in seg_obj.getUCRDescriptors():
+		try:
+			dbg.log("")
+			dbg.log("-" * 60)
+			dbg.log("[+] UCR")
+			dbg.log("")
+			# Heap-wide UCRList.
+			dbg.log("    Heap-wide UCR List")
+			dbg.log("")
+			heap_ucrs = mHeap.getUCRDescriptors()
+			rows = []
+			for i, ucr in enumerate(heap_ucrs):
 				pages = ucr.size >> 12
 				rows.append([
-					"%d" % sidx,
-					_ptrUpper(seg_base),
-					_ptrUpper(seg_top),
+					"%d" % i,
 					_ptrUpper(ucr.address),
 					_ptrUpper(ucr.end),
 					"0x%x (%d)" % (ucr.size, ucr.size),
 					"%d" % pages,
 				])
-		_ucrTable(["Segment Index", "Segment Base", "Segment Top", "UCR Base", "UCR Top", "Size", "Pages"], rows)
-	except Exception as e:
-		dbg.log("[+] UCR")
-		dbg.log("    [-] Failed to enumerate UCRs: %s" % str(e))
+			_ucrTable(["Index", "Base", "Top", "Size", "Pages"], rows)
+
+			# Per-segment UCRs.
+			dbg.log("")
+			dbg.log("    Segments UCR List")
+			dbg.log("")
+			seg_order = {id(s): i for i, s in enumerate(mHeap.getSegments())}
+			rows = []
+			for seg_obj in mHeap.getSegments():
+				seg_base = seg_obj.BaseAddress
+				seg_top = seg_base + seg_obj.NumberOfPages * 0x1000
+				sidx = seg_order.get(id(seg_obj), 0)
+				for ucr in seg_obj.getUCRDescriptors():
+					pages = ucr.size >> 12
+					rows.append([
+						"%d" % sidx,
+						_ptrUpper(seg_base),
+						_ptrUpper(seg_top),
+						_ptrUpper(ucr.address),
+						_ptrUpper(ucr.end),
+						"0x%x (%d)" % (ucr.size, ucr.size),
+						"%d" % pages,
+					])
+			_ucrTable(["Segment Index", "Segment Base", "Segment Top", "UCR Base", "UCR Top", "Size", "Pages"], rows)
+		except Exception as e:
+			dbg.log("[+] UCR")
+			dbg.log("    [-] Failed to enumerate UCRs: %s" % str(e))
 
 	# -- FreeList --
 	# Plain summary: count + min/max UserSize. -extend: the full per-chunk table (same columns as
@@ -45802,8 +45778,8 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 		# the dedicated !mona heap -listhints view.
 		if extended:
 			_lhBinsListBody(mHeap)
-		else:
-			_lhFlatBinsBody(mHeap)
+		# else (summary view): the ListsInUse bitmap + populated bins above is the summary;
+		# the per-bin "Bins List" table is available via `!mona heap -listhints`.
 	except Exception as e:
 		dbg.log("[+] ListHints")
 		dbg.log("    [-] %s" % str(e))
@@ -45858,47 +45834,6 @@ def _heapShowSummaryBody(mHeap, heapbase, tag, extended=False):
 			dbg.log("    LFH Address: %s" % _ptrUpper(fe.address))
 			dbg.log(_lfhActiveBucketsLine(mHeap, fe))
 			dbg.log("    Total Chunks: %d (Busy: %d, Free: %d)" % (g_total, g_busy, g_free))
-			dbg.log("")
-
-			rows = []
-			active_flags = []  # parallel to rows: True for ACTIVE buckets (rendered bold)
-			for bucket in buckets:
-				if bucket.corrupted:
-					rows.append(["%d" % bucket.bucket_index, "*** CORRUPTED ***", "", "", "", ""])
-					active_flags.append(False)
-					continue
-				serves, gran_units = _lfhBucketServed(bucket, by_index)
-				subsegments = subsegs_by_block.get(bucket.BlockUnits) or bucket.getSubSegments()
-				b_busy = b_free = b_total = 0
-				for ss in subsegments:
-					if getattr(ss, "corrupted", False):
-						continue
-					b_busy += ss.getBusyCount()
-					b_free += ss.getFreeCount()
-					b_total += ss.BlockCount
-				activation, is_active = _lfhActivationCell(mHeap, bucket, by_index)
-				if not is_active and activation in ("-", "0"):  # skip buckets neither active nor counting
-					continue
-				rows.append([
-					"%d" % bucket.bucket_index,
-					serves,
-					"%d" % gran_units,
-					"%d/%d (%d)" % (b_busy, b_free, b_total),
-					"%d" % len(subsegments),
-					activation,
-				])
-				active_flags.append(is_active)
-			if not rows:
-				dbg.log("    (no active/counting buckets)")
-			else:
-				headers = ["Index", "Served Size", "Granularity", "Chunks", "SubSegments", "Activation Counter"]
-				widths = [max(len(headers[c]), max(len(r[c]) for r in rows)) for c in range(len(headers))]
-				dbg.log("    " + "   ".join(h.ljust(widths[c]) for c, h in enumerate(headers)))
-				dbg.log("    " + "   ".join(("-" * widths[c]) for c in range(len(headers))))
-				for r, is_active in zip(rows, active_flags):
-					line = "   ".join(r[c].ljust(widths[c]) for c in range(len(headers)))
-					# ACTIVE buckets in bold (DML on console; tags stripped for the .md fence).
-					dbg.log("    " + ("<b>%s</b>" % line if is_active else line))
 		except Exception as e:
 			dbg.log("    [-] %s" % str(e))
 
@@ -51901,7 +51836,11 @@ def procDumpLog(args):
 		contents = f.readlines()
 		f.close()
 
+		_parsecnt = 0
 		for tline in contents:
+			_parsecnt += 1
+			if _parsecnt % 2000 == 0:
+				interruptMona()
 			line = ensure_text(tline)
 			mndbg.dbgp("Read line from logfile: %s" % line)
 			if line.startswith("alloc("):
@@ -52034,10 +51973,10 @@ def procDumpLog(args):
 				)
 				dbg.log(updatetext)
 			curnr += 1
-			flipcnt += 1		
+			flipcnt += 1
 			interruptMona()
 		dbg.log("[+] Done. Check %s for output" % thislog)
-	except:
+	except Exception:
 		dbg.log(" *** Unable to open logfile %s ***" % thislog,highlight=1)
 		dbg.log(traceback.format_exc())
 		return
