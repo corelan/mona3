@@ -13676,6 +13676,8 @@ def get_script_name():
 
 
 def get_current_function_name():
+    if not DEBUG_MODE:
+        return ""
 
     frame = inspect.currentframe()
     try:
@@ -16477,6 +16479,24 @@ class MnPEB:
 			return mod
 		return next((m for m in self._modules_by_base.values()
 					 if m.moduleBase <= addr <= m.moduleTop), None)
+
+	def getModuleNameByAddress(self, addr):
+		"""Module name (dict key) lookup for addr via a cached sorted module-range index
+		(addr within [moduleBase, moduleTop]); "" when addr is in no module."""
+		mods = self.getModules()
+		idx = getattr(self, "_modrange_index", None)
+		token = (id(mods), len(mods))
+		if idx is None or idx[3] != token:
+			items = sorted(((m.moduleBase, m.moduleTop, name) for name, m in mods.items()), key=lambda t: t[0])
+			idx = ([t[0] for t in items], [t[1] for t in items], [t[2] for t in items], token)
+			self._modrange_index = idx
+		starts, tops, names, _tok = idx
+		if not starts:
+			return ""
+		i = bisect.bisect_right(starts, addr) - 1
+		if 0 <= i < len(starts) and addr <= tops[i]:
+			return names[i]
+		return ""
 
 	def getModulesSortedByBase(self, reverse=False):
 		"""Return all modules as [(name, MnModule)] sorted by load address."""
@@ -25694,10 +25714,9 @@ class MnPointer:
 		"""		
 		MnProc.ensure()
 		if self.ownerName == "":
-			# not stack or heap
-			for thismodule, mod in mnproc.getPEB().getModules().items():
-				if mod.moduleBase <= self.address <= mod.moduleTop:
-					return thismodule
+			_mname = mnproc.getPEB().getModuleNameByAddress(self.address)
+			if _mname:
+				return _mname
 			# if it's not a module, maybe it's stack or heap
 			# just call the functions, to populate owner
 			if not modulesOnly:
@@ -26297,7 +26316,6 @@ class MnPointer:
 						outputlines = output.split("\n")
 						offset = 0
 						hdr_off = archValue(0, 8)
-						prev_was_string = False
 						for outputline in outputlines:
 							if not outputline.replace(" ","") == "":
 								loc = outputline[0:archValue(8,17)].replace("`","")
@@ -26315,13 +26333,12 @@ class MnPointer:
 									dumpdata[loc_int] = info
 								elif not "??" in content and symbol.replace(" ","") == "":
 									contentaddy = hexStrToInt(content)
-									info = self.getLocInfo(loc_int, contentaddy, startaddy, endaddy, gate_dps=True, prev_was_string=prev_was_string)
+									info = self.getLocInfo(loc_int, contentaddy, startaddy, endaddy, gate_dps=True)
 									info.append(content)
 									dumpdata[loc_int] = info
 								else:
 									info = ["", symbol, "", content]
 									dumpdata[loc_int] = info
-								prev_was_string = len(info) > 1 and (info[1].startswith("= UNICODE") or info[1].startswith("= ASCII"))
 						if addy in parentdata:
 							pdata = parentdata[addy]
 							parent = "Referenced at %s (object %s, offset +0x%02x)" % ((PTR_PRINT % pdata[0]),(PTR_PRINT % pdata[1]),pdata[0]-pdata[1])
@@ -26404,7 +26421,7 @@ class MnPointer:
 				content = info[3] if len(info) > 3 else ""
 				contentinfo = toAsciiOnly(info[1])
 				offsetstr = toSize("%02x" % offset,4)
-				tablelines.append("+%s   %s | %s  %s" % (offsetstr,_ptrUpper(loc),content.upper(),contentinfo))
+				tablelines.append("+%s   %s | %s  %s" % (offsetstr,_ptrUpper(loc),content,contentinfo))
 				offset += archValue(4,8)
 
 		# ----- console: unchanged plain fixed-width -----
@@ -26445,7 +26462,7 @@ class MnPointer:
 		return
 
 
-	def getLocInfo(self,loc,addy,startaddy,endaddy,gate_dps=False,prev_was_string=None):
+	def getLocInfo(self,loc,addy,startaddy,endaddy,gate_dps=False):
 		locinfo = []
 		def _hlabel(_heapaddy, _chunkobj):
 			if _chunkobj is not None and hasattr(_chunkobj, "usersize"):
@@ -26530,15 +26547,15 @@ class MnPointer:
 						if _off == 0:
 							return "ptr to %s" % _rel
 						if _off > 0:
-							return "ptr to %s+%s" % (_rel, PTR_PRINT % _off)
-						return "ptr to %s-%s" % (_rel, PTR_PRINT % (-_off))
+							return "ptr to %s+0x%x" % (_rel, _off)
+						return "ptr to %s-0x%x" % (_rel, -_off)
 				return None
 			except Exception:
 				return None
 
 		if addy >= startaddy and addy <= endaddy:
 			offset = addy - startaddy
-			selflabel = "ptr to self" if offset == 0 else "ptr to self+%s" % (PTR_PRINT % offset)
+			selflabel = "ptr to self" if offset == 0 else "ptr to self+0x%x" % offset
 			locinfo = ["self",selflabel,""]
 			return locinfo
 
@@ -26555,30 +26572,28 @@ class MnPointer:
 		# A slot value can carry SEVERAL valid readings at once (its own bytes may spell a string
 		# AND the same value may be a live heap/stack/module address). Collect every applicable
 		# reading -- strings first, then pointer target, then location -- and join them with
-		# " |OR| " instead of returning at the first match, so no interpretation hides another.
+		# " <OR> " instead of returning at the first match, so no interpretation hides another.
 		parts = []
 		loctype = ""   # locinfo[0]: "ptr_obj" when addy is a followable object/heap pointer
 		strtype = ""   # locinfo[2]
 
-		# ---- 1) the value's OWN bytes read as a string. Only surfaced when this is the object's
-		# first slot, or the previous slot was itself a string (a string "run") -- so a value that
-		# merely *looks* like text amid pointer/data fields isn't mislabelled. prev_was_string is
-		# None when a caller opts out of the run gate (then the reading is always shown). ----
-		is_first = (loc == startaddy)
-		show_value_string = (prev_was_string is None) or is_first or bool(prev_was_string)
+		# ---- 1) the value's OWN bytes read as a string (checked first). A value can be a string
+		# literal in its own bytes AND a live pointer/heap address at the same time; the string
+		# reading is always shown when the bytes form one, kept as its own " <OR> " part and never
+		# dropped in favour of a pointer reading. ----
 		b1,b2,b3,b4,b5,b6,b7,b8 = (0,)*8
 		if arch == 32:
 			b1,b2,b3,b4 = splitAddress(addy)
 		else:
 			b1,b2,b3,b4,b5,b6,b7,b8 = splitAddress(addy)
-		if show_value_string and ptrx.isUnicode:
+		if ptrx.isUnicode:
 			ustr = toAscii(toHexByte(b2)) + toAscii(toHexByte(b4))
 			if arch == 64:
 				ustr += toAscii(toHexByte(b6)) + toAscii(toHexByte(b8))
 			if ustr.replace(" ","") != "" and not toHexByte(b2) == "00":
 				parts.append("= UNICODE '%s'" % ustr)
 				strtype = "unicode"
-		if show_value_string and not parts and ptrx.isAsciiPrintable:
+		if not parts and ptrx.isAsciiPrintable:
 			astr = toAscii(toHexByte(b1)) + toAscii(toHexByte(b2)) + toAscii(toHexByte(b3)) + toAscii(toHexByte(b4))
 			if arch == 64:
 				astr += toAscii(toHexByte(b5)) + toAscii(toHexByte(b6)) + toAscii(toHexByte(b7)) + toAscii(toHexByte(b8))
@@ -26598,14 +26613,23 @@ class MnPointer:
 				extra = "(Heap) %s" % _hlabel(heapaddy, chunkobj)
 				_heap_target = True
 			else:
-				detailmemloc = ptrx.getPtrFunction()
-				extra = "(%s.%s)" % (memloc, detailmemloc)
+				# code section -> resolve the function (may disassemble via uf); non-code (data) -> skip the
+				# uf resolution and just show module+offset (faster, and not a misleading function name).
+				_mod = mnproc.getPEB().getModuleByAddress(addy)
+				if _mod is not None and getattr(_mod, "moduleCodebase", 0) > 0 and not (_mod.moduleCodebase <= addy < _mod.moduleCodetop):
+					extra = "(%s+0x%x)" % (memloc, addy - _mod.moduleBase)
+				else:
+					detailmemloc = ptrx.getPtrFunction()
+					extra = "(%s.%s)" % (memloc, detailmemloc)
+
+		if extra == "" and not _readable:
+			extra = _reservedLabel(addy)
 
 		# ---- 3) what the value points to (dps symbol, then string / func / BSTR reads) ----
 		if not _readable:
 			output = "??"
 		else:
-			output = dbg.nativeCommand("dps %s L 1" % (PTR_PRINT % addy))
+			output = _glcCachedRead("dps1", addy, lambda: dbg.nativeCommand("dps %s L 1" % (PTR_PRINT % addy)))
 		outputlines = output.split("\n")
 		target = ""
 		if len(outputlines) > 0 and not "??" in outputlines[0]:
@@ -26616,7 +26640,7 @@ class MnPointer:
 					extra = "(Heap) %s" % _hlabel(_hb, _co2)
 					_heap_target = True
 				else:
-					extra = "(mapped)"
+					extra = _regionTypeLabel(addy)
 			ptraddy = outputlines[0][archValue(10,19):archValue(18,36)].replace("`","")
 			ptrinfo = outputlines[0][archValue(19,37):]
 			if ptrinfo.replace(" ","") != "":
@@ -26624,26 +26648,37 @@ class MnPointer:
 				_pp = ("%s (%s)" % (_adj, _ptrUpper(hexStrToInt(ptraddy)))) if _adj else ("ptr to %s" % _ptrUpper(hexStrToInt(ptraddy)))
 				target = "%s : %s" % (_pp, ptrinfo)
 				loctype = "ptr_obj" if ("vftable" in ptrinfo or "Heap" in memloc) else "ptr"
+		# ---- 3b) string / BSTR at *addr, GATED by the first dword (*addr) that `dps` already
+		# returned -- a non-string pointer thus skips the blind readString/readWString/BSTR debugger
+		# reads (the per-slot hot path); real strings still use the exact reads for content/length. ----
 		if ismapped and target == "":
 			try:
-				strdata = dbg.readString(addy)
-				if len(strdata) > 2:
-					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-					target = "ptr to ASCII (0x%02x) '%s'" % (len(strdata), datastr)
-					loctype = loctype or "ptr_str"
-					strtype = strtype or "ascii"
-			except:
-				pass
-		if ismapped and target == "":
-			try:
-				strdata = dbg.readWString(addy)
-				if len(strdata) > 2:
-					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-					target = "ptr to UNICODE (0x%02x) '%s'" % (len(strdata), datastr)
-					loctype = loctype or "ptr_str"
-					strtype = strtype or "unicode"
-			except:
-				pass
+				_fb = struct.pack("<Q" if arch == 64 else "<I", hexStrToInt(ptraddy))
+			except Exception:
+				_fb = b""
+			_fbb = [c if isinstance(c, int) else ord(c) for c in _fb]
+			_pb = lambda i: i < len(_fbb) and 0x20 <= _fbb[i] <= 0x7e
+			_zb = lambda i: i < len(_fbb) and _fbb[i] == 0
+			if _pb(0) and _pb(1) and _pb(2):
+				try:
+					strdata = _glcCachedRead("rs", addy, lambda: dbg.readString(addy))
+					if len(strdata) > 2:
+						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+						target = "ptr to ASCII (0x%02x) '%s'" % (len(strdata), datastr)
+						loctype = loctype or "ptr_str"
+						strtype = strtype or "ascii"
+				except:
+					pass
+			if target == "" and _pb(0) and _zb(1) and _pb(2) and _zb(3):
+				try:
+					strdata = _glcCachedRead("rws", addy, lambda: dbg.readWString(addy))
+					if len(strdata) > 2:
+						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+						target = "ptr to UNICODE (0x%02x) '%s'" % (len(strdata), datastr)
+						loctype = loctype or "ptr_str"
+						strtype = strtype or "unicode"
+				except:
+					pass
 		if ismapped and target == "" and not (_heap_target or "Heap" in memloc or "Stack" in memloc):
 			ptrf = ptrx.getPtrFunction()
 			if ptrf != "":
@@ -26651,26 +26686,29 @@ class MnPointer:
 				loctype = loctype or "ptr_func"
 		if ismapped and target == "":
 			try:
-				bstr = struct.unpack('<L',dbg.readMemory(addy,4))[0]
-				strdata = dbg.readWString(addy+4)
-				if len(strdata) > 2 and (bstr == len(strdata)+1):
-					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-					target = "ptr to BSTR UNICODE (0x%02x) '%s'" % (bstr, datastr)
-					loctype = loctype or "ptr_str"
-					strtype = strtype or "unicode"
-			except:
-				pass
-		if ismapped and target == "":
-			try:
-				bstr = struct.unpack('<L',dbg.readMemory(addy,4))[0]
-				strdata = dbg.readString(addy+4)
-				if len(strdata) > 2 and (bstr == len(strdata)/2):
-					datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
-					target = "ptr to BSTR ASCII (0x%02x) '%s'" % (bstr, datastr)
-					loctype = loctype or "ptr_str"
-					strtype = strtype or "ascii"
-			except:
-				pass
+				bstr = hexStrToInt(ptraddy) & 0xffffffff
+			except Exception:
+				bstr = 0
+			if 0 < bstr < 0x1000:
+				try:
+					strdata = _glcCachedRead("rws4", addy, lambda: dbg.readWString(addy+4))
+					if len(strdata) > 2 and (bstr == len(strdata)+1):
+						datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+						target = "ptr to BSTR UNICODE (0x%02x) '%s'" % (bstr, datastr)
+						loctype = loctype or "ptr_str"
+						strtype = strtype or "unicode"
+				except:
+					pass
+				if target == "":
+					try:
+						strdata = _glcCachedRead("rs4", addy, lambda: dbg.readString(addy+4))
+						if len(strdata) > 2 and (bstr == len(strdata)/2):
+							datastr = strdata[0:80] + "..." if len(strdata) > 80 else strdata
+							target = "ptr to BSTR ASCII (0x%02x) '%s'" % (bstr, datastr)
+							loctype = loctype or "ptr_str"
+							strtype = strtype or "ascii"
+					except:
+						pass
 
 		# ---- 4) a live heap pointer with no other detail: show its adjacent-chunk relation ----
 		if _heap_target and target == "":
@@ -26689,12 +26727,77 @@ class MnPointer:
 			loctype = "ptr_obj"   # a live heap pointer is followable for nested dumps
 		if not parts:
 			return ["", "", ""]
-		return [loctype, " |OR| ".join(parts), strtype]
+		return [loctype, " <OR> ".join(parts), strtype]
 
 
 #---------------------------------------#
 #  Heap dump fast-path helpers          #
 #---------------------------------------#
+
+_glc_read_cache = {}
+
+def _glcCachedRead(op, addy, fn):
+	"""Per-address debugger read (dps / readString / readWString / readMemory) cache. Cleared at
+	the start of procDumpLog / procDumpObj."""
+	_k = (op, addy)
+	if _k in _glc_read_cache:
+		return _glc_read_cache[_k]
+	_v = fn()
+	_glc_read_cache[_k] = _v
+	return _v
+
+
+def _backingName(addy):
+	"""Basename of the file/image backing *addy* (via GetMappedFileNameW), cached per dump command;
+	"" when unavailable (private memory / failure)."""
+	try:
+		path = _glcCachedRead("mfn", addy, lambda: dbg.getMappedFilename(addy))
+	except Exception:
+		path = ""
+	if not path:
+		return ""
+	return path.replace("/", "\\").split("\\")[-1]
+
+
+def _reservedLabel(addy):
+	"""Classify a NON-readable (uncommitted) target by its reservation, so a pointer into a module's
+	reserved image gap or a reserved region isn't left unlabeled; "" for Free / unmapped (e.g. null)."""
+	if addy < 0x10000:
+		return ""
+	try:
+		page = dbg.getMemoryPageByAddress(addy)
+		usage = page.getUsage() if page is not None else ""
+	except Exception:
+		return ""
+	if usage != "Reserve":
+		return ""
+	try:
+		mname = mnproc.getPEB().getModuleNameByAddress(addy)
+		if mname:
+			return "(%s reserved)" % mname
+	except Exception:
+		pass
+	return "(reserved)"
+
+
+def _regionTypeLabel(addy):
+	"""Classify a readable address that memLocation()/the heap index could NOT attribute, by its
+	VirtualQueryEx region Type -- so a bare "(mapped)" becomes "(image)" (a mapped PE image not in
+	mona's module list), "(mapped file)" (a mapped data file/section) or "(private)" (VirtualAlloc /
+	private commit). Falls back to "(mapped)" when the region type is unknown/unavailable."""
+	try:
+		page = dbg.getMemoryPageByAddress(addy)
+		usage = page.getUsage() if page is not None else ""
+	except Exception:
+		usage = ""
+	_base = {"Image": "image", "Mapped": "mapped file", "Private": "private"}.get(usage)
+	if _base is None:
+		return "(mapped)"
+	if _base == "private":
+		return "(private)"
+	_name = _backingName(addy)
+	return ("(%s: %s)" % (_base, _name)) if _name else ("(%s)" % _base)
+
 
 def _bulkReadForDump(startaddy, size):
 	"""Read up to *size* bytes from *startaddy* for a chunk/object dump.
@@ -51858,6 +51961,7 @@ def procSehChain(self):
 	return
 
 def procDumpLog(args):
+	_glc_read_cache.clear()
 	logfile = ""
 	levels = 0
 	nestedsize = 0x28
@@ -52046,6 +52150,7 @@ def procDumpLog(args):
 	return
 
 def procDumpObj(args):
+	_glc_read_cache.clear()
 	addy = 0
 	levels = 0
 	size = 0
@@ -54508,6 +54613,26 @@ Arguments:
 Optional arguments:
     -l <number>       : Recursively dump objects
     -m <number>       : Size for recursive objects (default value: 0x28)
+
+Annotation legend (the Info column shown next to each dumped value):
+    Each value is shown with EVERY reading that applies, joined by " <OR> " -- a value can be
+    both a string in its own bytes AND a live address, so both are printed.
+    = ASCII '..' / = UNICODE '..'   : the value's own bytes, read as text
+    ptr to ASCII|UNICODE|BSTR (len) '..' : the value points to a string of that kind/length
+    ptr to <addr> : module!symbol   : points to a symbolized location (e.g. a vtable)
+    ptr to self+0xNN                : points back into this same object
+    ptr to next+0xNN (addr)         : points into the immediately following heap chunk
+    ptr to prev-0xNN (addr)         : points into the immediately preceding heap chunk
+    (Stack)                         : target lives on a thread stack
+    (Heap) Size 0xNN | BEA|LFH|VABlock | Busy|Free|Busy-Internal :
+                                      target is a heap chunk -- allocator (back-end / LFH /
+                                      VirtualAlloc) and its state
+    (module.func+0xNN)              : target is in a module's CODE section (resolved function)
+    (module+0xNN)                   : target is in a module but NOT its code section (data)
+    (image: name)                   : a mapped PE image NOT in mona's module list (file basename)
+    (mapped file: name)             : a mapped data file / section (file basename)
+    (private)                       : private, committed VirtualAlloc memory
+    (MODULE reserved) / (reserved)  : reserved (uncommitted) memory -- not readable
 """
 
 	dumplogUsage = """Dump all objects recorded in an alloc/free log
@@ -54524,7 +54649,9 @@ Optional arguments:
     -l <number>       : Recursively dump objects
     -m <number>       : Size for recursive objects (default value: 0x28)
     -s <number>       : Only take allocated chunks of this exact size into consideration
-    -nofree           : Ignore all free() events, show all allocations (including those that were freed)""" 
+    -nofree           : Ignore all free() events, show all allocations (including those that were freed)
+
+The per-value annotation legend (the Info column) is the same as !mona dumpobj -- see its help.""" 
 
 	tobpUsage = """Generate WinDBG syntax to set a logging breakpoint at a given location
 Arguments:
