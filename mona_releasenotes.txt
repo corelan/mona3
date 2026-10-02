@@ -1,3 +1,19 @@
+[mona 3.0.3035]
+- Update revision (mona: 3035)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/0e1ea0f">0e1ea0f</link> Heap summary (#79)
+  - <link cmd="https://github.com/corelan/mona3/commit/14034cd">14034cd</link> Improve string awareness, perf improvements (indexing and caching) & mapping (#78)
+  - <link cmd="https://github.com/corelan/mona3/commit/2bdb919">2bdb919</link> Attempt multi-interpretation and uf fix (#77)
+  - <link cmd="https://github.com/corelan/mona3/commit/d14e27f">d14e27f</link> Fix VABlock size calculation (#76)
+  - <link cmd="https://github.com/corelan/mona3/commit/4fec9cc">4fec9cc</link> Work on dumpobj and dumplog (#75)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/6b3d5f3">6b3d5f3</link> error handling fix
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/9ce07cb">9ce07cb</link> Update revision (mona: 3034)
+  - <link cmd="https://github.com/corelan/mona3/commit/135505e">135505e</link> Update revision (mona: 3033)
+  - <link cmd="https://github.com/corelan/mona3/commit/0221ec5">0221ec5</link> Update revision (mona: 3032)
+  - <link cmd="https://github.com/corelan/mona3/commit/69a1b99">69a1b99</link> Update revision (mona: 3031)
+
 [mona 3.0.3034]
 - Update revision (mona: 3034)
 apl3b:
@@ -181,19 +197,6 @@ github-actions[bot]:
 [windbglib 3.0.3014]
 - Update revision (mona: 3025, windbglib: 3014)
 - No file-specific commits found.
-
-[mona 3.0.3024]
-- Update revision (mona: 3024) update pip modules via mona up
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/56e6100">56e6100</link> allow pip updates via mona up. you can turn it off via mona config variable pip_update
-  - <link cmd="https://github.com/corelan/mona3/commit/cca5eb8">cca5eb8</link> update prompt
-  - <link cmd="https://github.com/corelan/mona3/commit/cef22e6">cef22e6</link> fix count bug
-  - <link cmd="https://github.com/corelan/mona3/commit/d4efc18">d4efc18</link> validate files first
-  - <link cmd="https://github.com/corelan/mona3/commit/a2a73ae">a2a73ae</link> change filename extension when uploading to openai/anthropic
-  - <link cmd="https://github.com/corelan/mona3/commit/827b229">827b229</link> increase max tokens a bit for anthropic and report if response was truncated
-  - <link cmd="https://github.com/corelan/mona3/commit/b50faa7">b50faa7</link> improve prompt
-  - <link cmd="https://github.com/corelan/mona3/commit/7ed1ff0">7ed1ff0</link> verbose logging, stability improvements, better references to already uploaded files
-  - <link cmd="https://github.com/corelan/mona3/commit/c739928">c739928</link> reinstate the use of anthropic library, fallback to https. improve support for -upload and susequent use of file ids via -id in mona ai
 
 [windbglib 3.0.3013]
 - Update revision (mona: 3023, windbglib: 3013) identify windows 11, add logo to output markdown files
