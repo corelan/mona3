@@ -42254,6 +42254,11 @@ def parse_undelimited_cpb(input_string):
 
 def parse_cpb_input(user_input):
 	user_input = cleanHex(user_input)
+	# An empty (or whitespace-only) cpb means "no badchars". Guard here,
+	# otherwise cleanHex("") -> "" -> split(",") -> [''] would fall through
+	# to parse_undelimited_cpb("") and recurse infinitely until a crash.
+	if user_input.strip() == "":
+		return []
 	user_input = user_input.replace(":", ",")
 	user_input_list = user_input.split(",")
 	bad_chars_list = []
