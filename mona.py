@@ -35389,7 +35389,7 @@ def args2criteria(args,modulecriteria,criteria):
 	if "cpb" in args:
 		criteria["badchars"] = b"".join(parse_cpb_input(args["cpb"]))
 		dbg.log("    - Bad char filter will be applied to pointers : %s " % args["cpb"])
-		dbg.log("    - Badchars : %s " % "".join("\\x%02x" % b for b in criteria["badchars"]))
+		dbg.log("      Badchars : %s " % "".join("\\x%02x" % b for b in sorted(criteria["badchars"])))
 			
 	if "cm" in args:
 		modcriteria = args["cm"].split(",")
