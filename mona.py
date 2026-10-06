@@ -460,7 +460,8 @@ class MnDebugger:
 				log_error("Unable to parse -cpb value '%s'" % args["cpb"])
 			if callable(log_error_detail):
 				log_error_detail("Use \\xNN byte syntax, for example: -cpb '\\x00\\x20\\x0a\\x0d\\x3f'")
-				log_error_detail("Ranges are also supported, for example: -cpb '\\x00..\\x05\\x20\\x3f'")
+				log_error_detail("Short forms are also accepted: -cpb '00 20 0a 0d 3f' or -cpb '00200a0d3f'")
+				log_error_detail("Ranges are also supported, for example: -cpb '\\x00..\\x05\\x20\\x3f' or -cpb '00..05,20,3f'")
 			return False
 		debug_prefix = ensure_text(debug_label).strip() or "cpb"
 		mndbg.dbgp("%s: validated -cpb value '%s' -> %s" % (
@@ -1304,53 +1305,83 @@ def getAllRegisters():
 		return dbg.getRegs()
 
 
-def cpbArgToBytes(value):
-	txt = ensure_text(value).strip().replace('"', "").replace("'", "")
+def _cpbParseBytes(value):
+	# Single source of truth for interpreting a -cpb badchars argument.
+	# Accepts every delimiter style the user may type:
+	#   "\\x00\\x0a\\x20"  (classic)
+	#   "00 0a 20"          (space separated)
+	#   "000a20"            (packed / undelimited)
+	#   "," or ":" separated, and mixes of the above.
+	# Ranges are still supported in any style: "\\x00..\\x05", "00..05", "00..05,20,3f".
+	# Returns (bytes, ok). ok is False when the value cannot be interpreted as hex bytes.
+	# An empty / whitespace-only value means "no badchars" -> (b"", True).
+	if value is None:
+		return b"", True
+	try:
+		txt = ensure_text(value)
+	except Exception:
+		return b"", False
+	txt = txt.strip()
 	if txt == "":
 		return b"", True
+	if len(txt) >= 2 and txt[0] in ("b", "B") and txt[1] in ("'", '"'):
+		txt = txt[1:]
+	txt = txt.replace('"', "").replace("'", "")
+	# Preserve range operators ("..") through the prefix/separator stripping
+	# below by temporarily replacing them with a sentinel, which we reinsert
+	# after stripping so the linear walker can expand them as ranges.
+	txt = txt.replace("..", "\x00")
+	# Strip byte prefixes and all separators (whitespace, commas, colons).
+	# The \x00 sentinel is deliberately NOT in the strip class, so range
+	# operators survive the separator removal and are reinserted as ".."
+	# afterwards for the linear walker to expand.
+	txt = re.sub(r"(?i)\\x", "", txt)
+	txt = re.sub(r"(?i)0x", "", txt)
+	txt = re.sub(r"[\s,:]", "", txt)
+	txt = txt.replace("\x00", "..")
+	if txt == "":
+		return b"", True
+	# Tokenise the cleaned string into byte tokens and range operators, then
+	# validate the overall structure. ".." only forms a range when it sits
+	# between two hex bytes; any stray "..", leading/trailing "..", doubled
+	# "..", or odd-length hex is rejected.
+	out = bytearray()
+	i = 0
+	n = len(txt)
+	while i < n:
+		if txt[i] == "." and i + 1 < n and txt[i + 1] == ".":
+			# A range operator: "<byte>..". The start byte is the 2 hex chars
+			# just before it; the end byte is the 2 hex chars after it.
+			if i < 2:
+				return b"", False
+			start_tok = txt[i - 2:i]
+			if i + 3 > n:
+				return b"", False
+			end_tok = txt[i + 2:i + 4]
+			if not re.match(r"(?i)^[0-9a-f]{2}$", start_tok) or not re.match(r"(?i)^[0-9a-f]{2}$", end_tok):
+				return b"", False
+			for bval in range(int(start_tok, 16), int(end_tok, 16) + 1):
+				out.append(bval)
+			i += 4
+		else:
+			if i + 1 >= n:
+				return b"", False
+			tok = txt[i:i + 2]
+			if not re.match(r"(?i)^[0-9a-f]{2}$", tok):
+				return b"", False
+			# If this byte is immediately followed by "..", it is the start of
+			# a range and will be emitted by the range handler; skip it here
+			# to avoid emitting it twice.
+			if not (i + 3 < n and txt[i + 2] == "." and txt[i + 3] == "."):
+				out.extend(bytes.fromhex(tok))
+			i += 2
+	return bytes(out), True
 
-	if "\\x" in txt.lower():
-		badchars = txt.replace("\\x", "").replace("\\X", "")
-		bpos = 0
-		newbadchars = ""
-		try:
-			while bpos < len(badchars):
-				if (bpos + 1) >= len(badchars):
-					return b"", False
-				curchar = badchars[bpos] + badchars[bpos+1]
-				if curchar == "..":
-					pos = bpos
-					if pos > 1 and pos <= len(badchars)-4:
-						bytebefore = badchars[pos-2] + badchars[pos-1]
-						byteafter = badchars[pos+2] + badchars[pos+3]
-						bbefore = int(bytebefore,16)
-						bafter = int(byteafter,16)
-						insertbytes = ""
-						bbefore += 1
-						while bbefore < bafter:
-							insertbytes += "%02x" % bbefore
-							bbefore += 1
-						newbadchars += insertbytes
-				else:
-					newbadchars += curchar
-				bpos += 2
-			raw = hex2bin(newbadchars)
-		except Exception:
-			return b"", False
-	else:
-		try:
-			raw = ensure_bytes(txt, encoding="latin-1")
-		except Exception:
-			return b"", False
 
-	seen = set()
-	out = []
-	for c in raw:
-		b = c if isinstance(c, int) else ord(c)
-		if b not in seen:
-			seen.add(b)
-			out.append(struct.pack('B', b))
-	return b"".join(out), True
+def cpbArgToBytes(value):
+	# Thin wrapper kept for callers that expect (bytes, ok) semantics.
+	# The real parsing logic lives in _cpbParseBytes so there is only one implementation.
+	return _cpbParseBytes(value)
 
 
 def _safe_int(v):
@@ -42232,48 +42263,19 @@ def procCompare(args):
 			char_string_array.append(chr(char))
 		memcompare(memory_search_start_pos, char_string_array, comparison_output_table)
 
-def parse_undelimited_cpb(input_string):
-	hex_char_list = []
-	parsed_string = ""
-	zipped_chars = zip(input_string[::2], input_string[1::2])
-	for char_first, char_second in zipped_chars:
-		hex_char_list.append(char_first + char_second)
-	for index, char in enumerate(hex_char_list):
-		try:
-			if hex_char_list[index + 1] == ".." or hex_char_list[index - 1] == "..":
-				continue
-			elif char == "..":
-				parsed_string += f"{hex_char_list[index - 1]}..{hex_char_list[index + 1]},"
-				continue
-		except IndexError:
-			parsed_string += f"{char},"
-			continue
-		else: parsed_string += f"{char},"
-	return parse_cpb_input(parsed_string[:-1])
-
-
 def parse_cpb_input(user_input):
-	user_input = cleanHex(user_input)
-	# An empty (or whitespace-only) cpb means "no badchars". Guard here,
-	# otherwise cleanHex("") -> "" -> split(",") -> [''] would fall through
-	# to parse_undelimited_cpb("") and recurse infinitely until a crash.
-	if user_input.strip() == "":
+	# Thin wrapper over the single cpb parser (_cpbParseBytes). Returns a list of
+	# single-byte objects (one per bad byte), which is the shape callers expect.
+	# Invalid / unparseable input yields an empty list (treated as "no badchars").
+	if isinstance(user_input, bool):
 		return []
-	user_input = user_input.replace(":", ",")
-	user_input_list = user_input.split(",")
-	bad_chars_list = []
-	for input_substring_entry in user_input_list:
-		if len(input_substring_entry) == 2:
-			bad_char = bytes.fromhex(input_substring_entry)
-			bad_chars_list.append(bad_char)
-		elif len(input_substring_entry) == 6 and input_substring_entry[2:4] == "..":
-			start_bad_char = bytes.fromhex(input_substring_entry[0:2])
-			end_bad_char = bytes.fromhex(input_substring_entry[4:6])
-			for char_index in range(int.from_bytes(start_bad_char), int.from_bytes(end_bad_char)):
-				bad_chars_list.append(char_index.to_bytes())
-			bad_chars_list.append(end_bad_char)
-		else: bad_chars_list = bad_chars_list + parse_undelimited_cpb(input_substring_entry)
-	return bad_chars_list
+	try:
+		raw, ok = _cpbParseBytes(user_input)
+	except Exception:
+		return []
+	if not ok:
+		return []
+	return [bytes([b]) for b in raw]
 
 def bad_char_comparison_array(args):
 	bad_chars_list = []
