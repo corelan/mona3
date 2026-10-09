@@ -55261,7 +55261,7 @@ Test model overrides:
 
 
 	commands["help"] 			= MnCommand("help", "Show help", "   %s help [command]" % launchcmd,procHelp,"h",[32,64])
-	commands["seh"] 			= MnCommand("seh", "Find pointers to assist with SEH overwrite exploits",sehUsage, procFindSEH)
+	commands["seh"] 			= MnCommand("seh", "Find pointers to instructions that add 8 bytes to ESP and return",sehUsage, procFindSEH, "ppr")
 	commands["config"] 			= MnCommand("config","Manage configuration file (mona.ini)",configUsage,procConfig,"conf",[32,64])
 	commands["cleanlog"]        = MnCommand("cleanlog","Remove old log files from your workingfolder",cleanLogUsage,procCleanLog,"clean",[32,64])
 	commands["jmp"]				= MnCommand("jmp","Find pointers that will allow you to jump to a register",jmpUsage,procFindJMP, "j",[32,64])
