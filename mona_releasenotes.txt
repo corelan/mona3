@@ -1,3 +1,19 @@
+[mona 3.0.3036]
+- Update revision (mona: 3036)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/0e1ea0f">0e1ea0f</link> Heap summary (#79)
+  - <link cmd="https://github.com/corelan/mona3/commit/14034cd">14034cd</link> Improve string awareness, perf improvements (indexing and caching) & mapping (#78)
+  - <link cmd="https://github.com/corelan/mona3/commit/2bdb919">2bdb919</link> Attempt multi-interpretation and uf fix (#77)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/06e0d1f">06e0d1f</link> Log resolved badchars in \xNN format, sorted
+  - <link cmd="https://github.com/corelan/mona3/commit/571fc32">571fc32</link> Log the resolved badchars list in \xNN format
+  - <link cmd="https://github.com/corelan/mona3/commit/33a503c">33a503c</link> Unify -cpb badchars parsing into a single function
+  - <link cmd="https://github.com/corelan/mona3/commit/1c815b9">1c815b9</link> Fix infinite recursion in parse_cpb_input when -cpb is empty
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/312450d">312450d</link> Update revision (mona: 3035)
+  - <link cmd="https://github.com/corelan/mona3/commit/9ce07cb">9ce07cb</link> Update revision (mona: 3034)
+  - <link cmd="https://github.com/corelan/mona3/commit/135505e">135505e</link> Update revision (mona: 3033)
+
 [mona 3.0.3035]
 - Update revision (mona: 3035)
 apl3b:
@@ -174,25 +190,6 @@ github-actions[bot]:
 - Update revision (mona: 3026, windbglib: 3015)
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/adf74bb">adf74bb</link> Update revision (mona: 3025, windbglib: 3014)
-
-[mona 3.0.3025]
-- Update revision (mona: 3025, windbglib: 3014)
-BailOutHere:
-  - <link cmd="https://github.com/corelan/mona3/commit/8750228">8750228</link> Minor fixes:     guess_bad_chars():     - "mapping" var uses strings, whereas the rest of the logic here expects integer representations of bytes.     - final logic for updating bytes omitted from input converts i to char, whereas set(cmp.x) already returns a set of integers
-  - <link cmd="https://github.com/corelan/mona3/commit/118c6b4">118c6b4</link>     Changes:         memcompare():         # Found the problem re: standard comparison table vs the corrupted, uncorrupted bytes!           - MemoryComparator() expects a bytes() object           - draw_byte_table() uses mapping, which should be derived from a list of single bytes         - ensured bytes object is passed to MemoryComparator and not list of bytes         - fixed issue with attempting to sort bytes objects rather than lists
-  - <link cmd="https://github.com/corelan/mona3/commit/83a7c45">83a7c45</link> Changes:         procCompare():         - made -f arg no longer mandatory         - added -cpb arg for gen. of badchars array         - create_char_array() used when there is no -f arg         - use memcompare() for comparison where no file is specified         - renamed vars to reduce ambiguity
-apl3b:
-  - <link cmd="https://github.com/corelan/mona3/commit/c281c9a">c281c9a</link> Heap work (#67)
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/c6eabba">c6eabba</link> update -q 2
-  - <link cmd="https://github.com/corelan/mona3/commit/930dcb9">930dcb9</link> bugfix ensure_text
-  - <link cmd="https://github.com/corelan/mona3/commit/f870a25">f870a25</link> Merge pull request #66 from BailOutHere/compare-cmd-changes
-  - <link cmd="https://github.com/corelan/mona3/commit/9cab4c6">9cab4c6</link> provide help when response was truncated
-  - <link cmd="https://github.com/corelan/mona3/commit/95004fc">95004fc</link> add support for openrouter
-  - <link cmd="https://github.com/corelan/mona3/commit/56e6100">56e6100</link> allow pip updates via mona up. you can turn it off via mona config variable pip_update
-  - <link cmd="https://github.com/corelan/mona3/commit/cca5eb8">cca5eb8</link> update prompt
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/0ef6c08">0ef6c08</link> Update revision (mona: 3024) update pip modules via mona up
 
 [windbglib 3.0.3014]
 - Update revision (mona: 3025, windbglib: 3014)
