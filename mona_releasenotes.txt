@@ -1,3 +1,20 @@
+[mona 3.0.3037]
+- Update revision (mona: 3037)
+apl3b:
+  - <link cmd="https://github.com/corelan/mona3/commit/0e1ea0f">0e1ea0f</link> Heap summary (#79)
+  - <link cmd="https://github.com/corelan/mona3/commit/14034cd">14034cd</link> Improve string awareness, perf improvements (indexing and caching) & mapping (#78)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/a917fa2">a917fa2</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/6b1c5e3">6b1c5e3</link> make ppr alias for seh
+  - <link cmd="https://github.com/corelan/mona3/commit/06e0d1f">06e0d1f</link> Log resolved badchars in \xNN format, sorted
+  - <link cmd="https://github.com/corelan/mona3/commit/571fc32">571fc32</link> Log the resolved badchars list in \xNN format
+  - <link cmd="https://github.com/corelan/mona3/commit/33a503c">33a503c</link> Unify -cpb badchars parsing into a single function
+  - <link cmd="https://github.com/corelan/mona3/commit/1c815b9">1c815b9</link> Fix infinite recursion in parse_cpb_input when -cpb is empty
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/d1b65c9">d1b65c9</link> Update revision (mona: 3036)
+  - <link cmd="https://github.com/corelan/mona3/commit/312450d">312450d</link> Update revision (mona: 3035)
+  - <link cmd="https://github.com/corelan/mona3/commit/9ce07cb">9ce07cb</link> Update revision (mona: 3034)
+
 [mona 3.0.3036]
 - Update revision (mona: 3036)
 apl3b:
@@ -169,22 +186,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/43313dc">43313dc</link> update help for mona compare
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/bdc00ce">bdc00ce</link> Update revision (mona: 3026, windbglib: 3015)
-
-[mona 3.0.3026]
-- Update revision (mona: 3026, windbglib: 3015)
-apl3b:
-  - <link cmd="https://github.com/corelan/mona3/commit/1861bc1">1861bc1</link> Heap output (#70)
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/43313dc">43313dc</link> update help for mona compare
-  - <link cmd="https://github.com/corelan/mona3/commit/e7d9e4e">e7d9e4e</link> fix issue with safe_int
-  - <link cmd="https://github.com/corelan/mona3/commit/d0d6109">d0d6109</link> update routine to find sourcode
-  - <link cmd="https://github.com/corelan/mona3/commit/3f667ef">3f667ef</link> fix indentation
-  - <link cmd="https://github.com/corelan/mona3/commit/bd49dc3">bd49dc3</link> update q 2
-  - <link cmd="https://github.com/corelan/mona3/commit/988f27c">988f27c</link> update prompt for q 2
-  - <link cmd="https://github.com/corelan/mona3/commit/c3a298d">c3a298d</link> fix uf parsing
-  - <link cmd="https://github.com/corelan/mona3/commit/c6eabba">c6eabba</link> update -q 2
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/adf74bb">adf74bb</link> Update revision (mona: 3025, windbglib: 3014)
 
 [windbglib 3.0.3015]
 - Update revision (mona: 3026, windbglib: 3015)
