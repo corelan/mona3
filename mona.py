@@ -51876,6 +51876,11 @@ def _walkSehChain(sehchain):
 			recinfo = "Smashed, offset %d%s" % (smashoffset, typeinfo)
 		if nsehvalue == 0xffffffff:
 			recinfo = "End of SEH chain"
+		if recinfo == "":
+			try:
+				recinfo = getDisasmInstruction(dbg.disasm(sehandler))
+			except Exception:
+				pass
 		records[recaddress] = [nsehvalue, sehandler, funcname, recinfo]
 	return records, overwritten
 
