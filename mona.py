@@ -37701,6 +37701,7 @@ def procInfo(args):
 		dbg.log("    %s" % modinfo.__str__(clickable=True))
 		if rva != 0:
 			dbg.log("    Offset from module base: 0x%x" % rva)
+			dbg.log("    RVA: %s+0x%x" % (modinfo.moduleFilename, rva))
 		iatlist = modinfo.getIAT()
 		if address in iatlist:
 			iatentry = iatlist[address]
