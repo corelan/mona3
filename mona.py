@@ -31174,7 +31174,10 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	p2prangestosearch = []
 	global g_silent
 	allpointers = {}
-	if pattern is None or _to_text(pattern).strip().strip("\"'").strip() == "":
+	pattern_check = _to_text(pattern) if pattern is not None else ""
+	if len(pattern_check) >= 2 and pattern_check[0] == pattern_check[-1] and pattern_check[0] in "\"'":
+		pattern_check = pattern_check[1:-1]
+	if pattern_check == "":
 		dbg.log("[!] Search pattern cannot be empty", highlight=1)
 		return allpointers
 	originalPattern = pattern
