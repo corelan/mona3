@@ -31173,39 +31173,10 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	tmpsearch = []
 	p2prangestosearch = []
 	global g_silent
-	if len(modulecriteria) > 0:
-		modulestosearch = getModulesToQuery(modulecriteria)
-		# convert modules to ranges
-		for modulename in modulestosearch:
-			objmod = MnModule(modulename)
-			mBase = objmod.moduleBase
-			mTop = objmod.moduleTop
-			if mBase < base and base < mTop:
-				mBase = base
-			if mTop > top:
-				mTop = top
-			if mBase >= base and mBase < top:
-				if not [mBase,mTop] in rangestosearch:
-					rangestosearch.append([mBase,mTop])
-		# if no modules were specified, then also add  the other ranges (outside modules)
-		if not "modules" in modulecriteria:
-			outside = getRangesOutsideModules()
-			for range in outside:
-				mBase = range[0]
-				mTop = range[1]
-				if mBase < base and base < mTop:
-					mBase = base
-				if mTop > top:
-					mTop = top
-				if mBase >= base and mBase < top:
-					if not [mBase,mTop] in rangestosearch:
-						rangestosearch.append([mBase,mTop])
-	else:
-		rangestosearch.append([base,top])
-	
-	tmpsearch.append([0,TOP_USERLAND])
-	
 	allpointers = {}
+	if pattern is None or _to_text(pattern).strip().strip("\"'").strip() == "":
+		dbg.log("[!] Search pattern cannot be empty", highlight=1)
+		return allpointers
 	originalPattern = pattern
 	
 	# guess the type if it is not specified
@@ -31238,6 +31209,37 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	split1 = re.compile(' ')		
 	split2 = re.compile(':')
 	split3 = re.compile("\\*")
+	instructionbytes = None
+
+	if ptype == "instr" and "\\x" in pattern.lower():
+		dbg.log("[!] Search pattern contains escaped bytes; treating it as binary instead of assembling as instructions", highlight=1)
+		if ".." in pattern:
+			wildcardsearch = True
+		else:
+			try:
+				instructionbytes = hex2bin(pattern)
+			except Exception:
+				dbg.log("[!] Invalid hex pattern", highlight=1)
+				return allpointers
+		ptype = "bin"
+	elif ptype == "instr":
+		pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" #","#").replace("# ","#")
+		previous_silent = g_silent
+		try:
+			g_silent = True
+			assembled = assemble(pattern,"")
+		except Exception:
+			assembled = ""
+		finally:
+			g_silent = previous_silent
+		if assembled:
+			try:
+				instructionbytes = hex2bin(assembled)
+			except Exception:
+				instructionbytes = ""
+		if not instructionbytes:
+			dbg.log("[!] Invalid instruction - could not assemble %s" % pattern, highlight=1)
+			return allpointers
 	
 	if not g_silent:
 		dbg.log("    - Treating search pattern as %s" % ptype)
@@ -31249,14 +31251,21 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	elif ptype == "bin":
 		if len(pattern) % 2 != 0:
 			dbg.log("Invalid hex pattern", highlight=1)
-			return
+			return allpointers
 		if not wildcardsearch:
-			bytes = hex2bin(pattern)
+			if instructionbytes is not None:
+				bytes = instructionbytes
+			else:
+				try:
+					bytes = hex2bin(pattern)
+				except Exception:
+					dbg.log("Invalid hex pattern", highlight=1)
+					return allpointers
 		else:
 			# check if first byte is a byte and not a wildcard
 			if len(pattern) > 3 and pattern[2:4] == "..":
 				dbg.log(" *** Can't start a wildcard search with a wildcard. Specify a byte instead ***",highlight =1)
-				return
+				return allpointers
 			else:
 				# search for the first byte and then check wildcards later
 				foundstartbytes = False
@@ -31276,13 +31285,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 			pattern = pattern.replace("'","")
 		bytes = pattern
 	elif ptype == "instr":
-		pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" #","#").replace("# ","#")
-		g_silent = True
-		bytes = hex2bin(assemble(pattern,""))
-		g_silent = False
-		if bytes == "":
-			dbg.log("Invalid instruction - could not assemble %s" % pattern,highlight=1)
-			return
+		bytes = instructionbytes
 	elif ptype == "file":
 		patternfilename = pattern.replace("'","").replace('"',"")
 		dbg.log("    - Search patterns = all pointers in file %s" % patternfilename)
@@ -31307,16 +31310,66 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 								allpointers[subsubparts[0]] += [hexStrToInt(thispointer)]
 							extracted += 1
 		dbg.log("      %d pointers extracted." % extracted)							
+	if ptype != "file" and not bytes:
+		dbg.log("[!] Search pattern cannot be empty", highlight=1)
+		return allpointers
 	dbg.updateLog()
 	
 	fakeptrcriteria = {}
 	
 	fakeptrcriteria["accesslevel"] = "*"
 	
+	if ptype != "file":
+		if ptype == "asc":
+			searchpattern = pattern
+		elif wildcardsearch and ptype == "bin":
+			searchpattern = pattern
+		else:
+			searchpattern = bin2hexstr(bytes)
+		dbg.log("    - Search pattern: %s" % searchpattern)
+	else:
+		searchpattern = patternfilename
+		dbg.log("    - Search pattern: %s" % searchpattern)
+
+	dbg.log("[+] Preparing memory search for %s" % searchpattern)
+	tmpsearch.append([0,TOP_USERLAND])
+	if len(modulecriteria) > 0:
+		modulestosearch = getModulesToQuery(modulecriteria)
+		# convert modules to ranges
+		for modulename in modulestosearch:
+			objmod = MnModule(modulename)
+			mBase = objmod.moduleBase
+			mTop = objmod.moduleTop
+			if mBase < base and base < mTop:
+				mBase = base
+			if mTop > top:
+				mTop = top
+			if mBase >= base and mBase < top:
+				if not [mBase,mTop] in rangestosearch:
+					rangestosearch.append([mBase,mTop])
+		# if no modules were specified, then also add the other ranges (outside modules)
+		if not "modules" in modulecriteria:
+			outside = getRangesOutsideModules()
+			for memory_range in outside:
+				mBase = memory_range[0]
+				mTop = memory_range[1]
+				if mBase < base and base < mTop:
+					mBase = base
+				if mTop > top:
+					mTop = top
+				if mBase >= base and mBase < top:
+					if not [mBase,mTop] in rangestosearch:
+						rangestosearch.append([mBase,mTop])
+	else:
+		rangestosearch.append([base,top])
+
 	if "p2p" in criteria or level > 0:
-		#save range for later, search in all of userland for now
+		# save ranges for recursive searches, then search userland for direct pointers
 		p2prangestosearch = rangestosearch
 		rangestosearch = tmpsearch
+
+	if ptype != "file":
+		dbg.log("[+] Searching memory for %s" % searchpattern)
 	
 	if ptype != "file":
 		for ranges in rangestosearch:
