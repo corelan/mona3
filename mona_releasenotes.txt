@@ -1,3 +1,19 @@
+[mona 3.0.3039]
+- Update revision (mona: 3039)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/5dbc58f">5dbc58f</link> Allow searching for ASCII whitespace
+  - <link cmd="https://github.com/corelan/mona3/commit/b05b646">b05b646</link> Fix find instruction byte-pattern searches
+  - <link cmd="https://github.com/corelan/mona3/commit/e20c2b1">e20c2b1</link> show rva in mona info
+  - <link cmd="https://github.com/corelan/mona3/commit/e581f37">e581f37</link> Disassemble SEH handler in chain info
+  - <link cmd="https://github.com/corelan/mona3/commit/a917fa2">a917fa2</link> Merge branch 'main' of https://github.com/corelan/mona3
+  - <link cmd="https://github.com/corelan/mona3/commit/6b1c5e3">6b1c5e3</link> make ppr alias for seh
+  - <link cmd="https://github.com/corelan/mona3/commit/06e0d1f">06e0d1f</link> Log resolved badchars in \xNN format, sorted
+  - <link cmd="https://github.com/corelan/mona3/commit/571fc32">571fc32</link> Log the resolved badchars list in \xNN format
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/edbdf4c">edbdf4c</link> Update revision (mona: 3038)
+  - <link cmd="https://github.com/corelan/mona3/commit/3963eb0">3963eb0</link> Update revision (mona: 3037)
+  - <link cmd="https://github.com/corelan/mona3/commit/d1b65c9">d1b65c9</link> Update revision (mona: 3036)
+
 [mona 3.0.3038]
 - Update revision (mona: 3038)
 corelanc0d3r:
@@ -169,22 +185,6 @@ corelanc0d3r:
   - <link cmd="https://github.com/corelan/mona3/commit/ad26fe3">ad26fe3</link> update offline ai requests
 github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/8f13946">8f13946</link> Update revision - heap improvements (mona: 3028)
-  - <link cmd="https://github.com/corelan/mona3/commit/b8a716c">b8a716c</link> Update revision (mona: 3027)
-
-[mona 3.0.3028]
-- Update revision - heap improvements (mona: 3028)
-apl3b:
-  - <link cmd="https://github.com/corelan/mona3/commit/f9aff07">f9aff07</link> Chunk view improvement (#72)
-  - <link cmd="https://github.com/corelan/mona3/commit/3cfcae4">3cfcae4</link> Update visualization and arg validation (#71)
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/ca48709">ca48709</link> documentation
-  - <link cmd="https://github.com/corelan/mona3/commit/6e543ad">6e543ad</link> allow -s with mona pc
-  - <link cmd="https://github.com/corelan/mona3/commit/ad26fe3">ad26fe3</link> update offline ai requests
-  - <link cmd="https://github.com/corelan/mona3/commit/0e3fbd8">0e3fbd8</link> update usage for mona ai
-  - <link cmd="https://github.com/corelan/mona3/commit/e38fb1f">e38fb1f</link> add ai -q 0 (autonomous agent loop)
-  - <link cmd="https://github.com/corelan/mona3/commit/2a5b7cb">2a5b7cb</link> mona ai improvements
-  - <link cmd="https://github.com/corelan/mona3/commit/fe5e035">fe5e035</link> a bit of work on the AI logic. Adding openai-generic and support for slow self-hosted models with limited context window
-github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/b8a716c">b8a716c</link> Update revision (mona: 3027)
 
 [windbglib 3.0.3015]
