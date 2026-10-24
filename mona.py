@@ -18524,6 +18524,7 @@ class MnModule: # TODO: Add getters
 		self.moduleKey              = modulename
 		self.modulePath             = path
 		self.moduleFilename         = filename
+		self.moduleFileNameNormalized = self.normalizeModuleName(filename)
 		self.moduleBase             = mzbase
 		self.moduleSize             = pe["size"]
 		self.moduleTop              = mzbase + pe["size"]
@@ -18757,12 +18758,33 @@ class MnModule: # TODO: Add getters
 		mod_lower = modulename.lower().strip()
 		return any(mod_lower.startswith(e) for e in g_excluded_modules_list)
 
+	@staticmethod
+	def normalizeModuleName(filename):
+		"""
+		Normalize a module file name into the module name windbg/dbgeng uses in symbol expressions
+
+		Arguments:
+		filename - module file name (optionally with path), e.g. "glib-2.0-0.dll"
+
+		Return:
+		Normalized module name, e.g. "glib_2_0_0"
+
+		dbgeng derives the module name from the image file name: the path and
+		final extension are stripped, and every character that cannot be used
+		in a symbol name is replaced with an underscore
+		"""
+		name = ensure_text(filename or "").replace("\\", "/")
+		name = os.path.basename(name)
+		name = os.path.splitext(name)[0]
+		return re.sub(r"[^A-Za-z0-9_]", "_", name)
+
 	_ATTR_MAP = {
 		"base":               "moduleBase",
 		"top":                "moduleTop",
 		"size":               "moduleSize",
 		"path":               "modulePath",
 		"filename":           "moduleFilename",
+		"filenamenormalized": "moduleFileNameNormalized",
 		"version":            "moduleVersion",
 		"entry":              "moduleEntry",
 		"codebase":           "moduleCodebase",
@@ -19337,6 +19359,9 @@ class MnModule: # TODO: Add getters
 
 	def moduleFilename(self):
 		return self.moduleFilename
+
+	def moduleFileNameNormalized(self):
+		return self.moduleFileNameNormalized
 
 	def moduleBase(self):
 		return self.moduleBase
@@ -28131,9 +28156,9 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		thistable += ("%s\n" % excluded_by_configtext)
 	thistable += ("-" * linelength) + "\n"
 	if arch == 32:
-		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
+		thistable += " Base       | Top        | Size       | Rebase | SafeSEH | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName | Normalized] {Symbols} (Path), DLLCharacteristics\n"
 	elif arch == 64:
-		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName] {Symbols} (Path), DLLCharacteristics\n"
+		thistable += " Base               | Top                | Size               | Rebase | ASLR  | CFG   | NXCompat | OS Dll | Version, [ImageName | Normalized] {Symbols} (Path), DLLCharacteristics\n"
 	thistable += ("-" * linelength) + "\n"
 
 	thistable_display = thistable
@@ -28153,6 +28178,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			path 	= str(modproperties.modulePath)
 			name        = str(modproperties.moduleFilename or modproperties.moduleKey)
 			name_click  = clickModuleName(str(modproperties.moduleFilename or modproperties.moduleKey))
+			normalized_name = str(modproperties.moduleFileNameNormalized or modproperties.moduleKey)
 			dllflag = "0x%x" % modproperties.moduleDllCharacteristics
 			sym_tag = ""
 			if show_sym:
@@ -28174,10 +28200,10 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 			])
 			if arch == 32:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + module_details + "\n"
-				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
+				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + " | " + normalized_name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 			if arch == 64:
 				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + module_details + "\n"
-				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
+				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + " | " + normalized_name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 	thistable += ("-" * linelength) + "\n"
 	thistable_display += ("-" * linelength) + "\n"
 	tableinfo = thistable.split('\n')
@@ -37758,6 +37784,8 @@ def procInfo(args):
 		if rva != 0:
 			dbg.log("    Offset from module base: 0x%x" % rva)
 			dbg.log("    RVA: %s+0x%x" % (modinfo.moduleFilename, rva))
+			bp_cmd = "bu %s+0x%x" % (modinfo.moduleFileNameNormalized, rva)
+			dbg.log("    Breakpoint: %s" % clickWinDBGCmd(bp_cmd, bp_cmd))
 		iatlist = modinfo.getIAT()
 		if address in iatlist:
 			iatentry = iatlist[address]
