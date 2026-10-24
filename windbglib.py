@@ -1013,6 +1013,10 @@ def getModulesFromDebugger():
 		line = line.strip()
 		if not line:
 			continue
+		# lm appends an "Unloaded modules:" section at the end; those entries
+		# are no longer loaded, so stop parsing there
+		if line.lower().startswith("unloaded modules"):
+			break
 		# lm output format:
 		#   x86: <start> <end>   <name>    (deferred)
 		#   x64: <start>`<high> <end>`<high>   <name>    (deferred)

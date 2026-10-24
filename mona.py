@@ -16430,7 +16430,45 @@ class MnPEB:
 			result[list_name] = modules
 		self._ldr_list        = result
 		self._modules_by_base = mod_cache
-		self._modules_by_name = {m.moduleKey.lower(): m for m in mod_cache.values()}
+		self._modules_by_name = self._build_name_index(mod_cache)
+
+	def _build_name_index(self, mod_cache):
+		"""Build the name -> MnModule index from a base-keyed module cache.
+
+		Module keys are file names without extension (windbg normalized names),
+		so two modules can share one stem: msedge.exe and msedge.dll both
+		normalize to "msedge".  windbg keeps the plain name for the non-exe
+		module and renames the .exe module to "<stem>_exe" (msedge_exe), so the
+		same rule is applied here.  Any remaining collision falls back to a
+		"<stem>_<hex load address>" suffix so every module stays reachable.
+		"""
+		grouped = {}
+		for mod in mod_cache.values():
+			grouped.setdefault(mod.moduleKey.lower(), []).append(mod)
+		name_index = {}
+		for key, mods in grouped.items():
+			if len(mods) == 1:
+				name_index[key] = mods[0]
+				continue
+			exe_mods = [m for m in mods if (m.moduleFilename or "").lower().endswith(".exe")]
+			if len(exe_mods) == 1:
+				exe = exe_mods[0]
+				exe_key = exe.moduleKey + "_exe"
+				exe.moduleKey = exe_key
+				exe.moduleFileNameNormalized = exe_key
+				name_index[exe_key.lower()] = exe
+				rest = [m for m in mods if m is not exe]
+			else:
+				rest = list(mods)
+			for i, mod in enumerate(rest):
+				if i == 0:
+					name_index[mod.moduleKey.lower()] = mod
+				else:
+					suffix_key = "%s_%x" % (mod.moduleKey, mod.moduleBase)
+					mod.moduleKey = suffix_key
+					mod.moduleFileNameNormalized = suffix_key
+					name_index[suffix_key.lower()] = mod
+		return name_index
 
 	def _walk_modules(self, from_memory=False, peb_order="load"):
 		"""Build and cache the full module list. Returns self._ldr_list.
@@ -28127,12 +28165,21 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	_POST_SORT_FIELDS = {k: v["key"] for k, v in MODULE_COLUMNS.items()}
 	items = list(mnproc.getPEB().getModules(peb_order=peb_order).items())
-	displayed_module_count = len(items) if len(logfile) > 0 else len(modules)
 	if sort_keys:
 		# Apply compound sort in reverse key order so first key wins (stable sort)
 		for key, reverse in reversed(sort_keys):
 			if key in _POST_SORT_FIELDS:
 				items = sorted(items, key=_POST_SORT_FIELDS[key], reverse=reverse)
+
+	# Display filter: console output only shows modules that survived the
+	# criteria filter (the `modules` list), logfile output shows everything.
+	# Both header counts are derived from this same list so they always match
+	# the number of rows actually printed.
+	if len(logfile) > 0:
+		display_items = items
+	else:
+		display_items = [item for item in items if len(modules) > 0 and item[0] in modules]
+	displayed_module_count = len(display_items)
 
 
 	if _symbol_dirs_cache is None:
@@ -28141,7 +28188,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	linelength = 175
 	thistable += ("-" * linelength) + "\n"
-	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(mnproc.getPEB().getModules()), displayed_module_count)
+	thistable += " Total nr of modules loaded: %d | Nr of modules displayed after filters: %d" % (len(items), displayed_module_count)
 	_PEB_ORDER_DISPLAY = {"load": "InLoadOrder", "memory": "InMemoryOrder", "init": "InInitializationOrder"}
 	thistable += " | PEB order: %s\n" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order)
 	if sort_keys:
@@ -28163,47 +28210,46 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 
 	thistable_display = thistable
 
-	for thismodule, modproperties in items:
-		if (len(modules) > 0 and thismodule in modules or len(logfile)>0):
-			rebase	= toSize(str(modproperties.isRebase),7)
-			base 	= toSize(str("0x" + toHex(modproperties.moduleBase)),10)
-			top 	= toSize(str("0x" + toHex(modproperties.moduleTop)),10)
-			size 	= toSize(str("0x" + toHex(modproperties.moduleSize)),10)
-			safeseh = toSize(str(modproperties.isSafeSEH),7)
-			aslr 	= toSize(str(modproperties.isAslr),5)
-			cfg 	= toSize(str(modproperties.isCFG),5)
-			nx 		= toSize(str(modproperties.isNX),7)
-			isos 	= toSize(str(modproperties.isOS),7)
-			version = str(modproperties.moduleVersion)
-			path 	= str(modproperties.modulePath)
-			name        = str(modproperties.moduleFilename or modproperties.moduleKey)
-			name_click  = clickModuleName(str(modproperties.moduleFilename or modproperties.moduleKey))
-			normalized_name = str(modproperties.moduleFileNameNormalized or modproperties.moduleKey)
-			dllflag = "0x%x" % modproperties.moduleDllCharacteristics
-			sym_tag = ""
-			if show_sym:
-				has_sym = _hasSymbolsCached(modproperties)
-				sym_tag = " {%s}" % str(bool(has_sym))
-			module_details = "%s [%s]%s (%s) %s" % (version, name, sym_tag, path, dllflag)
-			module_details_md = module_details.replace("|", "\\|")
-			markdown_rows.append([
-				base.strip().replace("|", "\\|"),
-				top.strip().replace("|", "\\|"),
-				size.strip().replace("|", "\\|"),
-				rebase.strip().replace("|", "\\|"),
-				safeseh.strip().replace("|", "\\|"),
-				aslr.strip().replace("|", "\\|"),
-				cfg.strip().replace("|", "\\|"),
-				nx.strip().replace("|", "\\|"),
-				isos.strip().replace("|", "\\|"),
-				module_details_md
-			])
-			if arch == 32:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + module_details + "\n"
-				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + " | " + normalized_name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
-			if arch == 64:
-				thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + module_details + "\n"
-				thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + " | " + normalized_name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
+	for thismodule, modproperties in display_items:
+		rebase	= toSize(str(modproperties.isRebase),7)
+		base 	= toSize(str("0x" + toHex(modproperties.moduleBase)),10)
+		top 	= toSize(str("0x" + toHex(modproperties.moduleTop)),10)
+		size 	= toSize(str("0x" + toHex(modproperties.moduleSize)),10)
+		safeseh = toSize(str(modproperties.isSafeSEH),7)
+		aslr 	= toSize(str(modproperties.isAslr),5)
+		cfg 	= toSize(str(modproperties.isCFG),5)
+		nx 		= toSize(str(modproperties.isNX),7)
+		isos 	= toSize(str(modproperties.isOS),7)
+		version = str(modproperties.moduleVersion)
+		path 	= str(modproperties.modulePath)
+		name        = str(modproperties.moduleFilename or modproperties.moduleKey)
+		name_click  = clickModuleName(str(modproperties.moduleFilename or modproperties.moduleKey))
+		normalized_name = str(modproperties.moduleFileNameNormalized or modproperties.moduleKey)
+		dllflag = "0x%x" % modproperties.moduleDllCharacteristics
+		sym_tag = ""
+		if show_sym:
+			has_sym = _hasSymbolsCached(modproperties)
+			sym_tag = " {%s}" % str(bool(has_sym))
+		module_details = "%s [%s]%s (%s) %s" % (version, name, sym_tag, path, dllflag)
+		module_details_md = module_details.replace("|", "\\|")
+		markdown_rows.append([
+			base.strip().replace("|", "\\|"),
+			top.strip().replace("|", "\\|"),
+			size.strip().replace("|", "\\|"),
+			rebase.strip().replace("|", "\\|"),
+			safeseh.strip().replace("|", "\\|"),
+			aslr.strip().replace("|", "\\|"),
+			cfg.strip().replace("|", "\\|"),
+			nx.strip().replace("|", "\\|"),
+			isos.strip().replace("|", "\\|"),
+			module_details_md
+		])
+		if arch == 32:
+			thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + module_details + "\n"
+			thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " +safeseh + " | " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + " | " + normalized_name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
+		if arch == 64:
+			thistable += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + module_details + "\n"
+			thistable_display += " " + base + " | " + top + " | " + size + " | " + rebase +"| " + aslr + " | "+ cfg + " |  " + nx + " | " + isos + "| " + version + " [" + clickModuleName(name) + " | " + normalized_name + "]" + sym_tag + " (" + path + ") " + dllflag + "\n"
 	thistable += ("-" * linelength) + "\n"
 	thistable_display += ("-" * linelength) + "\n"
 	tableinfo = thistable.split('\n')
@@ -28231,7 +28277,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 				md_lines.append("")
 				md_lines.append("## Module Table")
 				md_lines.append("")
-				md_lines.append("- Total nr of modules loaded: **%d**" % len(mnproc.getPEB().getModules()))
+				md_lines.append("- Total nr of modules loaded: **%d**" % len(items))
 				md_lines.append("- Nr of modules displayed after filters: **%d**" % displayed_module_count)
 				md_lines.append("- PEB order: **%s**" % _PEB_ORDER_DISPLAY.get(peb_order, peb_order))
 				if sort_keys:
