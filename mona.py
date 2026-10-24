@@ -28230,7 +28230,7 @@ def showModuleTable(logfile="", modules=[], modulecriteria={}, sort_keys=None, p
 		if show_sym:
 			has_sym = _hasSymbolsCached(modproperties)
 			sym_tag = " {%s}" % str(bool(has_sym))
-		module_details = "%s [%s]%s (%s) %s" % (version, name, sym_tag, path, dllflag)
+		module_details = "%s [%s](%s) %s (%s) %s" % (version, name, normalized_name, sym_tag, path, dllflag)
 		module_details_md = module_details.replace("|", "\\|")
 		markdown_rows.append([
 			base.strip().replace("|", "\\|"),
@@ -31298,7 +31298,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 				return allpointers
 		ptype = "bin"
 	elif ptype == "instr":
-		pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace(" #","#").replace("# ","#")
+		pattern = pattern.replace("'","").replace('"',"").replace("  "," ").replace(", ",",").replace("; ","#").replace(" #","#").replace("# ","#").replace(";","#")
 		previous_silent = g_silent
 		try:
 			g_silent = True
