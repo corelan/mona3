@@ -1,3 +1,24 @@
+[mona 3.0.3040]
+- Update revision (mona: 3040, windbglib: 3016)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/f176f14">f176f14</link> Fix module enumeration: skip unloaded modules, disambiguate stem collisions, consistent table counts
+  - <link cmd="https://github.com/corelan/mona3/commit/4cbca51">4cbca51</link> Add windbg-normalized module name to MnModule
+  - <link cmd="https://github.com/corelan/mona3/commit/5dbc58f">5dbc58f</link> Allow searching for ASCII whitespace
+  - <link cmd="https://github.com/corelan/mona3/commit/b05b646">b05b646</link> Fix find instruction byte-pattern searches
+  - <link cmd="https://github.com/corelan/mona3/commit/e20c2b1">e20c2b1</link> show rva in mona info
+  - <link cmd="https://github.com/corelan/mona3/commit/e581f37">e581f37</link> Disassemble SEH handler in chain info
+  - <link cmd="https://github.com/corelan/mona3/commit/a917fa2">a917fa2</link> Merge branch 'main' of https://github.com/corelan/mona3
+github-actions[bot]:
+  - <link cmd="https://github.com/corelan/mona3/commit/db6807e">db6807e</link> Update revision (mona: 3039)
+  - <link cmd="https://github.com/corelan/mona3/commit/edbdf4c">edbdf4c</link> Update revision (mona: 3038)
+  - <link cmd="https://github.com/corelan/mona3/commit/3963eb0">3963eb0</link> Update revision (mona: 3037)
+  - <link cmd="https://github.com/corelan/mona3/commit/d1b65c9">d1b65c9</link> Update revision (mona: 3036)
+
+[windbglib 3.0.3016]
+- Update revision (mona: 3040, windbglib: 3016)
+corelanc0d3r:
+  - <link cmd="https://github.com/corelan/mona3/commit/f176f14">f176f14</link> Fix module enumeration: skip unloaded modules, disambiguate stem collisions, consistent table counts
+
 [mona 3.0.3039]
 - Update revision (mona: 3039)
 corelanc0d3r:
@@ -171,22 +192,6 @@ github-actions[bot]:
   - <link cmd="https://github.com/corelan/mona3/commit/8f13946">8f13946</link> Update revision - heap improvements (mona: 3028)
   - <link cmd="https://github.com/corelan/mona3/commit/b8a716c">b8a716c</link> Update revision (mona: 3027)
 
-[mona 3.0.3029]
-- Update revision (mona: 3029)
-apl3b:
-  - <link cmd="https://github.com/corelan/mona3/commit/23de543">23de543</link> Add new command heap -chunks -extend (#74)
-  - <link cmd="https://github.com/corelan/mona3/commit/f9aff07">f9aff07</link> Chunk view improvement (#72)
-  - <link cmd="https://github.com/corelan/mona3/commit/3cfcae4">3cfcae4</link> Update visualization and arg validation (#71)
-corelanc0d3r:
-  - <link cmd="https://github.com/corelan/mona3/commit/8f8a26c">8f8a26c</link> give mona stacks an output file as well
-  - <link cmd="https://github.com/corelan/mona3/commit/9ab8c54">9ab8c54</link> bugfix in cleanHex
-  - <link cmd="https://github.com/corelan/mona3/commit/ca48709">ca48709</link> documentation
-  - <link cmd="https://github.com/corelan/mona3/commit/6e543ad">6e543ad</link> allow -s with mona pc
-  - <link cmd="https://github.com/corelan/mona3/commit/ad26fe3">ad26fe3</link> update offline ai requests
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/8f13946">8f13946</link> Update revision - heap improvements (mona: 3028)
-  - <link cmd="https://github.com/corelan/mona3/commit/b8a716c">b8a716c</link> Update revision (mona: 3027)
-
 [windbglib 3.0.3015]
 - Update revision (mona: 3026, windbglib: 3015)
 github-actions[bot]:
@@ -238,7 +243,3 @@ corelanc0d3r:
 [windbglib 3.0.3006]
 - Update revision (mona: 3015, windbglib: 3006) AI refinements
 - No file-specific commits found.
-
-[windbglib 3.0.3005]
-github-actions[bot]:
-  - <link cmd="https://github.com/corelan/mona3/commit/3d1a50e">3d1a50e</link> compat. with Py3.14.4  (mona: 3006, windbglib: 3004)

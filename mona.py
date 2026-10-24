@@ -37,7 +37,7 @@ $Revision: 3333
 """
 
 __VERSION__ = '3.0'
-__REV__ = 3039
+__REV__ = 3040
 
 DEBUG_MODE = False
 _AI_PROVIDER_ENGINES = ["openai", "openaiagents", "anthropic", "openrouter", "ollama", "customai", "openai-generic"]
