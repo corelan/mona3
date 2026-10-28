@@ -31279,7 +31279,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 		if not g_silent:
 			dbg.log("    - Expanded ascii pattern to unicode, switched search mode to bin")
 
-	bytes = ""
+	bytes = b""
 	patternfilename = ""
 	split1 = re.compile(' ')		
 	split2 = re.compile(':')
@@ -31462,7 +31462,9 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 	
 	# filter out bad ones if wildcardsearch is enabled
 	if wildcardsearch and ptype == "bin":
-		nrbytes = ( len(pattern) / 4) - len(bytes)
+		anchor_count = sum([len(addresses) for addresses in allpointers.values()])
+		dbg.log("[+] Found %d addresses containing the start byte sequence" % anchor_count)
+		nrbytes = (len(pattern) // 4) - len(bytes)
 		if nrbytes > 0:
 			maskpart = pattern[len(bytes)*4:]
 			tocomparewith_tmp = maskpart.split("\\x")
@@ -31480,7 +31482,7 @@ def findPattern(modulecriteria,criteria,pattern,ptype,base,top,consecutive=False
 					compareindex = 0
 					wildcardmatch = True
 					for thisbyte in bytesatlocation:
-						thisbytestr = bin2hexstr(thisbyte).replace("\\x","")
+						thisbytestr = bin2hex(thisbyte)
 						thisbytecompare = tocomparewith[compareindex]
 						if thisbytecompare != ".." and thisbytestr.lower() != thisbytecompare.lower():
 							wildcardmatch=False
@@ -37165,6 +37167,24 @@ def procFind(args):
 			if not os.path.isfile(filename):
 				dbg.log("Unable to find/read file %s" % filename,highlight=1)
 				return
+	if ftype == "":
+		if not pattern.strip().lower().startswith("0x"):
+			normalized_pattern = normalizeHexBytesArg(pattern)
+			if normalized_pattern not in [None, ""]:
+				ftype = "bin"
+				pattern = "\\x" + "\\x".join([
+					normalized_pattern[index:index + 2]
+					for index in range(0, len(normalized_pattern), 2)
+				])
+	elif ftype == "bin" and ".." not in pattern:
+		normalized_pattern = normalizeHexBytesArg(pattern)
+		if normalized_pattern is None or normalized_pattern == "":
+			dbg.log("[!] Invalid binary pattern. Use even-length hex byte pairs, for example 414243 or \\x41\\x42\\x43.", highlight=1)
+			return
+		pattern = "\\x" + "\\x".join([
+			normalized_pattern[index:index + 2]
+			for index in range(0, len(normalized_pattern), 2)
+		])
 	rangep2p = 0
 
 	
@@ -37224,10 +37244,26 @@ def procFindWild(args):
 
 
 	if patterntype == "":
-		if "\\x" in pattern:
+		binary_candidate = ensure_text(pattern).strip().replace("'", "").replace('"', "")
+		binary_candidate = re.sub(r"(?i)\\x|0x", "", binary_candidate)
+		binary_candidate = re.sub(r"[\s,:]", "", binary_candidate)
+		if re.match(r"(?i)^(?:[0-9a-f]{2}|\?\?|\.\.)+$", binary_candidate):
 			patterntype = "bin"
 		else:
 			patterntype = "str"
+
+	if patterntype == "bin":
+		binary_pattern = ensure_text(pattern).strip()
+		if len(binary_pattern) >= 2 and binary_pattern[0] in ("b", "B") and binary_pattern[1] in ("'", '"'):
+			binary_pattern = binary_pattern[1:]
+		binary_pattern = binary_pattern.replace("'", "").replace('"', "")
+		binary_pattern = re.sub(r"(?i)\\x|0x", "", binary_pattern)
+		binary_pattern = re.sub(r"[\s,:]", "", binary_pattern)
+		if not re.match(r"(?i)^(?:[0-9a-f]{2}|\?\?|\.\.)+$", binary_pattern):
+			dbg.log("[!] Invalid binary pattern. Use byte pairs, for example 414243, or ?? for wildcard bytes.", highlight=1)
+			return
+		byte_tokens = re.findall(r"(?i)[0-9a-f]{2}|\?\?|\.\.", binary_pattern)
+		pattern = "".join(["\\x.." if token in ("??", "..") else "\\x" + token for token in byte_tokens])
 	
 	if "b" in args:
 		base,addyok = getAddyArg(args["b"])
@@ -37278,7 +37314,10 @@ def procFindWild(args):
 		criteria["mindistance"] = mindistance
 		criteria["maxdistance"] = maxdistance
 				
-	allpointers = findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype)
+	if patterntype == "bin":
+		allpointers = findPattern(modulecriteria,criteria,pattern,"bin",base,top)
+	else:
+		allpointers = findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype)
 
 	# transform the results for easy display
 		
@@ -54204,6 +54243,10 @@ Note : the charset must match the charset that was used to create the pattern !
 By default, findwild searches through the entire memory space and considers executable pages.
 If you only want to search in executable pages that are part of modules, use the -m * argument
 
+An even-length hex byte pattern is treated as binary automatically. Use -type bin to force binary
+searches, including patterns with ?? (or ..) for one wildcard byte. Use -type str to search
+hex-looking text literally. Binary wildcard patterns need at least one fixed byte.
+
 Mandatory arguments :
         -s <instruction#instruction#instruction>  (separate instructions with #)
 
@@ -54229,6 +54272,12 @@ Optional arguments:
         push rbp#*#jmp rax
         mov eax, [eax+n4:20]#*#inc r32
         add esp,imm0x100:0x200#pop r32#retn
+
+	414243                    (binary bytes: 41 42 43)
+	4142??90                  (binary bytes with one wildcard byte)
+	-type bin -s "\\x41\\x42\\x..\\x90"
+	-type bin -s "\\xAA\\xBB" (escaped-byte binary pattern)
+	-type str -s "414243"     (literal text)
         """
 
 
@@ -54236,6 +54285,8 @@ Optional arguments:
 
 Mandatory argument : -s <pattern> : the sequence to search for. If you specified type 'file', then use -s to specify the file.
 This file needs to be a file created with mona.py, containing pointers at the begin of each line.
+Even-length hexadecimal byte pairs are detected as binary automatically. Separate pairs with spaces or commas if desired.
+Use -type asc to search hex-looking characters as literal text.
 
 Optional arguments:
     -type <type>    : Type of pattern to search for : bin,asc,ptr,instr,file
