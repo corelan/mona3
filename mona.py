@@ -37317,6 +37317,14 @@ def procFindWild(args):
 	if patterntype == "bin":
 		allpointers = findPattern(modulecriteria,criteria,pattern,"bin",base,top)
 	else:
+		def replace_hex_wildcard(match):
+			fixed_digits = match.group(1)
+			wildcard_digits = match.group(2)
+			min_value = int(fixed_digits + ("0" * len(wildcard_digits)), 16) if fixed_digits else 0
+			max_value = int(fixed_digits + ("f" * len(wildcard_digits)), 16) if fixed_digits else (16 ** len(wildcard_digits)) - 1
+			return "imm0x%x:0x%x" % (min_value, max_value)
+
+		pattern = re.sub(r"(?i)\b0x([0-9a-f]*)(\?+)(?![0-9a-f?])", replace_hex_wildcard, pattern)
 		allpointers = findPatternWild(modulecriteria,criteria,pattern,base,top,patterntype)
 
 	# transform the results for easy display
@@ -54259,6 +54267,7 @@ Optional arguments:
 
   Inside the instructions string, you can use the following wildcards :
         *        = any instruction
+	?        = any hexadecimal digit in a 0x-prefixed value (e.g. 0x6?? = 0x600-0x6ff)
         r32      = any 32bit register
         r64      = any 64bit register
         -n or +n = any number in a range (uses the -distance min, unless you specified a specific range)
